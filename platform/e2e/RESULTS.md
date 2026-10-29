@@ -290,3 +290,42 @@ platform/e2e/
 | 两个用例并行时数据库名不同且互不影响（打印各自库名佐证） | 通过 | 第四节：`artifacts/db-usage.log` 记录两个 worker 的库名；用例断言对照库看不到标记行 |
 | 全部连接串走容器名，不存在本机回环地址连接串（匹配数 0） | 通过 | 第五节：匹配数 0 |
 | 提供最小端到端样例，一条命令跑通并产出 PNG | 通过 | `pnpm run test:scripted` 一条命令产出 `artifacts/screenshots/*.png` |
+
+---
+
+## 十一、任务 06 增量（接入真实全栈示例应用）
+
+- 执行日期：2026-10-29
+- 沙箱名：`sample-lab`；网桥 `sample-lab-net`；挂载 `platform/examples/fullstack-sample → /workspace/fullstack-sample`、`platform/e2e → /workspace/e2e`
+- 依赖容器：`postgres`、`minio`、`logto`（均由示例项目的 `scripts/up.sh` 拉起）
+
+### 增量内容
+
+| 项 | 增量 |
+|---|---|
+| 依赖清单 | 新增 `minio`（`/minio/health/live` 返回 200）与 `logto`（OIDC 发现文档返回 200 且含 issuer）；`app` 的地址改为 `http://app:8000/` |
+| 迁移 | 新增 `migrations/003_sample_records.sql`（示例应用的业务表 `sample_records`） |
+| 种子 | 新增 `seeds/v2.sql`（版本 v2：两条初始记录）；种子版本现为 `v1,v2` |
+| 用例 | 新增 `tests/e2e/fullstack-sample.spec.ts`（Logto 登录 → 写库 → 传 MinIO → 列表 → 下载比对）；`sample-page.spec.ts` 改为只断言两套流程都成立的 `page-home-title`；`explore/explore.spec.ts` 改为走查应用首页与 Logto 登录页 |
+| 辅助 | 新增 `helpers/logto-signin.ts`（第三方页面定位集中一处，契约断言显式豁免并公示）；`helpers/postgres.ts` 的种子指纹加入 `sample_records` 行数与哈希 |
+| 断言 | `tools/assert-testid-only.sh` 的扫描范围扩到 `helpers/`，并公示第三方页面豁免名单 |
+
+### 实测
+
+```
+[门禁] 依赖 postgres、minio、logto、app 全部第 1 次探测通过
+[门禁] 迁移已执行：001_init.sql、002_indexes.sql、003_sample_records.sql
+[门禁] 种子已载入：v1.sql、v2.sql（模板库种子版本：v1, v2）
+  4 passed (2.6s)
+退出码 = 0
+```
+
+| 口径 | 数值 |
+|---|---|
+| 脚本模式整套耗时（连续 3 次） | 3073 / 2958 / 3003 毫秒 |
+| 用例数 | 4 条（2 个 worker 并行） |
+| 模板库十连克隆 | 单库最短 130 / 最长 147 / 平均 140 毫秒 |
+| 截图 | 4 张（脚本 2 张 + 探索 2 张），1280×986 与 1280×720 |
+| trace | 5 份 |
+
+> 完整实测记录见 `platform/examples/fullstack-sample/RESULTS.md`。

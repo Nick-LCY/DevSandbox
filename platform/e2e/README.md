@@ -98,19 +98,37 @@ Error: 依赖「app」等待超时；判据：HTTP 状态码 200 且响应体包
       "timeoutSeconds": 120
     },
     {
+      "name": "minio",
+      "type": "http",
+      "url": "http://minio:9000/minio/health/live",
+      "urlEnv": "E2E_MINIO_URL",
+      "criterion": "HTTP 状态码 200（MinIO 存活探针 /minio/health/live）",
+      "timeoutSeconds": 120
+    },
+    {
+      "name": "logto",
+      "type": "http",
+      "url": "http://logto:3001/oidc/.well-known/openid-configuration",
+      "urlEnv": "E2E_LOGTO_URL",
+      "criterion": "HTTP 状态码 200 且响应体包含 issuer（Logto 默认租户的 OIDC 发现文档）",
+      "timeoutSeconds": 120,
+      "bodyIncludes": "\"issuer\""
+    },
+    {
       "name": "app",
       "type": "http",
-      "url": "http://app:8000",
+      "url": "http://app:8000/",
       "urlEnv": "E2E_APP_URL",
       "criterion": "HTTP 状态码 200 且响应体包含 data-testid=\"page-home-title\"",
-      "timeoutSeconds": 120
+      "timeoutSeconds": 120,
+      "bodyIncludes": "data-testid=\"page-home-title\""
     }
   ]
 }
 ```
 
 - 换清单：`E2E_DEPENDENCIES_FILE=/path/to/dependencies.json`；
-- 换单个依赖的指向：`E2E_PG_URL=...`、`E2E_APP_URL=...`；
+- 换单个依赖的指向：`E2E_PG_URL=...`、`E2E_MINIO_URL=...`、`E2E_LOGTO_URL=...`、`E2E_APP_URL=...`；
 - 清单里写的超时上限超过 120 秒会直接报错，防止有人把等待上限放大。
 
 **所有连接串一律走容器名**（沙箱内部网络中由 docker 内置 DNS 解析），不使用本机回环地址。
@@ -153,19 +171,22 @@ Error: 依赖「app」等待超时；判据：HTTP 状态码 200 且响应体包
 
 ## 七、在沙箱里跑通（完整步骤）
 
+**标准流程（任务 06 之后）**：被测应用是真实全栈应用，环境由示例项目一把起：
+
 ```bash
 # 1. 宿主：创建沙箱，把代码目录挂进去
 cd platform
-uv run python cli/sandboxctl.py create e2e-lab \
+uv run python cli/sandboxctl.py create sample-lab \
   --image sandbox-platform/sandbox-default:0.1.0 \
-  --mount "$PWD/e2e:/workspace"
+  --mount "$PWD/examples/fullstack-sample:/workspace/fullstack-sample" \
+  --mount "$PWD/e2e:/workspace/e2e"
 
-# 2. 沙箱容器内：装依赖
-cd /workspace
+# 2. 沙箱容器内：装端到端基建自己的依赖
+cd /workspace/e2e
 bash tools/install-deps.sh
 
-# 3. 沙箱容器内：起依赖容器（postgres + 静态页 app）
-bash tools/start-services.sh
+# 3. 沙箱容器内：起全环境（postgres + minio + logto + 被测应用，每步带健康门禁）
+bash /workspace/fullstack-sample/scripts/up.sh
 
 # 4. 沙箱容器内：跑脚本模式（判定）与探索模式
 pnpm run test:scripted
@@ -176,8 +197,20 @@ bash tools/new-test-db.sh bench 10
 
 # 6. 宿主：回收沙箱
 cd ..
-uv run python cli/sandboxctl.py delete e2e-lab --yes
+uv run python cli/sandboxctl.py delete sample-lab --yes
 ```
+
+**仅基建自检的轻量流程**（只有 postgres 与一个最小静态页，不含真实依赖）：
+
+```bash
+# 沙箱容器内
+cd /workspace/e2e
+bash tools/start-services.sh        # postgres + 静态页容器 app
+pnpm run test:scripted
+```
+
+> 两种流程不要同时跑：`tools/start-services.sh` 里的静态页容器也叫 `app`，
+> 与示例项目注册在沙箱容器上的 `app` 别名会在 DNS 上撞名。
 
 宿主目录要让沙箱用户可写（沙箱容器里的 root 映射到沙箱专属用户，不是宿主用户）：
 
@@ -196,7 +229,10 @@ bash tools/assert-contracts.sh
 | 断言 | 判据 |
 |---|---|
 | 回环地址连接串 | `platform/e2e/` 全目录（排除 `node_modules/`、`artifacts/`、`.pnpm-store/`、`.git/` 与断言脚本自身）匹配数为 **0** |
-| data-testid 唯一定位 | `tests/` 与 `explore/` 里 XPath、语义定位器、CSS 选择器、DOM 原生选择器的命中数合计为 **0** |
+| data-testid 唯一定位 | `tests/`、`explore/`、`helpers/` 里 XPath、语义定位器、CSS 选择器、DOM 原生选择器的命中数合计为 **0**；第三方页面豁免名单在脚本输出里公示 |
+
+> 第三方页面豁免：Logto 登录页不是我们自己的页面，控制不了它的 DOM，没法加 data-testid。
+> 它的定位集中在 `helpers/logto-signin.ts` 一个文件里，断言脚本每次运行都会公示这份豁免名单。
 
 ---
 
@@ -213,20 +249,29 @@ bash tools/assert-contracts.sh
 5. **pnpm 的包缓存默认落在工作目录**（`.pnpm-store/`），会让代码目录变脏；用 `tools/install-deps.sh` 可改到容器家目录。
 6. **宿主目录权限**。沙箱容器里的 root 映射的是沙箱专属用户，写不进宿主上属主是普通用户的目录；
    挂载前要 `chmod -R o+rwX`。
+7. **容器名会被 Chromium 升级成 HTTPS**。IP 字面量与本机名不会升级，但容器名会；
+   被测应用与 Logto 前面都要有双协议前置（同一端口明文 + TLS），
+   否则浏览器停在 `net::ERR_SSL_PROTOCOL_ERROR`。
+8. **应用不能在模板库被克隆时连着模板库**。`CREATE DATABASE ... TEMPLATE e2e_template`
+   要求模板库没有其它连接；被测应用要连自己的库，用例库由应用在登录时选定。
+9. **浏览器的文件下载导航不携带 `page.setExtraHTTPHeaders` 设的头**。
+   要按用例库路由，就得让应用在登录时把「本次用哪个库」记进会话，后续请求（包括下载导航）都按会话走。
+10. **宿主装过的 `node_modules` 沙箱内改不动**（属主不同，`pnpm install` 报 `EPERM ... chmod`）。
+    `node_modules/` 在 `.gitignore` 里，沙箱内先删再装即可。
 
 ---
 
-## 十、给 06（示例项目与验收演练）的复用说明
+## 十、06（示例项目与验收演练）的接入结果
 
-06 的示例项目直接复用这套基建，不需要另起炉灶：
+06 的示例项目直接复用这套基建，没有另起炉灶。实际落地情况：
 
-| 06 要做的事 | 复用这里的东西 |
+| 06 要做的事 | 实际怎么做的 |
 |---|---|
-| 起被测应用 | 把示例项目构建成镜像，用 `docker run --name <容器名> --network <沙箱网桥>` 起；容器名进 `config/dependencies.json` 的清单，判据按服务的真实就绪信号写 |
-| 应用自己的页面 | 按 `TESTID.md` 给元素加 `data-testid`，用例只写 `getByTestId()` |
-| 应用自己的数据库 | 往 `migrations/` 加迁移、往 `seeds/` 加带版本号的种子；门禁自动把模板库装好，用例库自动克隆 |
-| 跑验收 | `pnpm run test:scripted` 的退出码就是验收结论；截图与 trace 就在 `artifacts/` 里，直接给人看 |
-| agent 现场看效果 | `pnpm run test:explore` 出截图与 trace，退出码恒 0，不污染判定 |
+| 起被测应用 | 应用进程跑在**沙箱容器内**（沙箱就是开发环境），沙箱容器在网桥上注册 `app` 别名；依赖容器（`postgres`、`minio`、`logto`）由示例项目的 `scripts/up.sh` 拉起 |
+| 应用自己的页面 | 按 `TESTID.md` 给元素加 `data-testid`，用例只写 `getByTestId()`；静态外壳 `index.html` 里也放了 `page-home-title`，健康门禁读原始 HTML 就能判就绪 |
+| 应用自己的数据库 | 往 `migrations/` 加 `003_sample_records.sql`、往 `seeds/` 加 `v2.sql`；门禁自动把模板库装好，用例库自动克隆；应用在登录换 token 时选定本次用哪个库并记进会话 |
+| 跑验收 | `pnpm run test:scripted` 的退出码就是验收结论；截图与 trace 就在 `artifacts/` 里 |
+| agent 现场看效果 | `pnpm run test:explore` 出截图与 trace（会走到 Logto 真实登录页），退出码恒 0 |
 | 依赖没起来时的排查 | 门禁失败信息里直接写明是哪个依赖、判据是什么、上限多久、最后一次探测的原因 |
 
 新增依赖服务时，只要做两件事：容器名进清单、判据写成一条可自动验证的句子。

@@ -60,6 +60,10 @@ export interface SeedFingerprint {
   metaVersions: string;
   itemCount: number;
   itemHash: string;
+  /** 示例应用的业务表行数。 */
+  recordCount: number;
+  /** 示例应用的业务表内容哈希。 */
+  recordHash: string;
 }
 
 export async function seedFingerprint(url: string): Promise<SeedFingerprint> {
@@ -69,7 +73,9 @@ export async function seedFingerprint(url: string): Promise<SeedFingerprint> {
          (SELECT count(*)::int FROM seed_meta) AS "metaCount",
          (SELECT coalesce(string_agg(version, ',' ORDER BY version), '') FROM seed_meta) AS "metaVersions",
          (SELECT count(*)::int FROM seed_items) AS "itemCount",
-         (SELECT md5(coalesce(string_agg(id::text || ':' || name || ':' || price_cents::text, ',' ORDER BY id), '')) FROM seed_items) AS "itemHash"`,
+         (SELECT md5(coalesce(string_agg(id::text || ':' || name || ':' || price_cents::text, ',' ORDER BY id), '')) FROM seed_items) AS "itemHash",
+         (SELECT count(*)::int FROM sample_records) AS "recordCount",
+         (SELECT md5(coalesce(string_agg(id::text || ':' || title || ':' || owner_id, ',' ORDER BY id), '')) FROM sample_records) AS "recordHash"`,
     );
     return result.rows[0];
   });

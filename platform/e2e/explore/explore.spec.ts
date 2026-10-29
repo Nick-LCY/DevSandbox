@@ -5,8 +5,6 @@ import { test } from '@playwright/test';
 
 import { artifactsDir } from '../helpers/config';
 
-const APP_URL = process.env.E2E_APP_URL ?? 'http://app:8000';
-
 /**
  * 探索会话：agent 现场走查页面时用这个 project。
  *
@@ -15,7 +13,7 @@ const APP_URL = process.env.E2E_APP_URL ?? 'http://app:8000';
  *   - 本 project 不参与判定：不作断言，走查中断只记录不报错；
  *   - 退出码由 `tools/run-explore.sh` 统一压成 0。
  */
-test('探索会话：走查样例页并留存截图与 trace', async ({ page }, testInfo) => {
+test('探索会话：走查应用首页与 Logto 登录页并留存截图与 trace', async ({ page }, testInfo) => {
   const dir = path.join(artifactsDir(), 'explore');
   fs.mkdirSync(dir, { recursive: true });
   const shots: string[] = [];
@@ -28,13 +26,14 @@ test('探索会话：走查样例页并留存截图与 trace', async ({ page }, 
   };
 
   try {
-    await page.goto(APP_URL);
+    await page.goto('/');
     await page.getByTestId('page-home-title').waitFor({ state: 'visible' });
     await capture('01-home');
 
-    await page.getByTestId('page-home-summary-text').click();
-    await page.getByTestId('page-home-details-body').waitFor({ state: 'visible' });
-    await capture('02-details-opened');
+    // 走到 Logto 的真实登录页：证明浏览器确实跳到了身份提供方
+    await page.getByTestId('page-home-login-button').click();
+    await page.waitForURL(/logto/, { timeout: 30_000 });
+    await capture('02-logto-sign-in');
   } catch (error) {
     const message = (error as Error).message;
     console.warn(`[探索] 走查中断（探索模式不参与判定）：${message}`);

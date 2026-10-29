@@ -10,9 +10,26 @@
       "timeoutSeconds": 120
     },
     {
+      "name": "minio",
+      "type": "http",
+      "url": "http://minio:9000/minio/health/live",
+      "urlEnv": "E2E_MINIO_URL",
+      "criterion": "HTTP 状态码 200（MinIO 存活探针 /minio/health/live）",
+      "timeoutSeconds": 120
+    },
+    {
+      "name": "logto",
+      "type": "http",
+      "url": "http://logto:3001/oidc/.well-known/openid-configuration",
+      "urlEnv": "E2E_LOGTO_URL",
+      "criterion": "HTTP 状态码 200 且响应体包含 issuer（Logto 默认租户的 OIDC 发现文档）",
+      "timeoutSeconds": 120,
+      "bodyIncludes": "\"issuer\""
+    },
+    {
       "name": "app",
       "type": "http",
-      "url": "http://app:8000",
+      "url": "http://app:8000/",
       "urlEnv": "E2E_APP_URL",
       "criterion": "HTTP 状态码 200 且响应体包含 data-testid=\"page-home-title\"",
       "timeoutSeconds": 120,

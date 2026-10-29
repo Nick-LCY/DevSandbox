@@ -14,12 +14,13 @@
 | [[tasks/sandbox-platform/03-sandbox-image.md\|03 默认全栈沙箱镜像]] | todo | 依赖 02 |
 | [[tasks/sandbox-platform/04-lifecycle-core-cli.md\|04 生命周期核心模块与CLI]] | todo | 依赖 01 |
 | [[tasks/sandbox-platform/05-e2e-harness.md\|05 端到端基建]] | todo | 依赖 03、04 |
-| [[tasks/sandbox-platform/06-sample-app-acceptance.md\|06 示例项目与验收演练]] | todo | 依赖 03、04、05 |
+| [[tasks/sandbox-platform/06-sample-app-acceptance.md\|06 示例项目与验收演练]] | doing | 第一步已完成：全栈示例项目落地（FastAPI + React + Postgres + MinIO + Logto），沙箱内端到端 4 条用例全绿（退出码 0）；闭环验收演练待做 |
 
 ## TODO / 阻塞
 - [ ] 一期任务已拆分至 `tasks/sandbox-platform/`，状态见各任务文件。
 
 ## 最近变更
+- 2026-10-29：06 第一步完成——全栈示例项目落地 `platform/examples/fullstack-sample/`（后端 FastAPI+uv、前端 React+Vite），真实对接 Postgres / MinIO(S3) / Logto(OIDC 授权码)；依赖清单加 app/logto/minio 三条，迁移与种子进既有目录，沙箱内 `pnpm run test:scripted` 4 条用例全绿（退出码 0）。下一轮需求见 `BRIEF-NEXT.md`，闭环验收演练待做。
 - 2026-10-29：01 免root打样验证完成——专属用户 + 子 ID 段 + 用户级免 root 守护进程 + 套接字挂载 + 同网桥按名互访全部跑通；02、04 可开工，注意基础镜像的 docker 客户端须与宿主守护进程同版本。
 - 2026-10-29：挂载契约修订——套接字为唯一固定挂载，其余由用户声明。
 - 2026-10-29：归档全部架构决策（7 篇 ADR）与一期任务拆分。

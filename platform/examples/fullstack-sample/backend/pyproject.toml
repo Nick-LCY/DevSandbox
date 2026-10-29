@@ -1,0 +1,30 @@
+[project]
+name = "fullstack-sample-backend"
+version = "0.1.0"
+description = "全栈示例后端：FastAPI + Postgres + MinIO(S3) + Logto(OIDC)"
+requires-python = ">=3.11"
+dependencies = [
+    "asyncpg>=0.30.0",
+    "boto3>=1.35.0",
+    "fastapi>=0.115.0",
+    "httpx>=0.27.0",
+    "pyjwt[crypto]>=2.9.0",
+    "python-multipart>=0.0.12",
+    "uvicorn[standard]>=0.32.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

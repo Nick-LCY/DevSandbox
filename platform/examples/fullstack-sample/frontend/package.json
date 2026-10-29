@@ -1,0 +1,23 @@
+{
+  "name": "fullstack-sample-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "全栈示例前端：React + Vite，登录 → 提交数据 → 上传文件 → 列表展示",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "19.2.0",
+    "react-dom": "19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.1",
+    "@vitejs/plugin-react": "5.0.4",
+    "typescript": "5.9.3",
+    "vite": "7.1.9"
+  }
+}

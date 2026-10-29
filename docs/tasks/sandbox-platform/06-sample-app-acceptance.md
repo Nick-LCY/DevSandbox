@@ -1,8 +1,15 @@
 ---
 prd: prds/sandbox-platform.md
-status: todo
+status: doing
 ---
 # 任务：示例全栈项目与一期验收演练
+
+> **进度：第一步已完成（平台搭好 + 端到端全绿），闭环验收演练由后续执行。**
+> - 示例项目落在 `platform/examples/fullstack-sample/`（FastAPI + React + Postgres + MinIO + Logto）；
+> - 实测数据见 `platform/examples/fullstack-sample/RESULTS.md`；
+> - 下一轮需求见 `platform/examples/fullstack-sample/BRIEF-NEXT.md`。
+> - 闭环验收（agent 在全新沙箱里独立完成「读需求 → 改码 → 起依赖 → 跑端到端 → 看截图 → 修复 → 全绿」）
+>   尚未执行，本任务状态保持 doing，做完才置 done。
 
 ## 目标
 搭建一个真实全栈示例项目（前端 + FastAPI + Postgres + MinIO + Logto），并让 agent 在一个干净沙箱中无人工介入地跑通「改码 → 起环境 → 端到端 → 看截图 → 修复 → 全绿」闭环，同时记录实测数据用于校准后续性能估算。
