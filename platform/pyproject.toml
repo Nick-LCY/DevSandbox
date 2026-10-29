@@ -1,0 +1,27 @@
+[project]
+name = "sandbox-platform"
+version = "0.1.0"
+description = "沙箱平台控制面核心模块（生命周期编排、用户与子 ID 段管理、镜像与挂载装配、元数据存储）"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sandbox_platform"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "root: 需要真实 root 权限与 systemd 用户会话的宿主级测试",
+]
+filterwarnings = ["error::DeprecationWarning:sandbox_platform.*"]

@@ -1,0 +1,227 @@
+# 控制面核心模块接口
+
+一期由 `platform/cli/sandboxctl.py` 调用；二期将由**同一批模块**暴露为 FastAPI 路由，行为与一期等价。
+
+约定：
+
+- 核心模块只返回数据与抛异常，不做参数解析、不直接输出。
+- 所有宿主特权操作通过 `Privilege` 包装：进程本身是 root 时直接执行，否则走免密 `sudo`。
+- 数据根目录由环境变量 `SANDBOX_PLATFORM_HOME` 决定，默认 `/var/lib/sandbox-platform`。
+
+---
+
+## 1. `config.py` —— 平台配置
+
+### `PlatformConfig`
+
+冻结数据类，字段如下。
+
+| 字段 | 类型 | 默认值 | 环境变量 | 说明 |
+|---|---|---|---|---|
+| `home` | `Path` | `/var/lib/sandbox-platform` | `SANDBOX_PLATFORM_HOME` | 平台数据根目录 |
+| `user_prefix` | `str` | `sandbox` | `SANDBOX_PLATFORM_USER_PREFIX` | 沙箱系统用户名前缀 |
+| `subid_base` | `int` | `100000` | `SANDBOX_PLATFORM_SUBID_BASE` | 子 ID 段最小起点 |
+| `subid_length` | `int` | `65536` | `SANDBOX_PLATFORM_SUBID_LENGTH` | 子 ID 段长度 |
+| `offline_image_dir` | `Path` | `/opt/deps/images` | `SANDBOX_PLATFORM_OFFLINE_IMAGE_DIR` | 离线镜像包目录 |
+| `default_image` | `str` | `sandbox-platform/sandbox-default` | `SANDBOX_PLATFORM_IMAGE` | 默认沙箱镜像 |
+| `socket_mount_path` | `str` | `/var/run/docker.sock` | `SANDBOX_PLATFORM_SOCKET_MOUNT` | 套接字在容器内的路径 |
+
+| 函数 | 签名 | 说明 |
+|---|---|---|
+| 构造 | `PlatformConfig.from_env(env: dict[str, str] \| None = None) -> PlatformConfig` | 按环境变量装配并校验 |
+| 覆盖 | `PlatformConfig.with_overrides(**kwargs) -> PlatformConfig` | 返回覆盖部分字段的新配置 |
+| 校验 | `PlatformConfig.validate() -> None` | 非法取值抛 `ConfigError` |
+| 路径 | `sandbox_root` / `lock_root` / `temp_root` / `sandbox_dir(name)` / `metadata_path(name)` | 数据目录布局 |
+| 命名 | `system_user_name(sandbox_name: str) -> str` | 沙箱名 → 系统用户名 |
+| 准备 | `ensure_directories() -> None` | 创建数据目录（幂等） |
+
+---
+
+## 2. `mounts.py` —— 挂载解析与容器参数
+
+| 函数 | 签名 | 说明 |
+|---|---|---|
+| 解析单条 | `parse_mount_declaration(declaration: str) -> MountSpec` | 解析 `宿主路径:容器路径[:ro]`；宿主路径必须已存在且是绝对路径，平台不代为创建 |
+| 解析多条 | `parse_mounts(declarations: list[str] \| tuple[str, ...] \| None) -> list[MountSpec]` | 逐条解析并校验容器内路径不重复 |
+| 固定挂载 | `socket_mount(socket_path: str, container_path: str) -> MountSpec` | 平台唯一固定挂载（角色 `socket`） |
+| 转参数 | `MountSpec.to_docker_args() -> list[str]` | 生成 `--mount type=bind,src=…,dst=…[,readonly]` |
+| 拼参数 | `mounts_to_docker_args(mounts: list[MountSpec]) -> list[str]` | 多条挂载拼成一段参数 |
+| 文本化 | `describe_mounts(mounts: list[MountSpec]) -> str` | 人类可读清单 |
+
+`MountSpec` 字段：`host_path: str`、`container_path: str`、`read_only: bool`、`role: str`（`socket` / `user`）。
+
+---
+
+## 3. `metadata.py` —— 沙箱元数据
+
+### `SandboxMetadata`
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `name` | `str` | 沙箱名 |
+| `system_user` / `uid` / `gid` / `home` | `str` / `int` / `int` / `str` | 沙箱专属用户 |
+| `subid_start` / `subid_length` | `int` | 子 UID/GID 段 |
+| `image` | `str` | 沙箱镜像 |
+| `socket_path` / `socket_mount_path` | `str` | 宿主套接字路径 / 容器内挂载点 |
+| `container_name` / `container_id` / `network_name` | `str` | 沙箱容器与网桥网络 |
+| `unit_path` | `str` | systemd 用户单元路径 |
+| `state` | `str` | `running` / `stopped` / `deleted` |
+| `mounts` | `list[MountSpec]` | 用户声明挂载 |
+| `dependency_containers` | `list[str]` | 已知依赖容器名 |
+| `command` / `env` / `workdir` | `list[str]` / `dict[str, str]` / `str` | 容器启动参数（重启时复用） |
+| `created_at` / `updated_at` | `str` | 时间戳 |
+
+### `MetadataStore`
+
+| 函数 | 签名 | 说明 |
+|---|---|---|
+| 构造 | `MetadataStore(config: PlatformConfig)` | 仓库入口 |
+| 路径 | `root` / `sandbox_dir(name)` / `path_for(name)` | 元数据目录布局 |
+| 写入 | `save(metadata: SandboxMetadata) -> Path` | 原子写入 `<home>/sandboxes/<name>/metadata.json` |
+| 读取 | `load(name: str) -> SandboxMetadata \| None` | 不存在返回 `None` |
+| 列表 | `list_all() -> list[SandboxMetadata]` | 按名称排序，损坏文件跳过 |
+| 删除 | `delete(name: str) -> bool` | 删除整个沙箱元数据目录 |
+
+---
+
+## 4. `userspace.py` —— 系统用户与子 ID 段
+
+| 函数 | 签名 | 说明 |
+|---|---|---|
+| 分配空闲段 | `pick_free_range(ranges: list[tuple[int, int]], base: int, length: int) -> int` | 纯函数：挑一段不重叠的区间起点 |
+| 用户查询 | `UserSpaceManager.lookup_user(name: str) -> SystemUser \| None` | 读 uid/gid/家目录 |
+| 用户存在 | `UserSpaceManager.user_exists(name: str) -> bool` | — |
+| 建用户 | `UserSpaceManager.ensure_user(name: str) -> SystemUser` | 已存在则沿用；新建带家目录 |
+| 登记段 | `UserSpaceManager.allocate_subid_range(user_name: str) -> SubIdRange` | 动态分配不重叠段，写入 `/etc/subuid` 与 `/etc/subgid`；已有合规段则沿用（文件锁保护并发） |
+| 回收段 | `UserSpaceManager.remove_subid_range(user_name: str) -> bool` | 清除两个文件里的条目 |
+| 读条目 | `UserSpaceManager.read_subid_entries(user_name: str) -> dict[str, tuple[int, int]]` | 只读查询 |
+| 写单元 | `UserSpaceManager.write_docker_unit(user: SystemUser) -> Path` | 写 `~/.config/systemd/user/docker.service`（含 `Delegate=yes` 与 `--rootless`），目录与文件属主必须是沙箱用户 |
+| 单元内容 | `UserSpaceManager.render_unit(user: SystemUser) -> str` | 纯函数：渲染单元文本 |
+| 保活 | `enable_linger(user_name) -> bool` / `disable_linger(user_name) -> bool` | `loginctl enable-linger` |
+| 终止会话 | `UserSpaceManager.terminate_user(user_name: str) -> bool` | 删用户前必须先做 |
+| 等待回收 | `UserSpaceManager.wait_for_runtime_gone(uid: int, timeout: int = 30) -> bool` | 等 `/run/user/<uid>` 消失，避免 uid 复用竞态 |
+| 删用户 | `UserSpaceManager.remove_user(user: SystemUser, remove_home: bool = True) -> bool` | 终止会话 → `userdel -r` → 兜底清家目录 |
+
+`SystemUser` 字段：`name`、`uid`、`gid`、`home`；派生属性 `runtime_dir`（`/run/user/<uid>`）、`socket_path`。
+`SubIdRange` 字段：`start`、`length`；派生属性 `end`、`spec`。
+
+---
+
+## 5. `daemon.py` —— 用户级守护进程与容器操作
+
+`UserContext`：`user`、`uid`、`gid`、`home`；派生 `runtime_dir`、`socket_path`、`env()`。
+
+`UserDaemon(context: UserContext, privilege: Privilege | None = None)` 全部方法都以沙箱用户身份执行（`sudo -u <用户> env -i …`，带 `XDG_RUNTIME_DIR` 与 `DOCKER_HOST`）。
+
+| 方法 | 签名 | 说明 |
+|---|---|---|
+| 执行 | `run_as_user(argv, *, check=False, timeout=300) -> CommandResult` | 以沙箱用户身份执行任意命令 |
+| 用户级 systemd | `systemctl(args, *, check=False, timeout=120) -> CommandResult` | `systemctl --user …` |
+| 重试 | `systemctl_retry(args, *, attempts=30, delay=1.0) -> CommandResult` | 用户级管理器未就绪时重试 |
+| 守护进程状态 | `is_active() -> bool` / `is_enabled() -> bool` / `socket_ready() -> bool` | — |
+| 等待 | `wait_for_runtime_dir(timeout=60) -> bool` / `wait_for_socket(timeout=90) -> bool` | — |
+| 用户管理器 | `ensure_user_manager(timeout=120) -> CommandResult` | 从系统级显式启动 `user@<uid>.service`，规避 uid 复用时的启动竞态 |
+| 单元动作 | `daemon_reload()` / `enable_daemon()` / `disable_daemon()` / `start_daemon()` / `stop_daemon()` / `restart_daemon()` | 返回 `CommandResult` |
+| 镜像 | `image_exists(image) -> bool` / `pull_image(image) -> CommandResult` / `load_image(tar_path) -> CommandResult` / `image_id(image) -> str \| None` | — |
+| 容器 | `container_exists(name) -> bool` / `container_id(name) -> str \| None` / `container_running(name) -> bool` / `list_containers(all_containers=True) -> list[dict]` | — |
+| 起容器 | `run_container(*, name, image, mounts, network=None, command=None, env=None, labels=None, workdir=None) -> CommandResult` | `docker run -d -i`；给了 `command` 时用 `--entrypoint ""` 覆盖镜像入口；`-i` 保持标准输入打开，镜像入口里的交互式 shell 才不会立即退出 |
+| 停删容器 | `stop_container(name)` / `start_container(name)` / `remove_container(name, force=True)` | — |
+| 容器内执行 | `exec_in_container(name, argv, *, check=False, timeout=120) -> CommandResult` | — |
+| 网络 | `network_exists(name) -> bool` / `create_network(name)` / `remove_network(name)` / `connect_network(name, network)` | — |
+| 路径可见性 | `can_access_path(path) -> bool` | 宿主路径对沙箱用户是否可读可穿过 |
+
+---
+
+## 6. `images.py` —— 镜像与离线包
+
+| 函数 | 签名 | 说明 |
+|---|---|---|
+| 扫描离线包 | `ImageManager.detect_offline_packages(directory: Path \| None = None) -> list[OfflineImagePackage]` | 优先读清单文件 `images.list`（每行 `<镜像引用> <包文件名>`，与平台基础镜像的离线包目录同格式），其余归档从 `manifest.json` 识别镜像名 |
+| 找离线包 | `ImageManager.find_offline_package(image: str, directory=None) -> OfflineImagePackage \| None` | 按镜像名匹配 |
+| 加载离线包 | `ImageManager.load_offline_package(package, daemon: UserDaemon) -> bool` | `docker load -i` 导入目标守护进程 |
+| 保证可用 | `ImageManager.ensure_image(image: str, daemon: UserDaemon) -> str` | 顺序：本地已有 → 离线包 → 宿主本地镜像注入 → 守护进程直拉 → 宿主拉取后注入；返回来源标记（`present` / `offline` / `pulled` / `injected`），全部失败抛 `ImageError` |
+| 宿主镜像 | `ImageManager.host_image_exists(image: str) -> bool` | 宿主 root 守护进程里是否已有该镜像（平台自建镜像走注入路径，不依赖镜像仓库） |
+
+`OfflineImagePackage` 字段：`image`、`path`、`repo_tags`、`size`。
+
+---
+
+## 7. `lifecycle.py` —— 生命周期编排
+
+### 数据类
+
+| 名称 | 字段 | 说明 |
+|---|---|---|
+| `CreateRequest` | `name`、`image=None`、`mount_declarations=()`、`command=None`、`env={}`、`workdir=None`、`network_name=None` | 创建入参 |
+| `CreateResult` | `metadata`、`connection`、`steps` | 创建结果；`steps` 是固定 7 步名称 |
+| `ConnectionInfo` | `socket_path`、`container_name`、`exec_command`、`docker_command`、`notes` | 连接方式与命令提示 |
+| `ReclaimPlan` | `sandbox_name`、`items`、`untouched_note`、`user_mounts` | 删除前的回收清单；`untouched_note` 固定为「用户挂载的宿主机目录不受影响」 |
+| `DeleteResult` | `name`、`existed`、`removed`、`plan` | 删除结果；沙箱不存在时 `existed=False` 且不抛异常 |
+
+### `SandboxService`
+
+| 方法 | 签名 | 说明 |
+|---|---|---|
+| 构造 | `SandboxService(config: PlatformConfig \| None = None, privilege: Privilege \| None = None)` | 控制面服务入口 |
+| 查询 | `find(name) -> SandboxMetadata \| None` | 不存在返回 `None` |
+| 查询 | `get(name) -> SandboxMetadata` | 不存在抛 `NotFoundError` |
+| 列表 | `list() -> list[SandboxMetadata]` | 尽力刷新运行状态（用户已删 → `deleted`） |
+| 创建 | `create(request: CreateRequest) -> CreateResult` | 固定 7 步，任一步失败回滚已完成步骤 |
+| 启动 | `start(name: str) -> SandboxMetadata` | 复用同一用户、同一子 ID 段、同一守护进程单元；只恢复沙箱容器，依赖容器由使用方自行拉起 |
+| 关闭 | `stop(name: str, stop_dependencies: bool = True) -> SandboxMetadata` | 依赖容器是否一并停止由显式参数控制，默认停 |
+| 回收清单 | `reclaim_plan(name: str) -> ReclaimPlan` | 删除前展示用 |
+| 删除 | `delete(name: str) -> DeleteResult` | 按固定回收清单回收，幂等 |
+
+### 创建的 7 步与回滚
+
+| 步 | 动作 | 失败回滚 |
+|---|---|---|
+| ① | 创建专属系统用户 | 删除用户与家目录 |
+| ② | 登记子 UID/GID 段 | 清除 `/etc/subuid`、`/etc/subgid` 条目 |
+| ③ | 写 systemd 用户单元、开启 linger、启动守护进程 | 停用并删除单元、关闭 linger |
+| ④ | 解析用户声明挂载（校验宿主路径存在、容器路径绝对、套接字路径不被占用、宿主路径对沙箱用户可见） | 无宿主副作用，无需回滚 |
+| ⑤ | 准备镜像与网络，启动沙箱容器（挂载套接字与用户声明挂载） | 删除容器与网络 |
+| ⑥ | 写入沙箱元数据 | 删除元数据 |
+| ⑦ | 组装连接方式与命令提示 | 无 |
+
+删除的固定回收清单：沙箱容器与依赖容器 → 网桥网络 → 停止并禁用 systemd 用户单元 → 删除用户与家目录 → 回收子 UID/GID 段 → 删除平台元数据。
+**用户声明挂载的宿主机目录一律不触碰**（平台不创建、不删除、不修改）。
+
+---
+
+## 8. `command.py` —— 宿主命令封装
+
+| 函数 | 签名 | 说明 |
+|---|---|---|
+| 执行 | `run(argv, *, env=None, check=False, timeout=300, cwd=None, stdin_text=None) -> CommandResult` | 超时或命令不存在抛 `CommandError` |
+
+`CommandResult` 字段：`argv`、`returncode`、`stdout`、`stderr`；属性 `ok`、`output`；方法 `raise_for_status()`。
+
+---
+
+## 9. `errors.py` —— 异常
+
+| 异常 | 继承 | 触发场景 |
+|---|---|---|
+| `SandboxError` | `Exception` | 业务异常基类 |
+| `ConfigError` | `SandboxError` | 配置或数据目录不可用 |
+| `ValidationError` | `SandboxError` | 沙箱名、挂载声明等输入非法 |
+| `NotFoundError` | `SandboxError` | 沙箱不存在 |
+| `AlreadyExistsError` | `SandboxError` | 沙箱已存在 |
+| `CommandError` | `SandboxError` | 宿主命令失败（带 `argv`、`returncode`、`stdout`、`stderr`） |
+| `ImageError` | `SandboxError` | 镜像不可用 |
+| `LifecycleError` | `SandboxError` | 生命周期步骤失败（带 `step`、`cause`） |
+
+---
+
+## 10. 与命令行的对应关系
+
+| 命令 | 调用的核心接口 |
+|---|---|
+| `create` | `SandboxService.create` |
+| `start` | `SandboxService.start` |
+| `stop` | `SandboxService.stop`（`--keep-dependencies` 对应 `stop_dependencies=False`） |
+| `delete` | `SandboxService.reclaim_plan` + `SandboxService.delete` |
+| `list` | `SandboxService.list` |
+
+二期把 `SandboxService` 的方法映射为 HTTP 路由时，请求体可直接用 `CreateRequest`，响应体可用 `CreateResult`、`SandboxMetadata`、`ReclaimPlan`、`DeleteResult`。

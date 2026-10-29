@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# 构建产物
+dist/
+build/
+*.egg-info/
+
+# 平台运行期数据（默认数据根目录在 /var/lib，这里兜底本地调试目录）
+platform-home/
