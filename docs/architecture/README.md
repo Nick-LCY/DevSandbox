@@ -17,6 +17,7 @@
 | 0005 | [[architecture/decisions/0005-挂载契约与数据归属.md\|挂载契约与数据归属]] | 已接受 |
 | 0006 | [[architecture/decisions/0006-端到端测试基建策略.md\|端到端测试基建策略]] | 已接受 |
 | 0007 | [[architecture/decisions/0007-范围边界与云边形态.md\|范围边界与云边形态]] | 已接受 |
+| 0008 | [[architecture/decisions/0008-统一镜像代理与离线包废弃.md\|统一镜像代理与离线包废弃]] | 已接受 |
 
 结论摘要见 [[architecture/overview.md#关键决策]]，决策背景与代价见 [[architecture/decisions/README.md|ADR 清单]]。
 

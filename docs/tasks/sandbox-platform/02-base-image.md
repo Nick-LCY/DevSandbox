@@ -7,6 +7,8 @@ status: done
 > 实测结论：基础镜像 `sandbox-platform/base:0.1.0` 建成，镜像体积 534.4 MB（其中依赖离线包 489.5 MB），免 root 守护进程下首次加载离线包耗时 23 秒、第二次全部跳过，容器内客户端与服务端版本一致（29.6.2）。实测记录见 `platform/base-image/RESULTS.md`，用法见 `platform/base-image/README.md`。
 >
 > 两处偏离需知会：（1）`minio/minio` 官方仓库已从 Docker Hub 下架、无法再拉取，离线包取自宿主 root 守护进程里已存在的同 digest 官方镜像；（2）三个离线包 tar 合计 489.5 MB，未纳入 git，由 `fetch-deps.sh` + `SHA256SUMS` 保证可复现。
+>
+> 后续变更：依赖镜像离线包机制已废弃，改由统一镜像代理拉取，见 [[architecture/decisions/0008-统一镜像代理与离线包废弃.md|ADR 0008]]；本任务下方的完成标准保留为 0.1.0 当时的历史事实。
 
 ## 目标
 构建平台基础镜像 `sandbox-platform/base`：只含 docker 客户端、纯 bash 入口脚本与套接字默认路径约定，并随镜像分发常用依赖镜像的离线包与首次自动加载脚本。它是所有沙箱镜像的唯一底座。

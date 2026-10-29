@@ -7,6 +7,8 @@ status: done
 > 实测结论：默认全栈沙箱镜像 `sandbox-platform/sandbox-default:0.1.0` 建成，镜像体积 1212.9 MB（其中 chromium 浏览器 681 MB），交互式 bash 内 pi / git / uv / node / pnpm / nvm / npx playwright 全部有版本输出，node 与 pnpm 由 nvm 管理，`--network=none` 下 chromium 对 `data:text/html` 截图成功。沙箱平台联调实测：容器内 client=server=29.6.2，入口脚本首启自动加载三个依赖离线包耗时 23 秒、二启全部 skip，容器冷启动到 bash 可用 0.17~0.42 秒。实测记录见 `platform/sandbox-image/RESULTS.md`，用法见 `platform/sandbox-image/README.md`。
 >
 > 一处需知会：平台配置里的默认镜像名 `sandbox-platform/sandbox-default` **不带 tag**（解析成 `:latest`），所以本镜像必须同时打 `:0.1.0` 与不带 tag 两个名字，否则 `sandboxctl create` 零参数创建会找不到默认镜像。
+>
+> 后续变更：依赖镜像离线包机制已废弃（见 [[architecture/decisions/0008-统一镜像代理与离线包废弃.md|ADR 0008]]），当前 0.1.0 镜像仍含已废弃的离线包层，待基于 base 0.2.0 重建；本任务下方的完成标准保留为当时的历史事实。
 
 ## 目标
 在平台基础镜像之上构建官方默认全栈沙箱镜像 `sandbox-platform/sandbox-default`，内含 pi、git、uv、nvm + node、pnpm 与 Playwright 浏览器，并打通依赖镜像离线包的首次自动加载流程；用户可在其上自由叠加自己的层。
@@ -23,4 +25,4 @@ status: done
 - [x] 实测记录 `platform/sandbox-image/RESULTS.md`：镜像总体积（MB）、chromium 浏览器体积（MB）、依赖离线包加载耗时（秒）、镜像冷启动到 bash 可用的耗时（秒）。
 
 ## 依赖
-- 依赖 [[tasks/sandbox-platform/02-base-image.md|02 平台基础镜像]]（基础镜像与依赖离线包由该任务提供）。
+- 依赖 [[tasks/sandbox-platform/02-base-image.md|02 平台基础镜像]]（基础镜像由该任务提供；依赖镜像的加载方式已改为统一镜像代理，见 ADR 0008）。
