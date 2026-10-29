@@ -12,6 +12,9 @@ import pytest
 
 from sandbox_platform import PlatformConfig, SandboxService
 
+# 测试专用的镜像代理端口（与生产实例 3128 隔离）
+TEST_PROXY_PORT = 33128
+
 
 def _passwordless_sudo_available() -> bool:
     """宿主是否具备免密 sudo。"""
@@ -28,14 +31,31 @@ def platform_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
     放在 /tmp 下且全局可读：平台会往这里写镜像中转归档，
     免 root 守护进程以沙箱用户身份运行，必须能穿过该目录。
+
+    同时把镜像代理端口改到测试专用端口：测试期间的代理容器与生产实例
+    （端口 3128）互不干扰，容器名也因端口后缀而不同。
     """
     home = Path(tempfile.mkdtemp(prefix="sandbox-platform-home-", dir="/tmp"))
     home.chmod(0o755)
     monkeypatch.setenv("SANDBOX_PLATFORM_HOME", str(home))
+    monkeypatch.setenv("SANDBOX_PLATFORM_PROXY_PORT", str(TEST_PROXY_PORT))
     try:
         yield home
     finally:
+        _remove_test_proxy(home)
         shutil.rmtree(home, ignore_errors=True)
+
+
+def _remove_test_proxy(home: Path) -> None:
+    """测试自清理：删除测试期间的代理容器（只删端口后缀的那个实例）。"""
+    if not shutil.which("docker"):
+        return
+    name = f"sandbox-platform-registry-proxy-{TEST_PROXY_PORT}"
+    subprocess.run(
+        ["docker", "rm", "-f", name],
+        capture_output=True,
+        check=False,
+    )
 
 
 @pytest.fixture

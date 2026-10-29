@@ -22,7 +22,19 @@ pytestmark = pytest.mark.root
 
 
 def _docker_cli_image() -> str:
-    """取与宿主守护进程同版本的 docker 客户端镜像（容器内需要 docker 命令）。"""
+    """取一个带 docker 客户端的镜像（容器内需要 docker 命令）。
+
+    优先用平台基础镜像：它在宿主已构建好，属平台自建镜像，由宿主导入即可，
+    不用经代理下载（大镜像走代理会明显拖慢测试）。
+    """
+    for candidate in ("sandbox-platform/base:0.2.0",):
+        inspect = subprocess.run(
+            ["docker", "image", "inspect", candidate],
+            capture_output=True,
+            check=False,
+        )
+        if inspect.returncode == 0:
+            return candidate
     result = subprocess.run(
         ["docker", "version", "--format", "{{.Server.Version}}"],
         capture_output=True,
@@ -399,3 +411,36 @@ def test_user_specified_network_is_not_reclaimed_by_platform(
         assert not any("网络" in item for item in deleted.failed)
     finally:
         _cleanup(service, name)
+
+
+def test_create_fails_when_proxy_unreachable(
+    service: SandboxService, require_root: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """代理不可达时创建直接失败（不降级直连），且不留下沙箱残留。"""
+    from sandbox_platform import LifecycleError
+
+    name = "sboxproxy"
+    monkeypatch.setattr(service.proxy, "ensure_running", lambda *a, **k: False)
+    monkeypatch.setattr(
+        service.proxy,
+        "probe",
+        lambda: _proxy_probe_failure(),
+    )
+    try:
+        with pytest.raises(LifecycleError) as excinfo:
+            service.create(
+                CreateRequest(name=name, image=_docker_cli_image(), command=("sleep", "infinity"))
+            )
+        message = str(excinfo.value)
+        assert "镜像代理未就绪" in message
+        assert "不做降级直连" in message
+        assert service.find(name) is None
+    finally:
+        _cleanup(service, name)
+
+
+def _proxy_probe_failure():
+    """构造一个「代理不可达」的探测结果。"""
+    from sandbox_platform import ProxyProbe
+
+    return ProxyProbe(tcp=False, http=False, detail="连接被拒绝")

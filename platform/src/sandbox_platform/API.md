@@ -22,16 +22,26 @@
 | `user_prefix` | `str` | `sandbox` | `SANDBOX_PLATFORM_USER_PREFIX` | 沙箱系统用户名前缀 |
 | `subid_base` | `int` | `100000` | `SANDBOX_PLATFORM_SUBID_BASE` | 子 ID 段最小起点 |
 | `subid_length` | `int` | `65536` | `SANDBOX_PLATFORM_SUBID_LENGTH` | 子 ID 段长度 |
-| `offline_image_dir` | `Path` | `/opt/deps/images` | `SANDBOX_PLATFORM_OFFLINE_IMAGE_DIR` | 离线镜像包目录 |
 | `default_image` | `str` | `sandbox-platform/sandbox-default` | `SANDBOX_PLATFORM_IMAGE` | 默认沙箱镜像 |
 | `socket_mount_path` | `str` | `/var/run/docker.sock` | `SANDBOX_PLATFORM_SOCKET_MOUNT` | 套接字在容器内的路径 |
+| `proxy_image` | `str` | `rpardini/docker-registry-proxy:0.8.0` | `SANDBOX_PLATFORM_PROXY_IMAGE` | 统一镜像代理镜像 |
+| `proxy_port` | `int` | `3128` | `SANDBOX_PLATFORM_PROXY_PORT` | 代理在宿主回环上的监听端口 |
+| `proxy_address` | `str` | `127.0.0.1` | `SANDBOX_PLATFORM_PROXY_ADDRESS` | 沙箱守护进程访问代理用的地址（见下注） |
+| `proxy_registries` | `tuple[str, ...]` | `docker.io ghcr.io quay.io gcr.io registry.k8s.io` | `SANDBOX_PLATFORM_PROXY_REGISTRIES` | 代理拦截并缓存的仓库清单（空格分隔） |
+| `system_ca_bundle` | `Path` | `/etc/ssl/certs/ca-certificates.crt` | `SANDBOX_PLATFORM_SYSTEM_CA_BUNDLE` | 宿主系统 CA 束（与代理 CA 合并成单个文件） |
+| `local_image_prefixes` | `tuple[str, ...]` | `sandbox-platform/` | `SANDBOX_PLATFORM_LOCAL_IMAGE_PREFIXES` | 平台自建镜像前缀：这类镜像由宿主导出注入，不走代理 |
+
+> 代理地址默认为 `127.0.0.1`：`dockerd-rootless.sh` 默认启用 `--detach-netns`，
+> 免 root 守护进程进程本身留在宿主网络命名空间（只有容器在 slirp4netns 命名空间里），
+> 所以守护进程用宿主回环地址访问代理；slirp 网关 `10.0.2.2` 只在沙箱容器内可达。
+> 若宿主上把守护进程放进 slirp 命名空间运行，需把该地址改成 `10.0.2.2`。
 
 | 函数 | 签名 | 说明 |
 |---|---|---|
 | 构造 | `PlatformConfig.from_env(env: dict[str, str] \| None = None) -> PlatformConfig` | 按环境变量装配并校验 |
 | 覆盖 | `PlatformConfig.with_overrides(**kwargs) -> PlatformConfig` | 返回覆盖部分字段的新配置 |
 | 校验 | `PlatformConfig.validate() -> None` | 非法取值抛 `ConfigError` |
-| 路径 | `sandbox_root` / `lock_root` / `temp_root` / `sandbox_dir(name)` / `metadata_path(name)` | 数据目录布局 |
+| 路径 | `sandbox_root` / `lock_root` / `temp_root` / `proxy_root` / `proxy_cache_dir` / `proxy_ca_dir` / `sandbox_dir(name)` / `metadata_path(name)` | 数据目录布局 |
 | 命名 | `system_user_name(sandbox_name: str) -> str` | 沙箱名 → 系统用户名 |
 | 准备 | `ensure_directories() -> None` | 创建数据目录（幂等） |
 
@@ -136,17 +146,41 @@
 
 ---
 
-## 6. `images.py` —— 镜像与离线包
+## 6. `images.py` —— 镜像可用性
+
+平台不再维护离线镜像包（ADR 0008）：沙箱免 root 守护进程自己的 `docker pull`
+经统一镜像代理完成，平台只管两条路径。
 
 | 函数 | 签名 | 说明 |
 |---|---|---|
-| 扫描离线包 | `ImageManager.detect_offline_packages(directory: Path \| None = None) -> list[OfflineImagePackage]` | 优先读清单文件 `images.list`（每行 `<镜像引用> <包文件名>`，与平台基础镜像的离线包目录同格式），其余归档从 `manifest.json` 识别镜像名 |
-| 找离线包 | `ImageManager.find_offline_package(image: str, directory=None) -> OfflineImagePackage \| None` | 按镜像名匹配 |
-| 加载离线包 | `ImageManager.load_offline_package(package, daemon: UserDaemon) -> bool` | `docker load -i` 导入目标守护进程 |
-| 保证可用 | `ImageManager.ensure_image(image: str, daemon: UserDaemon) -> str` | 顺序：本地已有 → 离线包 → 宿主本地镜像注入 → 守护进程直拉 → 宿主拉取后注入；返回来源标记（`present` / `offline` / `pulled` / `injected`），全部失败抛 `ImageError` |
-| 宿主镜像 | `ImageManager.host_image_exists(image: str) -> bool` | 宿主 root 守护进程里是否已有该镜像（平台自建镜像走注入路径，不依赖镜像仓库） |
+| 保证可用 | `ImageManager.ensure_image(image: str, daemon: UserDaemon) -> str` | 顺序：沙箱守护进程已有 → 平台自建镜像（`local_image_prefixes` 前缀匹配）由宿主导出注入 → 其余交给沙箱守护进程经镜像代理拉取；返回来源标记（`present` / `injected` / `remote`） |
+| 平台自建判定 | `ImageManager.is_platform_local(image: str) -> bool` | 镜像是否属平台自建命名空间（只在宿主构建、不存在于任何仓库） |
+| 宿主镜像 | `ImageManager.host_image_exists(image: str) -> bool` | 宿主 root 守护进程里是否已有该镜像 |
+| 导出注入 | `ImageManager.inject_from_host(image: str, daemon: UserDaemon) -> str` | `docker save` → `docker load` 注入沙箱守护进程，失败抛 `ImageError` |
 
-`OfflineImagePackage` 字段：`image`、`path`、`repo_tags`、`size`。
+---
+
+## 6bis. `proxy.py` —— 统一镜像代理
+
+代理用上游项目 `rpardini/docker-registry-proxy`（版本钉在 0.8.0），以宿主 root
+守护进程容器方式运行，监听宿主回环 `127.0.0.1:3128`；缓存与 CA 目录落在
+`<home>/registry-proxy/` 下（`SANDBOX_PLATFORM_HOME` 重定向时跟随）。
+
+| 函数 | 签名 | 说明 |
+|---|---|---|
+| 容器名 | `proxy_container_name(port: int) -> str` | 默认端口用固定名 `sandbox-platform-registry-proxy`，其它端口加后缀避免抢端口 |
+| CA 束路径 | `ca_bundle_path(user_home: str \| Path) -> Path` | 沙箱用户家目录里「系统 CA 束 + 代理 CA」合并文件的路径 |
+| 构造 | `RegistryProxyManager(config: PlatformConfig \| None = None, privilege: Privilege \| None = None)` | 代理管理入口 |
+| 目录 | `ensure_directories() -> None` | 创建缓存目录与 CA 目录（幂等） |
+| 镜像 | `ensure_image() -> bool` | 宿主上无代理镜像时拉取一次（首启自动拉取） |
+| 拉起 | `ensure_running(timeout: int = 120) -> bool` | 幂等拉起并等到健康；并发调用由文件锁串行化；失败返回 `False`（**调用方必须直接失败，不降级直连**） |
+| 健康 | `probe() -> ProxyProbe` / `health_check() -> bool` | TCP 可连 + 能从 `http://127.0.0.1:<port>/ca.crt` 取到证书才算健康 |
+| CA | `read_ca_certificate() -> str` / `read_system_ca_bundle() -> str` | 读代理 CA / 系统 CA 束，缺失抛 `ProxyError` |
+| 合并 CA 束 | `install_ca_bundle(user: SystemUser) -> Path` | 「系统 CA 束 + 代理 CA」合并成单个文件，装到沙箱用户家目录（属主沙箱用户、权限 0644） |
+| 权限 | `harden_ca_permissions() -> None` | CA 私钥 `0600`、证书 `0644` |
+| 停止/删除 | `stop() -> bool` / `remove() -> bool` | 停止 / 删除代理容器（缓存与 CA 目录保留） |
+
+`ProxyProbe` 字段：`tcp`、`http`、`detail`；属性 `healthy`。
 
 ---
 
@@ -188,6 +222,18 @@
 | ⑥ | 写入沙箱元数据 | 删除元数据 |
 | ⑦ | 组装连接方式与命令提示 | 无 |
 
+### 创建前置：统一镜像代理
+
+创建流程在**任何宿主改动之前**先做代理预检（不计在 7 步里）：
+
+1. `RegistryProxyManager.ensure_running()` —— 幂等拉起代理容器并等健康（首次会拉一次代理镜像）；
+2. 健康检查不通过 → 直接抛 `LifecycleError`（步骤名「准备镜像代理」），**不降级直连**；
+3. 用户创建之后、守护进程启动之前，把「系统 CA 束 + 代理 CA」合并文件装到沙箱用户家目录
+   （`~/.config/sandbox-platform/registry-proxy-ca-bundle.crt`，属主沙箱用户、权限 0644）。
+
+沙箱守护进程的 systemd 单元由此拿到三个代理环境变量与合并 CA 束路径，
+沙箱内 `docker pull` 自动经代理并命中缓存。
+
 删除的固定回收清单：沙箱容器与依赖容器 → 网桥网络（仅平台自建）→ 停止并禁用 systemd 用户单元 → 删除用户与家目录 → 回收子 UID/GID 段 → 删除平台元数据。
 **用户声明挂载的宿主机目录一律不触碰**（平台不创建、不删除、不修改）。
 
@@ -223,7 +269,8 @@
 | `NotFoundError` | `SandboxError` | 沙箱不存在 |
 | `AlreadyExistsError` | `SandboxError` | 沙箱已存在 |
 | `CommandError` | `SandboxError` | 宿主命令失败（带 `argv`、`returncode`、`stdout`、`stderr`） |
-| `ImageError` | `SandboxError` | 镜像不可用 |
+| `ImageError` | `SandboxError` | 镜像不可用（导出注入失败等） |
+| `ProxyError` | `SandboxError` | 统一镜像代理不可用（CA 不可读、合并 CA 束装不上等） |
 | `LifecycleError` | `SandboxError` | 生命周期步骤失败（带 `step`、`cause`） |
 
 ---

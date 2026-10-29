@@ -3,143 +3,237 @@
 - 执行日期：2026-10-29
 - 宿主：Ubuntu 26.04 LTS / 内核 7.0.0-38-generic / cgroup v2
 - Docker：客户端 + 服务端 **29.6.2**（宿主 root 守护进程），存储驱动 `overlayfs`（containerd 快照器）
-- 免 root 守护进程：复用 `platform/probe/rootless/` 的 00/01/04 脚本（用户 `sandboxprobe`，systemd 用户级单元 + RootlessKit）
-- 镜像：`sandbox-platform/base:0.1.0`，image id `sha256:208cd220d0134cbc9c0ee2a9dd7cf67c930885eab54db82dbd5d93377fbea409`
+- 免 root 守护进程：复用 `platform/probe/rootless/` 的 00/01/04 脚本
+- 镜像：`sandbox-platform/base:0.2.0`，image id `sha256:c89ed16c11a7f8aef0514b900b1febaaeb8ce9825b3b2bb51d0ab1dfd9a50611`
+- 统一镜像代理：`rpardini/docker-registry-proxy:0.8.0`
+  （digest `sha256:fe958e7a4b7ef01a646d903347a0522b6a9065b44b451c5ef87eb4b6b0f3d770`）
+
+> **0.2.0 的变更原因**：废弃离线包机制（ADR 0008）——依赖镜像与一切外部镜像统一经宿主统一镜像代理缓存拉取，
+> 基础镜像不再随依赖镜像膨胀，也不再被依赖版本绑死发布节奏。
+
+---
 
 ## 一、体积
 
 ### 基础镜像
 
-| 口径 | 数值 |
-|------|------|
-| `docker image inspect .Size`（验收口径） | **534,391,230 B = 534.4 MB = 509.6 MiB** |
-| `docker save` 导出 tar | 534,409,216 B（与上一行同量级） |
-| `docker images` 显示的虚拟大小 | 1.15 GB（展开后口径，含与其它镜像共享的层） |
-| `docker system df -v` | 共享 113.6 MB / 独占 1.038 GB |
+| 口径 | 0.1.0（已废弃离线包） | 0.2.0（当前） | 变化 |
+|------|------|------|------|
+| `docker image inspect .Size`（验收口径） | 534,391,230 B = 534.4 MB | **47,693,426 B = 47.7 MB** | **−91.1%** |
+| 其中依赖镜像离线包层 | 490 MB | 0 | 全部移除 |
 
-分层构成（`docker history`，未压缩）：
+0.2.0 分层构成（`docker history`，未压缩）：
 
 | 层 | 体积 |
 |----|------|
-| debian:bookworm-slim 底座 | 85.3 MB |
+| debian:bookworm-slim 底座 | 4.6 MB（与 0.1.0 同底座，共用层） |
 | docker 客户端二进制（静态 Go） | 42.5 MB |
-| 依赖镜像离线包层 | 490 MB |
-| 入口脚本 + 加载脚本 + 目录权限 | 33 kB |
+| 入口脚本 + 目录权限 | 12.5 kB |
 
-> 离线包占了镜像体积的九成。基础镜像必须携带离线包是任务硬要求；若后续要瘦身，唯一有效的方向是拆成「基础镜像 + 离线包镜像」两层由平台组合。
+> 旧镜像 `sandbox-platform/base:0.1.0`（534.4 MB）仍保留在宿主上，存量沙箱镜像仍引用它；本轮不重建。
 
 ### 依赖镜像离线包
 
-| 包 | 字节 | MB | sha256 |
-|----|------|-----|--------|
-| `postgres-16.15-alpine3.24.tar` | 116,749,312 | 116.7 | `75be4e107226def02acd7351c23b567324b30ed3c2ed5bc0f769ebf68cf9aaa5` |
-| `minio-minio-RELEASE.2025-04-22T22-12-26Z.tar` | 64,024,576 | 64.0 | `6ab00aa32cdac2220fc812118296e7144c5a44171586d4d4b155f02b28777716` |
-| `logto-1.29.0.tar` | 308,753,408 | 308.8 | `f111a0c273ac924ad9b2792bc75c44abd7ba1951cdcd0ef656b74be53daff5f2` |
-| **合计** | **489,527,296** | **489.5 MB（467 MiB）** | — |
+已全部移除：不再有 `deps/images/*.tar`（原 489.5 MB）、不再有 `load-deps.sh` / `fetch-deps.sh`、
+镜像内不再有 `/opt/deps` 目录。
 
-### 依赖镜像版本（已钉死）
+---
 
-| 用途 | 镜像引用 | 来源 | digest |
-|------|----------|------|--------|
-| Postgres | `postgres:16.15-alpine3.24` | Docker Hub `library/postgres` | `sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab` |
-| MinIO | `minio/minio:RELEASE.2025-04-22T22-12-26Z` | Docker Hub `minio/minio`（**官方仓库已从 Docker Hub 下架**，本包取自宿主 root 守护进程里已存在的同 digest 官方镜像） | `sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e` |
-| Logto | `ghcr.io/logto-io/logto:1.29.0` | GHCR `logto-io/logto` | `sha256:5d2b916d2a3cd26517182b9061eb4b28a26ce317e0f6c43ee175b60b5f1d0a9f` |
+## 二、判定结果
 
-## 二、加载耗时
-
-| 场景 | 数值 |
-|------|------|
-| 首次加载（免 root 守护进程，3 个包 489.5 MB） | **23 秒** |
-| 第二次执行 `load-deps.sh` | 3 个包全部 `skip`，耗时 < 1 秒 |
-
-首次加载日志（容器内 `/tmp/load-deps.log`）：
-
-```
-[load-deps] 开始处理依赖镜像离线包（目录：/opt/deps/images）
-[load-deps] 加载前镜像列表：
-sandbox-platform/base:0.1.0 (1.15GB)
-[load-deps] load  postgres:16.15-alpine3.24 <- postgres-16.15-alpine3.24.tar
-[load-deps] loaded postgres:16.15-alpine3.24
-[load-deps] load  minio/minio:RELEASE.2025-04-22T22-12-26Z <- minio-minio-RELEASE.2025-04-22T22-12-26Z.tar
-[load-deps] loaded minio/minio:RELEASE.2025-04-22T22-12-26Z
-[load-deps] load  ghcr.io/logto-io/logto:1.29.0 <- logto-1.29.0.tar
-[load-deps] loaded ghcr.io/logto-io/logto:1.29.0
-[load-deps] 加载后镜像列表：
-sandbox-platform/base:0.1.0 (1.15GB)
-postgres:16.15-alpine3.24 (420MB)
-ghcr.io/logto-io/logto:1.29.0 (1.76GB)
-minio/minio:RELEASE.2025-04-22T22-12-26Z (250MB)
-[load-deps] 结束：全部离线包处理完毕
-```
-
-第二次执行（幂等）：
-
-```
-[load-deps] skip  postgres:16.15-alpine3.24（已存在，跳过加载）
-[load-deps] skip  minio/minio:RELEASE.2025-04-22T22-12-26Z（已存在，跳过加载）
-[load-deps] skip  ghcr.io/logto-io/logto:1.29.0（已存在，跳过加载）
-```
-
-## 三、判定结果
-
-### `verify.sh`（镜像级，宿主 root 守护进程）：33 项全通过
+### `verify.sh`（镜像级，宿主 root 守护进程）：35 项全通过
 
 | 判定组 | 结果 |
 |--------|------|
-| bash / docker 客户端存在、`docker --version` 有版本输出 | 通过 |
+| 镜像存在；bash / docker 客户端存在；`docker --version` 有版本输出 | 通过 |
 | 业务运行时缺席：node、npm、pnpm、python3、python、psql、pg_config、mc、minio、postgres、git、curl、jq | 通过（13 项均未安装） |
 | 无 `VOLUME` 指令，`inspect .Config.Volumes` 为 `null`；容器内只有 `/proc` `/sys` `/dev` `/etc` 标准挂载 | 通过 |
 | `/workspace` 是空目录、可写、非挂载点、权限 1777 | 通过 |
-| `/entrypoint.sh` 与 `/opt/deps/load-deps.sh` 存在，静态检查无业务运行时调用 | 通过 |
-| 三个离线包与 `images.list` 清单在镜像内 | 通过 |
+| `/entrypoint.sh` 存在，静态检查无业务运行时调用 | 通过 |
+| **镜像内无离线包痕迹**：无 `/opt/deps`、无 `load-deps.sh` / `fetch-deps.sh` / `images.list`、全盘无 `.tar` 类文件、入口脚本无加载逻辑 | 通过（5 项） |
 | docker 缺失 → 输出含 `docker client missing` 且退出码 127 | 通过 |
 | docker 存在 → 进入交互式 bash，退出码 0 | 通过 |
 
-### `verify-rootless.sh`（真实免 root 守护进程）：7 项全通过
+### `verify-rootless.sh`（真实免 root 守护进程）：5 项全通过（+ 6 项回收校验）
 
 | 判定 | 结果 |
 |------|------|
-| 入口脚本在容器内后台自动完成离线包加载（耗时 23 秒） | 通过 |
-| 免 root 守护进程已导入 postgres / minio / logto 三个镜像 | 通过 |
-| `load-deps.sh` 幂等：3 个镜像全部 `skip`，`loaded` 计数为 0 | 通过 |
-| 容器内 `docker version`：client 29.6.2 == server 29.6.2 | 通过 |
+| 入口脚本进入交互式 bash（容器保持运行） | 通过 |
+| 容器内 docker 客户端可访问守护进程 | 通过 |
+| 镜像内无 `/opt/deps` 离线包目录 | 通过 |
+| 容器内 client=29.6.2 == server=29.6.2 | 通过 |
 | 客户端版本 == 宿主 root 守护进程版本 29.6.2 | 通过 |
-| 回收：容器删除、用户与子 ID 段清除、用户级单元删除、运行时目录回收（6 项校验全通过） | 通过 |
+| 回收：容器删除、用户与子 ID 段清除、用户级单元删除、运行时目录回收 | 通过（6 项） |
 
-容器内版本一致性输出：
+---
+
+## 三、统一镜像代理实测（核心验收）
+
+### 代理版本与配置
+
+| 项 | 取值 | 依据 |
+|----|------|------|
+| 代理镜像 | `rpardini/docker-registry-proxy:0.8.0` | 上游稳定版（多架构）；`:latest` 是 master 构建，不用于生产 |
+| 镜像 digest | `sha256:fe958e7a4b7ef01a646d903347a0522b6a9065b44b451c5ef87eb4b6b0f3d770` | Docker Hub registry API 返回的 `docker-content-digest` |
+| 监听 | 宿主 `127.0.0.1:3128` → 容器 3128 | 上游只暴露 3128；绑回环不对外 |
+| 必填环境变量 | `REGISTRIES="docker.io ghcr.io quay.io gcr.io registry.k8s.io"` | 上游拦截清单；docker.io 由上游内置（`registry-1.docker.io` / `auth.docker.io`） |
+| 其它环境变量 | `ENABLE_MANIFEST_CACHE=true` | 上游默认 false；开启后 manifest 也缓存，Docker Hub 限流友好 |
+| 卷 | `/var/lib/sandbox-platform/registry-proxy/cache` → `/docker_mirror_cache`；`/var/lib/sandbox-platform/registry-proxy/ca` → `/ca` | 上游约定；两个卷都必须持久化 |
+| CA 证书 | `/ca/ca.crt`（同时经 `http://127.0.0.1:3128/ca.crt` 提供） | 上游 entrypoint 生成 |
+| CA 私钥 | `/ca/ca.key`，权限 **0600** | 平台在代理就绪后显式收紧 |
+| 健康检查 | TCP 连 `127.0.0.1:3128` + HTTP 取 `/ca.crt` 拿到证书 | 两项都通过才算健康 |
+
+沙箱侧注入（`systemd` 用户单元）：
 
 ```
-[base-image] 容器内 client=29.6.2 server=29.6.2
+Environment=HTTPS_PROXY=http://127.0.0.1:3128
+Environment=HTTP_PROXY=http://127.0.0.1:3128
+Environment=NO_PROXY=localhost,127.0.0.1,::1
+Environment=SSL_CERT_FILE=/home/sandbox-<name>/.config/sandbox-platform/registry-proxy-ca-bundle.crt
 ```
 
-## 四、完成标准逐条核对
+`SSL_CERT_FILE` 指向**合并 CA 束**：宿主系统 CA 束（120 份根证书）+ 代理 CA（1 份），共 121 份，
+属主沙箱用户、权限 0644。只放代理 CA 会让沙箱内非代理目标的 TLS 全部失败，故必须合并。
+
+### a) 用 base:0.2.0 创建沙箱
+
+```
+$ sandboxctl create proxy-lab --image sandbox-platform/base:0.2.0 --command "sleep infinity"
+INFO sandbox_platform.proxy：镜像代理已就绪：http://127.0.0.1:3128
+INFO sandbox_platform.userspace：创建系统用户：sandbox-proxy-lab
+INFO sandbox_platform.proxy：已安装合并 CA 束：/home/sandbox-proxy-lab/.config/sandbox-platform/registry-proxy-ca-bundle.crt（属主 sandbox-proxy-lab）
+沙箱 proxy-lab 创建完成
+```
+
+平台自建镜像（`sandbox-platform/` 前缀）由宿主导出注入沙箱守护进程，不走代理下载。
+
+### b) 沙箱内首次拉取（缓存未命中）
+
+```
+$ docker exec sandbox-proxy-lab docker pull busybox:1.37
+Digest: sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+Status: Downloaded newer image for busybox:1.37
+首次拉取耗时：15.25 秒
+```
+
+代理缓存目录随即出现该镜像的 blob（8 个文件，共 2.3 MB）：
+
+```
+2212597  /var/lib/sandbox-platform/registry-proxy/cache/f/2c/f680048c00822b67682fe0c4b94a22cf   ← busybox 根层
+10573    .../3/ba/52e0d56d97fb8bf512c634641e08cba3
+10506    .../2/4a/7059f52a8c5d2ee53bb6bd0d116ae4a2
+3064     .../8/12/790da5fa08ef1780d822fa3d70a1c128
+1650     .../c/5c/40f919db829f46b7107b667d7c9c65cc
+```
+
+代理访问日志里对应记录为 `MISS`。
+
+### c) 删除沙箱 → 重建 → 再拉同一镜像（命中缓存）
+
+```
+$ sandboxctl delete proxy-lab --yes && sandboxctl create proxy-lab --image sandbox-platform/base:0.2.0 …
+$ docker exec sandbox-proxy-lab docker pull busybox:1.37
+Status: Downloaded newer image for busybox:1.37
+第二次拉取耗时：3.44 秒
+```
+
+代理访问日志（manifest 与全部 blob 均为 `HIT`）：
+
+```
+"upstream_cache_status":"HIT","method":"HEAD","uri":"/v2/library/busybox/manifests/1.37"
+"upstream_cache_status":"HIT","method":"GET","uri":"/v2/library/busybox/manifests/sha256:a7dbc319…"
+"upstream_cache_status":"HIT","method":"GET","uri":"/v2/library/busybox/blobs/sha256:30ecbe15…"
+"upstream_cache_status":"HIT","method":"GET","uri":"/v2/library/busybox/blobs/sha256:9177639f…"
+"upstream_cache_status":"HIT","method":"GET","uri":"/v2/library/busybox/blobs/sha256:68fe9bff…"
+```
+
+**两次拉取耗时对比：15.25 秒（MISS，走外网） → 3.44 秒（HIT，走本地缓存），约 4.4 倍提速。**
+第二次仍非零耗时，因为 Docker Hub 的 token 协商与 manifest 拉取要走一遍代理转发。
+
+### d) 停掉代理后再拉（验证无降级语义）
+
+```
+$ docker stop sandbox-platform-registry-proxy
+$ docker exec sandbox-proxy-lab docker pull busybox:1.36
+Error response from daemon: failed to resolve reference "docker.io/library/busybox:1.36":
+  failed to do request: Head "https://registry-1.docker.io/v2/library/busybox/manifests/1.36":
+  proxyconnect tcp: dial tcp 127.0.0.1:3128: connect: connection refused
+失败耗时：0.09 秒
+```
+
+错误信息直接点名代理地址与拒绝原因，**没有任何直连公网的降级行为**（守护进程虽然有宿主网络，
+但 `HTTPS_PROXY` 强制它走代理）。测完代理已恢复。
+
+### e) 代理不可达时创建沙箱（控制面侧）
+
+让 3128 端口被占位使代理容器起不来时，创建直接失败并回滚：
+
+```
+$ sandboxctl create proxy-fail --image sandbox-platform/base:0.2.0 --command "sleep infinity"
+ERROR sandbox_platform.proxy：启动代理容器失败：docker: Error response from daemon: failed to set up
+  container networking: … failed to bind host port 127.0.0.1:3128/tcp: address already in use
+错误：步骤「准备镜像代理」失败：镜像代理未就绪（http://127.0.0.1:3128）：…；平台不做降级直连，请先修复代理后重试
+```
+
+失败发生在任何宿主改动之前（沙箱用户尚未创建），无需回滚。
+
+---
+
+## 四、测试与冒烟
+
+| 项 | 结果 |
+|----|------|
+| `pytest`（全量，含 root 标记测试） | **158 项全通过**（其中新增代理回归 14 项：单元模板四环境变量、代理不可达→创建失败且报错明确、`ensure_running` 幂等、CA 束生成与权限、合并 CA 束同时含系统与代理两份） |
+| `ruff check src/ tests/ cli/` | 零告警 |
+| `scripts/smoke-lifecycle.sh` | 两遍全绿，各 30 项判定（新增：单元注入四环境变量、合并 CA 束可读且含多份证书、沙箱内经代理拉取小镜像成功） |
+
+---
+
+## 五、完成标准逐条核对
 
 | 完成标准 | 结论 | 依据 |
 |----------|------|------|
-| Dockerfile 可构建出 `sandbox-platform/base:<tag>`，构建无外网 | 通过 | `docker build --network=none` 成功；RUN 步骤仅本地文件操作 |
-| 镜像内含 docker 客户端，`docker --version` 有输出且能与外部守护进程通信 | 通过 | `Docker version 29.6.2, build dfc4efb`；免 root 守护进程下 `docker ps`/`docker load` 均正常 |
-| 纯 bash 入口脚本，只依赖 bash 与 docker，静态检查通过 | 通过 | `verify.sh` 静态检查无命中 |
+| 基础镜像 0.2.0 可构建，无外网构建 | 通过 | `docker build --network=none` 成功；RUN 步骤仅本地文件操作 |
+| 镜像内含 docker 客户端，版本与宿主一致 | 通过 | `Docker version 29.6.2`；容器内 client == server == 宿主 |
+| 纯 bash 入口脚本，只依赖 bash 与 docker | 通过 | `verify.sh` 静态检查无命中 |
 | 入口行为固定：docker 存在则 exec 交互式 bash，不存在则报错退出码 127 | 通过 | 两条判定均通过 |
 | 镜像不内置任何 volume 挂载点 | 通过 | `inspect .Config.Volumes = null`；容器内只有标准挂载 |
-| 存在便捷空目录 `/workspace` 且可写，容器层目录、随容器消失 | 通过 | 空目录、1777、可创建删除文件、`/proc/mounts` 无命中 |
-| README 写明套接字默认路径 `/var/run/docker.sock` | 通过 | README「挂载点约定」 |
-| 依赖镜像离线包随镜像分发，`docker load` 可离线导入成功 | 通过 | 三个包在 `/opt/deps/images/`，免 root 守护进程内导入成功 |
-| `load-deps.sh` 首次自动加载、重复执行不重复加载、输出前后镜像列表 | 通过 | 日志含 `skip`/`loaded` 与前后镜像列表 |
-| `verify.sh` 断言无业务运行时、有 docker 与 bash | 通过 | 33 项判定 |
-| README 写明构建命令、标签规则、套接字路径、`/workspace` 含义、离线包来源与更新方式 | 通过 | README 全文 |
-| RESULTS.md 记录镜像体积、离线包体积、首次加载耗时 | 通过 | 本文件第一、二节 |
+| 便捷空目录 `/workspace` 可写、容器层目录 | 通过 | 空目录、1777、可创建删除文件、`/proc/mounts` 无命中 |
+| **镜像内无离线包痕迹（deps 目录、加载脚本、tar 包）** | 通过 | `verify.sh` 5 项断言 + 全盘 `find` 无 `.tar` 类文件 |
+| 入口脚本无离线包加载逻辑 | 通过 | 静态检查 `load-deps` / `docker load` / `/opt/deps` / `images.list` 均无命中 |
+| 沙箱内 `docker pull` 经统一代理成功，代理缓存出现该镜像 blob | 通过 | 第三节 b 项：8 个缓存文件 / 2.3 MB |
+| 删沙箱重建后再拉命中缓存并记录耗时 | 通过 | 15.25 秒 → 3.44 秒，日志 `HIT` |
+| 代理不可达时拉取明确失败、无降级直连 | 通过 | 第三节 d 项：`proxyconnect tcp: … connection refused`，0.09 秒失败 |
+| 代理不可达时创建沙箱明确失败 | 通过 | 第三节 e 项：步骤「准备镜像代理」失败并回滚 |
+| CA 私钥权限 0600；合并 CA 束含系统与代理两份 | 通过 | `/ca/ca.key` 0600；合并束 121 份证书 |
 
-## 五、踩坑清单
+---
 
-1. **`minio/minio` 已从 Docker Hub 下架**：`docker pull minio/minio:RELEASE.2025-04-22T22-12-26Z` 直接 `403 Forbidden / denied`，Docker Hub 的仓库 API 返回 `object not found`，`quay.io/minio/minio` 也改成需要认证且标签列表为空。处理方式：用宿主 root 守护进程里已存在的同 digest 官方镜像导出离线包（`sha256:a1ea29fa…`），并在 README / 本文件记录来源。**后续更新 MinIO 版本时需要另找可拉取的镜像源，不能假设 Docker Hub 还能拉。**
-2. **`docker:cli` 标签是 latest**（当时指向 29.9.2），client 与宿主 server 版本对不上。基础镜像的客户端版本由构建参数 `DOCKER_CLI_VERSION=29.6.2` 锁定，取值必须与宿主守护进程一致。
-3. **docker 客户端二进制是静态 Go 程序**（`not a dynamic executable`），可以跨发行版直接复制；但 `docker:29.6.2-cli` 镜像本身是 Alpine（musl），只搬二进制、不搬它的 libc。
-4. **`debian:bookworm-slim` 自带 bash**（`/usr/bin/bash`）与 `libtinfo.so.6`，不需要在无网阶段离线安装 bash，选它比 ubuntu:24.04 更省事也更小。
-5. **Dockerfile 里 `FROM` 之后的阶段看不到全局 ARG**：LABEL 里引用 `${BASE_VERSION}` / `${DOCKER_CLI_VERSION}` 会触发 `UndefinedVar` 警告且渲染为空，必须在构建阶段内重新 `ARG` 一次。
-6. **`/proc/mounts` 的字段顺序与 `/etc/fstab` 不同**：挂载点在第 2 列（`source target fstype options 0 0 extra`），第 5 列是 `0`。判定「无预置挂载点」时按 fstab 口径写会全量误报。
-7. **静态检查会把注释里的词也算命中**：入口脚本注释里原本写了被禁命令名，导致「只依赖 bash 与 docker」判定失败。已把注释改成不含这些词的表述；脚本正文本身从未调用过它们。
-8. **免 root 守护进程里 `docker images` 的 SIZE 是展开后的虚拟大小**（基础镜像显示 1.15 GB），与 `docker image inspect .Size`（534.4 MB）不是同一口径；测体积一律以 inspect 为准。
-9. **`exec bash -i` 在非 TTY 下会打印 `cannot set terminal process group` 告警**（退出码仍为 0），这是交互式 shell 的正常行为，判定脚本按退出码判定即可。
-10. **离线包 tar 共 489 MB，未进 git**：克隆仓库后必须先跑 `fetch-deps.sh` 再构建；`Dockerfile` 的 `RUN` 步骤会检查 `deps/images/*.tar` 是否存在，缺失时构建直接失败并提示，避免产出无法加载依赖的空壳镜像。
-11. **Dockerfile 首行不要写 `# syntax=docker/dockerfile:1`**：它会让 BuildKit 去仓库拉取前端镜像，无外网构建时直接失败；去掉后用内置前端即可，本构建全程只解析两个基础镜像的 manifest（已在本机缓存）。
-12. **内置前端产出的镜像配置里没有 `Volumes` 这个 key**（不是 `null`，而是字段不存在）；`docker image inspect --format '{{json .Config.Volumes}}'` 会报 `map has no entry for key "Volumes"`。判定脚本要把「字段不存在」与「值为 null」都当作“无挂载点”。
+## 六、踩坑清单
+
+1. **免 root 守护进程不在 slirp 网络命名空间里**（本轮最关键的坑）：`dockerd-rootless.sh` 默认启用
+   `--detach-netns`，守护进程进程本身留在**宿主网络命名空间**（只有容器在 slirp4netns 命名空间里）。
+   因此守护进程访问代理要用宿主回环地址 `127.0.0.1:3128`；slirp 网关 `10.0.2.2` 只在**沙箱容器内**可达，
+   给守护进程写 `10.0.2.2` 会把请求发到宿主局域网网关，表现为拉取报 `unexpected EOF`（连接被对端静默关闭），
+   代理日志里看不到任何请求。平台因此把代理地址做成配置项（`SANDBOX_PLATFORM_PROXY_ADDRESS`），
+   默认 `127.0.0.1`，并在单元里显式固定 `DOCKERD_ROOTLESS_ROOTLESSKIT_DETACH_NETNS=true`。
+2. **`unexpected EOF` 不等于「网络不通」**：dockerd 拉取失败报这个错时，先确认守护进程在哪个网络命名空间
+   （`readlink /proc/<dockerd pid>/ns/net`），再确认代理地址是否可达；本例中代理日志完全无记录，
+   才定位到地址用错了命名空间。
+3. **代理的 CA 必须与系统 CA 合并**：只把代理 CA 放进 `SSL_CERT_FILE` 会让沙箱内所有非代理目标的
+   TLS 握手失败（业务 API、数据库连接等）。平台把系统 CA 束（`/etc/ssl/certs/ca-certificates.crt`）
+   与代理 CA 合并成一个文件装到沙箱用户家目录。
+4. **代理容器里的 nginx 会 chown 缓存目录**：nginx 的 cache manager 会把缓存目录改成 worker 用户
+   （容器内 uid 100），宿主上表现为目录属主变成 `usbmux`（uid 100）。不影响代理写入，
+   但读取缓存内容需要 root；CA 目录不受影响，私钥仍是 0600 root。
+5. **代理不可达时的错误信息要指名道姓**：守护进程报的是 `proxyconnect tcp: dial tcp 127.0.0.1:3128:
+   connect: connection refused`，用户一眼能看出是代理问题；平台侧在创建流程里再补一条
+   「镜像代理未就绪（地址）：…；平台不做降级直连」，两层信息都不遮蔽。
+6. **代理容器名要带端口后缀**：测试用临时数据根 + 独立端口时，代理容器名若固定会与生产实例抢名字与端口。
+   平台按端口派生容器名（默认 3128 用固定名，其它端口加后缀）。
+7. **并发创建要加锁**：两个沙箱同时创建会同时去建代理容器，后一个撞名失败。代理拉起用文件锁串行化。
+8. **宿主 DNS 只在宿主网络命名空间可用**：slirp 命名空间里 `/etc/resolv.conf` 指向 systemd-resolved 的
+   `127.0.0.53`，在命名空间内不可达，沙箱容器内的 DNS 解析会失败。这正好说明代理是必需的：
+   代理在宿主侧解析仓库域名，守护进程只需把域名交给代理。
+9. **旧镜像保留**：0.1.0 基础镜像与 `sandbox-platform/sandbox-default:0.1.0` 均未重建、未删除，
+   存量引用不受影响；默认沙箱镜像的重建是后续任务。

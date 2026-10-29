@@ -4,9 +4,10 @@
 # 复用 platform/probe/rootless/ 的 00（建用户）/ 01（起守护进程）/ 04（回收）三个脚本。
 #
 # 验证内容：
-#   1) 入口脚本在容器内后台自动加载依赖镜像离线包（首次加载 + 耗时）；
-#   2) load-deps.sh 幂等：再执行一次全部 skip，不重复导入；
-#   3) 容器内 docker 客户端版本 == 免 root 守护进程服务端版本。
+#   1) 基础镜像可注入免 root 守护进程；
+#   2) 入口脚本行为：docker 客户端存在时进入交互式 shell；
+#   3) 容器内 docker 客户端版本 == 免 root 守护进程服务端版本；
+#   4) 镜像内无离线包痕迹（0.2.0 起废弃离线包机制，依赖镜像统一经镜像代理拉取）。
 #
 # 用法：
 #   ./verify-rootless.sh              # 测完自动回收
@@ -17,7 +18,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROBE_DIR="$SCRIPT_DIR/../probe/rootless"
 
-BASE_IMAGE="${BASE_IMAGE:-sandbox-platform/base:0.1.0}"
+BASE_IMAGE="${BASE_IMAGE:-sandbox-platform/base:0.2.0}"
 CONTAINER_NAME="${CONTAINER_NAME:-base-image-test}"
 KEEP=0
 [ "${1:-}" = "--keep" ] && KEEP=1
@@ -70,11 +71,10 @@ probe_exec docker image inspect "$BASE_IMAGE" >/dev/null 2>&1 \
   && log "基础镜像已在免 root 守护进程中就绪" \
   || { echo "免 root 守护进程中未找到基础镜像" >&2; exit 1; }
 
-# ---------------------------------------------------------------- 2. 入口脚本：首次自动加载
-log "启动容器（挂载套接字到 /var/run/docker.sock），验证入口脚本后台自动加载"
+# ---------------------------------------------------------------- 2. 入口脚本行为
+log "启动容器（挂载套接字到 /var/run/docker.sock），验证入口脚本进入交互式 shell"
 probe_exec docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
-START_TS="$(date +%s)"
 # 用 FIFO 给容器保持一个永不结束的 stdin，让入口脚本里的交互式 bash 不立即退出
 FIFO="$(mktemp -u /tmp/base-image-stdin.XXXXXX)"
 mkfifo "$FIFO"
@@ -85,54 +85,31 @@ probe_exec docker run -d -i \
   -v "$SOCK:/var/run/docker.sock" \
   "$BASE_IMAGE" <"$FIFO" >/dev/null
 
-LOAD_LOG=""
-for _ in $(seq 1 180); do
-  LOAD_LOG="$(probe_exec docker exec "$CONTAINER_NAME" cat /tmp/load-deps.log 2>/dev/null || true)"
-  case "$LOAD_LOG" in
-    *"结束：全部离线包处理完毕"*) break ;;
-    *"错误"*|*"error"*) break ;;
-  esac
-  sleep 1
-done
-END_TS="$(date +%s)"
-LOAD_SECONDS=$((END_TS - START_TS))
-
-echo
-echo "----- /tmp/load-deps.log -----"
-echo "$LOAD_LOG"
-echo "----- 首次加载耗时：${LOAD_SECONDS} 秒 -----"
-echo
-
-case "$LOAD_LOG" in
-  *"结束：全部离线包处理完毕"*) check "入口脚本后台完成离线包加载" 0 "耗时 ${LOAD_SECONDS} 秒" ;;
-  *) check "入口脚本后台完成离线包加载" 1 "日志未出现完成标记" ;;
-esac
-
-for ref in "postgres:16.15-alpine3.24" "minio/minio:RELEASE.2025-04-22T22-12-26Z" "ghcr.io/logto-io/logto:1.29.0"; do
-  if probe_exec docker images -q "$ref" | grep -q .; then
-    check "免 root 守护进程已导入 $ref" 0 "存在"
-  else
-    check "免 root 守护进程已导入 $ref" 1 "未找到"
-  fi
-done
-
-# ---------------------------------------------------------------- 3. load-deps.sh 幂等
-log "再次执行 load-deps.sh，验证幂等（应全部 skip）"
-IDEMP_LOG="$(probe_exec docker run --rm -v "$SOCK:/var/run/docker.sock" \
-  --entrypoint /bin/bash "$BASE_IMAGE" -c '/opt/deps/load-deps.sh' 2>&1)"
-echo "$IDEMP_LOG" | sed 's/^/  /'
-
-skip_count="$(printf '%s\n' "$IDEMP_LOG" | grep -c 'skip ' || true)"
-loaded_count="$(printf '%s\n' "$IDEMP_LOG" | grep -c 'loaded ' || true)"
-if [ "$skip_count" -eq 3 ] && [ "$loaded_count" -eq 0 ]; then
-  check "load-deps.sh 幂等：3 个镜像全部 skip" 0 "skip=$skip_count loaded=$loaded_count"
+sleep 2
+if probe_exec docker inspect --format '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null | grep -q true; then
+  check "入口脚本进入交互式 bash（容器保持运行）" 0 "容器在跑"
 else
-  check "load-deps.sh 幂等：3 个镜像全部 skip" 1 "skip=$skip_count loaded=$loaded_count"
+  check "入口脚本进入交互式 bash（容器保持运行）" 1 "容器未运行"
 fi
 
-# ---------------------------------------------------------------- 4. 客户端 / 服务端版本一致性
-VER_OUT="$(probe_exec docker run --rm -v "$SOCK:/var/run/docker.sock" \
-  --entrypoint /bin/bash "$BASE_IMAGE" -c 'docker version --format "{{.Client.Version}} {{.Server.Version}}"' 2>&1)"
+# 容器内能通过套接字看到守护进程（说明 docker 客户端与守护进程连通）
+INSIDE_PS="$(probe_exec docker exec "$CONTAINER_NAME" docker ps --format '{{.Names}}' 2>&1 || true)"
+if echo "$INSIDE_PS" | grep -q "$CONTAINER_NAME"; then
+  check "容器内 docker 客户端可访问守护进程" 0 "$CONTAINER_NAME"
+else
+  check "容器内 docker 客户端可访问守护进程" 1 "实际输出：$(echo "$INSIDE_PS" | tr '\n' ' ')"
+fi
+
+# 镜像内无离线包痕迹
+DEPS_PROBE="$(probe_exec docker exec "$CONTAINER_NAME" sh -c 'test ! -e /opt/deps && echo clean' 2>&1 || true)"
+if echo "$DEPS_PROBE" | grep -q clean; then
+  check "镜像内无 /opt/deps 离线包目录" 0 "不存在"
+else
+  check "镜像内无 /opt/deps 离线包目录" 1 "实际输出：$(echo "$DEPS_PROBE" | tr '\n' ' ')"
+fi
+
+# ---------------------------------------------------------------- 3. 客户端 / 服务端版本一致性
+VER_OUT="$(probe_exec docker exec "$CONTAINER_NAME" docker version --format "{{.Client.Version}} {{.Server.Version}}" 2>&1)"
 CLIENT_VER="$(printf '%s' "$VER_OUT" | awk '{print $1}')"
 SERVER_VER="$(printf '%s' "$VER_OUT" | awk '{print $2}')"
 log "容器内 client=$CLIENT_VER server=$SERVER_VER"
@@ -149,7 +126,7 @@ else
   check "客户端版本与宿主守护进程版本一致" 1 "client=$CLIENT_VER host=$HOST_SERVER_VERSION"
 fi
 
-# ---------------------------------------------------------------- 5. 回收
+# ---------------------------------------------------------------- 4. 回收
 kill "$TAIL_PID" 2>/dev/null || true
 rm -f "$FIFO"
 
@@ -163,5 +140,4 @@ fi
 
 echo
 echo "判定汇总：共 ${CHECK_TOTAL} 项，不通过 ${CHECK_FAILED} 项"
-echo "首次加载耗时（秒）：${LOAD_SECONDS}"
 [ "$CHECK_FAILED" -eq 0 ]

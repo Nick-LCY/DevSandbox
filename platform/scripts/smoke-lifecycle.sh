@@ -67,7 +67,13 @@ for item in data:
 }
 
 # 与宿主守护进程同版本的 docker 客户端镜像（容器内需要 docker 命令）
+# 优先用平台基础镜像：它在宿主已构建好，属平台自建镜像，宿主导入即可，无需经代理下载
 detect_cli_image() {
+  local base="sandbox-platform/base:0.2.0"
+  if docker image inspect "$base" >/dev/null 2>&1; then
+    echo "$base"
+    return
+  fi
   local ver
   ver="$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)"
   if [ -n "$ver" ]; then echo "docker:${ver}-cli"; else echo "docker:cli"; fi
@@ -133,6 +139,31 @@ if [ "$(echo "$INSIDE_LIST" | tr -d '\r' | grep -c .)" = "1" ] && [ "$(echo "$IN
   check "容器内 docker ps 只见本沙箱容器" 0 "$INSIDE_LIST"
 else
   check "容器内 docker ps 只见本沙箱容器" 1 "实际输出：$(echo "$INSIDE_LIST" | tr '\n' ' ')"
+fi
+
+# ②b 统一镜像代理：守护进程单元注入代理环境变量 + 合并 CA 束就位
+UNIT_ENV="$(sandbox_exec "$SYSTEM_USER" systemctl --user show docker.service --property=Environment --value 2>/dev/null || true)"
+for key in "HTTPS_PROXY=" "HTTP_PROXY=" "NO_PROXY=" "SSL_CERT_FILE="; do
+  if echo "$UNIT_ENV" | grep -q "$key"; then
+    check "守护进程单元注入 $key" 0 "$(echo "$UNIT_ENV" | tr ' ' '\n' | grep "^$key" | head -1)"
+  else
+    check "守护进程单元注入 $key" 1 "环境变量里没有 $key"
+  fi
+done
+CA_BUNDLE="$(echo "$UNIT_ENV" | tr ' ' '\n' | grep '^SSL_CERT_FILE=' | head -1 | cut -d= -f2-)"
+if [ -n "$CA_BUNDLE" ] && sudo test -r "$CA_BUNDLE"; then
+  CERT_COUNT="$(sudo grep -c 'BEGIN CERTIFICATE' "$CA_BUNDLE" 2>/dev/null || echo 0)"
+  check "合并 CA 束可读且含多份证书" 0 "$CA_BUNDLE（${CERT_COUNT} 份）"
+else
+  check "合并 CA 束可读且含多份证书" 1 "读不到 $CA_BUNDLE"
+fi
+
+# ②c 沙箱内经统一镜像代理拉取小镜像（代理不可达时应直接失败，不降级直连）
+PULL_OUT="$(sandbox_exec "$SYSTEM_USER" docker exec "$CONTAINER_NAME" docker pull busybox:1.37 2>&1 || true)"
+if echo "$PULL_OUT" | grep -qE 'Pull complete|Status: Downloaded'; then
+  check "沙箱内 docker pull 经镜像代理成功" 0 "busybox:1.37"
+else
+  check "沙箱内 docker pull 经镜像代理成功" 1 "实际输出：$(echo "$PULL_OUT" | tr '\n' ' ')"
 fi
 
 # ③ 容器内挂载点：套接字 + 用户声明挂载

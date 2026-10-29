@@ -49,7 +49,8 @@ uv run python cli/sandboxctl.py list
 - 宿主已安装 Docker 与 `dockerd-rootless.sh`、`newuidmap`/`newgidmap`（`uidmap` 包）。
 - 宿主操作（建用户、写 `/etc/subuid`、写用户单元、启停用户级守护进程）需要特权：进程本身是 root 时直接执行，否则走免密 `sudo`。
 - 平台数据根目录默认 `/var/lib/sandbox-platform`，可用环境变量 `SANDBOX_PLATFORM_HOME` 重定向到可写路径。目录由平台用 `install -d` 创建，属主为首次创建它的那个用户；同一台机器请固定用同一种身份操作控制面。
-- 镜像来源优先级：沙箱守护进程已有 → 宿主离线包目录（默认 `/opt/deps/images`，认 `images.list` 清单）→ 宿主本地镜像导出注入 → 守护进程直拉。平台自建镜像（`sandbox-platform/*`）走「宿主导出注入」路径，不依赖镜像仓库。
+- **统一镜像代理**：创建沙箱时平台会拉起代理容器（`rpardini/docker-registry-proxy:0.8.0`，宿主回环 `127.0.0.1:3128`）并做健康检查；代理不可达则创建直接失败，**不降级直连**。缓存与 CA 目录在 `<平台数据根>/registry-proxy/`。
+- 镜像来源优先级：沙箱守护进程已有 → 平台自建镜像（`sandbox-platform/*`）由宿主导出注入 → 其余镜像由沙箱守护进程经统一镜像代理拉取（命中代理缓存）。平台不再维护任何离线镜像包。
 
 ## 沙箱容器启动约定
 

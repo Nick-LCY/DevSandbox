@@ -5,13 +5,13 @@
 # 不引入任何业务运行时，也不使用任何外部下载或文本处理工具。
 #
 # 行为约定：
-#   1) docker 命令存在：后台加载依赖镜像离线包（不阻塞），随后 exec 交互式 bash；
+#   1) docker 命令存在：exec 交互式 bash；
 #   2) docker 命令不存在：打印一行含「docker client missing」的错误，退出码 127。
+#
+# 0.2.0 起不再有任何离线包加载逻辑：依赖镜像统一经宿主统一镜像代理缓存拉取
+# （沙箱守护进程的 HTTPS_PROXY / SSL_CERT_FILE 由平台注入）。
 
 set -uo pipefail
-
-DEPS_LOADER="${DEPS_LOADER:-/opt/deps/load-deps.sh}"
-DEPS_LOG="${DEPS_LOG:-/tmp/load-deps.log}"
 
 # ---------------------------------------------------------------- 1) docker 客户端缺失则报错退出
 if ! command -v docker >/dev/null 2>&1; then
@@ -19,12 +19,5 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 127
 fi
 
-# ---------------------------------------------------------------- 2) 后台加载依赖镜像离线包
-# 日志落 /tmp/load-deps.log；加载失败不影响交互式 shell 启动
-if [ -x "$DEPS_LOADER" ]; then
-  ( "$DEPS_LOADER" >>"$DEPS_LOG" 2>&1 || true ) &
-  disown 2>/dev/null || true
-fi
-
-# ---------------------------------------------------------------- 3) 交互式 bash
+# ---------------------------------------------------------------- 2) 交互式 bash
 exec bash -i

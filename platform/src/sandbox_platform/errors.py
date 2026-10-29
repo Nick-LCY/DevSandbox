@@ -55,7 +55,14 @@ class CommandError(SandboxError):
 
 
 class ImageError(SandboxError):
-    """镜像不可用（本地无镜像、离线包缺失且拉取失败）。"""
+    """镜像不可用（本地无镜像且拉取失败）。"""
+
+
+class ProxyError(SandboxError):
+    """统一镜像代理不可用（拉起失败、健康检查不通过、CA 不可读等）。
+
+    代理不可达时**不做降级直连**（用户已拍板）：调用方必须直接失败。
+    """
 
 
 class LifecycleError(SandboxError):

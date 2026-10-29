@@ -15,10 +15,11 @@ from .errors import (
     ImageError,
     LifecycleError,
     NotFoundError,
+    ProxyError,
     SandboxError,
     ValidationError,
 )
-from .images import ImageManager, OfflineImagePackage
+from .images import ImageManager
 from .lifecycle import (
     CREATE_STEP_NAMES,
     RECLAIM_INCOMPLETE_NOTE,
@@ -53,10 +54,23 @@ from .mounts import (
     sensitive_host_paths,
     socket_mount,
 )
-from .userspace import Privilege, SubIdRange, SystemUser, UserSpaceManager
+from .proxy import (
+    ProxyProbe,
+    RegistryProxyManager,
+    ca_bundle_path,
+    proxy_container_name,
+)
+from .userspace import (
+    PROXY_NO_PROXY,
+    Privilege,
+    SubIdRange,
+    SystemUser,
+    UserSpaceManager,
+)
 
 __all__ = [
     "CREATE_STEP_NAMES",
+    "PROXY_NO_PROXY",
     "RECLAIM_INCOMPLETE_NOTE",
     "RECLAIM_UNTOUCHED_NOTE",
     "SENSITIVE_HOST_DIRS",
@@ -77,10 +91,12 @@ __all__ = [
     "MetadataStore",
     "MountSpec",
     "NotFoundError",
-    "OfflineImagePackage",
     "PlatformConfig",
     "Privilege",
+    "ProxyError",
+    "ProxyProbe",
     "ReclaimPlan",
+    "RegistryProxyManager",
     "SandboxError",
     "SandboxMetadata",
     "SandboxService",
@@ -90,10 +106,12 @@ __all__ = [
     "UserDaemon",
     "UserSpaceManager",
     "ValidationError",
+    "ca_bundle_path",
     "describe_mounts",
     "mounts_to_docker_args",
     "parse_mount_declaration",
     "parse_mounts",
+    "proxy_container_name",
     "sensitive_host_paths",
     "socket_mount",
     "validate_env_pairs",

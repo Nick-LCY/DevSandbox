@@ -32,6 +32,16 @@ SUBGID_FILE = Path("/etc/subgid")
 DOCKER_UNIT_NAME = "docker.service"
 DOCKERD_ROOTLESS_DEFAULT = "/usr/bin/dockerd-rootless.sh"
 
+# 合并 CA 束在沙箱用户家目录里的相对路径（系统 CA 束 + 代理 CA）
+CA_BUNDLE_RELPATH = Path(".config/sandbox-platform/registry-proxy-ca-bundle.crt")
+# 代理环境变量的免代理名单：本地地址一律直连
+PROXY_NO_PROXY = "localhost,127.0.0.1,::1"
+
+
+def ca_bundle_path(user_home: str | Path) -> Path:
+    """沙箱用户家目录里「合并 CA 束」的落盘路径。"""
+    return Path(user_home) / CA_BUNDLE_RELPATH
+
 
 @dataclass(frozen=True)
 class SystemUser:
@@ -333,9 +343,28 @@ class UserSpaceManager:
         found = shutil.which("dockerd-rootless.sh")
         return found or DOCKERD_ROOTLESS_DEFAULT
 
+    def proxy_url(self) -> str:
+        """沙箱守护进程访问统一镜像代理的 URL。
+
+        默认 ``http://127.0.0.1:<port>``：dockerd-rootless.sh 默认启用 ``--detach-netns``，
+        守护进程进程本身留在宿主网络命名空间（只有容器在 slirp4netns 命名空间里），
+        因此守护进程要用宿主回环地址访问代理；slirp 网关 10.0.2.2 只在沙箱容器内可达。
+        """
+        return f"http://{self.config.proxy_address}:{self.config.proxy_port}"
+
     def render_unit(self, user: SystemUser) -> str:
-        """渲染 systemd 用户单元内容。"""
+        """渲染 systemd 用户单元内容。
+
+        统一镜像代理（ADR 0008）：单元里注入代理环境变量，沙箱内 ``docker pull``
+        自动经代理并命中缓存。``SSL_CERT_FILE`` 指向「系统 CA 束 + 代理 CA」的合并文件，
+        非代理目标的 TLS 仍然可用。
+
+        ``DOCKERD_ROOTLESS_ROOTLESSKIT_DETACH_NETNS=true`` 显式固定守护进程的网络命名空间
+        位置（与 dockerd-rootless.sh 的默认值一致）：守护进程留在宿主网络命名空间，
+        才能用回环地址访问代理，容器仍在 slirp4netns 命名空间里。
+        """
         socket_path = user.socket_path
+        proxy_url = self.proxy_url()
         return (
             "[Unit]\n"
             f"Description=Docker daemon (rootless) for {user.name}\n"
@@ -347,6 +376,11 @@ class UserSpaceManager:
             "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
             f"Environment=HOME={user.home}\n"
             f"Environment=DOCKER_HOST=unix://{socket_path}\n"
+            f"Environment=HTTPS_PROXY={proxy_url}\n"
+            f"Environment=HTTP_PROXY={proxy_url}\n"
+            f"Environment=NO_PROXY={PROXY_NO_PROXY}\n"
+            f"Environment=SSL_CERT_FILE={ca_bundle_path(user.home)}\n"
+            "Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_DETACH_NETNS=true\n"
             f"ExecStart={self.dockerd_rootless_path()} --rootless\n"
             "ExecReload=/bin/kill -s HUP $MAINPID\n"
             "TimeoutSec=0\n"

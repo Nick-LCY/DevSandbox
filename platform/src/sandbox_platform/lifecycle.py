@@ -21,7 +21,7 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .command import run
+from .command import CommandResult, run
 from .config import PlatformConfig
 from .daemon import (
     LABEL_MANAGED,
@@ -33,8 +33,10 @@ from .daemon import (
 )
 from .errors import (
     AlreadyExistsError,
+    ImageError,
     LifecycleError,
     NotFoundError,
+    ProxyError,
     SandboxError,
     ValidationError,
 )
@@ -47,6 +49,7 @@ from .metadata import (
     SandboxMetadata,
 )
 from .mounts import MountSpec, parse_mounts, socket_mount
+from .proxy import RegistryProxyManager
 from .userspace import Privilege, SystemUser, UserSpaceManager
 
 logger = logging.getLogger(__name__)
@@ -195,6 +198,7 @@ class SandboxService:
         self.privilege = privilege or Privilege()
         self.userspace = UserSpaceManager(self.config, self.privilege)
         self.images = ImageManager(self.config, self.privilege)
+        self.proxy = RegistryProxyManager(self.config, self.privilege)
         self.store = MetadataStore(self.config)
 
     # ---------------------------------------------------------------- 查询
@@ -319,6 +323,10 @@ class SandboxService:
         # 前置校验：输入不合法时不得在宿主上留下任何副作用
         self._precheck(request)
 
+        # 统一镜像代理必须先就绪：代理不可达时不做降级直连（用户已拍板），
+        # 直接终止创建并给出明确报错（此时尚未在宿主上做任何改动）。
+        self._ensure_proxy_running("准备镜像代理")
+
         self._ensure_data_directories()
 
         completed: list[tuple[str, object]] = []
@@ -336,6 +344,8 @@ class SandboxService:
 
             # ③ 写入并启动 systemd 用户单元（含 enable-linger）
             current_step = CREATE_STEP_NAMES[2]
+            # 合并 CA 束必须先于守护进程就位（单元里的 SSL_CERT_FILE 指向它）
+            self._install_ca_bundle(current_step, system_user)
             daemon = UserDaemon(
                 UserContext(
                     user=system_user.name,
@@ -401,24 +411,25 @@ class SandboxService:
             if daemon.container_exists(container_name):
                 daemon.remove_container(container_name)
             completed.append((current_step, self._rollback_container(daemon, container_name, network_name, network_owned)))
-            run_result = daemon.run_container(
-                name=container_name,
+            run_result = self._run_sandbox_container(
+                daemon,
+                container_name=container_name,
                 image=image,
                 mounts=all_mounts,
                 network=network_name,
                 command=request.command,
-                env=request.env,
-                labels={
-                    LABEL_NAME: name,
-                    LABEL_ROLE: ROLE_SANDBOX,
-                    LABEL_MANAGED: "true",
-                },
+                env=dict(request.env),
                 workdir=request.workdir,
+                name=name,
             )
             if not run_result.ok:
-                raise LifecycleError(
-                    current_step, f"启动沙箱容器失败：{run_result.output.strip()}"
-                )
+                detail = run_result.output.strip()
+                if not daemon.image_exists(image):
+                    detail = (
+                        f"镜像 {image} 在沙箱守护进程与宿主上都不存在，"
+                        f"沙箱内经镜像代理拉取失败：{detail}"
+                    )
+                raise LifecycleError(current_step, f"启动沙箱容器失败：{detail}")
             container_id = daemon.container_id(container_name) or ""
 
             # ⑥ 写入沙箱元数据
@@ -458,6 +469,95 @@ class SandboxService:
         except Exception as exc:  # pragma: no cover - 兜底：非预期异常也要回滚
             self._rollback(completed)
             raise LifecycleError(current_step, str(exc), cause=exc) from exc
+
+    def _run_sandbox_container(
+        self,
+        daemon: UserDaemon,
+        *,
+        container_name: str,
+        image: str,
+        mounts: list[MountSpec],
+        network: str,
+        command: tuple[str, ...] | None,
+        env: dict[str, str],
+        workdir: str | None,
+        name: str,
+    ) -> CommandResult:
+        """启动沙箱容器；镜像拉取失败且宿主有本地副本时，注入后重试一次。
+
+        常规路径：镜像不在沙箱守护进程里时，守护进程自己经统一镜像代理拉取。
+        例外：镜像只存在于宿主（用户自建镜像、不在任何仓库），代理拉不到，
+        这时把宿主副本导出注入沙箱守护进程再重试一次。
+        """
+        labels = {
+            LABEL_NAME: name,
+            LABEL_ROLE: ROLE_SANDBOX,
+            LABEL_MANAGED: "true",
+        }
+        result = daemon.run_container(
+            name=container_name,
+            image=image,
+            mounts=mounts,
+            network=network,
+            command=command,
+            env=env,
+            labels=labels,
+            workdir=workdir,
+        )
+        if result.ok or daemon.image_exists(image):
+            return result
+        if not self.images.host_image_exists(image):
+            return result
+        logger.info("镜像 %s 经代理拉取失败，改为从宿主本地副本注入后重试", image)
+        try:
+            self.images.inject_from_host(image, daemon)
+        except ImageError as exc:
+            logger.warning("宿主镜像注入失败：%s", exc)
+            return result
+        if daemon.container_exists(container_name):
+            daemon.remove_container(container_name)
+        return daemon.run_container(
+            name=container_name,
+            image=image,
+            mounts=mounts,
+            network=network,
+            command=command,
+            env=env,
+            labels=labels,
+            workdir=workdir,
+        )
+
+    def _ensure_proxy_ready(self, step: str, user: SystemUser) -> None:
+        """确保统一镜像代理就绪，并把合并 CA 束装到沙箱用户家目录。
+
+        代理不可达时直接失败：**不降级直连**（用户已拍板）。合并 CA 束必须在守护进程
+        启动前就位——单元里的 ``SSL_CERT_FILE`` 指向它。
+        """
+        self._ensure_proxy_running(step)
+        try:
+            self.proxy.install_ca_bundle(user)
+        except ProxyError as exc:
+            raise LifecycleError(step, f"安装合并 CA 束失败：{exc}") from exc
+
+    def _install_ca_bundle(self, step: str, user: SystemUser) -> None:
+        """把「系统 CA 束 + 代理 CA」合并文件装到沙箱用户家目录。"""
+        try:
+            self.proxy.install_ca_bundle(user)
+        except ProxyError as exc:
+            raise LifecycleError(step, f"安装合并 CA 束失败：{exc}") from exc
+
+    def _ensure_proxy_running(self, step: str) -> None:
+        """拉起代理并做健康检查；不通过则直接失败（不降级直连）。"""
+        if not self.proxy.ensure_running():
+            probe = self.proxy.probe()
+            detail = probe.detail
+            if self.proxy.last_error:
+                detail = f"{detail}；{self.proxy.last_error}"
+            raise LifecycleError(
+                step,
+                f"镜像代理未就绪（{self.proxy.proxy_url}）：{detail}；"
+                "平台不做降级直连，请先修复代理后重试",
+            )
 
     def _ensure_data_directories(self) -> None:
         """准备平台数据目录（特权创建，属主为当前调用者）。"""
@@ -534,6 +634,9 @@ class SandboxService:
             raise LifecycleError("启动沙箱", f"沙箱系统用户在宿主上不存在：{metadata.system_user}")
         daemon = self._daemon_for_user(user)
 
+        # 代理不可达时不做降级直连（与创建路径一致）
+        self._ensure_proxy_ready("启动沙箱", user)
+
         if not daemon.is_active():
             if not daemon.wait_for_runtime_dir(timeout=60):
                 daemon.ensure_user_manager()
@@ -564,19 +667,16 @@ class SandboxService:
 
         socket = socket_mount(metadata.socket_path, metadata.socket_mount_path)
         all_mounts = [socket, *metadata.mounts]
-        run_result = daemon.run_container(
-            name=metadata.container_name,
+        run_result = self._run_sandbox_container(
+            daemon,
+            container_name=metadata.container_name,
             image=metadata.image,
             mounts=all_mounts,
             network=metadata.network_name,
             command=tuple(metadata.command) if metadata.command else None,
             env=dict(metadata.env),
-            labels={
-                LABEL_NAME: metadata.name,
-                LABEL_ROLE: ROLE_SANDBOX,
-                LABEL_MANAGED: "true",
-            },
             workdir=metadata.workdir or None,
+            name=metadata.name,
         )
         if not run_result.ok:
             raise LifecycleError("启动沙箱", f"启动沙箱容器失败：{run_result.output.strip()}")
