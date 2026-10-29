@@ -97,7 +97,7 @@ print('yes' if any(i['name'] == '$SANDBOX_NAME' for i in data) else '')
 fi
 
 MOUNT_DIR="$(mktemp -d /tmp/sandbox-platform-smoke-XXXXXX)"
-chmod 0777 "$MOUNT_DIR"
+chmod 0755 "$MOUNT_DIR"
 MARKER_FILE="$MOUNT_DIR/marker.txt"
 echo "冒烟数据-请勿修改" > "$MARKER_FILE"
 chmod 0666 "$MARKER_FILE"
@@ -146,6 +146,13 @@ fi
 # ④ 外部挂载目录内容可读
 if [ "$(cat "$MARKER_FILE")" = "冒烟数据-请勿修改" ]; then check "外部挂载目录内容未变" 0 ""; else check "外部挂载目录内容未变" 1 "内容异常"; fi
 
+# ⑤ 依赖容器：模拟 agent 事后自己起的依赖容器
+#    删除前的回收清单必须把它列进去（删除前实时扫描守护进程网络上的容器）
+DEP_CONTAINER="${SANDBOX_NAME}-dep"
+sandbox_exec "$SYSTEM_USER" docker run -d --name "$DEP_CONTAINER" \
+  --network "${SANDBOX_NAME}-net" --entrypoint sleep "$IMAGE" infinity >/dev/null 2>&1 \
+  || echo "[smoke] 依赖容器启动失败（后续清单断言会不通过）"
+
 # ---------------------------------------------------------------- 关闭
 log "关闭沙箱"
 "${CLI[@]}" stop "$SANDBOX_NAME"
@@ -172,6 +179,16 @@ if [ "$(cat "$MARKER_FILE")" = "冒烟数据-请勿修改" ]; then check "重启
 
 # ---------------------------------------------------------------- 删除
 log "删除沙箱"
+
+# 删除前先看提示清单：依赖容器必须在清单里（实时扫描 + 元数据旧列表取并集）
+# 标准输入接 /dev/null：非交互环境直接打印清单后退出，不会卡在确认提示上
+PLAN_OUTPUT="$("${CLI[@]}" delete "$SANDBOX_NAME" </dev/null 2>&1 || true)"
+if echo "$PLAN_OUTPUT" | grep -q "$DEP_CONTAINER"; then
+  check "删除提示清单含依赖容器" 0 "$DEP_CONTAINER"
+else
+  check "删除提示清单含依赖容器" 1 "清单里没有 $DEP_CONTAINER"
+fi
+
 "${CLI[@]}" delete "$SANDBOX_NAME" --yes
 
 if ! id -u "$SYSTEM_USER" >/dev/null 2>&1; then check "系统用户已回收" 0 ""; else check "系统用户已回收" 1 "用户仍在"; fi
@@ -192,8 +209,11 @@ fi
 
 # ---------------------------------------------------------------- 幂等
 log "重复删除同一沙箱（应返回不存在且不报错）"
-"${CLI[@]}" delete "$SANDBOX_NAME" --yes
-if [ $? -eq 0 ]; then check "重复删除幂等" 0 ""; else check "重复删除幂等" 1 "重复删除报错"; fi
+if "${CLI[@]}" delete "$SANDBOX_NAME" --yes; then
+  check "重复删除幂等" 0 ""
+else
+  check "重复删除幂等" 1 "重复删除报错"
+fi
 
 # ---------------------------------------------------------------- 汇总
 echo

@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import shlex
+
 
 class SandboxError(Exception):
     """沙箱平台所有业务异常的基类。"""
@@ -49,7 +51,7 @@ class CommandError(SandboxError):
         self.stdout = stdout
         self.stderr = stderr
         detail = message or stderr.strip() or stdout.strip() or f"退出码 {returncode}"
-        super().__init__(f"命令执行失败（{returncode}）：{' '.join(self.argv)} — {detail}")
+        super().__init__(f"命令执行失败（{returncode}）：{shlex.join(self.argv)} — {detail}")
 
 
 class ImageError(SandboxError):

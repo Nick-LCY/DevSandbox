@@ -41,8 +41,9 @@
 
 | 函数 | 签名 | 说明 |
 |---|---|---|
-| 解析单条 | `parse_mount_declaration(declaration: str) -> MountSpec` | 解析 `宿主路径:容器路径[:ro]`；宿主路径必须已存在且是绝对路径，平台不代为创建 |
-| 解析多条 | `parse_mounts(declarations: list[str] \| tuple[str, ...] \| None) -> list[MountSpec]` | 逐条解析并校验容器内路径不重复 |
+| 解析单条 | `parse_mount_declaration(declaration: str, *, extra_forbidden: Iterable[str \| Path] = ()) -> MountSpec` | 解析 `宿主路径:容器路径[:ro]`；宿主路径必须已存在且是绝对路径，平台不代为创建；路径含逗号一律拒绝；命中敏感清单（`/etc` `/proc` `/sys` `/dev` `/boot` `/root`、宿主 Docker 套接字、追加项如平台数据根）一律拒绝 |
+| 解析多条 | `parse_mounts(declarations: list[str] \| tuple[str, ...] \| None, *, extra_forbidden: Iterable[str \| Path] = ()) -> list[MountSpec]` | 逐条解析并校验容器内路径不重复 |
+| 敏感清单 | `sensitive_host_paths(extra: Iterable[str \| Path] = ()) -> tuple[str, ...]` | 固定敏感清单 + 调用方追加项（平台数据根由调用方追加） |
 | 固定挂载 | `socket_mount(socket_path: str, container_path: str) -> MountSpec` | 平台唯一固定挂载（角色 `socket`） |
 | 转参数 | `MountSpec.to_docker_args() -> list[str]` | 生成 `--mount type=bind,src=…,dst=…[,readonly]` |
 | 拼参数 | `mounts_to_docker_args(mounts: list[MountSpec]) -> list[str]` | 多条挂载拼成一段参数 |
@@ -66,6 +67,7 @@
 | `container_name` / `container_id` / `network_name` | `str` | 沙箱容器与网桥网络 |
 | `unit_path` | `str` | systemd 用户单元路径 |
 | `state` | `str` | `running` / `stopped` / `deleted` |
+| `network_owned` | `bool` | 网络是否平台自建：`False` 表示用户指定，只接入不回收 |
 | `mounts` | `list[MountSpec]` | 用户声明挂载 |
 | `dependency_containers` | `list[str]` | 已知依赖容器名 |
 | `command` / `env` / `workdir` | `list[str]` / `dict[str, str]` / `str` | 容器启动参数（重启时复用） |
@@ -76,8 +78,8 @@
 | 函数 | 签名 | 说明 |
 |---|---|---|
 | 构造 | `MetadataStore(config: PlatformConfig)` | 仓库入口 |
-| 路径 | `root` / `sandbox_dir(name)` / `path_for(name)` | 元数据目录布局 |
-| 写入 | `save(metadata: SandboxMetadata) -> Path` | 原子写入 `<home>/sandboxes/<name>/metadata.json` |
+| 路径 | `root` / `sandbox_dir(name)` / `path_for(name)` | 元数据目录布局；`sandbox_dir` 带兜底断言：沙箱名不得含路径分隔符 |
+| 写入 | `save(metadata: SandboxMetadata) -> Path` | 原子写入 `<home>/sandboxes/<name>/metadata.json`，文件权限 `0600` |
 | 读取 | `load(name: str) -> SandboxMetadata \| None` | 不存在返回 `None` |
 | 列表 | `list_all() -> list[SandboxMetadata]` | 按名称排序，损坏文件跳过 |
 | 删除 | `delete(name: str) -> bool` | 删除整个沙箱元数据目录 |
@@ -91,18 +93,19 @@
 | 分配空闲段 | `pick_free_range(ranges: list[tuple[int, int]], base: int, length: int) -> int` | 纯函数：挑一段不重叠的区间起点 |
 | 用户查询 | `UserSpaceManager.lookup_user(name: str) -> SystemUser \| None` | 读 uid/gid/家目录 |
 | 用户存在 | `UserSpaceManager.user_exists(name: str) -> bool` | — |
-| 建用户 | `UserSpaceManager.ensure_user(name: str) -> SystemUser` | 已存在则沿用；新建带家目录 |
+| 建用户 | `UserSpaceManager.ensure_user(name: str) -> SystemUser` | 已存在则沿用（返回值的 `created=False`）；新建带家目录（`created=True`）。**只有 `created=True` 的用户允许进回滚清单** |
 | 登记段 | `UserSpaceManager.allocate_subid_range(user_name: str) -> SubIdRange` | 动态分配不重叠段，写入 `/etc/subuid` 与 `/etc/subgid`；已有合规段则沿用（文件锁保护并发） |
-| 回收段 | `UserSpaceManager.remove_subid_range(user_name: str) -> bool` | 清除两个文件里的条目 |
+| 回收段 | `UserSpaceManager.remove_subid_range(user_name: str) -> bool` | 清除两个文件里的条目；与分配路径共用 `subid.lock`，读—改—写整段在临界区内 |
 | 读条目 | `UserSpaceManager.read_subid_entries(user_name: str) -> dict[str, tuple[int, int]]` | 只读查询 |
 | 写单元 | `UserSpaceManager.write_docker_unit(user: SystemUser) -> Path` | 写 `~/.config/systemd/user/docker.service`（含 `Delegate=yes` 与 `--rootless`），目录与文件属主必须是沙箱用户 |
 | 单元内容 | `UserSpaceManager.render_unit(user: SystemUser) -> str` | 纯函数：渲染单元文本 |
 | 保活 | `enable_linger(user_name) -> bool` / `disable_linger(user_name) -> bool` | `loginctl enable-linger` |
-| 终止会话 | `UserSpaceManager.terminate_user(user_name: str) -> bool` | 删用户前必须先做 |
+| 保活状态 | `UserSpaceManager.linger_state(user_name: str) -> bool \| None` | 查 linger 是否开启；查不到返回 `None` |
+| 终止会话 | `UserSpaceManager.terminate_user(user_name: str, uid: int \| None = None) -> bool` | 删用户前必须先做；返回**真实结果**：进程全部退出才为 `True`。常规终止超时后升级处置（停 `user@<uid>.service` → `kill -9` 残留进程） |
 | 等待回收 | `UserSpaceManager.wait_for_runtime_gone(uid: int, timeout: int = 30) -> bool` | 等 `/run/user/<uid>` 消失，避免 uid 复用竞态 |
-| 删用户 | `UserSpaceManager.remove_user(user: SystemUser, remove_home: bool = True) -> bool` | 终止会话 → `userdel -r` → 兜底清家目录 |
+| 删用户 | `UserSpaceManager.remove_user(user: SystemUser, remove_home: bool = True) -> bool` | 终止会话 → `userdel -r` → 兜底清家目录；返回 `True` 表示用户与家目录都已回收，进程未清空时保留家目录并返回 `False` |
 
-`SystemUser` 字段：`name`、`uid`、`gid`、`home`；派生属性 `runtime_dir`（`/run/user/<uid>`）、`socket_path`。
+`SystemUser` 字段：`name`、`uid`、`gid`、`home`、`created`（本次是否新建）；派生属性 `runtime_dir`（`/run/user/<uid>`）、`socket_path`。
 `SubIdRange` 字段：`start`、`length`；派生属性 `end`、`spec`。
 
 ---
@@ -117,13 +120,14 @@
 |---|---|---|
 | 执行 | `run_as_user(argv, *, check=False, timeout=300) -> CommandResult` | 以沙箱用户身份执行任意命令 |
 | 用户级 systemd | `systemctl(args, *, check=False, timeout=120) -> CommandResult` | `systemctl --user …` |
-| 重试 | `systemctl_retry(args, *, attempts=30, delay=1.0) -> CommandResult` | 用户级管理器未就绪时重试 |
+| 重试 | `systemctl_retry(args, *, attempts=5, delay=1.0) -> CommandResult` | 用户级管理器未就绪时重试（默认最多 5 次） |
 | 守护进程状态 | `is_active() -> bool` / `is_enabled() -> bool` / `socket_ready() -> bool` | — |
 | 等待 | `wait_for_runtime_dir(timeout=60) -> bool` / `wait_for_socket(timeout=90) -> bool` | — |
-| 用户管理器 | `ensure_user_manager(timeout=120) -> CommandResult` | 从系统级显式启动 `user@<uid>.service`，规避 uid 复用时的启动竞态 |
-| 单元动作 | `daemon_reload()` / `enable_daemon()` / `disable_daemon()` / `start_daemon()` / `stop_daemon()` / `restart_daemon()` | 返回 `CommandResult` |
+| 用户管理器 | `ensure_user_manager(timeout=120) -> CommandResult` | 从系统级显式启动 `user@<uid>.service`（带 `--no-block`，不阻塞等待就绪），规避 uid 复用时的启动竞态 |
+| 单元动作 | `daemon_reload()` / `enable_daemon()` / `disable_daemon()` / `start_daemon()` / `stop_daemon()` / `restart_daemon()` | 返回 `CommandResult`；`start_daemon` 带 `--no-block`，就绪判定统一交给 `wait_for_socket` |
 | 镜像 | `image_exists(image) -> bool` / `pull_image(image) -> CommandResult` / `load_image(tar_path) -> CommandResult` / `image_id(image) -> str \| None` | — |
 | 容器 | `container_exists(name) -> bool` / `container_id(name) -> str \| None` / `container_running(name) -> bool` / `list_containers(all_containers=True) -> list[dict]` | — |
+| 网络容器 | `containers_on_network(network) -> list[str] \| None` | 探测失败返回 `None`（与「确实没有容器」区分开），调用方据此判断清单是否完整 |
 | 起容器 | `run_container(*, name, image, mounts, network=None, command=None, env=None, labels=None, workdir=None) -> CommandResult` | `docker run -d -i`；给了 `command` 时用 `--entrypoint ""` 覆盖镜像入口；`-i` 保持标准输入打开，镜像入口里的交互式 shell 才不会立即退出 |
 | 停删容器 | `stop_container(name)` / `start_container(name)` / `remove_container(name, force=True)` | — |
 | 容器内执行 | `exec_in_container(name, argv, *, check=False, timeout=120) -> CommandResult` | — |
@@ -155,16 +159,16 @@
 | `CreateRequest` | `name`、`image=None`、`mount_declarations=()`、`command=None`、`env={}`、`workdir=None`、`network_name=None` | 创建入参 |
 | `CreateResult` | `metadata`、`connection`、`steps` | 创建结果；`steps` 是固定 7 步名称 |
 | `ConnectionInfo` | `socket_path`、`container_name`、`exec_command`、`docker_command`、`notes` | 连接方式与命令提示 |
-| `ReclaimPlan` | `sandbox_name`、`items`、`untouched_note`、`user_mounts` | 删除前的回收清单；`untouched_note` 固定为「用户挂载的宿主机目录不受影响」 |
-| `DeleteResult` | `name`、`existed`、`removed`、`plan` | 删除结果；沙箱不存在时 `existed=False` 且不抛异常 |
+| `ReclaimPlan` | `sandbox_name`、`items`、`untouched_note`、`user_mounts`、`incomplete` | 删除前的回收清单；`untouched_note` 固定为「用户挂载的宿主机目录不受影响」；依赖容器清单 = 元数据已知列表 ∪ 删除前实时扫描，探测失败时保留旧列表并置 `incomplete=True` |
+| `DeleteResult` | `name`、`existed`、`removed`、`failed`、`plan` | 删除结果；沙箱不存在时 `existed=False` 且不抛异常；`removed` 是确实回收掉的资源，`failed` 是尝试过但没成功的条目（带原因） |
 
 ### `SandboxService`
 
 | 方法 | 签名 | 说明 |
 |---|---|---|
 | 构造 | `SandboxService(config: PlatformConfig \| None = None, privilege: Privilege \| None = None)` | 控制面服务入口 |
-| 查询 | `find(name) -> SandboxMetadata \| None` | 不存在返回 `None` |
-| 查询 | `get(name) -> SandboxMetadata` | 不存在抛 `NotFoundError` |
+| 查询 | `find(name) -> SandboxMetadata \| None` | 不存在返回 `None`；先过沙箱名校验 |
+| 查询 | `get(name) -> SandboxMetadata` | 不存在抛 `NotFoundError`；先过沙箱名校验 |
 | 列表 | `list() -> list[SandboxMetadata]` | 尽力刷新运行状态（用户已删 → `deleted`） |
 | 创建 | `create(request: CreateRequest) -> CreateResult` | 固定 7 步，任一步失败回滚已完成步骤 |
 | 启动 | `start(name: str) -> SandboxMetadata` | 复用同一用户、同一子 ID 段、同一守护进程单元；只恢复沙箱容器，依赖容器由使用方自行拉起 |
@@ -176,16 +180,26 @@
 
 | 步 | 动作 | 失败回滚 |
 |---|---|---|
-| ① | 创建专属系统用户 | 删除用户与家目录 |
+| ① | 创建专属系统用户 | 删除用户与家目录（**仅本次新建的用户**进回滚清单） |
 | ② | 登记子 UID/GID 段 | 清除 `/etc/subuid`、`/etc/subgid` 条目 |
-| ③ | 写 systemd 用户单元、开启 linger、启动守护进程 | 停用并删除单元、关闭 linger |
+| ③ | 写 systemd 用户单元、开启 linger、启动守护进程 | 停用并删除单元、关闭 linger（回滚动作在写单元后立刻登记，启动失败也会回滚） |
 | ④ | 解析用户声明挂载（校验宿主路径存在、容器路径绝对、套接字路径不被占用、宿主路径对沙箱用户可见） | 无宿主副作用，无需回滚 |
 | ⑤ | 准备镜像与网络，启动沙箱容器（挂载套接字与用户声明挂载） | 删除容器与网络 |
 | ⑥ | 写入沙箱元数据 | 删除元数据 |
 | ⑦ | 组装连接方式与命令提示 | 无 |
 
-删除的固定回收清单：沙箱容器与依赖容器 → 网桥网络 → 停止并禁用 systemd 用户单元 → 删除用户与家目录 → 回收子 UID/GID 段 → 删除平台元数据。
+删除的固定回收清单：沙箱容器与依赖容器 → 网桥网络（仅平台自建）→ 停止并禁用 systemd 用户单元 → 删除用户与家目录 → 回收子 UID/GID 段 → 删除平台元数据。
 **用户声明挂载的宿主机目录一律不触碰**（平台不创建、不删除、不修改）。
+
+### 入参校验
+
+| 函数 | 说明 |
+|---|---|
+| `validate_sandbox_name(name)` | 沙箱名整串匹配（`[a-z0-9][a-z0-9_-]{0,23}`），`find` / `get` / `reclaim_plan` / `create` / `start` / `stop` / `delete` 七个入口统一先校验 |
+| `validate_image_name(image)` | 镜像名字符集限制（字母数字与 `. _ - / : @`） |
+| `validate_network_name(name)` | 网络名字符集限制（字母数字与 `. _ -`） |
+| `validate_env_pairs(env)` | 环境变量键白名单 `^[A-Za-z_][A-Za-z0-9_]*$` |
+| `validate_system_user_name(name)` | 系统用户名白名单（会进 `sudo -u` 等特权命令） |
 
 ---
 
@@ -193,7 +207,7 @@
 
 | 函数 | 签名 | 说明 |
 |---|---|---|
-| 执行 | `run(argv, *, env=None, check=False, timeout=300, cwd=None, stdin_text=None) -> CommandResult` | 超时或命令不存在抛 `CommandError` |
+| 执行 | `run(argv, *, env=None, check=False, timeout=300, cwd=None, stdin_text=None) -> CommandResult` | 超时或命令不存在抛 `CommandError`；日志与异常消息里的命令行用 `shlex.join` 的 shell 引号形式 |
 
 `CommandResult` 字段：`argv`、`returncode`、`stdout`、`stderr`；属性 `ok`、`output`；方法 `raise_for_status()`。
 

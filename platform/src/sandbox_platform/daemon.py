@@ -145,15 +145,23 @@ class UserDaemon:
 
         沙箱用户刚创建时，用户级管理器可能还没被拉起；直接从系统级显式启动，
         可规避 uid 复用（刚删掉同 uid 用户就重建）时的启动竞态。
+
+        启动一律加 ``--no-block``：systemd 的 ``start`` 默认会阻塞到单元
+        进入 active，用户级管理器启动慢时会把调用方挂住；真正的就绪判定
+        交给 :meth:`wait_for_runtime_dir` 与 :meth:`wait_for_socket`。
         """
         unit = f"user@{self.context.uid}.service"
-        return run(self.privilege.wrap(["systemctl", "start", unit]), check=False, timeout=timeout)
+        return run(
+            self.privilege.wrap(["systemctl", "start", "--no-block", unit]),
+            check=False,
+            timeout=timeout,
+        )
 
     def systemctl_retry(
         self,
         args: list[str] | tuple[str, ...],
         *,
-        attempts: int = 30,
+        attempts: int = 5,
         delay: float = 1.0,
         timeout: int | None = 120,
     ) -> CommandResult:
@@ -188,8 +196,8 @@ class UserDaemon:
         return self.systemctl(["disable", "docker.service"], check=False)
 
     def start_daemon(self) -> CommandResult:
-        """启动守护进程。"""
-        return self.systemctl(["start", "docker.service"], check=False)
+        """启动守护进程（不阻塞等待就绪）。"""
+        return self.systemctl(["start", "--no-block", "docker.service"], check=False)
 
     def stop_daemon(self) -> CommandResult:
         """停止守护进程。"""
@@ -256,14 +264,18 @@ class UserDaemon:
                 continue
         return containers
 
-    def containers_on_network(self, network: str) -> list[str]:
-        """列出挂在指定网络上的容器名。"""
+    def containers_on_network(self, network: str) -> list[str] | None:
+        """列出挂在指定网络上的容器名。
+
+        探测失败（网络不存在、守护进程不可达等）返回 ``None``，与「确实没有容器」
+        区分开：调用方据此判断清单是否完整。
+        """
         result = self.docker(
             ["network", "inspect", "--format", "{{range .Containers}}{{.Name}} {{end}}", network],
             check=False,
         )
         if not result.ok:
-            return []
+            return None
         return [item for item in result.stdout.split() if item]
 
     def run_container(

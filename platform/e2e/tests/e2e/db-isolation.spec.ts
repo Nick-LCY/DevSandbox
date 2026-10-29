@@ -12,8 +12,9 @@ test.describe('用例隔离与种子一致性', () => {
     const dependencies = loadDependencies();
     console.log(`[用例] 用例库=${testDb.name} worker=${testInfo.workerIndex}`);
 
-    // ① 库名带 worker 序号：并行 worker 之间库名必然不同
-    expect(testDb.name).toMatch(new RegExp(`^${testDatabasePrefix()}w\\d+_`));
+    // ① 库名带用例标识：每用例一库，并行 worker 之间库名必然不同
+    expect(testDb.name).toMatch(new RegExp(`^${testDatabasePrefix()}t[0-9a-f-]+_`));
+    expect(testDb.name).toContain(testInfo.testId);
 
     // ② 种子行数与版本（行数校验佐证）
     const fingerprintA = await seedFingerprint(testDb.url);
@@ -23,7 +24,7 @@ test.describe('用例隔离与种子一致性', () => {
     expect(fingerprintA.recordCount).toBe(EXPECTED_RECORD_COUNT);
 
     // ③ 再克隆一个库，比对「同一版本在任何用例库载入结果一致」
-    const peer = `${testDatabasePrefix()}peer_${testInfo.workerIndex}_${Date.now().toString(36)}`;
+    const peer = `${testDatabasePrefix()}peer_${testInfo.testId}_${Date.now().toString(36)}`;
     runDbTool('create', peer);
     try {
       const peerUrl = databaseUrl(dependencies, peer);

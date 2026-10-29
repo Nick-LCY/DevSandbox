@@ -336,3 +336,66 @@ def test_stop_keeps_dependencies_by_default(
         assert daemon.container_running(f"{name}-dep")
     finally:
         _cleanup(service, name)
+
+
+def test_reclaim_plan_lists_live_dependency_container(
+    service: SandboxService, tmp_path: Path, require_root: None
+) -> None:
+    """删除前的回收清单并入实时扫描到的依赖容器，删除后依赖容器被回收。"""
+    name = "sboxplan"
+    service.create(
+        CreateRequest(
+            name=name,
+            image=_docker_cli_image(),
+            command=("sleep", "infinity"),
+        )
+    )
+    try:
+        metadata = service.get(name)
+        daemon = _daemon_for(service, metadata)
+        dependency = daemon.run_container(
+            name=f"{name}-dep",
+            image=_docker_cli_image(),
+            mounts=[],
+            network=metadata.network_name,
+            command=("sleep", "infinity"),
+        )
+        assert dependency.ok, dependency.output
+
+        plan = service.reclaim_plan(name)
+        joined = " ".join(plan.items)
+        assert f"{name}-dep" in joined, "回收清单里没有实时扫描到的依赖容器"
+
+        deleted = service.delete(name)
+        assert deleted.existed is True
+        assert not daemon.container_exists(f"{name}-dep")
+    finally:
+        _cleanup(service, name)
+
+
+def test_user_specified_network_is_not_reclaimed_by_platform(
+    service: SandboxService, tmp_path: Path, require_root: None
+) -> None:
+    """用户指定的网络只接入不回收：平台不把它列入回收结果。"""
+    name = "sboxnet"
+    service.create(
+        CreateRequest(
+            name=name,
+            image=_docker_cli_image(),
+            command=("sleep", "infinity"),
+            network_name="custom-net",
+        )
+    )
+    try:
+        metadata = service.get(name)
+        assert metadata.network_owned is False
+        assert metadata.network_name == "custom-net"
+
+        plan = service.reclaim_plan(name)
+        assert "平台不回收" in " ".join(plan.items)
+
+        deleted = service.delete(name)
+        assert not any(item.startswith("网络 ") for item in deleted.removed)
+        assert not any("网络" in item for item in deleted.failed)
+    finally:
+        _cleanup(service, name)

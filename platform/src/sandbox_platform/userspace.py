@@ -41,6 +41,7 @@ class SystemUser:
     uid: int
     gid: int
     home: Path
+    created: bool = False
 
     @property
     def runtime_dir(self) -> Path:
@@ -153,26 +154,34 @@ class UserSpaceManager:
         return result.ok
 
     def lookup_user(self, name: str) -> SystemUser | None:
-        """查询用户信息；不存在返回 ``None``。"""
-        result = run(["id", "-u", name], check=False)
+        """查询用户信息；不存在返回 ``None``。
+
+        信息一律现查 ``getent passwd``：uid / gid / 家目录都取自当前系统，
+        不接受调用方传进来的旧值（删除路径上的元数据不可信）。
+        """
+        result = run(["getent", "passwd", name], check=False)
         if not result.ok:
             return None
+        first_line = result.stdout.strip().splitlines()
+        if not first_line:
+            return None
+        fields = first_line[0].split(":")
+        if len(fields) < 6:
+            return None
         try:
-            uid = int(result.stdout.strip())
+            uid = int(fields[2])
+            gid = int(fields[3])
         except ValueError:
             return None
-        gid_result = run(["id", "-g", name], check=False)
-        gid = int(gid_result.stdout.strip()) if gid_result.ok else uid
-        home_result = run(["getent", "passwd", name], check=False)
-        home = Path(f"/home/{name}")
-        if home_result.ok:
-            fields = home_result.stdout.strip().split(":")
-            if len(fields) >= 6 and fields[5]:
-                home = Path(fields[5])
+        home = Path(fields[5]) if fields[5] else Path(f"/home/{name}")
         return SystemUser(name=name, uid=uid, gid=gid, home=home)
 
     def ensure_user(self, name: str) -> SystemUser:
-        """确保用户存在（不存在则创建），返回用户信息。"""
+        """确保用户存在（不存在则创建），返回用户信息。
+
+        返回值里的 ``created`` 标记本次调用是否新建了用户：只有本次新建的用户
+        才允许进回滚清单，否则回滚会误删用户本来就在用的账号。
+        """
         existing = self.lookup_user(name)
         if existing is not None:
             logger.info("系统用户已存在：%s（uid=%s）", name, existing.uid)
@@ -187,7 +196,13 @@ class UserSpaceManager:
         created = self.lookup_user(name)
         if created is None:  # pragma: no cover - useradd 成功但查不到属于异常宿主状态
             raise SandboxError(f"系统用户创建后仍查不到：{name}")
-        return created
+        return SystemUser(
+            name=created.name,
+            uid=created.uid,
+            gid=created.gid,
+            home=created.home,
+            created=True,
+        )
 
     # ---------------------------------------------------------------- 子 ID 段
     def read_subid_entries(self, user_name: str) -> dict[str, tuple[int, int]]:
@@ -270,7 +285,22 @@ class UserSpaceManager:
         run(self.privilege.wrap(["tee", str(path)]), stdin_text=content, check=True)
 
     def remove_subid_range(self, user_name: str) -> bool:
-        """回收某用户在子 UID/GID 文件中的登记段。"""
+        """回收某用户在子 UID/GID 文件中的登记段。
+
+        与分配路径共用 ``subid.lock``：读—改—写整段都在临界区内，
+        避免与并发分配交叉导致刚分配的段被覆盖丢失。
+        """
+        self.config.lock_root.mkdir(parents=True, exist_ok=True)
+        lock_path = self.config.lock_root / "subid.lock"
+        with open(lock_path, "a+") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                return self._remove_subid_range_locked(user_name)
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    def _remove_subid_range_locked(self, user_name: str) -> bool:
+        """临界区内的回收实现（调用方必须已持有子 ID 段锁）。"""
         removed = False
         for path in (SUBUID_FILE, SUBGID_FILE):
             content = self._read_text(path)
@@ -390,18 +420,68 @@ class UserSpaceManager:
         result = run(self.privilege.wrap(["loginctl", "disable-linger", user_name]), check=False)
         return result.ok
 
-    def terminate_user(self, user_name: str) -> bool:
-        """终止用户会话与用户级 systemd 管理器（删用户前必须做）。"""
+    def linger_state(self, user_name: str) -> bool | None:
+        """查 linger 是否开启；查不到（无 logind 等）返回 ``None``。"""
+        result = run(
+            self.privilege.wrap(
+                ["loginctl", "show-user", user_name, "--property=Linger"]
+            ),
+            check=False,
+        )
+        if not result.ok:
+            return None
+        value = result.stdout.strip().split("=", 1)[-1].strip().lower()
+        if value == "yes":
+            return True
+        if value == "no":
+            return False
+        return None
+
+    def terminate_user(self, user_name: str, uid: int | None = None) -> bool:
+        """终止用户会话与用户级 systemd 管理器（删用户前必须做）。
+
+        返回 ``True`` 表示该用户的进程已全部退出；``False`` 表示仍有残留进程。
+        常规终止超时后升级处置：先停用户级 systemd 管理器，再对残留进程强杀。
+        """
         result = run(self.privilege.wrap(["loginctl", "terminate-user", user_name]), check=False)
         if not result.ok:
             logger.warning("终止用户 %s 的会话失败：%s", user_name, result.output)
-            return False
-        for _ in range(15):
-            probe = run(["pgrep", "-u", user_name], check=False)
-            if not probe.ok:
+        if self._wait_user_processes_gone(user_name, attempts=5):
+            return True
+
+        logger.warning("用户 %s 的进程未在 5 秒内退出，升级处置", user_name)
+        if uid is None:
+            uid = self.system_uid_of(user_name)
+        if uid is not None:
+            run(
+                self.privilege.wrap(["systemctl", "stop", f"user@{uid}.service"]),
+                check=False,
+                timeout=60,
+            )
+        for pid in self._user_pids(user_name):
+            run(self.privilege.wrap(["kill", "-9", str(pid)]), check=False)
+        return self._wait_user_processes_gone(user_name, attempts=5)
+
+    def _user_pids(self, user_name: str) -> list[int]:
+        """取该用户名下正在运行的进程 PID。"""
+        probe = run(["pgrep", "-u", user_name], check=False)
+        if not probe.ok:
+            return []
+        pids: list[int] = []
+        for item in probe.stdout.split():
+            try:
+                pids.append(int(item))
+            except ValueError:
+                continue
+        return pids
+
+    def _wait_user_processes_gone(self, user_name: str, attempts: int) -> bool:
+        """等待该用户名的进程全部退出。"""
+        for _ in range(attempts):
+            if not self._user_pids(user_name):
                 return True
             time.sleep(1)
-        return True
+        return not self._user_pids(user_name)
 
     def wait_for_runtime_gone(self, uid: int, timeout: int = 30) -> bool:
         """等待用户运行时目录被回收。
@@ -419,8 +499,12 @@ class UserSpaceManager:
         return False
 
     def remove_user(self, user: SystemUser, remove_home: bool = True) -> bool:
-        """删除用户（先终止会话），并回收家目录。"""
-        self.terminate_user(user.name)
+        """删除用户（先终止会话），并回收家目录。
+
+        返回 ``True`` 表示用户与家目录都已回收；``False`` 表示用户已删但家目录保留
+        （该用户仍有残留进程，删家目录会毁掉正在运行进程的工作目录）。
+        """
+        processes_cleared = self.terminate_user(user.name, uid=user.uid)
         result = run(self.privilege.wrap(["userdel", "-r", user.name]), check=False)
         if not result.ok:
             fallback = run(self.privilege.wrap(["userdel", user.name]), check=False)
@@ -433,13 +517,24 @@ class UserSpaceManager:
                     message="删除系统用户失败",
                 )
         self.wait_for_runtime_gone(user.uid)
-        if remove_home:
-            try:
-                home_exists = user.home.exists()
-            except OSError:
-                home_exists = True
-            if home_exists:
-                shutil.rmtree(user.home, ignore_errors=True)
+        if not remove_home:
+            return True
+        try:
+            home_exists = user.home.exists()
+        except OSError:
+            home_exists = True
+        if not home_exists:
+            return True
+        if not processes_cleared:
+            logger.error(
+                "用户 %s 仍有残留进程，家目录保留未删：%s", user.name, user.home
+            )
+            return False
+        try:
+            shutil.rmtree(user.home)
+        except OSError as exc:
+            logger.error("删除家目录失败：%s（%s）", user.home, exc)
+            return False
         return True
 
     # ---------------------------------------------------------------- 查询辅助

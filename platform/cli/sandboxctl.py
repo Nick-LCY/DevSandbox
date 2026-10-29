@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import shlex
 import sys
@@ -74,9 +75,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="用户声明挂载，可重复；平台不创建也不清理宿主目录",
     )
     create.add_argument("--command", help="容器启动命令（覆盖镜像默认入口，如 \"sleep infinity\"）")
-    create.add_argument("--env", action="append", default=[], metavar="键=值", help="容器环境变量，可重复")
+    create.add_argument(
+        "--env",
+        action="append",
+        default=[],
+        metavar="键=值",
+        help="容器环境变量，可重复；键名只允许字母、数字与下划线",
+    )
     create.add_argument("--workdir", help="容器工作目录")
-    create.add_argument("--network", help="网桥网络名（默认 <沙箱名>-net）")
+    create.add_argument(
+        "--network",
+        help="网桥网络名（默认 <沙箱名>-net）；用户指定的网络由用户自己创建与回收，平台只接入",
+    )
 
     start = subparsers.add_parser("start", help="启动已存在的沙箱")
     start.add_argument("name", help="沙箱名")
@@ -201,8 +211,12 @@ def command_delete(service: SandboxService, args: argparse.Namespace) -> int:
     echo(f"沙箱 {result.name} 已删除，回收清单：")
     for item in result.removed:
         echo(f"  - {item}")
+    if result.failed:
+        echo("以下资源未能回收：")
+        for item in result.failed:
+            echo(f"  ! {item}")
     echo(f"注意：{RECLAIM_UNTOUCHED_NOTE}")
-    return 0
+    return 1 if result.failed else 0
 
 
 def command_list(service: SandboxService, args: argparse.Namespace) -> int:
@@ -247,6 +261,10 @@ def command_list(service: SandboxService, args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------- 入口
 def main(argv: list[str] | None = None) -> int:
     """命令行入口。"""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(levelname)s %(name)s：%(message)s",
+    )
     parser = build_parser()
     args = parser.parse_args(argv)
     config = PlatformConfig.from_env(os.environ)

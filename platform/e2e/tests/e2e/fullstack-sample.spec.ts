@@ -4,7 +4,7 @@
  * 覆盖一条完整业务链路：
  *   Logto 登录页真实输入 → 授权码回调 → 后端校验 id_token → 写 Postgres → 传 MinIO → 列表展示 → 下载校验。
  *
- * 数据库隔离：每个 worker 独占一个用例库（由 fixtures/test-db.ts 克隆自模板库），
+ * 数据库隔离：每个用例独占一个用例库（由 fixtures/test-db.ts 克隆自模板库），
  * 用例通过 x-sample-database 请求头告诉后端本次请求用哪个库，
  * 因此「写进 Postgres」这一步是落在本用例自己的库里的。
  */
@@ -21,8 +21,8 @@ const LOGTO_PASSWORD = process.env.E2E_LOGTO_PASSWORD ?? 'SamplePass123!';
 /**
  * 删除本用例自己新建的记录，把用例库恢复到用例进来时的样子。
  *
- * 为什么需要：用例库按 worker 分配，同一个 worker 上的用例共用一个库。
- * 本用例新建的记录如果不清理，会让后面共用同一个库的用例看到多余的条目。
+ * 为什么需要：用例库虽然按用例分配（每用例一库），但本用例新建的记录
+ * 不清理会留在库里，影响复跑与人工排查时的数据核对。
  */
 async function removeOwnRecords(databaseUrl: string, marker: string): Promise<void> {
   await withClient(databaseUrl, async (client) => {
@@ -139,7 +139,7 @@ test.describe('全栈示例：列表过滤与提交加载态', () => {
     await signInWithLogto(page, LOGTO_USERNAME, LOGTO_PASSWORD);
     await page.waitForURL((url) => !url.pathname.startsWith('/auth/callback'), { timeout: 45_000 });
     // 列表是登录后异步拉取的，先等它加载出来再取条数快照；
-    // 用例库按 worker 分配，进来时可能已经有别的用例写过的记录，
+    // 用例库按用例分配，进来时种子里已有两条初始记录，
     // 因此后面一律用相对条数断言（BRIEF-NEXT.md 的 R1 也推荐相对判断）。
     await expect
       .poll(async () => page.getByTestId('page-home-record-list-item').count())

@@ -53,6 +53,7 @@ class SandboxMetadata:
     network_name: str
     unit_path: str
     state: str = STATE_STOPPED
+    network_owned: bool = True
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)
     mounts: list[MountSpec] = field(default_factory=list)
@@ -125,12 +126,17 @@ class MetadataStore:
         return self.config.sandbox_root
 
     def sandbox_dir(self, name: str) -> Path:
-        """单个沙箱的工作目录。"""
+        """单个沙箱的工作目录。
+
+        兜底断言：沙箱名不得含路径分隔符，防止元数据目录被写到数据根之外。
+        """
+        if Path(name).name != name or name in ("", ".", ".."):
+            raise ValidationError(f"沙箱名非法（不得含路径分隔符）：{name!r}")
         return self.config.sandbox_dir(name)
 
     def path_for(self, name: str) -> Path:
         """单个沙箱的元数据文件路径。"""
-        return self.config.metadata_path(name)
+        return self.sandbox_dir(name) / "metadata.json"
 
     # ---------------------------------------------------------------- 读写
     def exists(self, name: str) -> bool:
@@ -157,7 +163,7 @@ class MetadataStore:
             with handle:
                 handle.write(payload)
                 handle.write("\n")
-            os.chmod(handle.name, 0o644)
+            os.chmod(handle.name, 0o600)
             os.replace(handle.name, target)
         except BaseException:
             Path(handle.name).unlink(missing_ok=True)

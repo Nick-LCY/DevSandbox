@@ -10,7 +10,7 @@ platform/e2e/
 ├── global-setup.ts             # 健康检查门禁：依赖就绪 → 迁移 → 种子
 ├── global-teardown.ts          # 兜底清理残留用例库
 ├── config/dependencies.json    # 依赖清单（数据驱动）
-├── fixtures/test-db.ts         # 每 worker 一个独立数据库的 fixture
+├── fixtures/test-db.ts         # 每用例一个独立数据库的 fixture（库名带用例标识）
 ├── helpers/                    # 配置、postgres、健康判据、产物路径、trace 归档 reporter
 ├── migrations/                 # 数据库迁移（进模板库）
 ├── seeds/                      # 种子数据（带版本号，进模板库）
@@ -147,8 +147,9 @@ Error: 依赖「app」等待超时；判据：HTTP 状态码 200 且响应体包
 - 机制：`CREATE DATABASE <库名> TEMPLATE e2e_template`（模板库由门禁的迁移与种子装好）；
 - 容器名可配：`E2E_PG_CONTAINER`（默认 `postgres`）、`E2E_TEMPLATE_DB`（默认 `e2e_template`）；
 - psql 一律经 `docker exec` 到 postgres 容器内执行；
-- 并行隔离：`fixtures/test-db.ts` 给每个 worker 分配一个库（库名带 worker 序号），
-  用例结束即销毁，库名与创建/销毁事件都记在 `artifacts/db-usage.log`。
+- 并行隔离：`fixtures/test-db.ts` 给**每个用例**分配一个库（作用域为 test，库名带用例标识
+  `e2e_test_t<用例ID>_<运行编号>`），用例结束即销毁；同一 worker 上的多个用例也各用一个库，
+  库名与创建/销毁事件都记在 `artifacts/db-usage.log`。
 
 ---
 

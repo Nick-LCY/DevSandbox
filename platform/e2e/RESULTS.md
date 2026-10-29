@@ -210,7 +210,7 @@ platform/e2e/
 ├── fixtures/
 │   ├── app/index.html              # 最小静态页（带 data-testid）
 │   ├── app/serve.py                # 同端口同时讲明文与 TLS 的静态页服务
-│   └── test-db.ts                  # 每 worker 一个独立数据库的 fixture
+│   └── test-db.ts                  # 每用例一个独立数据库的 fixture（库名带用例标识）
 ├── helpers/
 │   ├── config.ts                   # 清单装载、连接串拼装、产物目录
 │   ├── postgres.ts                 # pg 封装、种子指纹
@@ -287,7 +287,7 @@ platform/e2e/
 | `TESTID.md` 写明命名规则、≥10 个示例、反例 | 通过 | 12 个示例 + 13 个反例 |
 | 用例只按 `data-testid` 定位，检索断言匹配数为 0 | 通过 | 第五节：6 类禁用写法命中数合计 0 |
 | 产物落在用户声明挂载的代码目录；失败用例自动留截图；运行后目录内出现 `*.png` 与 `trace.zip` | 通过 | 第六节：PNG 5 个、trace 4 份，magic 校验通过；失败用例产出 `test-failed-1.png` |
-| 两个用例并行时数据库名不同且互不影响（打印各自库名佐证） | 通过 | 第四节：`artifacts/db-usage.log` 记录两个 worker 的库名；用例断言对照库看不到标记行 |
+| 两个用例并行时数据库名不同且互不影响（打印各自库名佐证） | 通过 | 第四节：`artifacts/db-usage.log` 记录每个用例的库名（库名带用例标识）；用例断言对照库看不到标记行；第十二节：沙箱内实测每用例一库 |
 | 全部连接串走容器名，不存在本机回环地址连接串（匹配数 0） | 通过 | 第五节：匹配数 0 |
 | 提供最小端到端样例，一条命令跑通并产出 PNG | 通过 | `pnpm run test:scripted` 一条命令产出 `artifacts/screenshots/*.png` |
 
@@ -329,3 +329,45 @@ platform/e2e/
 | trace | 5 份 |
 
 > 完整实测记录见 `platform/examples/fullstack-sample/RESULTS.md`。
+
+---
+
+## 十二、安全加固轮增量：用例库改「每用例一库」
+
+- 执行日期：2026-10-29
+- 沙箱名：`e2e-recheck`；网桥 `e2e-recheck-net`；挂载 `platform → /workspace`（代码目录）
+- 依赖容器：`postgres`、`minio`、`logto`、`app`（由示例项目 `scripts/up.sh` 拉起，与沙箱容器同网桥）
+- 沙箱镜像：`sandbox-platform/sandbox-default:0.1.0`（离线包手动加载：minio / logto / postgres 三个离线包）
+
+### 增量内容
+
+| 项 | 增量 |
+|---|---|
+| fixture 作用域 | `fixtures/test-db.ts` 由 worker 级改为 **test 级**：每个用例独占一个库 |
+| 库名 | 由 `e2e_test_w<worker序号>_<运行编号>` 改为 `e2e_test_t<用例ID>_<运行编号>`（用例标识进库名） |
+| 用例断言 | `tests/e2e/db-isolation.spec.ts` 的库名正则改为 `^e2e_test_t[0-9a-f-]+_`，并断言库名含本用例的 `testId` |
+| 产物佐证 | `artifacts/db-usage.log` 的每条记录新增 `testId` 与 `title` 字段 |
+
+### 实测（沙箱内复验）
+
+```
+[用例数据库] 用例=两个用例库库名不同、互不影响… 标识=d6341a7d16365ba6a6f7-76d33d11080e1e8b1aff worker=0 pid=4381 库名=e2e_test_td6341a7d16365ba6a6f7-76d33d11080e1e8b1aff_mvteqfue
+[用例数据库] 用例=Logto 登录 → 新建记录（带附件）→ 列表展示 → 下载校验 标识=79ced442e91c67729a81-6a27ad5c83467ec4f33a worker=1 pid=4382 库名=e2e_test_t79ced442e91c67729a81-6a27ad5c83467ec4f33a_mvteqfue
+[用例数据库] 用例=未登录时记录接口拒绝访问，登录后可以读写 标识=79ced442e91c67729a81-591dfdbe16a8d501eefa worker=0 pid=4381 库名=e2e_test_t79ced442e91c67729a81-591dfdbe16a8d501eefa_mvteqfue
+[用例数据库] 用例=列表页按关键字过滤 标识=79ced442e91c67729a81-c5ddc0089183f9e3201c worker=1 pid=4382 库名=e2e_test_t79ced442e91c67729a81-c5ddc0089183f9e3201c_mvteqfue
+[用例数据库] 用例=提交过程有加载态 标识=79ced442e91c67729a81-9f373cbc3d720de4f0af worker=0 pid=4381 库名=e2e_test_t79ced442e91c67729a81-9f373cbc3d720de4f0af_mvteqfue
+[用例数据库] 用例=打开示例页 → 断言 data-testid 元素存在 → 截图 标识=7b000c0ed96bf09c43fc-614ea8fdeaa1f828e90a worker=0 pid=4381 库名=e2e_test_t7b000c0ed96bf09c43fc-614ea8fdeaa1f828e90a_mvteqfue
+
+  6 passed (5.3s)
+退出码 = 0
+```
+
+| 口径 | 数值 |
+|---|---|
+| 脚本模式退出码 | 0（6 条用例全绿，2 个 worker 并行） |
+| 并行隔离 | 两个 worker 同时在跑，库名不同且都带用例标识 |
+| 每用例一库 | 同一 worker（worker=0，pid=4381）连跑 3 条用例，**3 个不同库**（`…-591dfdbe…` / `…-9f373cbc…` / `…-614ea8fde…`），不再共用 |
+| 库名格式 | `e2e_test_t<用例ID>_<运行编号>`，用例ID 形如 `79ced442e91c67729a81-6a27ad5c83467ec4f33a` |
+| 佐证文件 | `artifacts/db-usage.log`（每条记录含 `testId` / `title` / `worker` / `database`） |
+
+> 口径与 PRD 一致：PRD「每个用例一个独立数据库」原本就写在方案与验收标准里，本轮是把实现对齐到 PRD，PRD 措辞未改动。

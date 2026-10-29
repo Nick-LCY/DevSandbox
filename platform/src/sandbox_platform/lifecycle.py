@@ -4,6 +4,12 @@
 
 创建固定 7 步：建用户 → 登记子 ID 段 → 写并起用户级守护进程 → 解析用户声明挂载
 → 起沙箱容器 → 写元数据 → 输出连接方式。任一步失败立即中断，并回滚已完成步骤。
+
+安全约定：
+
+- 沙箱名、镜像名、网络名、环境变量名一律先校验再使用。
+- 删除路径不信任元数据：用户信息现查 ``getent passwd``，家目录取查询结果，
+  单元路径按查询到的家目录重算，网络只回收平台自建的那一个。
 """
 
 from __future__ import annotations
@@ -40,15 +46,21 @@ from .metadata import (
     MetadataStore,
     SandboxMetadata,
 )
-from .mounts import parse_mounts, socket_mount
+from .mounts import MountSpec, parse_mounts, socket_mount
 from .userspace import Privilege, SystemUser, UserSpaceManager
 
 logger = logging.getLogger(__name__)
 
-SANDBOX_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,23}$")
+SANDBOX_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]{0,23}")
+IMAGE_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:@-]*")
+NETWORK_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+ENV_KEY_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+SYSTEM_USER_NAME_PATTERN = re.compile(r"[a-z_][a-z0-9_-]{0,30}")
+
 MAX_SYSTEM_USER_LENGTH = 31
 
 RECLAIM_UNTOUCHED_NOTE = "用户挂载的宿主机目录不受影响"
+RECLAIM_INCOMPLETE_NOTE = "依赖容器清单可能不完整（实时探测失败，仅列出元数据中已知的依赖容器）"
 
 CREATE_STEP_NAMES = (
     "创建专属用户",
@@ -103,24 +115,70 @@ class ReclaimPlan:
     items: tuple[str, ...] = ()
     untouched_note: str = RECLAIM_UNTOUCHED_NOTE
     user_mounts: tuple[str, ...] = ()
+    incomplete: bool = False
 
 
 @dataclass(frozen=True)
 class DeleteResult:
-    """删除沙箱的结果。"""
+    """删除沙箱的结果。
+
+    ``removed`` 是确实回收掉的资源；``failed`` 是尝试过但没成功的条目，
+    带原因，如实上报，不吞掉。
+    """
 
     name: str
     existed: bool
     removed: tuple[str, ...] = ()
+    failed: tuple[str, ...] = ()
     plan: ReclaimPlan | None = None
 
 
+# ---------------------------------------------------------------- 入参校验
 def validate_sandbox_name(name: str) -> str:
-    """校验沙箱名。"""
-    if not name or not SANDBOX_NAME_PATTERN.match(name):
+    """校验沙箱名（整串匹配，不接受前后多余字符）。"""
+    if not name or not SANDBOX_NAME_PATTERN.fullmatch(name):
         raise ValidationError(
             f"沙箱名非法：{name!r}，只允许小写字母、数字、连字符与下划线，且以字母或数字开头（长度 1~24）"
         )
+    return name
+
+
+def validate_image_name(image: str) -> str:
+    """校验镜像名（字符集限制，避免把任意字符串塞进 docker 参数）。"""
+    if not image or not IMAGE_NAME_PATTERN.fullmatch(image):
+        raise ValidationError(
+            f"镜像名非法：{image!r}，只允许字母、数字与 . _ - / : @ 字符，且以字母或数字开头"
+        )
+    return image
+
+
+def validate_network_name(name: str) -> str:
+    """校验网桥网络名。"""
+    if not name or not NETWORK_NAME_PATTERN.fullmatch(name):
+        raise ValidationError(
+            f"网络名非法：{name!r}，只允许字母、数字与 . _ - 字符，且以字母或数字开头"
+        )
+    return name
+
+
+def validate_env_pairs(env: dict[str, str]) -> dict[str, str]:
+    """校验容器环境变量的键名（白名单字符集）。"""
+    for key in env:
+        if not key or not ENV_KEY_PATTERN.fullmatch(key):
+            raise ValidationError(
+                f"环境变量名非法：{key!r}，只允许字母、数字与下划线，且不能以数字开头"
+            )
+    return env
+
+
+def validate_system_user_name(name: str) -> str:
+    """校验系统用户名（会进 ``sudo -u`` 等特权命令，必须先过白名单）。"""
+    if (
+        not name
+        or len(name) > MAX_SYSTEM_USER_LENGTH
+        or not SYSTEM_USER_NAME_PATTERN.fullmatch(name)
+    ):
+        raise ValidationError(f"系统用户名非法：{name!r}")
     return name
 
 
@@ -142,10 +200,12 @@ class SandboxService:
     # ---------------------------------------------------------------- 查询
     def find(self, name: str) -> SandboxMetadata | None:
         """取沙箱元数据；不存在返回 ``None``。"""
+        name = validate_sandbox_name(name)
         return self.store.load(name)
 
     def get(self, name: str) -> SandboxMetadata:
         """取沙箱元数据；不存在抛 :class:`NotFoundError`。"""
+        name = validate_sandbox_name(name)
         metadata = self.store.load(name)
         if metadata is None:
             raise NotFoundError(f"沙箱不存在：{name}")
@@ -175,23 +235,39 @@ class SandboxService:
 
     # ---------------------------------------------------------------- 内部辅助
     def _daemon_for(self, metadata: SandboxMetadata) -> UserDaemon:
-        """按元数据构造守护进程操作入口。"""
-        context = UserContext(
-            user=metadata.system_user,
-            uid=metadata.uid,
-            gid=metadata.gid,
-            home=Path(metadata.home),
+        """按元数据构造守护进程操作入口（优先用宿主上现查到的用户信息）。"""
+        user = self._resolve_user(metadata)
+        if user is not None:
+            return self._daemon_for_user(user)
+        return UserDaemon(
+            UserContext(
+                user=metadata.system_user,
+                uid=metadata.uid,
+                gid=metadata.gid,
+                home=Path(metadata.home),
+            ),
+            self.privilege,
         )
-        return UserDaemon(context, self.privilege)
 
-    def _system_user_for(self, metadata: SandboxMetadata) -> SystemUser:
-        """按元数据构造系统用户对象。"""
-        return SystemUser(
-            name=metadata.system_user,
-            uid=metadata.uid,
-            gid=metadata.gid,
-            home=Path(metadata.home),
+    def _daemon_for_user(self, user: SystemUser) -> UserDaemon:
+        """按已确认的系统用户构造守护进程操作入口。"""
+        return UserDaemon(
+            UserContext(user=user.name, uid=user.uid, gid=user.gid, home=user.home),
+            self.privilege,
         )
+
+    def _resolve_user(self, metadata: SandboxMetadata) -> SystemUser | None:
+        """按元数据里的用户名现查系统用户信息。
+
+        删除路径不信任元数据：uid / gid / 家目录一律现查 ``getent passwd``。
+        用户名非法或查不到时返回 ``None``，调用方据此拒绝执行特权命令。
+        """
+        try:
+            validate_system_user_name(metadata.system_user)
+        except ValidationError:
+            logger.error("元数据里的系统用户名非法，拒绝使用：%r", metadata.system_user)
+            return None
+        return self.userspace.lookup_user(metadata.system_user)
 
     def _container_name(self, name: str) -> str:
         """沙箱容器名。"""
@@ -201,14 +277,30 @@ class SandboxService:
         """沙箱网桥网络名。"""
         return f"{name}-net"
 
+    def _network_reclaimable(self, metadata: SandboxMetadata) -> bool:
+        """该网络是否由平台自建、可以回收。
+
+        只有平台按 ``<沙箱名>-net`` 规则自建的网络才回收；用户指定的网络只接入不回收。
+        """
+        if not metadata.network_owned:
+            return False
+        return metadata.network_name == self._network_name(metadata.name)
+
     def _dependency_containers(
         self, daemon: UserDaemon, metadata: SandboxMetadata
     ) -> list[str]:
-        """列出本沙箱网络上的依赖容器（不含沙箱容器自身）。"""
-        names = daemon.containers_on_network(metadata.network_name)
+        """列出本沙箱网络上的依赖容器（不含沙箱容器自身）。
+
+        实时探测失败时退回元数据里已知的依赖容器列表。
+        """
+        known = list(metadata.dependency_containers or [])
+        scanned = daemon.containers_on_network(metadata.network_name)
+        if scanned is None:
+            logger.warning("探测网络 %s 上的容器失败，改用元数据已知列表", metadata.network_name)
+            return known
         result: list[str] = []
-        for container in names:
-            if container == metadata.container_name:
+        for container in known + scanned:
+            if container == metadata.container_name or container in result:
                 continue
             result.append(container)
         return result
@@ -220,6 +312,7 @@ class SandboxService:
         system_user_name = self.config.system_user_name(name)
         if len(system_user_name) > MAX_SYSTEM_USER_LENGTH:
             raise ValidationError(f"沙箱名过长，系统用户名会超过 {MAX_SYSTEM_USER_LENGTH} 字符：{name}")
+        validate_system_user_name(system_user_name)
         if self.store.exists(name):
             raise AlreadyExistsError(f"沙箱已存在：{name}")
 
@@ -231,9 +324,10 @@ class SandboxService:
         completed: list[tuple[str, object]] = []
         current_step = CREATE_STEP_NAMES[0]
         try:
-            # ① 创建专属用户
+            # ① 创建专属用户（只有本次新建的用户才进回滚清单）
             system_user = self.userspace.ensure_user(system_user_name)
-            completed.append((current_step, self._rollback_user(system_user)))
+            if system_user.created:
+                completed.append((current_step, self._rollback_user(system_user)))
 
             # ② 登记子 UID/GID 段
             current_step = CREATE_STEP_NAMES[1]
@@ -242,8 +336,6 @@ class SandboxService:
 
             # ③ 写入并启动 systemd 用户单元（含 enable-linger）
             current_step = CREATE_STEP_NAMES[2]
-            unit_path = self.userspace.write_docker_unit(system_user)
-            self.userspace.enable_linger(system_user.name)
             daemon = UserDaemon(
                 UserContext(
                     user=system_user.name,
@@ -253,6 +345,10 @@ class SandboxService:
                 ),
                 self.privilege,
             )
+            unit_path = self.userspace.write_docker_unit(system_user)
+            # 单元文件与 linger 一旦落地就要有回滚动作：回滚动作在启动守护进程之前登记
+            completed.append((current_step, self._rollback_unit(daemon, system_user, unit_path)))
+            self.userspace.enable_linger(system_user.name)
             if not daemon.wait_for_runtime_dir(timeout=60):
                 daemon.ensure_user_manager()
                 if not daemon.wait_for_runtime_dir(timeout=60):
@@ -263,18 +359,22 @@ class SandboxService:
             daemon.ensure_user_manager()
             daemon.systemctl_retry(["daemon-reload"])
             daemon.systemctl_retry(["enable", "docker.service"])
-            daemon.systemctl_retry(["start", "docker.service"])
+            started = daemon.systemctl_retry(["start", "--no-block", "docker.service"])
+            if not started.ok:
+                raise LifecycleError(
+                    current_step,
+                    f"启动用户级守护进程失败：{started.output.strip()}",
+                )
             if not daemon.wait_for_socket(timeout=120):
                 raise LifecycleError(
                     current_step,
                     f"守护进程套接字未出现：{daemon.context.socket_path}"
                     f"（可用 journalctl --user -u docker.service 查看用户级日志）",
                 )
-            completed.append((current_step, self._rollback_unit(daemon, system_user, unit_path)))
 
             # ④ 解析用户声明挂载（只解析与校验，不动宿主目录）
             current_step = CREATE_STEP_NAMES[3]
-            user_mounts = parse_mounts(list(request.mount_declarations))
+            user_mounts = self._parse_user_mounts(request.mount_declarations)
             socket = socket_mount(str(daemon.context.socket_path), self.config.socket_mount_path)
             for mount in user_mounts:
                 if mount.container_path == socket.container_path:
@@ -289,9 +389,10 @@ class SandboxService:
 
             # ⑤ 启动沙箱容器并挂载套接字与用户声明挂载
             current_step = CREATE_STEP_NAMES[4]
-            image = request.image or self.config.default_image
+            image = validate_image_name(request.image or self.config.default_image)
             self.images.ensure_image(image, daemon)
             network_name = request.network_name or self._network_name(name)
+            network_owned = request.network_name is None
             if not daemon.network_exists(network_name):
                 created = daemon.create_network(network_name)
                 if not created.ok:
@@ -299,7 +400,7 @@ class SandboxService:
             container_name = self._container_name(name)
             if daemon.container_exists(container_name):
                 daemon.remove_container(container_name)
-            completed.append((current_step, self._rollback_container(daemon, container_name, network_name)))
+            completed.append((current_step, self._rollback_container(daemon, container_name, network_name, network_owned)))
             run_result = daemon.run_container(
                 name=container_name,
                 image=image,
@@ -338,6 +439,7 @@ class SandboxService:
                 network_name=network_name,
                 unit_path=str(unit_path),
                 state=STATE_RUNNING,
+                network_owned=network_owned,
                 mounts=user_mounts,
                 command=list(request.command or ()),
                 env=dict(request.env),
@@ -382,9 +484,20 @@ class SandboxService:
                 check=True,
             )
 
+    def _parse_user_mounts(self, declarations: tuple[str, ...] | list[str]) -> list[MountSpec]:
+        """解析用户声明挂载（平台数据根等敏感路径一律拒绝）。"""
+        return parse_mounts(
+            list(declarations),
+            extra_forbidden=[self.config.home],
+        )
+
     def _precheck(self, request: CreateRequest) -> None:
         """创建前的干跑校验：只解析不落地，避免非法输入留下宿主副作用。"""
-        for mount in parse_mounts(list(request.mount_declarations)):
+        validate_image_name(request.image or self.config.default_image)
+        if request.network_name:
+            validate_network_name(request.network_name)
+        validate_env_pairs(dict(request.env))
+        for mount in self._parse_user_mounts(request.mount_declarations):
             if mount.container_path == self.config.socket_mount_path:
                 raise ValidationError(
                     f"容器内路径 {mount.container_path} 是平台固定挂载的套接字路径，用户不能重复声明"
@@ -414,8 +527,12 @@ class SandboxService:
     # ---------------------------------------------------------------- 启动与关闭
     def start(self, name: str) -> SandboxMetadata:
         """启动沙箱（复用同一用户、同一子 ID 段、同一守护进程单元）。"""
+        name = validate_sandbox_name(name)
         metadata = self.get(name)
-        daemon = self._daemon_for(metadata)
+        user = self._resolve_user(metadata)
+        if user is None:
+            raise LifecycleError("启动沙箱", f"沙箱系统用户在宿主上不存在：{metadata.system_user}")
+        daemon = self._daemon_for_user(user)
 
         if not daemon.is_active():
             if not daemon.wait_for_runtime_dir(timeout=60):
@@ -427,7 +544,11 @@ class SandboxService:
             daemon.ensure_user_manager()
             daemon.systemctl_retry(["daemon-reload"])
             daemon.systemctl_retry(["enable", "docker.service"])
-            daemon.systemctl_retry(["start", "docker.service"])
+            started = daemon.systemctl_retry(["start", "--no-block", "docker.service"])
+            if not started.ok:
+                raise LifecycleError(
+                    "启动沙箱", f"启动用户级守护进程失败：{started.output.strip()}"
+                )
         if not daemon.wait_for_socket(timeout=120):
             raise LifecycleError("启动沙箱", f"守护进程套接字未出现：{daemon.context.socket_path}")
 
@@ -467,6 +588,7 @@ class SandboxService:
 
     def stop(self, name: str, stop_dependencies: bool = True) -> SandboxMetadata:
         """关闭沙箱：停止沙箱容器（依赖容器是否一并停止由显式参数控制，默认停）。"""
+        name = validate_sandbox_name(name)
         metadata = self.get(name)
         daemon = self._daemon_for(metadata)
 
@@ -485,91 +607,206 @@ class SandboxService:
 
     # ---------------------------------------------------------------- 删除
     def reclaim_plan(self, name: str) -> ReclaimPlan:
-        """列出删除沙箱时平台会回收的资源。"""
+        """列出删除沙箱时平台会回收的资源。
+
+        依赖容器清单 = 元数据里的已知列表 ∪ 删除前实时扫描到的容器；
+        实时探测失败时保留旧列表并标注清单可能不完整。
+        """
+        name = validate_sandbox_name(name)
         metadata = self.find(name)
         if metadata is None:
             return ReclaimPlan(sandbox_name=name, items=(), untouched_note=RECLAIM_UNTOUCHED_NOTE)
         items: list[str] = [
             f"沙箱容器 {metadata.container_name}",
-            f"网桥网络 {metadata.network_name}",
-            f"systemd 用户单元 {metadata.unit_path}",
-            f"系统用户 {metadata.system_user} 与家目录 {metadata.home}",
-            f"子 UID/GID 段 {metadata.subid_start}:{metadata.subid_length}（/etc/subuid、/etc/subgid）",
-            f"平台元数据 {self.store.path_for(metadata.name)}",
         ]
-        dependencies = metadata.dependency_containers or []
+
+        known = list(metadata.dependency_containers or [])
+        scanned = self._scan_network_containers(metadata)
+        incomplete = scanned is None
+        dependencies: list[str] = []
+        for container in known + (scanned or []):
+            if container == metadata.container_name or container in dependencies:
+                continue
+            dependencies.append(container)
         if dependencies:
-            items.insert(1, f"依赖容器 {', '.join(dependencies)}")
+            items.append(f"依赖容器 {', '.join(dependencies)}")
+        if incomplete:
+            items.append(RECLAIM_INCOMPLETE_NOTE)
+
+        items.append(
+            f"网桥网络 {metadata.network_name}"
+            if metadata.network_owned
+            else f"网桥网络 {metadata.network_name}（用户指定，平台不回收）"
+        )
+        items.extend(
+            [
+                f"systemd 用户单元 {metadata.unit_path}",
+                f"系统用户 {metadata.system_user} 与家目录 {metadata.home}",
+                f"子 UID/GID 段 {metadata.subid_start}:{metadata.subid_length}（/etc/subuid、/etc/subgid）",
+                f"平台元数据 {self.store.path_for(metadata.name)}",
+            ]
+        )
         user_mounts = tuple(mount.host_path for mount in metadata.mounts)
         return ReclaimPlan(
             sandbox_name=name,
             items=tuple(items),
             untouched_note=RECLAIM_UNTOUCHED_NOTE,
             user_mounts=user_mounts,
+            incomplete=incomplete,
         )
+
+    def _scan_network_containers(self, metadata: SandboxMetadata) -> list[str] | None:
+        """实时扫描沙箱网络上的容器；探测失败返回 ``None``。"""
+        user = self._resolve_user(metadata)
+        if user is None:
+            return None
+        daemon = self._daemon_for_user(user)
+        return daemon.containers_on_network(metadata.network_name)
 
     def delete(self, name: str) -> DeleteResult:
         """删除沙箱：按固定回收清单回收平台资源，用户声明挂载的宿主机目录一律不触碰。"""
+        name = validate_sandbox_name(name)
         metadata = self.find(name)
         if metadata is None:
             return DeleteResult(
                 name=name,
                 existed=False,
                 removed=(),
+                failed=(),
                 plan=ReclaimPlan(sandbox_name=name, items=(), untouched_note=RECLAIM_UNTOUCHED_NOTE),
             )
 
         plan = self.reclaim_plan(name)
-        daemon = self._daemon_for(metadata)
         removed: list[str] = []
+        failed: list[str] = []
 
-        # ① 删除沙箱容器与依赖容器
-        containers = {metadata.container_name, *metadata.dependency_containers}
-        containers.update(daemon.containers_on_network(metadata.network_name))
-        for container in sorted(containers):
-            if daemon.container_exists(container):
-                daemon.remove_container(container)
-                removed.append(f"容器 {container}")
-        if daemon.network_exists(metadata.network_name):
-            daemon.remove_network(metadata.network_name)
-            removed.append(f"网络 {metadata.network_name}")
+        # 用户信息现查 getent passwd：元数据里的 uid / gid / 家目录不可信
+        user = self._resolve_user(metadata)
 
-        # ② 停止并禁用 systemd 用户单元
-        daemon.disable_daemon()
-        daemon.stop_daemon()
-        self._remove_unit_files(metadata)
-        removed.append(f"systemd 用户单元 {metadata.unit_path}")
-
-        # ③ 删除用户与家目录
-        system_user = self._system_user_for(metadata)
-        if self.userspace.user_exists(system_user.name):
-            self.userspace.remove_user(system_user)
-        else:
-            shutil.rmtree(system_user.home, ignore_errors=True)
-        removed.append(f"系统用户 {system_user.name} 与家目录 {system_user.home}")
-
-        # ④ 回收子 UID/GID 段
-        had_entries = bool(self.userspace.read_subid_entries(system_user.name))
-        self.userspace.remove_subid_range(system_user.name)
-        if had_entries:
-            removed.append(f"子 UID/GID 段 {metadata.subid_start}:{metadata.subid_length}")
-        else:
-            removed.append(
-                f"子 UID/GID 段 {metadata.subid_start}:{metadata.subid_length}（此前已随用户删除回收）"
+        if user is None:
+            failed.append(
+                f"系统用户 {metadata.system_user} 在宿主上不存在或名字非法：容器与网络未回收"
             )
+        else:
+            daemon = self._daemon_for_user(user)
 
-        # ⑤ 删除平台元数据
-        if self.store.delete(name):
-            removed.append(f"平台元数据 {self.store.path_for(name)}")
+            # ① 删除沙箱容器与依赖容器（元数据已知列表 ∪ 实时扫描）
+            containers = {metadata.container_name, *(metadata.dependency_containers or [])}
+            scanned = daemon.containers_on_network(metadata.network_name)
+            if scanned is not None:
+                containers.update(scanned)
+            for container in sorted(containers):
+                if not daemon.container_exists(container):
+                    continue
+                result = daemon.remove_container(container)
+                if result.ok:
+                    removed.append(f"容器 {container}")
+                else:
+                    failed.append(f"容器 {container} 删除失败：{result.output.strip()}")
 
-        return DeleteResult(name=name, existed=True, removed=tuple(removed), plan=plan)
+            # ② 删除网桥网络（仅平台自建的网络）
+            if self._network_reclaimable(metadata) and daemon.network_exists(
+                metadata.network_name
+            ):
+                result = daemon.remove_network(metadata.network_name)
+                if result.ok:
+                    removed.append(f"网络 {metadata.network_name}")
+                else:
+                    failed.append(f"网络 {metadata.network_name} 删除失败：{result.output.strip()}")
+            elif not metadata.network_owned:
+                logger.info(
+                    "网络 %s 由用户指定，平台只接入不回收（如需清理请在沙箱内自行删除）",
+                    metadata.network_name,
+                )
 
-    def _remove_unit_files(self, metadata: SandboxMetadata) -> None:
-        """删除用户级单元文件与 enable 软链。"""
-        unit_path = Path(metadata.unit_path)
+            # ③ 停止并禁用 systemd 用户单元（单元路径按现查到的家目录重算）
+            unit_path = self.userspace.unit_path(user)
+            disable_result = daemon.disable_daemon()
+            if not disable_result.ok and daemon.is_enabled():
+                failed.append(f"禁用用户级守护进程单元失败：{disable_result.output.strip()}")
+            stop_result = daemon.stop_daemon()
+            if not stop_result.ok and daemon.is_active():
+                failed.append(f"停止用户级守护进程失败：{stop_result.output.strip()}")
+            if not self.userspace.disable_linger(user.name):
+                if self.userspace.linger_state(user.name) is True:
+                    failed.append(f"关闭 linger 保活失败：{user.name}")
+                else:
+                    logger.warning("关闭 linger 保活失败：%s（已确认 linger 未开启）", user.name)
+            if self._remove_unit_files(unit_path):
+                removed.append(f"systemd 用户单元 {unit_path}")
+            else:
+                failed.append(f"systemd 用户单元 {unit_path} 删除失败")
+
+            # ④ 删除用户与家目录
+            if self.userspace.user_exists(user.name):
+                if self.userspace.remove_user(user):
+                    removed.append(f"系统用户 {user.name} 与家目录 {user.home}")
+                else:
+                    removed.append(f"系统用户 {user.name}")
+                    failed.append(
+                        f"系统用户 {user.name} 仍有残留进程，家目录 {user.home} 未回收"
+                    )
+            else:
+                removed.append(f"系统用户 {user.name}（此前已不存在）")
+                self._remove_home(user.home)
+
+        # ⑤ 回收子 UID/GID 段（用户名必须先过白名单）
+        try:
+            validate_system_user_name(metadata.system_user)
+        except ValidationError:
+            failed.append(f"系统用户名非法，未回收子 UID/GID 段：{metadata.system_user!r}")
+        else:
+            had_entries = bool(self.userspace.read_subid_entries(metadata.system_user))
+            try:
+                self.userspace.remove_subid_range(metadata.system_user)
+            except SandboxError as exc:
+                failed.append(f"子 UID/GID 段回收失败：{exc}")
+            else:
+                if had_entries:
+                    removed.append(f"子 UID/GID 段 {metadata.subid_start}:{metadata.subid_length}")
+                else:
+                    removed.append(
+                        f"子 UID/GID 段 {metadata.subid_start}:{metadata.subid_length}（此前已随用户删除回收）"
+                    )
+
+        # ⑥ 删除平台元数据
+        try:
+            deleted_metadata = self.store.delete(name)
+        except OSError as exc:
+            failed.append(f"平台元数据 {self.store.path_for(name)} 删除失败：{exc}")
+        else:
+            if deleted_metadata:
+                removed.append(f"平台元数据 {self.store.path_for(name)}")
+            else:
+                failed.append(f"平台元数据 {self.store.path_for(name)} 删除失败")
+
+        return DeleteResult(
+            name=name,
+            existed=True,
+            removed=tuple(removed),
+            failed=tuple(failed),
+            plan=plan,
+        )
+
+    def _remove_unit_files(self, unit_path: Path) -> bool:
+        """删除用户级单元文件与 enable 软链；全部成功返回 ``True``。"""
         wants_path = unit_path.parent / "default.target.wants" / unit_path.name
+        ok = True
         for path in (unit_path, wants_path):
-            run(self.privilege.wrap(["rm", "-f", str(path)]), check=False)
+            result = run(self.privilege.wrap(["rm", "-f", str(path)]), check=False)
+            if not result.ok:
+                logger.error("删除单元文件失败：%s（%s）", path, result.output.strip())
+                ok = False
+        return ok
+
+    def _remove_home(self, home: Path) -> None:
+        """清理已不存在用户的残留家目录（失败只记日志，不吞异常）。"""
+        try:
+            if not home.exists():
+                return
+            shutil.rmtree(home)
+        except OSError as exc:
+            logger.error("删除家目录失败：%s（%s）", home, exc)
 
     # ---------------------------------------------------------------- 回滚
     def _rollback(self, completed: list[tuple[str, object]]) -> None:
@@ -582,13 +819,13 @@ class SandboxService:
                 logger.error("回滚步骤「%s」失败：%s", step, exc)
 
     def _rollback_user(self, system_user: SystemUser):
-        """回滚：删除用户与家目录。"""
+        """回滚：删除用户与家目录（只针对本次新建的用户）。"""
 
         def action() -> None:
             if self.userspace.user_exists(system_user.name):
                 self.userspace.remove_user(system_user)
             else:
-                shutil.rmtree(system_user.home, ignore_errors=True)
+                self._remove_home(system_user.home)
 
         return action
 
@@ -601,24 +838,25 @@ class SandboxService:
         return action
 
     def _rollback_unit(self, daemon: UserDaemon, system_user: SystemUser, unit_path: Path):
-        """回滚：停用并删除用户级单元。"""
+        """回滚：停用并删除用户级单元，同时关闭 linger。"""
 
         def action() -> None:
             daemon.disable_daemon()
             daemon.stop_daemon()
             self.userspace.disable_linger(system_user.name)
-            for path in (unit_path, unit_path.parent / "default.target.wants" / unit_path.name):
-                run(self.privilege.wrap(["rm", "-f", str(path)]), check=False)
+            self._remove_unit_files(unit_path)
 
         return action
 
-    def _rollback_container(self, daemon: UserDaemon, container_name: str, network_name: str):
-        """回滚：删除沙箱容器与网络。"""
+    def _rollback_container(
+        self, daemon: UserDaemon, container_name: str, network_name: str, network_owned: bool
+    ):
+        """回滚：删除沙箱容器与网络（用户指定的网络不回收）。"""
 
         def action() -> None:
             if daemon.container_exists(container_name):
                 daemon.remove_container(container_name)
-            if daemon.network_exists(network_name):
+            if network_owned and daemon.network_exists(network_name):
                 daemon.remove_network(network_name)
 
         return action

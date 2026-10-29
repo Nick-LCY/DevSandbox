@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import shlex
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -64,7 +65,7 @@ def run(
     stdin_text : 标准输入文本
     """
     argv = tuple(str(item) for item in argv)
-    logger.debug("执行命令：%s", " ".join(argv))
+    logger.debug("执行命令：%s", shlex.join(argv))
     try:
         completed = subprocess.run(
             argv,
