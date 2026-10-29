@@ -1,0 +1,4 @@
+# 依赖镜像离线包合计约 489 MB，不进版本库。
+# 用 platform/base-image/fetch-deps.sh 按 deps/images/images.list 重新生成，
+# 生成结果与 deps/images/SHA256SUMS 一致。构建前必须先跑一次 fetch-deps.sh。
+deps/images/*.tar
