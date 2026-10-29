@@ -135,3 +135,19 @@ a {
   color: #b42318;
   font-size: 14px;
 }
+
+.filter-bar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.filter-bar input {
+  flex: 1 1 auto;
+}
+
+.loading {
+  margin: 0;
+  font-size: 14px;
+  color: #3b4ce2;
+}
