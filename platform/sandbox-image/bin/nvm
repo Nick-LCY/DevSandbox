@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# nvm 的非交互式包装。
+#
+# nvm 本身是 shell 函数（定义在 ${NVM_DIR}/nvm.sh 里），只有 source 过 nvm.sh 的 shell 才能用。
+# 交互式 shell 走 /root/.bashrc 里的初始化；这个包装让 `docker exec ... bash -c "nvm ls"`
+# 这类非交互式调用也能直接用 nvm 命令。
+set -uo pipefail
+
+export NVM_DIR="${NVM_DIR:-/usr/local/nvm}"
+
+if [ ! -s "${NVM_DIR}/nvm.sh" ]; then
+  echo "nvm not found: ${NVM_DIR}/nvm.sh" >&2
+  exit 127
+fi
+
+# shellcheck disable=SC1091
+. "${NVM_DIR}/nvm.sh"
+
+nvm "$@"
