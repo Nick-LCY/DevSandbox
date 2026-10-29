@@ -15,7 +15,6 @@ import { screenshotPath } from '../../helpers/artifacts';
 import { signInWithLogto } from '../../helpers/logto-signin';
 import { withClient } from '../../helpers/postgres';
 import { test, expect } from '../../fixtures/test-db';
-
 const LOGTO_USERNAME = process.env.E2E_LOGTO_USERNAME ?? 'sampleuser';
 const LOGTO_PASSWORD = process.env.E2E_LOGTO_PASSWORD ?? 'SamplePass123!';
 
@@ -129,7 +128,7 @@ test.describe('全栈示例：登录 → 写库 → 传文件 → 列表', () =>
  *   5. 清除按钮等价于「把关键字置空后再点过滤」。
  */
 test.describe('全栈示例：列表过滤与提交加载态', () => {
-  test('列表页按关键字过滤', async ({ page, testDb }) => {
+  test('列表页按关键字过滤', async ({ page, testDb }, testInfo) => {
     console.log(`[用例] 用例库=${testDb.name}（R1 列表过滤）`);
 
     await page.setExtraHTTPHeaders({ 'x-sample-database': testDb.name });
@@ -139,10 +138,13 @@ test.describe('全栈示例：列表过滤与提交加载态', () => {
     await page.getByTestId('page-home-login-button').click();
     await signInWithLogto(page, LOGTO_USERNAME, LOGTO_PASSWORD);
     await page.waitForURL((url) => !url.pathname.startsWith('/auth/callback'), { timeout: 45_000 });
-    // 用例库按 worker 分配，进来时可能已经有别的用例写过的记录；
+    // 列表是登录后异步拉取的，先等它加载出来再取条数快照；
+    // 用例库按 worker 分配，进来时可能已经有别的用例写过的记录，
     // 因此后面一律用相对条数断言（BRIEF-NEXT.md 的 R1 也推荐相对判断）。
+    await expect
+      .poll(async () => page.getByTestId('page-home-record-list-item').count())
+      .toBeGreaterThanOrEqual(2);
     const baseCount = await page.getByTestId('page-home-record-list-item').count();
-    expect(baseCount).toBeGreaterThanOrEqual(2);
 
     // ② 新建三条记录：标题命中关键字 / 与关键字无关 / 关键字只在内容里且大小写不同
     const hitTitle = `R1 过滤靶标-${testDb.name}`;
@@ -150,18 +152,27 @@ test.describe('全栈示例：列表过滤与提交加载态', () => {
     await page.getByTestId('page-home-record-content-input').fill('R1 命中标题关键字');
     await page.getByTestId('page-home-record-submit-button').click();
     await expect(page.getByTestId('page-home-record-submit-status')).toContainText(hitTitle);
+    await expect(
+      page.getByTestId('page-home-record-list-item-title').filter({ hasText: hitTitle }),
+    ).toHaveCount(1);
 
     const plainTitle = `R1 普通记录-${testDb.name}`;
     await page.getByTestId('page-home-record-title-input').fill(plainTitle);
     await page.getByTestId('page-home-record-content-input').fill('R1 与关键字无关的内容');
     await page.getByTestId('page-home-record-submit-button').click();
     await expect(page.getByTestId('page-home-record-submit-status')).toContainText(plainTitle);
+    await expect(
+      page.getByTestId('page-home-record-list-item-title').filter({ hasText: plainTitle }),
+    ).toHaveCount(1);
 
     const mixedTitle = `R1 Case Probe-${testDb.name}`;
     await page.getByTestId('page-home-record-title-input').fill(mixedTitle);
     await page.getByTestId('page-home-record-content-input').fill('R1 内容里带 MIXEDCASE 标记');
     await page.getByTestId('page-home-record-submit-button').click();
     await expect(page.getByTestId('page-home-record-submit-status')).toContainText(mixedTitle);
+    await expect(
+      page.getByTestId('page-home-record-list-item-title').filter({ hasText: mixedTitle }),
+    ).toHaveCount(1);
 
     const total = await page.getByTestId('page-home-record-list-item').count();
     expect(total).toBe(baseCount + 3);
@@ -173,6 +184,13 @@ test.describe('全栈示例：列表过滤与提交加载态', () => {
     await expect(
       page.getByTestId('page-home-record-list-item-title').filter({ hasText: '过滤靶标' }),
     ).toHaveCount(1);
+
+    // 过滤后的界面留一张截图（给人看的证据）
+    // 先等提交按钮恢复可点（上一条记录的 300 毫秒最短加载窗口结束了），截图才干净
+    await expect(page.getByTestId('page-home-record-submit-button')).toBeEnabled();
+    const filteredShot = screenshotPath(testInfo, 'record-filtered');
+    await page.screenshot({ path: filteredShot, fullPage: true });
+    console.log(`[用例] 截图已保存：${filteredShot}`);
 
     // ④ 过滤只影响列表展示：后端接口仍返回全量
     const apiResponse = await page.request.get('/api/records');
@@ -193,6 +211,10 @@ test.describe('全栈示例：列表过滤与提交加载态', () => {
     await page.getByTestId('page-home-record-filter-clear-button').click();
     await expect(page.getByTestId('page-home-record-filter-input')).toHaveValue('');
     await expect(page.getByTestId('page-home-record-list-item')).toHaveCount(total + 1);
+    // 过滤期间新建的那条记录，清除后确实出现在列表里
+    await expect(
+      page.getByTestId('page-home-record-list-item-title').filter({ hasText: duringFilterTitle }),
+    ).toHaveCount(1);
 
     // ⑦ 只看标题与内容，且不区分大小写：内容里的 MIXEDCASE 用小写关键字命中
     await page.getByTestId('page-home-record-filter-input').fill('mixedcase');
@@ -220,7 +242,7 @@ test.describe('全栈示例：列表过滤与提交加载态', () => {
    *   3. 提交进行期间提交按钮保持 disabled；
    *   4. 加载元素最短显示 300 毫秒（请求很快返回时也不立刻消失）。
    */
-  test('提交过程有加载态', async ({ page, testDb }) => {
+  test('提交过程有加载态', async ({ page, testDb }, testInfo) => {
     console.log(`[用例] 用例库=${testDb.name}（R2 提交加载态）`);
 
     await page.setExtraHTTPHeaders({ 'x-sample-database': testDb.name });
@@ -249,6 +271,19 @@ test.describe('全栈示例：列表过滤与提交加载态', () => {
     // ④ 提交过程中：加载态可见、提交按钮保持置灰
     await expect(loading).toBeVisible();
     await expect(submitButton).toBeDisabled();
+
+    // 加载态的界面留一张截图（给人看的证据）：截表单区域，
+    // 能同时看到加载指示元素与置灰的提交按钮。
+    const loadingShot = screenshotPath(testInfo, 'record-upload-loading');
+    try {
+      await page.screenshot({ path: loadingShot, timeout: 5000 });
+      console.log(`[用例] 截图已保存：${loadingShot}`);
+    } catch (error) {
+      await page.getByTestId('page-home-record-form').screenshot({ path: loadingShot, timeout: 5000 });
+      console.log(
+        `[用例] 整页截图未取到，改截表单：${loadingShot}（${(error as Error).message.split('\n')[0]}）`,
+      );
+    }
 
     // ⑤ 提交结束后：加载态消失、记录出现在列表里
     await expect(loading).toBeHidden();

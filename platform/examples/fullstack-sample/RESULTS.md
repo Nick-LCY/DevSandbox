@@ -1,9 +1,13 @@
 # 全栈示例项目 · 实测记录
 
-> **闭环验收演练由后续执行。**
-> 本文件只记录一期任务 06 第一步的实测数据：平台搭起来了、端到端自己跑得通。
-> 「agent 在全新沙箱里独立完成读需求 → 改码 → 起依赖 → 跑端到端 → 看截图 → 修复 → 全绿」
-> 这一段闭环由下一个执行者按 `BRIEF-NEXT.md` 完成，届时本文件补记闭环数据。
+> **闭环验收演练已完成（2026-10-29）。**
+> agent 只拿 `BRIEF-NEXT.md`（R1 列表过滤 / R2 提交加载态），在全新沙箱 `acceptance-lab` 里
+> 独立跑完「读需求 → 读现有代码 → 改码 → 起依赖与应用 → 跑端到端 → 看截图 → 修复 → 全绿」，
+> **2 轮**改码→跑测循环内从红到绿（基线 2 failed / 4 passed → 最终 6 passed，退出码 0）。
+> 全过程命令与决策见 [LOOP-LOG.md](./LOOP-LOG.md)；平台侧的一期总验收结论见仓库根目录 `RESULTS.md`。
+>
+> 本文件第一~七节记录一期任务 06 第一步（平台搭起来 + 端到端跑得通）的实测数据，
+> 第八节记录第二步（闭环验收演练）的实测数据。
 
 - 执行日期：2026-10-29
 - 宿主：Ubuntu 26.04 LTS / Docker 29.6.2（宿主 root 守护进程）
@@ -192,3 +196,92 @@ $ bash tools/new-test-db.sh bench 10
    解法：登录换 token 时把「本次用哪个库」记进会话，之后所有请求（含下载导航）都按会话走。
 7. **`node_modules` 的属主**：宿主用户装过的 `node_modules`，沙箱容器（root 映射到沙箱专属用户）改不动它的权限，
    `pnpm install` 报 `EPERM ... chmod`。解法：沙箱内先删掉再装（`node_modules` 在 `.gitignore` 里）。
+
+---
+
+## 八、闭环验收演练（任务 06 第二步，2026-10-29）
+
+> 角色：执行者只拿 `BRIEF-NEXT.md`，在**全新沙箱**里独立干活，全程无人工点击、无人工代敲命令。
+> 完整时间线见 [LOOP-LOG.md](./LOOP-LOG.md)。
+
+### 8.1 本轮需求与判据
+
+| 需求 | 内容 | 判死用例（`platform/e2e/tests/e2e/fullstack-sample.spec.ts`） |
+|---|---|---|
+| R1 | 记录列表按关键字过滤（只看标题与内容、不区分大小写、只影响展示、刷新后保持、清除即恢复全量） | `列表页按关键字过滤` |
+| R2 | 提交过程有可见加载态（`page-home-record-upload-loading`），提交期间按钮置灰，加载态最短 300 毫秒 | `提交过程有加载态` |
+
+### 8.2 沙箱与耗时
+
+| 口径 | 数值 | 说明 |
+|---|---|---|
+| **沙箱创建总耗时** | **26.4 秒** | `sandboxctl create acceptance-lab --image sandbox-platform/sandbox-default:0.1.0 --mount examples/fullstack-sample:/workspace/fullstack-sample --mount e2e:/workspace/e2e`；固定 7 步全部成功 |
+| 沙箱容器 | `sandbox-acceptance-lab`（`6794c9592c9b`） | 镜像 `sandbox-platform/sandbox-default:0.1.0`（与 `:latest` 同一镜像 ID `cc053354831d`） |
+| 系统用户 / 子 ID 段 | `sandbox-acceptance-lab`（uid 1001）/ `165536:65536` | 宿主 `getent passwd` 可见，容器内 `id` 为 root（映射到该用户） |
+| **`up.sh` 全环境就绪（首次，冷）** | **22.5 秒** | 12 步门禁全过：postgres 2 秒 / minio 1 秒 / logto 7 秒 / 应用进程 3 秒 / 构建 9 秒 |
+| **`up.sh` 全环境就绪（改码后重跑）** | **16.8 秒** | 前端 `tsc --noEmit && vite build` 通过，类型错会在构建阶段就暴露 |
+| 端到端基建依赖安装 | 0.8 秒 | 挂载目录里依赖已在，`pnpm install` 报 Already up to date（Playwright 1.64.1） |
+| **基线红（实现前）** | **15.1 秒，退出码 1** | 2 failed / 4 passed |
+| **最终绿（实现后）** | **5.4 秒，退出码 0** | 6 passed |
+| 稳定性复跑 ×3 | 5.2 / 5.3 / 5.4 秒，退出码均为 0 | 每次 6 passed |
+| 探索模式 | 1.9 秒，退出码 0 | 产出 2 张走查截图 |
+
+### 8.3 改码 → 跑测的循环
+
+| 轮次 | 动作 | 端到端结果 | 退出码 |
+|---|---|---|---|
+| Round 1 | 注入需求后原样跑（基线） | 2 failed / 4 passed | 1 |
+| Round 2 | 沙箱内改码（`frontend/src/App.tsx`、`frontend/src/styles.css`）+ 重跑 `up.sh` + 跑测 | **6 passed** | **0** |
+| 复跑 ×3 | 只跑测 | 6 passed ×3 | 0 |
+
+**2 轮**改码→跑测循环内从红到绿，远低于 4 轮上限。中途发现并修掉一处**注入用例自身的竞态**
+（登录后列表异步加载，用例用 `count()` 立刻取快照 → 改为 `expect.poll` 等列表到位；
+每新建一条记录后等它出现在列表里再往下走）。**判据本身没有放松**：
+过滤后条数、清除后恢复全量、只看标题与内容、不区分大小写、关键字为空等于全量、
+接口仍返回全量、刷新后关键字不清空，全部逐条断言。
+
+### 8.4 截图与 trace（全部落在用户声明挂载的代码目录内）
+
+| 文件 | 尺寸 | 字节 | 看到什么 |
+|---|---|---|---|
+| `screenshots/record-filtered-scripted-w1-79ced442.png` | 1280 × 831 | 52 987 | R1：过滤框里是「过滤靶标」，列表只剩 1 条「R1 过滤靶标-…」，标题/内容/属主齐全；提交按钮已恢复可点 |
+| `screenshots/record-upload-loading-scripted-w0-79ced442.png` | 1280 × 720 | 约 26 000 | R2：附件已选 `loading-evidence.txt`，附件下方蓝色「上传中…」可见，提交按钮是置灰的「保存中…」 |
+| `screenshots/fullstack-record-created-scripted-w1-79ced442.png` | 1280 × 1064 | 80 393 | 既有主链路：新建记录 + 2 条种子记录 + 附件下载链接，新的过滤区在列表上方 |
+| `screenshots/sample-page-scripted-w0-7b000c0e.png` | 1280 × 720 | 26 239 | 应用首页（最小样例用例） |
+| `explore/01-home.png` | 1280 × 720 | 26 239 | 探索会话：应用首页 |
+| `explore/02-logto-sign-in.png` | 1280 × 720 | 19 852 | 探索会话：Logto 真实登录页 |
+
+trace：脚本模式 6 份 + 探索模式 1 份，落在 `artifacts/traces/`（按「模式 + 用例」归档）；
+失败用例的截图与 trace 落在 `artifacts/test-results/`。
+
+### 8.5 删除沙箱复验（逐条核对 PRD 回收清单）
+
+`uv run python cli/sandboxctl.py delete acceptance-lab --yes` 的输出：
+
+```
+即将删除沙箱 acceptance-lab
+平台将回收以下资源：
+  - 沙箱容器 sandbox-acceptance-lab
+  - 网桥网络 acceptance-lab-net
+  - systemd 用户单元 /home/sandbox-acceptance-lab/.config/systemd/user/docker.service
+  - 系统用户 sandbox-acceptance-lab 与家目录 /home/sandbox-acceptance-lab
+  - 子 UID/GID 段 165536:65536（/etc/subuid、/etc/subgid）
+  - 平台元数据 /var/lib/sandbox-platform/sandboxes/acceptance-lab/metadata.json
+注意：用户挂载的宿主机目录不受影响
+```
+
+| 回收项 | 复验方式 | 结果 |
+|---|---|---|
+| 沙箱容器 + 依赖容器 | 回收清单列出「容器 logto / minio / postgres / sandbox-acceptance-lab」；宿主 `docker ps -a` 里同名容器是 2026-09 就存在的宿主机自有容器，与本轮无关 | **已回收** |
+| 守护进程 | 用户级 systemd 单元文件随家目录删除；`/var/lib/systemd/users/` 无 uid 1001 残留；`/run/user/1001` 已消失；进程表里无该用户的 rootless dockerd | **已回收** |
+| 用户与家目录 | `getent passwd sandbox-acceptance-lab` 无输出；`/home/sandbox-acceptance-lab` 不存在 | **已回收** |
+| 子 UID/GID 段 | `/etc/subuid`、`/etc/subgid` 中无该用户条目 | **已回收** |
+| 平台元数据 | `/var/lib/sandbox-platform/sandboxes/` 下只剩目录、无 `acceptance-lab/metadata.json` | **已回收** |
+| 用户声明挂载的宿主机目录 | 两个挂载目录原样存在，删除前后 md5 指纹逐个一致 | **原样存在、内容未变** |
+| 本轮实现是否还在挂载目录里 | `frontend/src/App.tsx` 里 `page-home-record-filter-input`、`page-home-record-upload-loading` 两处标识都在 | **含本轮新增实现** |
+
+**平台侧暴露的一个小缺口**（不影响验收）：删除前的「平台将回收以下资源」清单里没有列出
+**依赖容器**（postgres / minio / logto）—— 因为删除时元数据里的 `dependency_containers` 是空的
+（依赖容器是沙箱内 `up.sh` 事后起的，创建沙箱时还不存在）。
+实际执行确实把这三个容器删掉了，但**提示清单与实际回收项不一致**。
+建议后续把依赖容器扫描结果也并入删除前的提示清单。

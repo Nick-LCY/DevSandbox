@@ -7,7 +7,8 @@
 - 依赖：Postgres / MinIO / Logto 全部容器化，跑在沙箱网内，按容器名互访。
 
 当前已实现的功能清单见 [REQUIREMENTS.md](./REQUIREMENTS.md)；实测数据见 [RESULTS.md](./RESULTS.md)；
-下一轮要做的需求见 [BRIEF-NEXT.md](./BRIEF-NEXT.md)。
+下一轮要做的需求见 [BRIEF-NEXT.md](./BRIEF-NEXT.md)；
+闭环验收演练的逐步命令与决策见 [LOOP-LOG.md](./LOOP-LOG.md)（可回放证据）。
 
 ---
 
@@ -19,6 +20,7 @@ platform/examples/fullstack-sample/
 ├── REQUIREMENTS.md              # 当前已实现功能清单（下一轮需求的基线）
 ├── BRIEF-NEXT.md                # 下一轮需求（下一个执行者只拿这份）
 ├── RESULTS.md                   # 实测数据
+├── LOOP-LOG.md                  # 闭环验收演练的逐步命令与决策（可回放证据）
 ├── backend/
 │   ├── pyproject.toml           # uv 依赖声明
 │   ├── migrations/
@@ -177,7 +179,10 @@ cd /workspace/e2e && bash tools/install-deps.sh && pnpm run test:scripted
 ```
 
 用例在 `platform/e2e/tests/e2e/fullstack-sample.spec.ts`，覆盖：
-Logto 登录页真实输入 → 授权码回调 → 后端校验 id_token → 写 Postgres → 传 MinIO → 列表展示 → 下载比对字节。
+Logto 登录页真实输入 → 授权码回调 → 后端校验 id_token → 写 Postgres → 传 MinIO → 列表展示 → 下载比对字节；
+列表关键字过滤（R1）与提交加载态（R2）也有对应用例。
+
+完整步骤与实测耗时见 [LOOP-LOG.md](./LOOP-LOG.md) 与 [RESULTS.md](./RESULTS.md) 第八节。
 
 ---
 

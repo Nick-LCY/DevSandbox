@@ -273,5 +273,6 @@ bash tools/assert-contracts.sh
 | 跑验收 | `pnpm run test:scripted` 的退出码就是验收结论；截图与 trace 就在 `artifacts/` 里 |
 | agent 现场看效果 | `pnpm run test:explore` 出截图与 trace（会走到 Logto 真实登录页），退出码恒 0 |
 | 依赖没起来时的排查 | 门禁失败信息里直接写明是哪个依赖、判据是什么、上限多久、最后一次探测的原因 |
+| 闭环验收演练 | 2026-10-29 在全新沙箱里把下一轮需求（R1 列表过滤 / R2 提交加载态）实现到全绿：2 轮「改码→跑测」循环，从 2 failed 走到 6 passed（退出码 0）；逐步命令与决策见 `platform/examples/fullstack-sample/LOOP-LOG.md`，实测数据见 `platform/examples/fullstack-sample/RESULTS.md` 第八节 |
 
 新增依赖服务时，只要做两件事：容器名进清单、判据写成一条可自动验证的句子。
