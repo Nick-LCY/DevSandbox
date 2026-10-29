@@ -9,7 +9,7 @@
 | Task | 状态 | 备注 |
 |------|------|------|
 | 一期任务集 | todo | 已拆分至 `tasks/sandbox-platform/`，状态见各任务文件 |
-| [[tasks/sandbox-platform/01-rootless-probe.md\|01 免root打样验证]] | todo | 无依赖，最先完成 |
+| [[tasks/sandbox-platform/01-rootless-probe.md\|01 免root打样验证]] | done | 实测主链路成立，14 项判定全通过；记录见 `platform/probe/rootless/RESULTS.md` |
 | [[tasks/sandbox-platform/02-base-image.md\|02 平台基础镜像]] | todo | 依赖 01 |
 | [[tasks/sandbox-platform/03-sandbox-image.md\|03 默认全栈沙箱镜像]] | todo | 依赖 02 |
 | [[tasks/sandbox-platform/04-lifecycle-core-cli.md\|04 生命周期核心模块与CLI]] | todo | 依赖 01 |
@@ -20,5 +20,6 @@
 - [ ] 一期任务已拆分至 `tasks/sandbox-platform/`，状态见各任务文件。
 
 ## 最近变更
+- 2026-10-29：01 免root打样验证完成——专属用户 + 子 ID 段 + 用户级免 root 守护进程 + 套接字挂载 + 同网桥按名互访全部跑通；02、04 可开工，注意基础镜像的 docker 客户端须与宿主守护进程同版本。
 - 2026-10-29：挂载契约修订——套接字为唯一固定挂载，其余由用户声明。
 - 2026-10-29：归档全部架构决策（7 篇 ADR）与一期任务拆分。
