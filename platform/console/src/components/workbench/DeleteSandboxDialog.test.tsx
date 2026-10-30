@@ -2,21 +2,29 @@
 /**
  * 删除沙箱确认弹窗：回收清单的两种圆点、兜底文案、两步确认与关闭途径。
  *
- * 覆盖五件事：
+ * 覆盖六件事：
  * - 平台回收项渲染红点，用户声明的挂载渲染绿点（两类资源的处置完全不同）；
  * - 后端没给「不受影响」说明时用兜底文案；
  * - 两步确认：第一次点只武装不发请求，第二次才真的发；
+ * - 武装窗口（5 秒）过期后要重新武装：过期后的第一次点击仍然不发请求；
  * - Esc 关闭不发删除请求；
  * - 删除进行中 Esc 不响应（不可逆操作不能半途退出）。
  */
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ReclaimPlan } from '../../api/types';
 import { DeleteSandboxDialog, UNTOUCHED_NOTE_FALLBACK } from './DeleteSandboxDialog';
 
-afterEach(cleanup);
+afterEach(() => {
+  // 假定时器必须还原，否则下一条用例会跟着停在假时间里。
+  vi.useRealTimers();
+  cleanup();
+});
+
+/** 武装窗口：第一次点确认后，多久内再点一次才真的删除（毫秒）。 */
+const ARM_WINDOW = 5000;
 
 /** 一份典型的回收清单：两项平台资源 + 一条用户挂载。 */
 function makePlan(overrides: Partial<ReclaimPlan> = {}): ReclaimPlan {
@@ -98,6 +106,33 @@ describe('DeleteSandboxDialog', () => {
     expect(confirm.textContent).toContain('再点一次确认删除');
 
     // 第二次点：真的发。
+    fireEvent.click(confirm);
+    expect(props.onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('武装窗口过期：过期后第一次点击只重新武装，不发删除请求', async () => {
+    vi.useFakeTimers();
+    const { props } = renderDialog();
+    const confirm = screen.getByTestId('page-sandbox-detail-delete-confirm-button');
+
+    // 第一次点：只武装。
+    fireEvent.click(confirm);
+    expect(props.onConfirm).not.toHaveBeenCalled();
+    expect(screen.getByTestId('page-sandbox-detail-delete-armed-hint')).toBeTruthy();
+
+    // 武装窗口过去：自动解除武装（按钮文案与提示条都回去）。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ARM_WINDOW);
+    });
+    expect(screen.queryByTestId('page-sandbox-detail-delete-armed-hint')).toBeNull();
+    expect(confirm.textContent).not.toContain('再点一次');
+
+    // 过期后第一次点：只重新武装，仍不发删除请求。
+    fireEvent.click(confirm);
+    expect(props.onConfirm).not.toHaveBeenCalled();
+    expect(screen.getByTestId('page-sandbox-detail-delete-armed-hint')).toBeTruthy();
+
+    // 再点一次：这次才真的发。
     fireEvent.click(confirm);
     expect(props.onConfirm).toHaveBeenCalledTimes(1);
   });

@@ -145,7 +145,26 @@ test.describe('网页控制台全流程', () => {
     await page.getByTestId('page-sandbox-create-success-link').click();
     await expect(page.getByTestId('page-sandbox-detail-title')).toBeVisible();
     const image = await detailField(page, 'image');
+
+    // 刷新必须真的打到后端：先挂上详情接口的响应监听，拿到响应再读字段。
+    // （前后读的是同一份前端状态，刷新按钮彻底坏了也照样绿。）
+    const detailResponse = page.waitForResponse(
+      (response) =>
+        response.url().includes('/api/sandboxes/acc-refresh') &&
+        response.request().method() === 'GET',
+      { timeout: 30_000 },
+    );
     await page.getByTestId('page-sandbox-detail-refresh-button').click();
+    try {
+      await detailResponse;
+    } catch (error) {
+      throw new Error(
+        `点击刷新后没有拿到详情接口（GET /api/sandboxes/acc-refresh）的响应：${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+
     await expect(page.getByTestId('page-sandbox-detail-state')).toHaveText('运行中');
     expect(await detailField(page, 'image')).toBe(image);
     await gotoDetail(page, 'acc-refresh');

@@ -6,6 +6,8 @@
  *
  * xterm.js 用 DOM 渲染器，行文本落在 `.xterm-rows` 里：
  * 用 `textContent()` 读（`innerText()` 对隐藏元素返回空串，切换标签时会踩坑）。
+ * 注意 `.xterm-rows` 的每个子 div 是**一行**，但 `textContent()` 会把各行
+ * 首尾相接拼成一段没有换行的字符串——要按行数东西必须逐行读（`terminalRows`）。
  */
 
 import { expect, type Page } from '@playwright/test';
@@ -43,11 +45,56 @@ export async function openTerminal(page: Page): Promise<string> {
 }
 
 /**
+ * 点击之前先确认「这次点击不是空操作」。
+ *
+ * 面板在路由不带会话标识时会自动选中第一个标签，那种情况下目标标签的
+ * `data-active="true"` 在点击前就成立，点成空操作断言照样绿（单独重跑一条
+ * 用例最容易踩）。所以点击前必须把目标标签处在「点一下会变」的状态：
+ * - 它本来就不是激活态：直接点；
+ * - 它已经是激活态：会话表里有别的标签就点别的标签，把它挤下去再回来点它；
+ * - 它已经是激活态且会话表里只有它一个：面板必然自动选它，能证明「点击不是
+ *   空操作」的只剩地址栏——点击前地址栏必须还不带该会话标识。
+ */
+async function expectClickIsNotNoop(page: Page, sessionId: string): Promise<void> {
+  const tab = tabOf(page, sessionId);
+  if ((await tab.getAttribute('data-active')) === 'false') {
+    await expect(tab).toHaveAttribute('data-active', 'false');
+    return;
+  }
+  // 已经是激活态：切到别的标签，把它挤下去。
+  const other = page.locator(
+    `[data-testid="page-sandbox-detail-terminal-tab"]:not([data-session-id="${sessionId}"])`,
+  );
+  if ((await other.count()) > 0) {
+    await other.first().getByTestId('page-sandbox-detail-terminal-tab-select').click();
+    await expect(tab).toHaveAttribute('data-active', 'false');
+    return;
+  }
+  // 会话表里只有它一个：面板必然自动选它，只能拿地址栏当证据。
+  expect(
+    page.url(),
+    '会话表里只有这一个会话（面板必然把它自动选成激活态）：点击前地址栏必须还不带该会话标识',
+  ).not.toContain(encodeURIComponent(sessionId));
+}
+
+/**
  * 点某个会话的标签（标签 = 会话，点标签就是附着到这个会话）。
+ *
+ * 两道关都过才算附着成功：
+ * ① 点击前目标标签必须处在「点一下会变」的状态（见 `expectClickIsNotNoop`）；
+ * ② 点击后地址栏必须带上该会话标识（编码后比对）——附着真的发生了。
  */
 async function clickTab(page: Page, sessionId: string): Promise<void> {
   const tab = tabOf(page, sessionId);
+  await expect(tab).toHaveCount(1, { timeout: 30_000 });
+  await expectClickIsNotNoop(page, sessionId);
   await tab.getByTestId('page-sandbox-detail-terminal-tab-select').click();
+  await expect
+    .poll(() => page.url(), {
+      timeout: 30_000,
+      message: `点标签之后地址栏没有带上会话 ${sessionId}`,
+    })
+    .toContain(encodeURIComponent(sessionId));
   await expect(tab).toHaveAttribute('data-active', 'true');
 }
 
@@ -83,11 +130,29 @@ export async function expectTerminalConnected(page: Page): Promise<void> {
 }
 
 /**
- * 读终端当前屏幕上的文本。
+ * 读终端当前屏幕上的文本（各行首尾相接，没有换行）。
  */
 export async function terminalText(page: Page, sessionId: string): Promise<string> {
   const rows = surfaceOf(page, sessionId).locator('.xterm-rows');
   return (await rows.textContent()) ?? '';
+}
+
+/**
+ * 读终端当前屏幕上的**逐行**文本。
+ *
+ * `.xterm-rows` 的每个子 div 就是一行；`textContent()` 会把它们拼成一段没有
+ * 换行的字符串，按行数东西（数输出行、数提示符）必须逐行读。
+ */
+export async function terminalRows(page: Page, sessionId: string): Promise<string[]> {
+  const rows = surfaceOf(page, sessionId).locator('.xterm-rows > div');
+  return await rows.evaluateAll((nodes) => nodes.map((node) => node.textContent ?? ''));
+}
+
+/**
+ * 提示符行数：整行去掉空白后以 `$` 或 `#` 结尾的行。
+ */
+export function countPromptRows(rows: string[]): number {
+  return rows.filter((row) => /[$#]$/.test(row.trim())).length;
 }
 
 /**
@@ -138,27 +203,45 @@ export async function expectTerminalTextAbsent(
 /**
  * 断言 Ctrl+C 真的送到了容器内的 shell。
  *
- * 口径：先让 shell 跑一条长命令（前台阻塞），发 Ctrl+C 之后
- * ① 屏幕上有 `^C` 回显或提示符回来了，② shell 立刻能执行下一条命令，
- * 且上一条命令的退出码是 130（128 + SIGINT）。
+ * 两道证据：
+ * ① **中断本身**：终端里出现 `^C` 回显（伪终端把控制字符回显成 `^C`），
+ *    或者提示符行数比中断前多了一条（shell 回到了提示符）。
+ *    原来的 `[$#]\s*$` 是恒真条件——屏幕末尾本来就是提示符，等于没断言。
+ * ② **硬证据**：shell 立刻能执行下一条命令，且上一条命令的退出码是 130
+ *    （128 + SIGINT）。Ctrl+C 没到 shell 的话，shell 还卡在前台命令里，
+ *    后面的 echo 根本不会执行。
  *
- * 第二条是硬证据：Ctrl+C 没到 shell 的话，shell 还卡在长命令里，
- * 后面的 echo 根本不会执行。
+ * `beforeRows` 是中断前的屏幕快照（逐行），用来对比提示符行数；不给就只认
+ * `^C` 回显这一条。
  */
 export async function expectInterruptReachedShell(
   page: Page,
   sessionId: string,
+  beforeRows: string[] = [],
   timeoutMs = 30_000,
 ): Promise<void> {
-  // ① 提示符回归或 ^C 回显
+  // ① 中断证据：^C 回显，或者提示符行数比中断前多。
+  const promptBefore = countPromptRows(beforeRows);
   await expect
-    .poll(async () => await terminalText(page, sessionId), {
-      timeout: timeoutMs,
-      message: 'Ctrl+C 之后终端既没有 ^C 回显，也没有回到提示符',
-    })
-    .toMatch(/\^C|[$#]\s*$/m);
+    .poll(
+      async () => {
+        const rows = await terminalRows(page, sessionId);
+        if (rows.some((row) => row.includes('^C'))) {
+          return 'interrupted';
+        }
+        if (beforeRows.length > 0 && countPromptRows(rows) > promptBefore) {
+          return 'interrupted';
+        }
+        return 'no-evidence';
+      },
+      {
+        timeout: timeoutMs,
+        message: 'Ctrl+C 之后终端既没有 ^C 回显，提示符行数也没有增加',
+      },
+    )
+    .toBe('interrupted');
 
-  // ② 硬证据：shell 立刻能执行下一条命令，且上一条命令的退出码是 130（128 + SIGINT）
+  // ② 硬证据：shell 立刻能执行下一条命令，上一条命令的退出码是 130。
   await typeInTerminal(page, sessionId, 'echo ACC_CTRL_C_STATUS_$?');
   await expectTerminalText(page, sessionId, 'ACC_CTRL_C_STATUS_130', timeoutMs);
 }

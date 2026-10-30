@@ -104,9 +104,14 @@ describe('Sidebar', () => {
 
     const item = screen.getByTestId('page-sandbox-list-item');
     expect(item.className).toContain('bg-sidebar-active');
-    // 左侧竖线（border-l-*）与伪元素竖线都不允许出现。
-    expect(item.className).not.toMatch(/border-l/);
-    expect(item.className).not.toMatch(/\b(before|after):/);
+    // 左侧竖线（border-l-*）与伪元素竖线（before:/after:）都不允许出现。
+    // 查整棵列表项子树（含自身）的每一个 class：竖线画在子元素上也算竖线。
+    const nodes = [item, ...item.querySelectorAll('*')];
+    const classes = nodes.flatMap((node) => Array.from(node.classList));
+    const offenders = classes.filter(
+      (className) => /^border-l/.test(className) || /^(before|after):/.test(className),
+    );
+    expect(offenders, '列表项子树里不允许出现左侧竖线类').toEqual([]);
     expect(item.getAttribute('aria-current')).toBe('true');
   });
 

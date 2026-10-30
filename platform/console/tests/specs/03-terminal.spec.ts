@@ -20,6 +20,7 @@ import {
   openTerminal,
   reattachTerminal,
   selectTerminal,
+  terminalRows,
   terminalText,
   typeInTerminal,
 } from '../helpers/terminal';
@@ -27,6 +28,11 @@ import { restartConsoleServer } from '../helpers/server';
 
 const SANDBOX_NAME = 'acc-term';
 const IMAGE = 'sandbox-platform/base:0.2.0';
+
+/** 整行内容就是 TICK 的行数（命令回显那一行里有 TICK 字样，不算）。 */
+function countTickLines(rows: string[]): number {
+  return rows.filter((row) => row.trim() === 'TICK').length;
+}
 
 /** 从终端屏幕上读出 `键=值` 形式的数值输出（等它渲染出来）。 */
 async function readTerminalValue(
@@ -115,17 +121,35 @@ test.describe('网页终端', () => {
     const sessionId = await openTerminal(page);
     await expectTerminalConnected(page);
 
-    // 让 shell 跑一条前台长命令：它会阻塞住终端
-    await typeInTerminal(page, sessionId, 'sleep 300');
-    await expectTerminalText(page, sessionId, 'sleep 300');
-    // 等 shell 真的进了 sleep（命令回显早于进程启动）
-    await page.waitForTimeout(1000);
+    // 让 shell 跑一条**前台循环**：它占住终端，并每秒吐一行可数的证据。
+    // （不用 sleep 300：命令回显早于进程启动，固定等待赌的是「进程起来了」，
+    //   循环输出才是真证据——第一行 TICK 出现才说明循环真的在跑。）
+    await typeInTerminal(page, sessionId, 'while :; do echo TICK; sleep 1; done');
+    await expect
+      .poll(async () => countTickLines(await terminalRows(page, sessionId)), {
+        timeout: 30_000,
+        message: '前台循环没有输出 TICK 行',
+      })
+      .toBeGreaterThan(0);
+
+    // 中断前记下 TICK 行数与屏幕快照
+    const beforeRows = await terminalRows(page, sessionId);
+    const ticksBefore = countTickLines(beforeRows);
 
     // 发 Ctrl+C：浏览器不能抢走这个键，它必须编码后送进容器内的 pty
     await page.keyboard.press('Control+C');
 
-    // 提示符回归（或 ^C 回显）+ 退出码 130（128 + SIGINT）
-    await expectInterruptReachedShell(page, sessionId, 60_000);
+    // 中断后 TICK 必须停止增长：观察窗口 3 秒，循环还活着的话至少再多出 3 行。
+    // （+1 的余量：快照与 Ctrl+C 送达之间可能已经多吐了一行。）
+    await page.waitForTimeout(3000);
+    const ticksAfter = countTickLines(await terminalRows(page, sessionId));
+    expect(
+      ticksAfter,
+      `Ctrl+C 之后前台循环还在输出：TICK 行数没有停止增长（中断前 ${ticksBefore}，中断后 ${ticksAfter}）`,
+    ).toBeLessThanOrEqual(ticksBefore + 1);
+
+    // 提示符回归 + 退出码 130（128 + SIGINT）
+    await expectInterruptReachedShell(page, sessionId, beforeRows, 60_000);
   });
 
   test('断开浏览器后重连，终端现场不丢（输出与仍在运行的进程都还在）', async ({ page, browser }) => {

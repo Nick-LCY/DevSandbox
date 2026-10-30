@@ -10,7 +10,7 @@
  * - 选中沙箱 + 终端会话：`#/sandboxes/<名>/<会话标识>`。
  */
 
-import { expect, type Locator, type Page } from '@playwright/test';
+import { expect, type Locator, type Page, type Request } from '@playwright/test';
 
 /**
  * 打开工作台（沙箱列表在左侧边栏，右侧是空态引导块）。
@@ -145,6 +145,14 @@ export async function closeDetailDialog(page: Page): Promise<void> {
   await expect(dialog).toBeHidden();
 }
 
+/** 详情弹窗里的错误横幅文案（横幅不在时是空串）。 */
+async function detailErrorText(banner: Locator): Promise<string> {
+  if ((await banner.count()) === 0) {
+    return '';
+  }
+  return ((await banner.textContent()) ?? '').trim();
+}
+
 /**
  * 取沙箱详情弹窗里的某个字段文本。
  *
@@ -157,6 +165,11 @@ export async function closeDetailDialog(page: Page): Promise<void> {
  * 字段名传字段本身（`image` / `image-source`），不传完整标识：
  * 与工作区头部重名的四个字段（状态 / 镜像 / 创建时间 / 更新时间）在弹窗里
  * 换了标识（`page-sandbox-detail-dialog-*`），映射关系只在本文件里维护。
+ *
+ * 等待口径是「**详情到了**」，不是「加载提示没了」：重拉时组件保留旧值、
+ * 加载提示根本不渲染，等加载提示消失等于空等。改成等「字段值」或「空占位」
+ * 二者之一出现，再按当前可见性选分支读值；详情接口失败时弹窗里有错误横幅，
+ * 那种情况立刻判红（错误文案带进失败信息），不干等 30 秒。
  */
 export async function detailField(page: Page, field: DetailFieldName): Promise<string> {
   const dialog = page.getByTestId('page-sandbox-detail-dialog');
@@ -164,15 +177,33 @@ export async function detailField(page: Page, field: DetailFieldName): Promise<s
   if (opened) {
     await openDetailDialog(page);
   }
-  // 等详情读完：弹窗先显示「正在读取沙箱详情…」，字段后到。
-  await expect(dialog.getByTestId('page-sandbox-detail-loading')).toHaveCount(0, {
-    timeout: 30_000,
-  });
   const target = dialog.getByTestId(dialogFieldId(field));
   // 列表型字段（挂载 / 环境变量 / 依赖容器）为空时渲染的是「（无…）」占位元素。
   const empty = dialog.getByTestId(`page-sandbox-detail-${field}-empty`);
-  const locator = (await target.count()) > 0 ? target : empty;
-  await expect(locator).toBeVisible({ timeout: 30_000 });
+  const errorBanner = dialog.getByTestId('page-sandbox-detail-dialog-error');
+
+  // 等「字段值」「空占位」「错误横幅」三者之一出现：详情读到了才有值，没值时
+  // 渲染占位；详情接口失败时弹窗里有错误横幅。
+  await expect
+    .poll(
+      async () => {
+        const valueVisible = await target.isVisible();
+        const emptyVisible = await empty.isVisible();
+        const errorVisible = (await errorBanner.count()) > 0;
+        return valueVisible || emptyVisible || errorVisible;
+      },
+      { timeout: 30_000, message: '沙箱详情一直不到：字段值、空占位、错误横幅都没出现' },
+    )
+    .toBe(true);
+
+  // 详情接口失败：显式断言错误横幅不在（文案带进失败信息）。
+  // 横幅一出现就判红，不干等 30 秒（给 2 秒重试窗口：横幅晚于字段到的情况也能捕到）。
+  await expect(errorBanner, {
+    message: `读取沙箱详情失败：${await detailErrorText(errorBanner)}`,
+  }).toHaveCount(0, { timeout: 2_000 });
+
+  // 按当前可见性选分支读值：字段有值读字段，空的读占位。
+  const locator = (await target.isVisible()) ? target : empty;
   const text = ((await locator.textContent()) ?? '').trim();
   if (opened) {
     await closeDetailDialog(page);
@@ -194,10 +225,37 @@ export async function openDeleteDialog(page: Page): Promise<Locator> {
 
 /**
  * 两步确认删除：第一次点只武装，第二次才真的发删除请求。
+ *
+ * 这里挂上删除请求的计数：第一次点之后必须一个删除请求都没发出去，第二次点
+ * 之后才发得出请求——堵住「第一击既武装又真删」的假绿。
  */
 export async function confirmDeleteTwice(page: Page): Promise<void> {
   const confirm = page.getByTestId('page-sandbox-detail-delete-confirm-button');
-  await confirm.click();
-  await expect(page.getByTestId('page-sandbox-detail-delete-armed-hint')).toBeVisible();
-  await confirm.click();
+  let deleteRequests = 0;
+  const countDelete = (request: Request): void => {
+    if (request.method() === 'DELETE' && request.url().includes('/api/sandboxes/')) {
+      deleteRequests += 1;
+    }
+  };
+  page.on('request', countDelete);
+  try {
+    await confirm.click();
+    // 等一小会儿再判零：请求事件比点击晚几十毫秒落地，不留窗口就等于没数。
+    await page.waitForTimeout(300);
+    expect(deleteRequests, '第一次点「确认删除」不应发出任何删除请求').toBe(0);
+
+    // 第一击只是武装：武装提示条得出现。
+    await expect(page.getByTestId('page-sandbox-detail-delete-armed-hint')).toBeVisible();
+
+    // 第二击：真删。删除请求必须发得出去。
+    await confirm.click();
+    await expect
+      .poll(() => deleteRequests, {
+        timeout: 30_000,
+        message: '第二次点「确认删除」没有发出删除请求',
+      })
+      .toBeGreaterThanOrEqual(1);
+  } finally {
+    page.off('request', countDelete);
+  }
 }

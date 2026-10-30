@@ -98,6 +98,7 @@ CONSOLE_TEST_PORT=8200 pnpm run test:acceptance
 | `gotoDetail` | 进某个沙箱的工作区 | `#/sandboxes/<名>` → `page-sandbox-detail-title` |
 | `selectSandbox` | 在侧栏里选中沙箱 | `page-sandbox-list-item` → `page-sandbox-detail-title` |
 | `openDetailDialog` / `detailField` | 开详情弹窗 / 读详情字段 | `page-sandbox-detail-detail-button` → `page-sandbox-detail-dialog` |
+| `closeDetailDialog` | 关详情弹窗（Esc） | `page-sandbox-detail-dialog` → 隐藏 |
 | `openDeleteDialog` / `confirmDeleteTwice` | 开删除弹窗 / 两步确认删除 | `page-sandbox-detail-delete-button` → `page-sandbox-detail-delete-dialog` → `page-sandbox-detail-delete-confirm-button` |
 | `openTerminal` | 新建一个终端会话 | `page-sandbox-detail-terminal-new-button` → `page-sandbox-detail-terminal-tab` |
 | `reattachTerminal` | 附着到已有会话（点已有标签） | `page-sandbox-detail-terminal-tab[data-session-id=…]` → `page-sandbox-detail-terminal-tab-select` |
