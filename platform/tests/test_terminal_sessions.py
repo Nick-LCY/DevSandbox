@@ -765,6 +765,10 @@ def test_exec_pty_shell_injects_session_marker(monkeypatch: pytest.MonkeyPatch) 
     process = daemon.exec_pty_shell("sandbox-demo", session_id="sess-marker-9")
     try:
         argv = captured["argv"]
+        # 命令行是完整的 ``docker exec …``：只给子命令的话宿主侧会去执行
+        # 一个叫 exec 的程序（不存在），容器内 shell 起不来。
+        assert "docker" in argv
+        assert argv[argv.index("docker") + 1] == "exec"
         assert "--env" in argv
         assert "SANDBOX_TERMINAL_SESSION=sess-marker-9" in argv
         assert "sandbox-demo" in argv

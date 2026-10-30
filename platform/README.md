@@ -53,7 +53,7 @@ uv run python cli/sandboxctl.py list
 
 ```bash
 cd platform
-uv sync --all-groups                      # 安装依赖（含 fastapi、uvicorn）
+uv sync --all-groups                      # 安装依赖（含 fastapi、uvicorn、websockets）
 uv run python -m sandbox_platform.server   # 启动服务
 ```
 
@@ -64,6 +64,7 @@ uv run python -m sandbox_platform.server   # 启动服务
 | 平台数据根 | 仍走 `SANDBOX_PLATFORM_HOME`（默认 `/var/lib/sandbox-platform`），与命令行一致 |
 | 权限要求 | 与一期命令行一致：进程本身是 root 时直接执行，否则走免密 `sudo` |
 | 前端托管 | `console/dist` 由同一进程在 `/` 路径托管；目录不存在时跳过静态托管并告警（`/api/health` 的 `console_mounted` 为 false），不影响服务启动；部署路径不同时用 `SANDBOX_CONSOLE_DIST` 覆盖 |
+| 网页终端 | WebSocket 端点需要 `websockets` 库（uvicorn 的 WebSocket 实现）；未安装时握手会被拒（HTTP 404），终端会话建得起来但连不上 |
 | 接口文档 | `src/sandbox_platform/API.md` 的「二期 HTTP 接口」章节；运行时的交互式文档在 `/docs`，**默认关闭**，需要时用 `SANDBOX_CONSOLE_DOCS=1` 开启 |
 | 错误响应 | 统一 `{"detail": "中文消息"}`；400 / 404 / 409 保留平台异常原文，500 只回「平台内部错误，请查看服务日志」（原文只进日志，不回显宿主路径） |
 | 常驻方式 | `server/sandbox-console.service` 是 systemd 单元模板，只提供模板，不自动安装、不自动启用 |
