@@ -154,6 +154,7 @@
 | 函数 | 签名 | 说明 |
 |---|---|---|
 | 保证可用 | `ImageManager.ensure_image(image: str, daemon: UserDaemon) -> str` | 顺序：沙箱守护进程已有 → 平台自建镜像（`local_image_prefixes` 前缀匹配）由宿主导出注入 → 其余交给沙箱守护进程经镜像代理拉取；返回来源标记（`present` / `injected` / `remote`） |
+| 按来源准备 | `ImageManager.ensure_image_from_source(image: str, daemon: UserDaemon, source: str = "auto") -> str` | `auto` 同上；`host` 强制从宿主导出注入，宿主无此镜像直接抛 `ImageError`，**不经镜像代理拉取** |
 | 平台自建判定 | `ImageManager.is_platform_local(image: str) -> bool` | 镜像是否属平台自建命名空间（只在宿主构建、不存在于任何仓库） |
 | 宿主镜像 | `ImageManager.host_image_exists(image: str) -> bool` | 宿主 root 守护进程里是否已有该镜像 |
 | 导出注入 | `ImageManager.inject_from_host(image: str, daemon: UserDaemon) -> str` | `docker save` → `docker load` 注入沙箱守护进程，失败抛 `ImageError` |
@@ -190,7 +191,7 @@
 
 | 名称 | 字段 | 说明 |
 |---|---|---|
-| `CreateRequest` | `name`、`image=None`、`mount_declarations=()`、`command=None`、`env={}`、`workdir=None`、`network_name=None` | 创建入参 |
+| `CreateRequest` | `name`、`image=None`、`mount_declarations=()`、`command=None`、`env={}`、`workdir=None`、`network_name=None`、`image_source="auto"` | 创建入参 |
 | `CreateResult` | `metadata`、`connection`、`steps` | 创建结果；`steps` 是固定 7 步名称 |
 | `ConnectionInfo` | `socket_path`、`container_name`、`exec_command`、`docker_command`、`notes` | 连接方式与命令提示 |
 | `ReclaimPlan` | `sandbox_name`、`items`、`untouched_note`、`user_mounts`、`incomplete` | 删除前的回收清单；`untouched_note` 固定为「用户挂载的宿主机目录不受影响」；依赖容器清单 = 元数据已知列表 ∪ 删除前实时扫描，探测失败时保留旧列表并置 `incomplete=True` |
@@ -237,6 +238,19 @@
 删除的固定回收清单：沙箱容器与依赖容器 → 网桥网络（仅平台自建）→ 停止并禁用 systemd 用户单元 → 删除用户与家目录 → 回收子 UID/GID 段 → 删除平台元数据。
 **用户声明挂载的宿主机目录一律不触碰**（平台不创建、不删除、不修改）。
 
+### 镜像来源：`image_source`
+
+`CreateRequest.image_source` 是**可选**字段，默认 `auto`，命令行不传该字段，**一期行为零变化**。
+
+| 取值 | 语义 | 准备镜像的路径 |
+|---|---|---|
+| `auto`（默认） | 一期行为 | 沙箱守护进程已有 → 平台自建镜像（`sandbox-platform/` 前缀）由宿主导出注入 → 其余交给沙箱守护进程经统一镜像代理拉取 |
+| `host` | 强制从宿主导出注入 | 宿主没有该镜像直接报错（`ImageError`），**不经镜像代理拉取**；宿主有则 `docker save` → `docker load` 注入沙箱守护进程（守护进程里已有时跳过重复注入） |
+
+`host` 模式在创建第 ⑤ 步准备镜像时执行，沙箱启动镜像因此不经镜像代理。
+该来源随沙箱元数据一起落盘（`SandboxMetadata.image_source`），
+`start` 时按同一来源准备镜像，旧的元数据文件没有该字段时按 `auto` 处理。
+
 ### 入参校验
 
 | 函数 | 说明 |
@@ -245,6 +259,7 @@
 | `validate_image_name(image)` | 镜像名字符集限制（字母数字与 `. _ - / : @`） |
 | `validate_network_name(name)` | 网络名字符集限制（字母数字与 `. _ -`） |
 | `validate_env_pairs(env)` | 环境变量键白名单 `^[A-Za-z_][A-Za-z0-9_]*$` |
+| `validate_image_source(source)` | 镜像来源只允许 `auto` / `host`，创建前干跑校验（非法取值不留下宿主副作用） |
 | `validate_system_user_name(name)` | 系统用户名白名单（会进 `sudo -u` 等特权命令） |
 
 ---
@@ -286,3 +301,78 @@
 | `list` | `SandboxService.list` |
 
 二期把 `SandboxService` 的方法映射为 HTTP 路由时，请求体可直接用 `CreateRequest`，响应体可用 `CreateResult`、`SandboxMetadata`、`ReclaimPlan`、`DeleteResult`。
+
+---
+
+## 11. 二期 HTTP 接口
+
+服务层子包 `sandbox_platform.server`（FastAPI）把上面的核心接口暴露为 HTTP 路由。
+**命令行与服务端共用同一 `SandboxService`，行为等价**：服务层只做编排与转译，
+不重复实现任何生命周期逻辑，宿主交互仍收敛在 `daemon.py` / `images.py` / `proxy.py` 内。
+
+| 项 | 值 |
+|---|---|
+| 前缀 | `/api` |
+| 启动入口 | `uv run python -m sandbox_platform.server` |
+| 监听地址 | 默认 `127.0.0.1:8000`，用 `SANDBOX_CONSOLE_HOST` / `SANDBOX_CONSOLE_PORT` 覆盖 |
+| 前端目录 | 默认 `<项目目录>/console/dist`，用 `SANDBOX_CONSOLE_DIST` 覆盖；目录不存在时跳过静态托管并记日志 |
+| 错误响应体 | 统一 `{"detail": "中文消息"}`，消息取平台异常原文 |
+| 鉴权 | 无（只监听回环或内网地址，不得暴露公网） |
+
+### 11.1 路由表
+
+| 方法 | 路径 | 请求体 | 响应体 | 对应的核心接口 |
+|---|---|---|---|---|
+| GET | `/api/health` | — | 服务自检（版本、平台数据根） | — |
+| POST | `/api/sandboxes` | `CreateSandboxRequest` | `CreateSandboxResponse` | `SandboxService.create` |
+| GET | `/api/sandboxes` | — | `SandboxSummary[]` | `SandboxService.list` |
+| GET | `/api/sandboxes/{name}` | — | `SandboxDetail` | `SandboxService.get` |
+| POST | `/api/sandboxes/{name}/start` | — | `SandboxDetail` | `SandboxService.start` |
+| POST | `/api/sandboxes/{name}/stop` | `StopSandboxRequest`（可省略） | `SandboxDetail` | `SandboxService.stop` |
+| GET | `/api/sandboxes/{name}/reclaim` | — | `ReclaimPlanModel` | `SandboxService.reclaim_plan` |
+| DELETE | `/api/sandboxes/{name}` | — | `DeleteSandboxResponse` | `SandboxService.delete` |
+
+### 11.2 请求字段
+
+`CreateSandboxRequest`：
+
+| 字段 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `name` | `str` | 必填 | 沙箱名，走一期白名单校验 |
+| `image` | `str \| null` | `null` | 沙箱镜像，缺省取平台默认镜像 |
+| `image_source` | `str` | `auto` | `auto`（一期行为）/ `host`（强制从宿主注入，不经镜像代理） |
+| `mounts` | `list[str]` | `[]` | 用户声明挂载，格式 `宿主路径:容器路径[:ro]`；平台不创建也不删除宿主目录 |
+| `command` | `str \| list[str] \| null` | `null` | 容器启动命令；给字符串时按 shell 引号规则切分，与命令行一致 |
+| `env` | `dict[str, str]` | `{}` | 容器环境变量，键名走白名单校验 |
+| `workdir` | `str \| null` | `null` | 容器工作目录 |
+| `network` | `str \| null` | `null` | 网桥网络名，缺省 `<沙箱名>-net`；用户指定的网络平台只接入不回收 |
+
+`StopSandboxRequest`：
+
+| 字段 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `stop_dependencies` | `bool` | `true` | 是否一并停止依赖容器（对应命令行 `--keep-dependencies` 的反面） |
+
+### 11.3 响应字段
+
+| 模型 | 字段 | 说明 |
+|---|---|---|
+| `SandboxSummary` | `name`、`state`、`state_label`、`image`、`created_at` | 列表项：名字 / 状态 / 镜像 / 创建时间 |
+| `SandboxDetail` | `name`、`state`、`state_label`、`image`、`image_source`、`created_at`、`updated_at`、`system_user`、`uid`、`gid`、`home`、`subid_start`、`subid_length`、`socket_path`、`socket_mount_path`、`container_name`、`container_id`、`network_name`、`network_owned`、`unit_path`、`mounts`、`dependency_containers`、`command`、`env`、`workdir` | 单个沙箱的完整信息（取自 `SandboxMetadata`） |
+| `CreateSandboxResponse` | `metadata`、`connection`、`steps` | 创建结果：`steps` 是固定 7 步名称，`connection` 含套接字路径与进入沙箱的命令提示 |
+| `ReclaimPlanModel` | `sandbox_name`、`items`、`untouched_note`、`user_mounts`、`incomplete` | 删除前的回收清单；`untouched_note` 固定为「用户挂载的宿主机目录不受影响」；`incomplete` 表示依赖容器清单可能不完整 |
+| `DeleteSandboxResponse` | `name`、`existed`、`removed`、`failed`、`plan` | 删除结果；`removed` 是确实回收掉的资源，`failed` 是尝试过但没成功的条目 |
+
+### 11.4 错误码映射
+
+| 场景 | 状态码 | 响应体 |
+|---|---|---|
+| 入参非法（沙箱名、镜像名、挂载声明、镜像来源等） | 400 | `{"detail": "平台异常原文"}` |
+| 请求体不合法（缺字段、类型不对） | 400 | `{"detail": "请求参数不合法：字段（原因）"}` |
+| 沙箱不存在 | 404 | `{"detail": "平台异常原文"}` |
+| 接口不存在 | 404 | `{"detail": "接口不存在：METHOD /path"}` |
+| 沙箱已存在 | 409 | `{"detail": "平台异常原文"}` |
+| 其余平台异常（代理不可达、生命周期步骤失败、镜像不可用等） | 500 | `{"detail": "平台异常原文"}` |
+
+映射在服务层统一完成：平台异常不吞，消息直接取异常原文。
+

@@ -1,0 +1,42 @@
+# 沙箱平台控制台服务（systemd 单元模板）
+#
+# 本文件只是模板：不自动安装、不自动启用。
+# 安装方式（按实际部署路径改下面的两处路径）：
+#   sudo cp platform/server/sandbox-console.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now sandbox-console.service
+#
+# 服务以宿主特权身份运行：单元里用 root 直接跑，核心包在需要宿主特权时
+# 直接执行（进程本身是 root）；若改成非 root 用户运行，核心包会自动走免密 sudo。
+#
+# 安全边界：服务不做认证，只监听回环或内网地址，不得暴露公网。
+
+[Unit]
+Description=Sandbox Platform Console（沙箱平台控制台服务）
+Documentation=https://127.0.0.1:8000/docs
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/sandbox-platform
+# 依赖用 uv 管理：uv sync --all-groups 后 uv run 启动
+ExecStart=/usr/local/bin/uv run python -m sandbox_platform.server
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+# 只绑回环地址；要给内网访问改成内网地址，不要暴露公网
+Environment=SANDBOX_CONSOLE_HOST=127.0.0.1
+Environment=SANDBOX_CONSOLE_PORT=8000
+# 平台数据根目录（与命令行一致）
+Environment=SANDBOX_PLATFORM_HOME=/var/lib/sandbox-platform
+
+# 日志一律走标准输出，由 journald 收走
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sandbox-console
+
+[Install]
+WantedBy=multi-user.target

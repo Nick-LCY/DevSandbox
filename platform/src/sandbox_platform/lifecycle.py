@@ -40,7 +40,11 @@ from .errors import (
     SandboxError,
     ValidationError,
 )
-from .images import ImageManager
+from .images import (
+    IMAGE_SOURCE_AUTO,
+    IMAGE_SOURCE_CHOICES,
+    ImageManager,
+)
 from .metadata import (
     STATE_DELETED,
     STATE_RUNNING,
@@ -79,7 +83,10 @@ CREATE_STEP_NAMES = (
 # ---------------------------------------------------------------- 请求与结果
 @dataclass(frozen=True)
 class CreateRequest:
-    """创建沙箱的入参。"""
+    """创建沙箱的入参。
+
+    ``image_source`` 取 ``auto``（默认，一期行为）或 ``host``（强制从宿主注入）。
+    """
 
     name: str
     image: str | None = None
@@ -88,6 +95,7 @@ class CreateRequest:
     env: dict[str, str] = field(default_factory=dict)
     workdir: str | None = None
     network_name: str | None = None
+    image_source: str = IMAGE_SOURCE_AUTO
 
 
 @dataclass(frozen=True)
@@ -172,6 +180,15 @@ def validate_env_pairs(env: dict[str, str]) -> dict[str, str]:
                 f"环境变量名非法：{key!r}，只允许字母、数字与下划线，且不能以数字开头"
             )
     return env
+
+
+def validate_image_source(source: str) -> str:
+    """校验镜像来源取值（``auto`` / ``host``）。"""
+    if source not in IMAGE_SOURCE_CHOICES:
+        raise ValidationError(
+            f"镜像来源非法：{source!r}，只允许 {' / '.join(IMAGE_SOURCE_CHOICES)}"
+        )
+    return source
 
 
 def validate_system_user_name(name: str) -> str:
@@ -400,7 +417,7 @@ class SandboxService:
             # ⑤ 启动沙箱容器并挂载套接字与用户声明挂载
             current_step = CREATE_STEP_NAMES[4]
             image = validate_image_name(request.image or self.config.default_image)
-            self.images.ensure_image(image, daemon)
+            self._prepare_image(image, daemon, request.image_source)
             network_name = request.network_name or self._network_name(name)
             network_owned = request.network_name is None
             if not daemon.network_exists(network_name):
@@ -450,6 +467,7 @@ class SandboxService:
                 network_name=network_name,
                 unit_path=str(unit_path),
                 state=STATE_RUNNING,
+                image_source=request.image_source,
                 network_owned=network_owned,
                 mounts=user_mounts,
                 command=list(request.command or ()),
@@ -469,6 +487,16 @@ class SandboxService:
         except Exception as exc:  # pragma: no cover - 兜底：非预期异常也要回滚
             self._rollback(completed)
             raise LifecycleError(current_step, str(exc), cause=exc) from exc
+
+    def _prepare_image(self, image: str, daemon: UserDaemon, image_source: str) -> str:
+        """按镜像来源准备镜像，返回来源标记。
+
+        ``auto``（一期行为，默认）：沙箱守护进程已有 → 平台自建镜像由宿主导出注入
+        → 其余交由沙箱守护进程经统一镜像代理拉取。
+
+        ``host``（强制从宿主注入）：宿主没有该镜像直接报错，**不经镜像代理拉取**。
+        """
+        return self.images.ensure_image_from_source(image, daemon, image_source)
 
     def _run_sandbox_container(
         self,
@@ -594,6 +622,7 @@ class SandboxService:
     def _precheck(self, request: CreateRequest) -> None:
         """创建前的干跑校验：只解析不落地，避免非法输入留下宿主副作用。"""
         validate_image_name(request.image or self.config.default_image)
+        validate_image_source(request.image_source)
         if request.network_name:
             validate_network_name(request.network_name)
         validate_env_pairs(dict(request.env))
@@ -655,7 +684,7 @@ class SandboxService:
         if not daemon.wait_for_socket(timeout=120):
             raise LifecycleError("启动沙箱", f"守护进程套接字未出现：{daemon.context.socket_path}")
 
-        self.images.ensure_image(metadata.image, daemon)
+        self._prepare_image(metadata.image, daemon, metadata.image_source)
 
         if not daemon.network_exists(metadata.network_name):
             created = daemon.create_network(metadata.network_name)

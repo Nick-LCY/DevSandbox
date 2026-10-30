@@ -19,7 +19,15 @@ from .errors import (
     SandboxError,
     ValidationError,
 )
-from .images import ImageManager
+from .images import (
+    IMAGE_SOURCE_AUTO,
+    IMAGE_SOURCE_CHOICES,
+    IMAGE_SOURCE_HOST,
+    SOURCE_INJECTED,
+    SOURCE_PRESENT,
+    SOURCE_REMOTE,
+    ImageManager,
+)
 from .lifecycle import (
     CREATE_STEP_NAMES,
     RECLAIM_INCOMPLETE_NOTE,
@@ -32,6 +40,7 @@ from .lifecycle import (
     SandboxService,
     validate_env_pairs,
     validate_image_name,
+    validate_image_source,
     validate_network_name,
     validate_sandbox_name,
     validate_system_user_name,
@@ -70,11 +79,17 @@ from .userspace import (
 
 __all__ = [
     "CREATE_STEP_NAMES",
+    "IMAGE_SOURCE_AUTO",
+    "IMAGE_SOURCE_CHOICES",
+    "IMAGE_SOURCE_HOST",
     "PROXY_NO_PROXY",
     "RECLAIM_INCOMPLETE_NOTE",
     "RECLAIM_UNTOUCHED_NOTE",
     "SENSITIVE_HOST_DIRS",
     "SENSITIVE_HOST_FILES",
+    "SOURCE_INJECTED",
+    "SOURCE_PRESENT",
+    "SOURCE_REMOTE",
     "STATE_DELETED",
     "STATE_RUNNING",
     "STATE_STOPPED",
@@ -116,6 +131,7 @@ __all__ = [
     "socket_mount",
     "validate_env_pairs",
     "validate_image_name",
+    "validate_image_source",
     "validate_network_name",
     "validate_sandbox_name",
     "validate_system_user_name",

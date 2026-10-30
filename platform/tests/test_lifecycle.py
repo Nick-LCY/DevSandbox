@@ -116,6 +116,27 @@ def test_metadata_store_is_reachable_from_service(service: SandboxService) -> No
     assert isinstance(service.store, MetadataStore)
 
 
+def test_create_request_image_source_defaults_to_auto() -> None:
+    """创建入参的镜像来源默认 auto（一期行为，命令行不传该字段）。"""
+    assert CreateRequest(name="demo").image_source == "auto"
+
+
+def test_invalid_image_source_is_rejected() -> None:
+    """镜像来源只允许 auto / host。"""
+    from sandbox_platform import validate_image_source
+
+    assert validate_image_source("auto") == "auto"
+    assert validate_image_source("host") == "host"
+    with pytest.raises(ValidationError):
+        validate_image_source("proxy")
+
+
+def test_create_rejects_invalid_image_source(service: SandboxService) -> None:
+    """非法镜像来源在动宿主之前就被拒绝。"""
+    with pytest.raises(ValidationError):
+        service.create(CreateRequest(name="demo", image_source="proxy"))
+
+
 def test_service_constructible_without_cli(config) -> None:
     """核心模块可在无命令行环境下直接构造与调用。"""
     service = SandboxService(config)

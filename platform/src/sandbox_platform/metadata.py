@@ -16,6 +16,7 @@ from typing import Any
 
 from .config import PlatformConfig
 from .errors import ConfigError, ValidationError
+from .images import IMAGE_SOURCE_AUTO
 from .mounts import MountSpec
 
 STATE_RUNNING = "running"
@@ -52,6 +53,7 @@ class SandboxMetadata:
     container_id: str
     network_name: str
     unit_path: str
+    image_source: str = IMAGE_SOURCE_AUTO
     state: str = STATE_STOPPED
     network_owned: bool = True
     created_at: str = field(default_factory=utc_now)

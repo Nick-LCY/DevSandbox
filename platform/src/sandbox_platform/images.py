@@ -26,6 +26,13 @@ SOURCE_PRESENT = "present"
 SOURCE_INJECTED = "injected"
 SOURCE_REMOTE = "remote"
 
+# 镜像来源（创建入参 ``CreateRequest.image_source`` 的取值）：
+# auto —— 一期行为：守护进程已有 → 平台自建镜像由宿主导出注入 → 其余经镜像代理拉取
+# host —— 强制从宿主导出注入：宿主没有该镜像直接报错，**不经镜像代理拉取**
+IMAGE_SOURCE_AUTO = "auto"
+IMAGE_SOURCE_HOST = "host"
+IMAGE_SOURCE_CHOICES = (IMAGE_SOURCE_AUTO, IMAGE_SOURCE_HOST)
+
 
 class ImageManager:
     """镜像查找与宿主镜像注入。"""
@@ -57,6 +64,33 @@ class ImageManager:
 
         logger.info("镜像 %s 交由沙箱守护进程经统一镜像代理拉取", image)
         return SOURCE_REMOTE
+
+    def ensure_image_from_source(
+        self,
+        image: str,
+        daemon: UserDaemon,
+        source: str = IMAGE_SOURCE_AUTO,
+    ) -> str:
+        """按镜像来源准备镜像，返回来源标记。
+
+        ``auto``（默认，一期行为）：链条同 :meth:`ensure_image`。
+
+        ``host``（强制从宿主注入）：宿主没有该镜像直接报错，**不经镜像代理拉取**；
+        宿主有则导出注入沙箱守护进程（守护进程里已有时跳过重复注入）。
+        """
+        if source != IMAGE_SOURCE_HOST:
+            return self.ensure_image(image, daemon)
+
+        if not self.host_image_exists(image):
+            raise ImageError(
+                f"宿主上没有镜像 {image}：强制从宿主注入模式要求该镜像存在于宿主，"
+                "平台不经镜像代理拉取（改用 auto 模式可让沙箱守护进程经代理拉取）"
+            )
+        if daemon.image_exists(image):
+            logger.info("沙箱守护进程已有镜像 %s，跳过重复注入", image)
+            return SOURCE_PRESENT
+        logger.info("按强制从宿主注入模式准备镜像 %s", image)
+        return self.inject_from_host(image, daemon)
 
     def is_platform_local(self, image: str) -> bool:
         """镜像是否属于平台自建命名空间（只在宿主构建，不存在于任何仓库）。"""

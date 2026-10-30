@@ -11,6 +11,7 @@ import sandbox_platform
 CORE_DIR = Path(sandbox_platform.__file__).resolve().parent
 PROJECT_DIR = CORE_DIR.parents[1]
 CLI_DIR = PROJECT_DIR / "cli"
+SERVER_DIR = CORE_DIR / "server"
 
 
 def _core_sources() -> list[Path]:
@@ -19,6 +20,10 @@ def _core_sources() -> list[Path]:
 
 def _cli_sources() -> list[Path]:
     return sorted(CLI_DIR.rglob("*.py"))
+
+
+def _server_sources() -> list[Path]:
+    return sorted(SERVER_DIR.rglob("*.py"))
 
 
 def test_core_has_no_argparse() -> None:
@@ -34,6 +39,32 @@ def test_core_has_no_print_call() -> None:
     offenders = [
         str(path) for path in _core_sources() if "print(" in path.read_text(encoding="utf-8")
     ]
+    assert offenders == []
+
+
+def test_server_layer_has_no_argparse() -> None:
+    """服务层源码内不出现 argparse（服务层不做命令行参数解析）。"""
+    sources = _server_sources()
+    assert sources, "服务层目录为空"
+    offenders = [str(path) for path in sources if "argparse" in path.read_text(encoding="utf-8")]
+    assert offenders == []
+
+
+def test_server_layer_has_no_print_call() -> None:
+    """服务层源码内不出现 print( 调用（输出一律走日志）。"""
+    sources = _server_sources()
+    assert sources, "服务层目录为空"
+    offenders = [str(path) for path in sources if "print(" in path.read_text(encoding="utf-8")]
+    assert offenders == []
+
+
+def test_server_layer_does_not_call_host_commands() -> None:
+    """服务层不直接拼宿主命令：宿主交互一律经核心包。"""
+    offenders = []
+    for path in _server_sources():
+        text = path.read_text(encoding="utf-8")
+        if "command.run" in text or "sandbox_platform.command" in text:
+            offenders.append(str(path))
     assert offenders == []
 
 

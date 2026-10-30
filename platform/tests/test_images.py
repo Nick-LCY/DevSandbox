@@ -1,6 +1,7 @@
 """镜像可用性保障的单元测试：本地已有 → 宿主导出注入 → 交给代理拉取。
 
 离线包机制已废弃（ADR 0008），平台不再维护任何离线镜像包。
+二期新增镜像来源开关：``auto``（默认，一期行为）与 ``host``（强制从宿主注入）。
 """
 
 from __future__ import annotations
@@ -90,3 +91,44 @@ def test_local_image_prefixes_are_configurable(tmp_path: Path) -> None:
     assert manager.is_platform_local("my-registry/app:1.0") is True
     assert manager.is_platform_local("other/app:1.0") is True
     assert manager.is_platform_local("sandbox-platform/base:0.2.0") is False
+
+
+# ---------------------------------------------------------------- 镜像来源开关
+def test_auto_source_keeps_first_phase_chain(manager: ImageManager, monkeypatch) -> None:
+    """默认 auto：一期行为不变——普通镜像交由守护进程经代理拉取。"""
+    daemon = FakeDaemon()
+    monkeypatch.setattr(manager, "host_image_exists", lambda image: True)
+    assert manager.ensure_image_from_source("busybox:1.37", daemon) == "remote"
+    assert daemon.loaded == []
+
+
+def test_host_source_injects_from_host(manager: ImageManager, monkeypatch) -> None:
+    """host：强制从宿主导出注入沙箱守护进程（不经镜像代理）。"""
+    daemon = FakeDaemon()
+    monkeypatch.setattr(manager, "host_image_exists", lambda image: True)
+    injected: list[str] = []
+    monkeypatch.setattr(
+        manager, "inject_from_host", lambda image, d: injected.append(image) or "injected"
+    )
+    assert manager.ensure_image_from_source("my-local/app:dev", daemon, "host") == "injected"
+    assert injected == ["my-local/app:dev"]
+
+
+def test_host_source_fails_when_host_lacks_image(manager: ImageManager, monkeypatch) -> None:
+    """host：宿主没有该镜像直接报错，不退回镜像代理拉取。"""
+    from sandbox_platform import ImageError
+
+    daemon = FakeDaemon()
+    monkeypatch.setattr(manager, "host_image_exists", lambda image: False)
+    with pytest.raises(ImageError):
+        manager.ensure_image_from_source("my-local/app:dev", daemon, "host")
+    assert daemon.loaded == []
+
+
+def test_host_source_skips_redundant_injection(manager: ImageManager, monkeypatch) -> None:
+    """host：沙箱守护进程里已有该镜像时不重复导出注入。"""
+    daemon = FakeDaemon(images=("my-local/app:dev",))
+    monkeypatch.setattr(manager, "host_image_exists", lambda image: True)
+    monkeypatch.setattr(manager, "inject_from_host", lambda image, d: "injected")
+    assert manager.ensure_image_from_source("my-local/app:dev", daemon, "host") == "present"
+    assert daemon.loaded == []

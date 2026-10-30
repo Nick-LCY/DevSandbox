@@ -7,8 +7,11 @@
 | 路径 | 内容 |
 |---|---|
 | `src/sandbox_platform/` | 控制面核心模块（生命周期编排、用户与子 ID 段管理、镜像与挂载装配、元数据存储） |
-| `src/sandbox_platform/API.md` | 各模块对外函数签名与参数表 |
+| `src/sandbox_platform/API.md` | 各模块对外函数签名与参数表（含二期 HTTP 接口） |
+| `src/sandbox_platform/server/` | 二期服务层：FastAPI 应用工厂、依赖注入、请求与响应模型、沙箱管理路由 |
 | `cli/sandboxctl.py` | 命令行薄壳：只做参数解析、调用核心模块、打印结果 |
+| `console/dist` | 网页控制台前端构建产物（由服务进程在 `/` 路径托管；目录不存在时跳过静态托管） |
+| `server/sandbox-console.service` | systemd 单元模板（只提供模板，不自动安装、不自动启用） |
 | `scripts/smoke-lifecycle.sh` | 端到端冒烟脚本（创建 → 关闭 → 启动 → 删除 → 回收校验） |
 | `tests/` | 单元测试与宿主级测试（宿主级测试打 `root` 标记） |
 | `probe/rootless/` | 一期任务 01 的免 root 打样脚本与实测记录 |
@@ -43,6 +46,38 @@ uv run python cli/sandboxctl.py delete demo --yes
 # 列表
 uv run python cli/sandboxctl.py list
 ```
+
+## 控制台服务启动方式
+
+二期把控制面核心包常驻为 HTTP 服务（FastAPI + uvicorn）：**命令行与服务端共用同一套核心接口，行为等价**。
+
+```bash
+cd platform
+uv sync --all-groups                      # 安装依赖（含 fastapi、uvicorn）
+uv run python -m sandbox_platform.server   # 启动服务
+```
+
+| 项 | 说明 |
+|---|---|
+| 监听地址 | 默认 `127.0.0.1:8000`；用环境变量 `SANDBOX_CONSOLE_HOST` / `SANDBOX_CONSOLE_PORT` 覆盖 |
+| **只绑回环地址** | 服务不做认证与多用户，允许改成内网地址，**不得暴露公网** |
+| 平台数据根 | 仍走 `SANDBOX_PLATFORM_HOME`（默认 `/var/lib/sandbox-platform`），与命令行一致 |
+| 权限要求 | 与一期命令行一致：进程本身是 root 时直接执行，否则走免密 `sudo` |
+| 前端托管 | `console/dist` 由同一进程在 `/` 路径托管；目录不存在时跳过静态托管并记日志，不影响服务启动；部署路径不同时用 `SANDBOX_CONSOLE_DIST` 覆盖 |
+| 接口文档 | `src/sandbox_platform/API.md` 的「二期 HTTP 接口」章节；运行时的交互式文档在 `/docs` |
+| 常驻方式 | `server/sandbox-console.service` 是 systemd 单元模板，只提供模板，不自动安装、不自动启用 |
+
+```bash
+# 沙箱管理接口（示例）
+curl -s http://127.0.0.1:8000/api/sandboxes
+curl -s -X POST -H 'Content-Type: application/json' \
+    -d '{"name":"demo","image_source":"host","image":"my-local/app:dev"}' \
+    http://127.0.0.1:8000/api/sandboxes
+```
+
+创建入参多了一个可选字段 `image_source`：默认 `auto`（一期行为，镜像缺失时经镜像代理拉取），
+`host` 表示强制从宿主导出注入（宿主没有该镜像直接报错，不经镜像代理），供网页选用宿主本地镜像。
+命令行不传该字段，一期行为零变化。
 
 ## 运行前提
 

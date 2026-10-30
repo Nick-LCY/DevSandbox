@@ -4,10 +4,14 @@ version = "0.1.0"
 description = "沙箱平台控制面核心模块（生命周期编排、用户与子 ID 段管理、镜像与挂载装配、元数据存储）"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "fastapi>=0.162.0",
+    "uvicorn>=0.54.0",
+]
 
 [dependency-groups]
 dev = [
+    "httpx2>=2.16.0",
     "pytest>=8.0",
 ]
 
