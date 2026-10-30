@@ -388,6 +388,15 @@ class SandboxService:
             result.append(self._refresh_state(metadata))
         return result
 
+    def daemon_for(self, name: str) -> UserDaemon:
+        """取沙箱对应的守护进程操作入口。
+
+        沙箱不存在抛 :class:`NotFoundError`；执行身份（系统用户现查）与权限构造
+        复用既有逻辑，调用方不另起一套特权路径。
+        """
+        metadata = self.get(name)
+        return self._daemon_for(metadata)
+
     def _refresh_state(self, metadata: SandboxMetadata) -> SandboxMetadata:
         """按实际运行情况刷新沙箱状态。"""
         if not self.userspace.user_exists(metadata.system_user):

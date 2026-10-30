@@ -7,7 +7,18 @@
 from __future__ import annotations
 
 from .config import PlatformConfig
-from .daemon import UserContext, UserDaemon
+from .daemon import (
+    PTY_DEFAULT_COLS,
+    PTY_DEFAULT_ROWS,
+    PTY_SESSION_ENV,
+    PtyProcess,
+    UserContext,
+    UserDaemon,
+    get_pty_winsize,
+    set_pty_winsize,
+    spawn_pty,
+    terminate_pty_process,
+)
 from .errors import (
     AlreadyExistsError,
     CommandError,
@@ -89,6 +100,9 @@ __all__ = [
     "IMAGE_SOURCE_CHOICES",
     "IMAGE_SOURCE_HOST",
     "PROXY_NO_PROXY",
+    "PTY_DEFAULT_COLS",
+    "PTY_DEFAULT_ROWS",
+    "PTY_SESSION_ENV",
     "RECLAIM_INCOMPLETE_NOTE",
     "RECLAIM_UNTOUCHED_NOTE",
     "SENSITIVE_HOST_DIRS",
@@ -121,6 +135,7 @@ __all__ = [
     "ProxyProbe",
     "ProxyRestartResult",
     "ProxyStatus",
+    "PtyProcess",
     "ReclaimPlan",
     "RegistryProxyManager",
     "SandboxError",
@@ -134,6 +149,7 @@ __all__ = [
     "ValidationError",
     "ca_bundle_path",
     "describe_mounts",
+    "get_pty_winsize",
     "image_digest",
     "mounts_to_docker_args",
     "parse_mount_declaration",
@@ -141,6 +157,9 @@ __all__ = [
     "proxy_container_name",
     "sensitive_host_paths",
     "socket_mount",
+    "set_pty_winsize",
+    "spawn_pty",
+    "terminate_pty_process",
     "validate_env_pairs",
     "validate_image_name",
     "validate_image_source",

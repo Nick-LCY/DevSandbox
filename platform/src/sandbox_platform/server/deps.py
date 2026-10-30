@@ -6,8 +6,10 @@
 
 from __future__ import annotations
 
-from fastapi import Request
+from fastapi import Request, WebSocket
 from sandbox_platform import PlatformConfig, SandboxService
+
+from .terminal import TerminalSessionManager
 
 
 def get_config(request: Request) -> PlatformConfig:
@@ -26,3 +28,33 @@ def get_service(request: Request) -> SandboxService:
         service = SandboxService(get_config(request))
         request.app.state.sandbox_service = service
     return service
+
+
+def get_terminal_manager(request: Request) -> TerminalSessionManager:
+    """取应用级终端会话管理器（整个进程共用一个实例）。"""
+    return _terminal_manager_of(request.app)
+
+
+def get_terminal_manager_ws(websocket: WebSocket) -> TerminalSessionManager:
+    """取应用级终端会话管理器（WebSocket 入口用）。
+
+    WebSocket 路由拿不到 HTTP 请求对象，只能从连接自己身上取应用状态。
+    """
+    return _terminal_manager_of(websocket.app)
+
+
+def _terminal_manager_of(app) -> TerminalSessionManager:
+    """按应用装配终端会话管理器（没有就建一个并挂到应用状态上）。"""
+    manager = getattr(app.state, "terminal_manager", None)
+    if manager is None:
+        config = getattr(app.state, "platform_config", None)
+        if config is None:
+            config = PlatformConfig.from_env()
+            app.state.platform_config = config
+        service = getattr(app.state, "sandbox_service", None)
+        if service is None:
+            service = SandboxService(config)
+            app.state.sandbox_service = service
+        manager = TerminalSessionManager(config, service)
+        app.state.terminal_manager = manager
+    return manager

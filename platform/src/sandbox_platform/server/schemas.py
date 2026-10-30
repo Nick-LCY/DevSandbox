@@ -363,3 +363,74 @@ class ProxyRestartModel(ProxyStatusModel):
             message=result.message,
             reinstalled_users=list(result.reinstalled_users),
         )
+
+
+class TerminalSessionCreateRequest(BaseModel):
+    """新建终端会话的请求体。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sandbox: str = Field(description="沙箱名（走一期白名单校验）")
+    cols: int = Field(default=80, ge=1, le=1000, description="初始窗口宽度（列）")
+    rows: int = Field(default=24, ge=1, le=1000, description="初始窗口高度（行）")
+
+
+class TerminalSessionResponse(BaseModel):
+    """新建终端会话的结果。"""
+
+    session_id: str
+    sandbox: str
+    container_name: str
+    cols: int
+    rows: int
+    state: str
+    created_at: str
+
+    @classmethod
+    def from_session(cls, session: Any) -> TerminalSessionResponse:
+        """由终端会话生成。"""
+        record = session.record
+        return cls(
+            session_id=record.session_id,
+            sandbox=record.sandbox_name,
+            container_name=record.container_name,
+            cols=record.cols,
+            rows=record.rows,
+            state=record.state,
+            created_at=record.created_at,
+        )
+
+
+class TerminalSessionModel(BaseModel):
+    """终端会话表的一行（会话元数据）。"""
+
+    session_id: str
+    sandbox_name: str
+    container_name: str
+    system_user: str
+    created_at: str
+    last_attached_at: str
+    state: str
+    exit_code: int | None
+    pid: int
+    cols: int
+    rows: int
+    attached_count: int
+
+    @classmethod
+    def from_record(cls, record: Any) -> TerminalSessionModel:
+        """由会话表记录生成。"""
+        return cls(
+            session_id=record.session_id,
+            sandbox_name=record.sandbox_name,
+            container_name=record.container_name,
+            system_user=record.system_user,
+            created_at=record.created_at,
+            last_attached_at=record.last_attached_at,
+            state=record.state,
+            exit_code=record.exit_code,
+            pid=record.pid,
+            cols=record.cols,
+            rows=record.rows,
+            attached_count=record.attached_count,
+        )

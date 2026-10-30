@@ -1,13 +1,26 @@
 """以沙箱用户身份操作 systemd 用户单元与免 root Docker 守护进程。
 
 所有宿主交互都收敛在这里，上层编排只调用本模块的方法。
+
+伪终端部分（网页终端用）：宿主侧分配一个伪终端承载容器内的交互式 shell，
+容器内进程拿到真实 TTY，宿主侧通过主端文件描述符收发字节。
 """
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import json
 import logging
+import os
+import shutil
+import signal
+import struct
+import subprocess
+import sys
+import termios
 import time
+import tty
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,6 +38,25 @@ ROLE_SANDBOX = "sandbox"
 ROLE_DEPENDENCY = "dependency"
 
 DEFAULT_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# ---------------------------------------------------------------- 伪终端常量
+# 伪终端默认窗口大小
+PTY_DEFAULT_COLS = 80
+PTY_DEFAULT_ROWS = 24
+# 会话标记：注入容器内进程的环境变量名。该值同时出现在宿主侧 exec 进程的命令行里，
+# 服务重启后据此判断「记录里的进程号是不是本次会话留下的」，避免误杀被复用的进程号。
+PTY_SESSION_ENV = "SANDBOX_TERMINAL_SESSION"
+
+# 伪终端启动引导：子进程先拿到伪终端从端的控制终端身份，再 exec 真正的命令。
+# 为什么必须有控制终端：容器客户端靠终端的 SIGWINCH 感知窗口大小变化，
+# 没有控制终端就收不到这个信号，容器内 TTY 的尺寸永远停在初始值。
+# 引导放在一个全新解释器里跑（不继承父进程的锁），避免在多线程进程里 fork 后执行
+# Python 代码的死锁风险。
+PTY_BOOTSTRAP = (
+    "import fcntl, os, sys, termios\n"
+    "fcntl.ioctl(0, termios.TIOCSCTTY, 0)\n"
+    "os.execv(sys.argv[1], sys.argv[1:])\n"
+)
 
 
 @dataclass(frozen=True)
@@ -369,3 +401,252 @@ class UserDaemon:
     def connect_network(self, name: str, network: str) -> CommandResult:
         """把容器接入网络。"""
         return self.docker(["network", "connect", network, name], check=False)
+
+    # ---------------------------------------------------------------- 伪终端
+    def container_shell(self, name: str) -> str:
+        """探测容器内可用的交互式 shell。
+
+        优先用 bash（有历史与行编辑），容器内没有 bash 时退回 sh。
+        """
+        result = self.exec_in_container(name, ["sh", "-c", "command -v bash"], check=False, timeout=30)
+        if result.ok and result.stdout.strip():
+            return "bash"
+        return "sh"
+
+    def exec_pty(
+        self,
+        argv: list[str] | tuple[str, ...],
+        *,
+        cols: int = PTY_DEFAULT_COLS,
+        rows: int = PTY_DEFAULT_ROWS,
+    ) -> "PtyProcess":
+        """以沙箱用户身份在伪终端里执行命令。
+
+        执行身份、环境变量与权限前缀复用 :meth:`user_argv`：与既有宿主命令
+        完全一致，只把「收集输出」换成「挂一个伪终端」。
+        """
+        return spawn_pty(self.user_argv(argv), cols=cols, rows=rows)
+
+    def exec_pty_shell(
+        self,
+        container: str,
+        *,
+        session_id: str,
+        cols: int = PTY_DEFAULT_COLS,
+        rows: int = PTY_DEFAULT_ROWS,
+        shell: str = "bash",
+    ) -> "PtyProcess":
+        """在容器内起一个带真实 TTY 的交互式 shell。
+
+        宿主侧分配伪终端承载：容器内进程拿到真实 TTY（行编辑、全屏程序可用），
+        宿主侧通过主端文件描述符收发字节。会话标识以环境变量形式注入容器内进程，
+        同时出现在宿主侧 exec 进程的命令行里（服务重启后据此清理遗留进程）。
+        """
+        argv = [
+            "exec",
+            "-it",
+            "--env",
+            f"{PTY_SESSION_ENV}={session_id}",
+            container,
+            shell,
+            "-i",
+        ]
+        return self.exec_pty(argv, cols=cols, rows=rows)
+
+
+# ---------------------------------------------------------------- 伪终端实现
+class PtyProcess:
+    """宿主侧伪终端的进程句柄。
+
+    ``master_fd`` 是伪终端主端文件描述符：宿主侧所有输入写进它、所有输出从它读出。
+    进程与伪终端同生共死——主端关闭后，容器内的交互式进程也会收到挂断。
+    """
+
+    def __init__(self, pid: int, master_fd: int, process: "subprocess.Popen[bytes]") -> None:
+        self.pid = pid
+        self.master_fd = master_fd
+        self._process = process
+        self._closed = False
+
+    def read(self, size: int = 65536) -> bytes:
+        """读一段输出；进程结束返回空字节。"""
+        try:
+            return os.read(self.master_fd, size)
+        except OSError as exc:
+            # 从端全部关闭后，主端读会返回 EIO（等价于 EOF）
+            if exc.errno in (errno.EIO, errno.EBADF):
+                return b""
+            raise
+
+    def write(self, data: bytes) -> int:
+        """写入输入字节，返回实际写入长度。"""
+        if not data:
+            return 0
+        try:
+            return os.write(self.master_fd, data)
+        except OSError as exc:
+            if exc.errno in (errno.EIO, errno.EBADF, errno.EPIPE):
+                return 0
+            raise
+
+    def resize(self, cols: int, rows: int) -> None:
+        """设置窗口大小（行数、列数）。"""
+        set_pty_winsize(self.master_fd, cols, rows)
+
+    def winsize(self) -> tuple[int, int]:
+        """取当前窗口大小（行数、列数）。"""
+        return get_pty_winsize(self.master_fd)
+
+    def poll(self) -> int | None:
+        """取退出码；进程仍在跑返回 ``None``。"""
+        return self._process.poll()
+
+    def wait(self, timeout: float | None = None) -> int | None:
+        """等待进程退出并返回退出码；超时返回 ``None``。"""
+        try:
+            return self._process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return None
+
+    def terminate(self) -> bool:
+        """终止进程（连同整个进程组）。"""
+        return terminate_pty_process(self.pid)
+
+    def close(self) -> None:
+        """关闭主端文件描述符（幂等）。"""
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            os.close(self.master_fd)
+        except OSError:
+            pass
+
+
+def set_pty_winsize(fd: int, cols: int, rows: int) -> None:
+    """设置伪终端窗口大小。"""
+    packed = struct.pack("HHHH", rows, cols, 0, 0)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, packed)
+
+
+def get_pty_winsize(fd: int) -> tuple[int, int]:
+    """取伪终端窗口大小（行数、列数）。"""
+    packed = fcntl.ioctl(fd, termios.TIOCGWINSZ, struct.pack("HHHH", 0, 0, 0, 0))
+    rows, cols, _, _ = struct.unpack("HHHH", packed)
+    return rows, cols
+
+
+def set_pty_raw(fd: int) -> None:
+    """把伪终端设为 raw 模式。
+
+    宿主侧只做字节搬运，不做行编辑：回显、规范化、信号处理全部关掉，
+    字节原样送到容器内进程那里，由容器内的 TTY 负责行编辑与 Ctrl-C。
+    """
+    mode = termios.tcgetattr(fd)
+    tty.cfmakeraw(mode)
+    termios.tcsetattr(fd, termios.TCSANOW, mode)
+
+
+def spawn_pty(
+    argv: list[str] | tuple[str, ...],
+    *,
+    cols: int = PTY_DEFAULT_COLS,
+    rows: int = PTY_DEFAULT_ROWS,
+    env: dict[str, str] | None = None,
+) -> PtyProcess:
+    """在宿主伪终端里起一个进程，返回进程句柄与主端文件描述符。
+
+    子进程自带新会话（``setsid``）并把伪终端从端设为自己的控制终端：
+    窗口大小变化时内核会给前台进程组发 SIGWINCH，容器客户端据此把新尺寸
+    转发到容器内的 TTY。
+    """
+    argv = [str(item) for item in argv]
+    if not argv:
+        raise ValueError("命令不能为空")
+    program = shutil.which(argv[0])
+    if program is None:
+        raise FileNotFoundError(f"命令不存在：{argv[0]}")
+    command = [program, *argv[1:]]
+    bootstrap = sys.executable
+    if bootstrap:
+        # 经引导进程拿控制终端：exec 之后进程号不变，命令行仍是真正的命令
+        command = [bootstrap, "-c", PTY_BOOTSTRAP, *command]
+    master_fd, slave_fd = os.openpty()
+    try:
+        set_pty_winsize(master_fd, cols, rows)
+        set_pty_raw(master_fd)
+        process = subprocess.Popen(  # noqa: S603 - 参数全部来自平台内部构造，不经 shell
+            command,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            start_new_session=True,
+            close_fds=True,
+            env=env,
+        )
+    except BaseException:
+        os.close(master_fd)
+        os.close(slave_fd)
+        raise
+    os.close(slave_fd)
+    return PtyProcess(process.pid, master_fd, process)
+
+
+def process_cmdline(pid: int) -> str | None:
+    """取进程的完整命令行文本。
+
+    进程不存在返回 ``None``；存在但取不到命令行（内核线程等）返回空串。
+    """
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return ""
+    return raw.replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
+
+
+def terminate_pty_process(
+    pid: int,
+    marker: str | None = None,
+    *,
+    grace: float = 3.0,
+) -> bool:
+    """按进程号终止遗留的伪终端进程。
+
+    只有当该进程的命令行含 ``marker``（会话标识）时才终止：进程号会被系统
+    复用，误杀无关进程的后果比留下一个僵尸严重得多。返回是否真的终止了进程。
+    """
+    if pid <= 1:
+        return False
+    cmdline = process_cmdline(pid)
+    if cmdline is None:
+        return False
+    if marker and marker not in cmdline:
+        logger.info("进程 %s 的命令行不含会话标记，跳过终止", pid)
+        return False
+    try:
+        pgid = os.getpgid(pid)
+    except OSError:
+        return False
+    try:
+        if pgid == pid:
+            os.killpg(pgid, signal.SIGTERM)
+        else:
+            os.kill(pid, signal.SIGTERM)
+    except OSError as exc:
+        logger.warning("终止遗留进程 %s 失败：%s", pid, exc)
+        return False
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        if process_cmdline(pid) is None:
+            return True
+        time.sleep(0.1)
+    try:
+        if pgid == pid:
+            os.killpg(pgid, signal.SIGKILL)
+        else:
+            os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+    return True

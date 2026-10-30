@@ -10,11 +10,12 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from sandbox_platform import ConfigError, PlatformConfig, __version__
+from sandbox_platform import ConfigError, PlatformConfig, SandboxService, __version__
 
 from .errors import install_exception_handlers
 from .routes import api_router
 from .sessions import prepare_sessions_dir, purge_leftover_sessions
+from .terminal import TerminalSessionManager
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     prepare_sessions_dir(config)
     removed = purge_leftover_sessions(config)
     logger.info("已清理上次遗留的终端会话记录：%d 条", len(removed))
-    yield
+
+    # 终端会话管理器整个进程共用一个：伪终端与容器内进程都活在它身上
+    service = getattr(app.state, "sandbox_service", None)
+    if service is None:
+        service = SandboxService(config)
+        app.state.sandbox_service = service
+    manager = TerminalSessionManager(config, service)
+    app.state.terminal_manager = manager
+    try:
+        yield
+    finally:
+        # 服务重启则会话全部失效：容器内进程一并收掉
+        manager.close_all()
 
 
 def create_app(config: PlatformConfig | None = None) -> FastAPI:
