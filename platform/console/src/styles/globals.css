@@ -25,19 +25,17 @@
  *    由 src/lib/theme.ts 的 applyTheme() 负责挂/摘这个类。
  *
  * 4. 新外壳作用域
- *    会跨页渗漏的规则（选中态 `::selection` 与 `color-scheme` 表单/滚动条配色）
- *    一律收进 `[data-console-shell]` 作用域，只对新外壳生效，旧四页保持浏览器
- *    默认外观不变。
- *    **任务二的外壳根元素必须携带 `data-console-shell` 属性**，否则这两条规则
+ *    会跨区域渗漏的规则（选中态 `::selection` 与 `color-scheme` 表单/滚动条配色）
+ *    一律收进 `[data-console-shell]` 作用域，只对控制台外壳生效。
+ *    **外壳根元素必须携带 `data-console-shell` 属性**，否则这两条规则
  *    不会命中（选中态与 color-scheme 会退回浏览器默认值）。
  *
  * ---------------------------------------------------------------------------
- * 旧四页已下线（任务二）：
+ * 样式底座只有一套：
  *
- * - 旧的无层样式表与 `src/pages/` 已删除，控制台只剩一套样式底座：
- *   Tailwind 工具类 + 本文件的令牌。
- * - 因此本文件**引入 Preflight**（Tailwind 的 reset）：旧四页依赖的浏览器
- *   默认样式（<p> 外边距、标题字重、<ol> 编号）不再需要保持原样，新外壳
+ * - 控制台只剩 Tailwind 工具类 + 本文件的令牌，没有第二套无层样式表。
+ * - 因此本文件**引入 Preflight**（Tailwind 的 reset）：浏览器默认样式
+ *   （<p> 外边距、标题字重、<ol> 编号）不再需要保持原样，全站
  *   按 Tailwind 的默认重置走。
  * ==========================================================================*/
 
@@ -161,8 +159,8 @@
   }
 }
 
-/* 新外壳作用域：选中态与 color-scheme 只对新外壳生效，不渗漏到旧四页。
-   任务二的外壳根元素必须携带 data-console-shell 属性。 */
+/* 新外壳作用域：选中态与 color-scheme 只对带 data-console-shell 的外壳生效。
+   外壳根元素必须携带 data-console-shell 属性。 */
 [data-console-shell] {
   color-scheme: light;
 }
@@ -361,8 +359,8 @@
     font-family: var(--app-font-mono);
   }
 
-  /* 选中态：收进新外壳作用域，旧四页保留浏览器默认选中色（暗色下默认选中
-     几乎不可见，不能渗漏过去）。任务二外壳根元素须携带 data-console-shell。 */
+  /* 选中态：收进新外壳作用域（暗色下浏览器默认选中色几乎不可见，不能渗漏
+     过去）。外壳根元素须携带 data-console-shell。 */
   [data-console-shell]::selection,
   [data-console-shell] ::selection {
     background: var(--app-accent);

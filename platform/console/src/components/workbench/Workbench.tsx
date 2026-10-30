@@ -58,6 +58,8 @@ export function Workbench() {
   const [proxyOpen, setProxyOpen] = useState(false);
 
   const requestIdRef = useRef(0);
+  /** 详情请求的序号：旧响应回来时直接丢弃，不许覆盖新沙箱的头部。 */
+  const detailRequestIdRef = useRef(0);
 
   /** 当前选中的沙箱名（没选中时为 null）。 */
   const selectedName = route.name === 'workbench-sandbox' ? route.sandboxName : null;
@@ -136,16 +138,26 @@ export function Workbench() {
   /* ------------------------------------------------------------------ 详情 */
 
   const loadDetail = useCallback(async (name: string) => {
+    const requestId = detailRequestIdRef.current + 1;
+    detailRequestIdRef.current = requestId;
     setDetailLoading(true);
     try {
       const found = await api.getSandbox(name);
+      if (requestId !== detailRequestIdRef.current) {
+        return;
+      }
       setDetail(found);
       setDetailError('');
     } catch (exc) {
+      if (requestId !== detailRequestIdRef.current) {
+        return;
+      }
       setDetail(null);
       setDetailError(exc instanceof Error ? exc.message : '读取沙箱详情失败');
     } finally {
-      setDetailLoading(false);
+      if (requestId === detailRequestIdRef.current) {
+        setDetailLoading(false);
+      }
     }
   }, []);
 
@@ -155,6 +167,9 @@ export function Workbench() {
       setDetailError('');
       return;
     }
+    // 换沙箱：先把上一个沙箱的详情清掉，别让头部串台；
+    // 在途的旧请求由 loadDetail 的请求序号护栏丢弃。
+    setDetail(null);
     void loadDetail(selectedName);
   }, [selectedName, loadDetail]);
 
@@ -274,6 +289,13 @@ export function Workbench() {
     [navigate, selectedName],
   );
 
+  /** 关掉删除确认弹窗：回收清单作废。 */
+  const closeDeleteDialog = useCallback((open: boolean) => {
+    if (!open) {
+      setPlan(null);
+    }
+  }, []);
+
   const running = detail?.state === 'running';
 
   return (
@@ -353,11 +375,7 @@ export function Workbench() {
 
       <DeleteSandboxDialog
         open={plan !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setPlan(null);
-          }
-        }}
+        onOpenChange={closeDeleteDialog}
         plan={plan}
         busy={deleting}
         onConfirm={() => void confirmDelete()}

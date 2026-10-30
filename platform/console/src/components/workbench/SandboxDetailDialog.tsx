@@ -28,6 +28,10 @@ function Field({ label, value, testId }: { label: string; value: string; testId:
  * 完整字段一览：状态、镜像、镜像来源、系统用户、容器名、网桥网络、时间、
  * 套接字路径、容器内挂载点、工作目录、启动命令、子 ID 段、网络归属、
  * 环境变量（只显示键名）、挂载、依赖容器。
+ *
+ * 标识口径：与工作区头部重名的四个字段（状态 / 镜像 / 创建时间 / 更新时间）
+ * 在弹窗里用 `page-sandbox-detail-dialog-*`，头部保持 `page-sandbox-detail-*`。
+ * 弹窗开着时两个标识同时挂在页面上，同名会让 Playwright 严格模式直接报错。
  */
 export function SandboxDetailDialog({
   open,
@@ -72,8 +76,8 @@ export function SandboxDetailDialog({
       {detail && (
         <div className="space-y-5">
           <div className="grid grid-cols-2 gap-x-6 gap-y-3.5">
-            <Field label="状态" value={detail.state_label} testId="page-sandbox-detail-state" />
-            <Field label="镜像" value={detail.image} testId="page-sandbox-detail-image" />
+            <Field label="状态" value={detail.state_label} testId="page-sandbox-detail-dialog-state" />
+            <Field label="镜像" value={detail.image} testId="page-sandbox-detail-dialog-image" />
             <Field label="镜像来源" value={detail.image_source} testId="page-sandbox-detail-image-source" />
             <Field label="系统用户" value={detail.system_user} testId="page-sandbox-detail-system-user" />
             <Field label="容器名" value={detail.container_name} testId="page-sandbox-detail-container-name" />
@@ -87,12 +91,12 @@ export function SandboxDetailDialog({
             <Field
               label="创建时间"
               value={formatTimestamp(detail.created_at)}
-              testId="page-sandbox-detail-created-at"
+              testId="page-sandbox-detail-dialog-created-at"
             />
             <Field
               label="更新时间"
               value={formatTimestamp(detail.updated_at)}
-              testId="page-sandbox-detail-updated-at"
+              testId="page-sandbox-detail-dialog-updated-at"
             />
             <Field label="套接字路径" value={detail.socket_path} testId="page-sandbox-detail-socket-path" />
             <Field

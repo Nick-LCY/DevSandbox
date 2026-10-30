@@ -84,8 +84,6 @@ function isBrowserReservedShortcut(event: KeyboardEvent): boolean {
 
 interface TerminalViewProps {
   sessionId: string;
-  /** 当前是否可见：只有可见的标签才做尺寸自适应。 */
-  active: boolean;
   /** 重试令牌：值变化时重建连接（用于「重连失败」后用户手动点重试）。 */
   retryToken?: number;
   onStateChange: (state: TerminalState) => void;
@@ -106,10 +104,8 @@ interface TerminalViewProps {
  * 或连接稳定存活超过 5 秒。握手成功不等于连上了——服务端握手后立刻关闭时，
  * 若在 `onopen` 清零计数就会变成每 500ms 一次的连接风暴。
  */
-export function TerminalView({ sessionId, active, retryToken = 0, onStateChange }: TerminalViewProps) {
+export function TerminalView({ sessionId, retryToken = 0, onStateChange }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const termRef = useRef<Terminal | null>(null);
-  const fitRef = useRef<FitAddon | null>(null);
   const stateCallbackRef = useRef(onStateChange);
   stateCallbackRef.current = onStateChange;
 
@@ -146,8 +142,6 @@ export function TerminalView({ sessionId, active, retryToken = 0, onStateChange 
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     term.open(container);
-    termRef.current = term;
-    fitRef.current = fitAddon;
 
     // 快捷键全量拦截：带 Ctrl / Meta / Alt 的组合一律不交给浏览器，
     // 但仍然让 xterm 编码后送进容器内的 shell（Ctrl+C 必须能到 pty）。
@@ -337,30 +331,8 @@ export function TerminalView({ sessionId, active, retryToken = 0, onStateChange 
       socket?.close();
       fitAddon.dispose();
       term.dispose();
-      termRef.current = null;
-      fitRef.current = null;
     };
   }, [sessionId, retryToken]);
-
-  useEffect(() => {
-    if (!active) {
-      return undefined;
-    }
-    // 标签刚显示出来时容器才有尺寸，等一帧再自适应。
-    const timer = window.setTimeout(() => {
-      const term = termRef.current;
-      const container = containerRef.current;
-      if (!term || !container || container.clientWidth === 0 || container.clientHeight === 0) {
-        return;
-      }
-      try {
-        fitRef.current?.fit();
-      } catch {
-        // 尺寸未就绪：忽略。
-      }
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [active]);
 
   return (
     <div

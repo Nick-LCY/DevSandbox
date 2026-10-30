@@ -239,7 +239,7 @@ test.describe('网页与命令行的等价性', () => {
       expect((sandboxctlMetadata(webName) as unknown as CliMetadata).state).toBe('running');
 
       // 网页展示的字段与命令行一致
-      expect(await detailField(page, 'page-sandbox-detail-system-user')).toBe(
+      expect(await detailField(page, 'system-user')).toBe(
         (sandboxctlMetadata(webName) as unknown as CliMetadata).system_user,
       );
     } finally {

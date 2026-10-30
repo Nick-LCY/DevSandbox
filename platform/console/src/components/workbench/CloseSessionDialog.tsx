@@ -1,6 +1,7 @@
-import { useEffect } from 'react';
+import { useCallback } from 'react';
 
 import { cn } from '../../lib/cn';
+import { ModalShell } from './ModalShell';
 
 interface CloseSessionDialogProps {
   open: boolean;
@@ -20,6 +21,9 @@ interface CloseSessionDialogProps {
  * 运行中的会话与已退出的会话后果完全不同，文案必须分开说：
  * - 运行中：关掉会终止容器内该会话的进程树，终端现场不保留；
  * - 已退出：只移除记录，容器内没有残留进程。
+ *
+ * 弹窗外壳与其他弹窗共用一套（Base UI Dialog 原语）：焦点圈在弹窗里，
+ * Esc 与点遮罩都能退出，删除进行中则一律不响应。
  */
 export function CloseSessionDialog({
   open,
@@ -29,20 +33,14 @@ export function CloseSessionDialog({
   onConfirm,
   onCancel,
 }: CloseSessionDialogProps) {
-  // Esc 关闭：不可逆操作必须给一条不点任何按钮就能退出的路。
-  useEffect(() => {
-    if (!open || busy) {
-      return undefined;
-    }
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
+  const handleOpenChange = useCallback(
+    (next: boolean) => {
+      if (!next) {
         onCancel();
       }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [open, busy, onCancel]);
+    },
+    [onCancel],
+  );
 
   if (!open) {
     return null;
@@ -55,28 +53,15 @@ export function CloseSessionDialog({
   const confirmLabel = running ? '关闭并移除' : '移除记录';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
-      <div
-        aria-hidden="true"
-        onClick={busy ? undefined : onCancel}
-        className="absolute inset-0 bg-black/40"
-      />
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        data-testid="page-sandbox-detail-terminal-remove-confirm"
-        className={cn(
-          'relative z-10 w-full max-w-[420px] rounded-xl border border-border bg-popover p-5 text-popover-foreground',
-          'shadow-lg',
-        )}
-      >
-        <h2 className="text-[15px] font-semibold">{title}</h2>
-        <p className="mt-2 text-[12.5px] leading-relaxed text-muted-foreground">{consequence}</p>
-        {sessionId && (
-          <p className="mt-1 font-mono text-[11.5px] text-faint">会话 {sessionId.slice(0, 8)}</p>
-        )}
-        <div className="mt-5 flex justify-end gap-2">
+    <ModalShell
+      open={open}
+      title={title}
+      testId="page-sandbox-detail-terminal-remove-confirm"
+      onOpenChange={handleOpenChange}
+      closeDisabled={busy}
+      maxWidthClassName="max-w-[420px]"
+      footer={
+        <>
           <button
             type="button"
             onClick={onCancel}
@@ -108,8 +93,13 @@ export function CloseSessionDialog({
           >
             {busy ? '正在处理…' : confirmLabel}
           </button>
-        </div>
-      </div>
-    </div>
+        </>
+      }
+    >
+      <p className="text-[12.5px] leading-relaxed text-muted-foreground">{consequence}</p>
+      {sessionId && (
+        <p className="mt-1 font-mono text-[11.5px] text-faint">会话 {sessionId.slice(0, 8)}</p>
+      )}
+    </ModalShell>
   );
 }

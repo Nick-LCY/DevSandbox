@@ -48,14 +48,14 @@ test.describe('网页控制台全流程', () => {
       await page.getByTestId('page-sandbox-create-success-link').click();
       await expect(page.getByTestId('page-sandbox-detail-title')).toContainText(SANDBOX_NAME);
       await expect(page.getByTestId('page-sandbox-detail-state')).toHaveText('运行中');
-      expect(await detailField(page, 'page-sandbox-detail-image')).toBe(IMAGE);
-      expect(await detailField(page, 'page-sandbox-detail-image-source')).toBe('host');
-      const mountText = await detailField(page, 'page-sandbox-detail-mounts');
+      expect(await detailField(page, 'image')).toBe(IMAGE);
+      expect(await detailField(page, 'image-source')).toBe('host');
+      const mountText = await detailField(page, 'mounts');
       expect(mountText).toContain(workspace.path);
       expect(mountText).toContain(workspace.containerPath);
 
-      const systemUser = await detailField(page, 'page-sandbox-detail-system-user');
-      const containerName = await detailField(page, 'page-sandbox-detail-container-name');
+      const systemUser = await detailField(page, 'system-user');
+      const containerName = await detailField(page, 'container-name');
       const uid = userUid(systemUser);
       expect(uid).toBeGreaterThan(0);
 
@@ -72,12 +72,12 @@ test.describe('网页控制台全流程', () => {
       expect(sandboxContainerState(systemUser, uid, containerName)).toBe('exited');
 
       // ── ⑥ 再启动：同一个用户、同一个子 ID 段、同一个守护进程
-      const subidBefore = await detailField(page, 'page-sandbox-detail-subid');
+      const subidBefore = await detailField(page, 'subid');
       await page.getByTestId('page-sandbox-detail-start-button').click();
       await expect(page.getByTestId('page-sandbox-list-action-message')).toContainText('已启动');
       await expect(page.getByTestId('page-sandbox-detail-state')).toHaveText('运行中');
       expect(sandboxContainerState(systemUser, uid, containerName)).toBe('running');
-      expect(await detailField(page, 'page-sandbox-detail-subid')).toBe(subidBefore);
+      expect(await detailField(page, 'subid')).toBe(subidBefore);
 
       // ── ⑦ 删除：先看回收清单弹窗，确认后才真删
       await page.getByTestId('page-sandbox-detail-delete-button').click();
@@ -136,10 +136,10 @@ test.describe('网页控制台全流程', () => {
     });
     await page.getByTestId('page-sandbox-create-success-link').click();
     await expect(page.getByTestId('page-sandbox-detail-title')).toBeVisible();
-    const image = await detailField(page, 'page-sandbox-detail-image');
+    const image = await detailField(page, 'image');
     await page.getByTestId('page-sandbox-detail-refresh-button').click();
     await expect(page.getByTestId('page-sandbox-detail-state')).toHaveText('运行中');
-    expect(await detailField(page, 'page-sandbox-detail-image')).toBe(image);
+    expect(await detailField(page, 'image')).toBe(image);
     await gotoDetail(page, 'acc-refresh');
     await expect(page.getByTestId('page-sandbox-detail-state')).toHaveText('运行中');
   });

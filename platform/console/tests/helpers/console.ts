@@ -65,6 +65,24 @@ export async function fillCreateForm(
   return Date.now() - started;
 }
 
+/**
+ * 弹窗字段的标识映射。
+ *
+ * 与工作区头部重名的四个字段在弹窗里换了标识（避免 Playwright 严格模式
+ * 撞车）；其余字段只在弹窗里出现，标识不变。
+ */
+const DIALOG_FIELD_IDS: Record<string, string> = {
+  state: 'page-sandbox-detail-dialog-state',
+  image: 'page-sandbox-detail-dialog-image',
+  'created-at': 'page-sandbox-detail-dialog-created-at',
+  'updated-at': 'page-sandbox-detail-dialog-updated-at',
+};
+
+/** 字段名 → 弹窗里的定位标识。 */
+function dialogFieldId(field: string): string {
+  return DIALOG_FIELD_IDS[field] ?? `page-sandbox-detail-${field}`;
+}
+
 /** 打开沙箱详情弹窗（完整字段在弹窗里）。 */
 export async function openDetailDialog(page: Page): Promise<void> {
   await page.getByTestId('page-sandbox-detail-detail-button').click();
@@ -76,14 +94,18 @@ export async function openDetailDialog(page: Page): Promise<void> {
  *
  * 完整字段（镜像来源 / 系统用户 / 容器名 / 挂载 / 子 ID 段…）只在详情弹窗里，
  * 所以先确保弹窗是开着的；读完顺手关掉，免得与工作区头部的同名字段撞车。
+ *
+ * 字段名传字段本身（`image` / `image-source`），不传完整标识：
+ * 与工作区头部重名的四个字段（状态 / 镜像 / 创建时间 / 更新时间）在弹窗里
+ * 换了标识（`page-sandbox-detail-dialog-*`），映射关系只在本文件里维护。
  */
-export async function detailField(page: Page, testId: string): Promise<string> {
+export async function detailField(page: Page, field: string): Promise<string> {
   const dialog = page.getByTestId('page-sandbox-detail-dialog');
   const opened = !(await dialog.isVisible());
   if (opened) {
     await openDetailDialog(page);
   }
-  const text = ((await dialog.getByTestId(testId).textContent()) ?? '').trim();
+  const text = ((await dialog.getByTestId(dialogFieldId(field)).textContent()) ?? '').trim();
   if (opened) {
     await page.keyboard.press('Escape');
     await expect(dialog).toBeHidden();

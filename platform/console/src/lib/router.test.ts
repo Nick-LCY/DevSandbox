@@ -1,6 +1,8 @@
+// @vitest-environment jsdom
+import { act, renderHook } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
-import { parseRoute, routeToHash, sandboxHash } from './router';
+import { parseRoute, routeToHash, sandboxHash, useNavigate } from './router';
 
 describe('parseRoute', () => {
   it('空地址落到工作台', () => {
@@ -110,5 +112,51 @@ describe('sandboxHash', () => {
       sandboxName: 'a/b c',
       sessionId: null,
     });
+  });
+});
+
+describe('useNavigate', () => {
+  it('把路由写进地址栏哈希', () => {
+    window.location.hash = '#/';
+    const { result } = renderHook(() => useNavigate());
+
+    act(() => {
+      result.current({
+        name: 'workbench-sandbox',
+        sandboxName: 'demo-01',
+        sessionId: 'sess-42',
+      });
+    });
+
+    expect(window.location.hash).toBe('#/sandboxes/demo-01/sess-42');
+  });
+
+  it('写进去的哈希是合法地址，能原样解析回同一个路由', () => {
+    window.location.hash = '#/';
+    const { result } = renderHook(() => useNavigate());
+    const route = {
+      name: 'workbench-sandbox' as const,
+      sandboxName: 'a/b c',
+      sessionId: 'ses/1',
+    };
+
+    act(() => {
+      result.current(route);
+    });
+
+    // 名字里的斜杠被编码成一个路径段，不会把地址拆成三段。
+    expect(window.location.hash).toBe('#/sandboxes/a%2Fb%20c/ses%2F1');
+    expect(parseRoute(window.location.hash)).toEqual(route);
+  });
+
+  it('跳到工作台首页：哈希回到 #/', () => {
+    window.location.hash = '#/sandboxes/demo-01';
+    const { result } = renderHook(() => useNavigate());
+
+    act(() => {
+      result.current({ name: 'workbench' });
+    });
+
+    expect(window.location.hash).toBe('#/');
   });
 });

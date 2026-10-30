@@ -1,6 +1,8 @@
-import { useEffect, type ReactNode } from 'react';
+import { useCallback, type ReactNode } from 'react';
+import { X } from 'lucide-react';
 
 import { cn } from '../../lib/cn';
+import { Dialog, DialogClose, DialogContent, DialogTitle } from '../ui/dialog';
 
 interface ModalShellProps {
   open: boolean;
@@ -21,7 +23,21 @@ interface ModalShellProps {
 }
 
 /**
- * 弹窗外壳：遮罩 + 面板 + 顶部标题栏。
+ * 面板最大宽度补上断点变体：`max-w-[560px]` → `sm:max-w-[560px]`。
+ *
+ * Base UI 原语自带 `sm:max-w-sm`（384px）的默认窄宽，不覆盖的话
+ * 宽弹窗在桌面端会被压成一条窄框。
+ */
+function withBreakpoint(maxWidthClassName: string): string {
+  return maxWidthClassName.replace(/^max-w-/, 'sm:max-w-');
+}
+
+/**
+ * 弹窗外壳：基于 Base UI Dialog 原语的遮罩 + 面板 + 顶部标题栏。
+ *
+ * 焦点管理交给原语：弹窗打开时焦点落进面板并被圈住（Tab 在面板里循环），
+ * 背景内容被标记为 aria-hidden（辅助技术读不到，Tab 也走不到），遮罩盖住整页，
+ * 关闭后焦点回到打开弹窗的那个按钮。
  *
  * 关闭途径有三条：Esc、点遮罩、点右上角 ×。三条都走 `onOpenChange(false)`，
  * 调用方可以按业务需要拦住（比如删除进行中不响应）。
@@ -36,60 +52,39 @@ export function ModalShell({
   children,
   footer,
 }: ModalShellProps) {
-  useEffect(() => {
-    if (!open || closeDisabled) {
-      return undefined;
-    }
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        onOpenChange(false);
+  const handleOpenChange = useCallback(
+    (next: boolean) => {
+      // 关闭被禁用时（删除进行中）：Esc、点遮罩、点关闭按钮一律不响应。
+      if (!next && closeDisabled) {
+        return;
       }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [open, closeDisabled, onOpenChange]);
-
-  if (!open) {
-    return null;
-  }
+      onOpenChange(next);
+    },
+    [closeDisabled, onOpenChange],
+  );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
-      <div
-        aria-hidden="true"
-        onClick={closeDisabled ? undefined : () => onOpenChange(false)}
-        className="absolute inset-0 bg-black/40"
-      />
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
+    <Dialog open={open} onOpenChange={handleOpenChange} disablePointerDismissal={closeDisabled}>
+      <DialogContent
+        showCloseButton={false}
         data-testid={testId}
         className={cn(
-          'relative z-10 flex max-h-[calc(100vh-3rem)] w-full flex-col overflow-hidden',
+          'flex max-h-[calc(100vh-3rem)] w-full flex-col gap-0 overflow-hidden p-0',
+          'max-w-[calc(100%-3rem)]',
+          withBreakpoint(maxWidthClassName),
           'rounded-xl border border-border bg-popover text-popover-foreground shadow-lg',
-          maxWidthClassName,
+          'ring-0',
         )}
       >
         <div className="flex items-center justify-between gap-4 border-b border-border px-5 py-3.5">
-          <h2 className="text-[15px] font-semibold">{title}</h2>
-          <button
-            type="button"
-            onClick={() => onOpenChange(false)}
+          <DialogTitle className="text-[15px] font-semibold">{title}</DialogTitle>
+          <DialogClose
             disabled={closeDisabled}
             aria-label="关闭"
-            className={cn(
-              'grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors',
-              'hover:bg-muted hover:text-foreground',
-              'focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none',
-              'disabled:pointer-events-none disabled:opacity-50',
-            )}
+            className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
           >
-            <span aria-hidden="true" className="text-[15px] leading-none">
-              ×
-            </span>
-          </button>
+            <X className="size-4" aria-hidden="true" />
+          </DialogClose>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
         {footer && (
@@ -97,7 +92,7 @@ export function ModalShell({
             {footer}
           </div>
         )}
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

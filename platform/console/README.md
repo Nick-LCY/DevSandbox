@@ -108,6 +108,7 @@ platform/console/
     │   ├── env.ts        环境变量声明解析
     │   ├── proxy.ts      代理状态文案转换
     │   ├── terminal.ts   终端帧协议
+    │   ├── sessions.ts   会话定序与标签序号登记
     │   ├── action.ts     操作提示条的文案与样式
     │   ├── theme.ts      亮 / 暗主题切换
     │   ├── cn.ts         类名合并（clsx + tailwind-merge）
@@ -130,7 +131,7 @@ platform/console/
     │       ├── ProxySettingsDialog.tsx 代理设置弹窗
     │       ├── DeleteSandboxDialog.tsx 删除确认弹窗（两步确认）
     │       ├── CloseSessionDialog.tsx   关闭终端会话弹窗
-    │       └── ModalShell.tsx          弹窗外壳（遮罩 / Esc / 标题栏）
+    │       └── ModalShell.tsx          弹窗外壳（Base UI Dialog：焦点陷阱 / Esc / 标题栏）
 ```
 
 ## 样式底座
@@ -170,7 +171,16 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 
 弹窗支持 `Esc` 关闭与点遮罩关闭（删除进行中两者都不响应）。
 
-删除沙箱是**两步确认**：第一次点「确认删除」只进入武装状态（按钮变「再点一次确认删除」，弹窗顶部出现红色提示「此操作不可撤销，再点一次确认」），武装窗口 5 秒内第二次点才真的发 `DELETE`；窗口过期自动解除武装。
+删除沙箱是**两步确认**：第一次点「确认删除」只进入武装状态（按钮变「再点一次确认删除」，弹窗顶部出现红色提示「此操作不可撤销，再点一次确认删除」），武装窗口 5 秒内第二次点才真的发 `DELETE`；窗口过期自动解除武装。
+
+## 弹窗与焦点管理
+
+全站只有**一套弹窗实现**：所有弹窗都走 `src/components/workbench/ModalShell.tsx`，而 ModalShell 底层是 Base UI 的 Dialog 原语（`src/components/ui/dialog.tsx`，`@base-ui/react`）。
+
+- **焦点陷阱**：弹窗打开时焦点落进面板，`Tab` / `Shift+Tab` 在面板里循环，不会跑到背后的页面上。
+- **背景不可交互**：弹窗开着时背景内容被标记为 `aria-hidden`（辅助技术读不到），`Tab` 走不到背景上；遮罩盖住整页，背景也点不到。
+- **焦点归位**：弹窗关闭后焦点回到打开它的那个按钮。
+- **关闭途径三条**：Esc、点遮罩、点右上角 `×`（lucide 图标）；三条都走 `onOpenChange(false)`，调用方可以按业务需要拦住（比如删除进行中一律不响应）。
 
 ## 关键行为
 
@@ -192,7 +202,11 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 - 终端配色与字体固定（两套主题恒定）：`Geist Mono` 12.5px，背景 `#152019`、前景 `#e3ebe5`、光标 `#a7d8af`、选区 `#2b3d31`。
 - **快捷键全量拦截**：带 Ctrl / Meta / Alt 的组合一律 `preventDefault`（不让浏览器抢走），但仍然编码后送进容器内的 shell（`Ctrl+C` 必须能到 pty）。浏览器保留键交回浏览器：`Ctrl+N`/`Ctrl+Shift+N`、`Ctrl+T`/`Ctrl+Shift+T`、`Ctrl+W`/`Ctrl+Shift+W`、`Ctrl+Q`、`Ctrl+Tab`/`Ctrl+Shift+Tab`、`F5`、`F11`、`F12`、`Alt+F4`、`Ctrl+P`、`Ctrl+S`。
 - 帧协议按 `API.md` 12.3：客户端二进制帧 = 终端输入字节，客户端文本帧 = `{"type":"resize","cols":..,"rows":..}`；服务端二进制帧 = 终端输出字节，服务端文本帧 = `hello` / `exit` / `error`。
-- 同一沙箱可开多个终端标签，每个标签一个独立会话（容器内一个带真实 TTY 的 shell）；标签标题是「终端 N」，N 是它在会话列表里的序号。
+- 同一沙箱可开多个终端标签，每个标签一个独立会话（容器内一个带真实 TTY 的 shell）；标签标题是「终端 N」，**N 是会话自己的登记号**（见下）。
+- **标签序号跟会话身份绑定**：会话第一次被看到时按递增顺序分配一个序号（同一个沙箱内从 1 开始），之后不再变动——关掉中间的标签，其余标签的序号不重排，用户正在用的那个不会改名字。标签的**顺序**按会话的创建时间排（同一时刻创建的按会话标识排）。
+- **会话表轻轮询**：面板可见时每 10 秒重新拉一次会话表（页面不可见时不拉），保证标签条与后端一致，关闭确认弹窗的「还在跑」判定也拿到较新的记录。刷新失败会在面板上挂错误提示，**下一次刷新成功或切换沙箱时自动清掉**。
+- **连接状态按会话存**：每个会话各记各的连接状态，状态栏只反映当前选中的会话；切换标签的瞬间不会还挂着上一个会话的「已连接」。
+- **切沙箱不会串台**：详情加载与会话表刷新都带请求序号护栏，旧沙箱的在途响应回来时直接丢弃，不会覆盖新沙箱的头部或标签条。
 - 断线后按退避节奏自动重连，**始终携带原 `session_id`**：服务端先回放环形缓冲再接实时流，现场不丢。页面刷新后（会话还在后端会话表里）点标签就能重新挂回原会话。
 - **退避计数只在连接真的可用时才清零**：收到服务端的 `hello` 帧，或连接稳定存活超过 5 秒。握手成功不等于连上了——服务端握手后立刻关闭时，如果在 `onopen` 就清零计数，会退化成每 500ms 一次的连接风暴。
 - 连续失败 10 次即停掉自动重连，界面显示「重连失败，点击重试」，由用户点「重试连接」手动触发。
@@ -221,10 +235,11 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 |---|---|---|
 | 外壳 | `layout` | `page-layout-title` / `page-layout-health`（带 `data-health-state`）/ `page-layout-proxy-button` / `page-layout-theme-toggle` |
 | 沙箱列表 | `sandbox-list` | `page-sandbox-list-title` / `page-sandbox-list-count` / `page-sandbox-list-item` / `page-sandbox-list-item-name` / `page-sandbox-list-item-state` / `page-sandbox-list-item-image` / `page-sandbox-list-refresh-button` / `page-sandbox-list-create-button` / `page-sandbox-list-error-message` / `page-sandbox-list-action-message` / `page-sandbox-list-empty` / `page-sandbox-list-loading` / `page-sandbox-list-updated-at` |
-| 新建沙箱 | `sandbox-create` | `page-sandbox-create-title` / `page-sandbox-create-name-input` / `page-sandbox-create-image-select` / `page-sandbox-create-image-refresh-button` / `page-sandbox-create-image-detail` / `page-sandbox-create-mount-add-button` / `page-sandbox-create-mount-item` / `page-sandbox-create-mount-host-input` / `page-sandbox-create-mount-container-input` / `page-sandbox-create-mount-readonly-checkbox` / `page-sandbox-create-mount-remove-button` / `page-sandbox-create-command-input` / `page-sandbox-create-workdir-input` / `page-sandbox-create-env-input` / `page-sandbox-create-submit-button` / `page-sandbox-create-error-message` / `page-sandbox-create-success` / `page-sandbox-create-success-message` / `page-sandbox-create-success-link` |
-| 沙箱详情 | `sandbox-detail` | `page-sandbox-detail-title` / `page-sandbox-detail-state` / `page-sandbox-detail-image` / `page-sandbox-detail-image-source` / `page-sandbox-detail-system-user` / `page-sandbox-detail-container-name` / `page-sandbox-detail-network-name` / `page-sandbox-detail-created-at` / `page-sandbox-detail-updated-at` / `page-sandbox-detail-socket-path` / `page-sandbox-detail-socket-mount-path` / `page-sandbox-detail-workdir` / `page-sandbox-detail-command` / `page-sandbox-detail-subid` / `page-sandbox-detail-network-owned` / `page-sandbox-detail-env` / `page-sandbox-detail-env-item` / `page-sandbox-detail-env-empty` / `page-sandbox-detail-mounts` / `page-sandbox-detail-mount-item` / `page-sandbox-detail-dependencies` / `page-sandbox-detail-dependency-item` / `page-sandbox-detail-refresh-button` / `page-sandbox-detail-start-button` / `page-sandbox-detail-stop-button` / `page-sandbox-detail-stop-dependencies-checkbox` / `page-sandbox-detail-detail-button` / `page-sandbox-detail-delete-button` / `page-sandbox-detail-empty` |
+| 新建沙箱 | `sandbox-create` | `page-sandbox-create-dialog`（弹窗容器）/ `page-sandbox-create-title` / `page-sandbox-create-name-input` / `page-sandbox-create-image-select` / `page-sandbox-create-image-refresh-button` / `page-sandbox-create-image-detail` / `page-sandbox-create-mount-add-button` / `page-sandbox-create-mount-item` / `page-sandbox-create-mount-host-input` / `page-sandbox-create-mount-container-input` / `page-sandbox-create-mount-readonly-checkbox` / `page-sandbox-create-mount-remove-button` / `page-sandbox-create-command-input` / `page-sandbox-create-workdir-input` / `page-sandbox-create-env-input` / `page-sandbox-create-submit-button` / `page-sandbox-create-error-message` / `page-sandbox-create-success` / `page-sandbox-create-success-message` / `page-sandbox-create-success-link` |
+| 沙箱详情（工作区头部） | `sandbox-detail` | `page-sandbox-detail-title` / `page-sandbox-detail-state` / `page-sandbox-detail-image` / `page-sandbox-detail-created-at` / `page-sandbox-detail-updated-at` / `page-sandbox-detail-refresh-button` / `page-sandbox-detail-start-button` / `page-sandbox-detail-stop-button` / `page-sandbox-detail-stop-dependencies-checkbox` / `page-sandbox-detail-detail-button` / `page-sandbox-detail-delete-button` / `page-sandbox-detail-empty` |
+| 沙箱详情弹窗 | `sandbox-detail-dialog` | `page-sandbox-detail-dialog`（弹窗容器）/ `page-sandbox-detail-dialog-state` / `page-sandbox-detail-dialog-image` / `page-sandbox-detail-dialog-created-at` / `page-sandbox-detail-dialog-updated-at` / `page-sandbox-detail-image-source` / `page-sandbox-detail-system-user` / `page-sandbox-detail-container-name` / `page-sandbox-detail-network-name` / `page-sandbox-detail-socket-path` / `page-sandbox-detail-socket-mount-path` / `page-sandbox-detail-workdir` / `page-sandbox-detail-command` / `page-sandbox-detail-subid` / `page-sandbox-detail-network-owned` / `page-sandbox-detail-env` / `page-sandbox-detail-env-item` / `page-sandbox-detail-env-empty` / `page-sandbox-detail-mounts` / `page-sandbox-detail-mount-item` / `page-sandbox-detail-mounts-empty` / `page-sandbox-detail-dependencies` / `page-sandbox-detail-dependency-item` / `page-sandbox-detail-dependencies-empty` / `page-sandbox-detail-loading` / `page-sandbox-detail-dialog-error` |
 | 终端 | `sandbox-detail-terminal` | `page-sandbox-detail-terminal-panel` / `page-sandbox-detail-terminal-tabs` / `page-sandbox-detail-terminal-tab` / `page-sandbox-detail-terminal-tab-select` / `page-sandbox-detail-terminal-tab-close` / `page-sandbox-detail-terminal-new-button` / `page-sandbox-detail-terminal-status` / `page-sandbox-detail-terminal-message` / `page-sandbox-detail-terminal-error` / `page-sandbox-detail-terminal-notice` / `page-sandbox-detail-terminal-retry-button` / `page-sandbox-detail-terminal-stopped-hint` / `page-sandbox-detail-terminal-surface` / `page-sandbox-detail-terminal-remove-confirm` / `page-sandbox-detail-terminal-remove-confirm-button` / `page-sandbox-detail-terminal-remove-cancel-button` |
-| 代理设置 | `settings` | `page-settings-title` / `page-settings-summary` / `page-settings-container-running` / `page-settings-healthy` / `page-settings-tcp-ok` / `page-settings-ca-fetchable` / `page-settings-cache-size` / `page-settings-certificate-ready` / `page-settings-proxy-url` / `page-settings-detail` / `page-settings-refresh-button` / `page-settings-restart-button` / `page-settings-restarting-message` / `page-settings-restart-result` / `page-settings-restarted` / `page-settings-restart-message` / `page-settings-ca-changed` / `page-settings-ca-reinstalled` / `page-settings-ca-conclusion` / `page-settings-reinstalled-users` / `page-settings-failed-users` / `page-settings-error-message` |
+| 代理设置 | `settings` | `page-settings-dialog`（弹窗容器）/ `page-settings-title` / `page-settings-summary` / `page-settings-container-running` / `page-settings-healthy` / `page-settings-tcp-ok` / `page-settings-ca-fetchable` / `page-settings-cache-size` / `page-settings-certificate-ready` / `page-settings-proxy-url` / `page-settings-detail` / `page-settings-refresh-button` / `page-settings-restart-button` / `page-settings-restarting-message` / `page-settings-restart-result` / `page-settings-restarted` / `page-settings-restart-message` / `page-settings-ca-changed` / `page-settings-ca-reinstalled` / `page-settings-ca-conclusion` / `page-settings-reinstalled-users` / `page-settings-failed-users` / `page-settings-error-message` |
 | 删除沙箱 | `sandbox-detail-delete` | `page-sandbox-detail-delete-dialog` / `page-sandbox-detail-delete-title` / `page-sandbox-detail-delete-untouched-note` / `page-sandbox-detail-delete-items` / `page-sandbox-detail-delete-item` / `page-sandbox-detail-delete-user-mounts` / `page-sandbox-detail-delete-user-mount-item` / `page-sandbox-detail-delete-incomplete` / `page-sandbox-detail-delete-armed-hint` / `page-sandbox-detail-delete-confirm-button` / `page-sandbox-detail-delete-cancel-button` |
 
 **已退役的标识**（旧四页与「后端保留的会话」列表下线后不再存在）：
@@ -244,6 +259,11 @@ const tab = page.locator('[data-testid="page-sandbox-detail-terminal-tab"][data-
 ```
 
 列表项额外带 `data-sandbox-name` 与 `data-sandbox-state`，终端标签与终端表面额外带 `data-session-id`（终端标签还带 `data-active`）。
+
+**同页双挂载的标识**（页面上同时存在多个，取第一个即可）：
+
+- `page-sandbox-list-create-button`：侧栏顶部的「新建沙箱」按钮与右侧空态引导块里的「新建沙箱」按钮各挂一个。用 `page.getByTestId('page-sandbox-list-create-button').first().click()` 即可。
+- `page-sandbox-detail-dialog-*`（状态 / 镜像 / 创建时间 / 更新时间）：这四个字段在工作区头部也有同名元素（`page-sandbox-detail-state` / `-image` / `-created-at` / `-updated-at`），弹窗里的版本加了 `dialog-` 前缀，两者不会撞名。
 
 ## 接口一览
 

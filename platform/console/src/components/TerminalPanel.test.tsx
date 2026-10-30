@@ -10,6 +10,7 @@
 
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { ComponentProps } from 'react';
 
 import type { TerminalSessionRecord } from '../api/types';
 import { TerminalPanel } from './TerminalPanel';
@@ -21,7 +22,11 @@ const mocks = vi.hoisted(() => ({
 }));
 
 /** 终端视图上报的状态：默认「连接中」，用来验证「标签状态与后端记录任一 running 即按运行中」。 */
-const viewMocks = vi.hoisted(() => ({ status: 'connecting' }));
+const viewMocks = vi.hoisted(() => ({
+  status: 'connecting',
+  /** 按会话标识指定状态：验证状态栏只反映当前会话。 */
+  bySession: {} as Record<string, string>,
+}));
 
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();
@@ -51,7 +56,8 @@ vi.mock('./TerminalView', async () => {
       const callbackRef = useRef(onStateChange);
       callbackRef.current = onStateChange;
       useEffect(() => {
-        callbackRef.current({ status: viewMocks.status, message: '模拟状态' });
+        const status = viewMocks.bySession[sessionId] ?? viewMocks.status;
+        callbackRef.current({ status, message: '模拟状态' });
       }, [sessionId]);
       return null;
     },
@@ -77,17 +83,41 @@ function makeRecord(overrides: Partial<TerminalSessionRecord> = {}): TerminalSes
   };
 }
 
+/** 每个测试用独立的沙箱名：标签序号按沙箱登记，测试之间互不干扰。 */
+let sandboxSeq = 0;
+
 function renderPanel(
   onActiveSessionChange: (sessionId: string | null) => void = vi.fn(),
-): void {
-  render(
+  props: Partial<ComponentProps<typeof TerminalPanel>> = {},
+): {
+  sandboxName: string;
+  rerender: (next: Partial<ComponentProps<typeof TerminalPanel>>) => void;
+} {
+  sandboxSeq += 1;
+  const sandboxName = props.sandboxName ?? `demo-${sandboxSeq}`;
+  const view = render(
     <TerminalPanel
-      sandboxName="demo"
+      sandboxName={sandboxName}
       sandboxRunning
       activeSessionId={null}
       onActiveSessionChange={onActiveSessionChange}
+      {...props}
     />,
   );
+  return {
+    sandboxName,
+    rerender: (next) =>
+      view.rerender(
+        <TerminalPanel
+          sandboxName={sandboxName}
+          sandboxRunning
+          activeSessionId={null}
+          onActiveSessionChange={onActiveSessionChange}
+          {...props}
+          {...next}
+        />,
+      ),
+  };
 }
 
 /** 首次返回会话列表，之后返回空列表（会话已经被删掉了）。 */
@@ -99,10 +129,12 @@ function mockSessions(records: TerminalSessionRecord[]): void {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.useRealTimers();
   mocks.listTerminalSessions.mockReset();
   mocks.createTerminalSession.mockReset();
   mocks.deleteTerminalSession.mockReset();
   viewMocks.status = 'connecting';
+  viewMocks.bySession = {};
 });
 
 describe('终端会话标签', () => {
@@ -155,10 +187,10 @@ describe('终端会话标签', () => {
     });
     const onActiveSessionChange = vi.fn();
 
-    renderPanel(onActiveSessionChange);
+    const { sandboxName } = renderPanel(onActiveSessionChange);
 
     fireEvent.click(screen.getByTestId('page-sandbox-detail-terminal-new-button'));
-    await waitFor(() => expect(mocks.createTerminalSession).toHaveBeenCalledWith('demo', 80, 24));
+    await waitFor(() => expect(mocks.createTerminalSession).toHaveBeenCalledWith(sandboxName, 80, 24));
     await waitFor(() => expect(onActiveSessionChange).toHaveBeenCalledWith('sess-new'));
   });
 });
@@ -318,5 +350,155 @@ describe('关闭终端会话', () => {
     expect(notice.textContent).toContain('会话列表刷新失败');
     // 删除已经成功：不把刷新失败说成删除失败
     expect(screen.queryByTestId('page-sandbox-detail-terminal-error')).toBeNull();
+  });
+});
+
+describe('标签序号与会话身份绑定', () => {
+  it('按会话创建时间定序：早建的会话序号在前', async () => {
+    mockSessions([
+      makeRecord({ session_id: 'sess-c', created_at: '2026-10-30T01:00:10+00:00' }),
+      makeRecord({ session_id: 'sess-a', created_at: '2026-10-30T01:00:00+00:00' }),
+      makeRecord({ session_id: 'sess-b', created_at: '2026-10-30T01:00:05+00:00' }),
+    ]);
+
+    renderPanel();
+
+    const tabs = await screen.findAllByTestId('page-sandbox-detail-terminal-tab');
+    expect(tabs.map((tab) => tab.getAttribute('data-session-id'))).toEqual([
+      'sess-a',
+      'sess-b',
+      'sess-c',
+    ]);
+    expect(
+      tabs.map((tab) =>
+        within(tab).getByTestId('page-sandbox-detail-terminal-tab-select').textContent,
+      ),
+    ).toEqual(['终端 1', '终端 2', '终端 3']);
+  });
+
+  it('关掉中间标签后，其余标签的序号不动', async () => {
+    const sessA = makeRecord({ session_id: 'sess-a', created_at: '2026-10-30T01:00:00+00:00' });
+    const sessB = makeRecord({ session_id: 'sess-b', created_at: '2026-10-30T01:00:05+00:00' });
+    const sessC = makeRecord({ session_id: 'sess-c', created_at: '2026-10-30T01:00:10+00:00' });
+    // 删掉中间那个之后，后端会话表里剩 a 与 c。
+    mocks.listTerminalSessions.mockResolvedValueOnce([sessA, sessB, sessC]);
+    mocks.listTerminalSessions.mockResolvedValue([sessA, sessC]);
+    mocks.deleteTerminalSession.mockResolvedValue({
+      session_id: 'sess-b',
+      state: 'running',
+      closed: true,
+      removed: true,
+    });
+
+    renderPanel();
+
+    const tabs = await screen.findAllByTestId('page-sandbox-detail-terminal-tab');
+    fireEvent.click(
+      within(tabs[1]).getByTestId('page-sandbox-detail-terminal-tab-close'),
+    );
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-terminal-remove-confirm-button'));
+
+    await waitFor(() => expect(screen.queryAllByTestId('page-sandbox-detail-terminal-tab')).toHaveLength(2));
+    const left = screen.getAllByTestId('page-sandbox-detail-terminal-tab');
+    expect(left.map((tab) => tab.getAttribute('data-session-id'))).toEqual(['sess-a', 'sess-c']);
+    expect(
+      left.map((tab) =>
+        within(tab).getByTestId('page-sandbox-detail-terminal-tab-select').textContent,
+      ),
+    ).toEqual(['终端 1', '终端 3']);
+  });
+});
+
+describe('连接状态按会话存', () => {
+  it('切到别的标签时，状态栏只反映当前会话', async () => {
+    viewMocks.bySession = { 'sess-a': 'connected', 'sess-b': 'connecting' };
+    mockSessions([
+      makeRecord({ session_id: 'sess-a', created_at: '2026-10-30T01:00:00+00:00' }),
+      makeRecord({ session_id: 'sess-b', created_at: '2026-10-30T01:00:05+00:00' }),
+    ]);
+
+    const { rerender } = renderPanel(vi.fn(), { activeSessionId: 'sess-a' });
+
+    await screen.findAllByTestId('page-sandbox-detail-terminal-tab');
+    await waitFor(() =>
+      expect(screen.getByTestId('page-sandbox-detail-terminal-status').textContent).toContain('已连接'),
+    );
+
+    // 切到第二个会话：状态不能还挂着上一个会话的「已连接」。
+    rerender({ activeSessionId: 'sess-b' });
+
+    await waitFor(() =>
+      expect(screen.getByTestId('page-sandbox-detail-terminal-status').textContent).toContain('连接中'),
+    );
+    expect(screen.getByTestId('page-sandbox-detail-terminal-status').textContent).not.toContain(
+      '已连接',
+    );
+  });
+});
+
+describe('会话表刷新', () => {
+  it('切沙箱时，旧沙箱的在途响应不覆盖新沙箱的标签条', async () => {
+    const pending: { resolve?: (records: TerminalSessionRecord[]) => void } = {};
+    mocks.listTerminalSessions.mockImplementationOnce(
+      () =>
+        new Promise<TerminalSessionRecord[]>((resolve) => {
+          pending.resolve = resolve;
+        }),
+    );
+    mocks.listTerminalSessions.mockResolvedValue([
+      makeRecord({ session_id: 'sess-b', sandbox_name: 'other' }),
+    ]);
+
+    const { rerender } = renderPanel();
+    rerender({ sandboxName: 'other' });
+
+    const tabs = await screen.findAllByTestId('page-sandbox-detail-terminal-tab');
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0].getAttribute('data-session-id')).toBe('sess-b');
+
+    // 旧沙箱的响应这时才回来：必须被丢弃。
+    pending.resolve?.([makeRecord({ session_id: 'sess-old' })]);
+    await waitFor(() =>
+      expect(screen.getAllByTestId('page-sandbox-detail-terminal-tab')).toHaveLength(1),
+    );
+    expect(
+      screen.getByTestId('page-sandbox-detail-terminal-tab').getAttribute('data-session-id'),
+    ).toBe('sess-b');
+  });
+
+  it('刷新成功后，上一轮的失败提示被清掉', async () => {
+    mocks.listTerminalSessions.mockRejectedValueOnce(new Error('读取终端会话列表失败'));
+    mocks.listTerminalSessions.mockResolvedValue([]);
+    mocks.createTerminalSession.mockResolvedValue({
+      session_id: 'sess-new',
+      sandbox: 'demo',
+      container_name: 'sandbox-demo',
+      cols: 80,
+      rows: 24,
+      state: 'running',
+      created_at: '2026-10-30T01:00:00+00:00',
+    });
+
+    renderPanel();
+
+    const banner = await screen.findByTestId('page-sandbox-detail-terminal-error');
+    expect(banner.textContent).toContain('读取终端会话列表失败');
+
+    // 新建会话会顺带刷新一次会话表：这次成功，错误提示就该消失。
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-terminal-new-button'));
+    await waitFor(() =>
+      expect(screen.queryByTestId('page-sandbox-detail-terminal-error')).toBeNull(),
+    );
+  });
+
+  it('会话表轻轮询：面板可见时每 10 秒自动再拉一次', async () => {
+    vi.useFakeTimers();
+    mocks.listTerminalSessions.mockResolvedValue([]);
+
+    renderPanel();
+
+    await vi.waitFor(() => expect(mocks.listTerminalSessions).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(mocks.listTerminalSessions.mock.calls.length).toBeGreaterThan(1);
   });
 });

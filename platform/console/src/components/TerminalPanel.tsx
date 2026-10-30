@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { api } from '../api/client';
 import type { TerminalSessionRecord } from '../api/types';
+import { sessionNumbering, sortSessionsByCreation } from '../lib/sessions';
 import { TerminalView, type TerminalStatus } from './TerminalView';
 import { CloseSessionDialog } from './workbench/CloseSessionDialog';
 import { TerminalTabs, type TerminalTabItem } from './workbench/TerminalTabs';
@@ -20,6 +21,9 @@ const STATUS_LABEL: Record<TerminalStatus, string> = {
 /** 后端会话表里的两种状态。 */
 const SESSION_STATE_RUNNING = 'running';
 
+/** 会话表的轻轮询间隔（毫秒）：让关闭确认弹窗拿到较新的会话状态。 */
+const SESSION_POLL_INTERVAL = 10000;
+
 /**
  * 标签视角的会话是不是还在跑。
  *
@@ -31,6 +35,12 @@ function tabSaysRunning(status: TerminalStatus | undefined): boolean {
     return false;
   }
   return status !== 'closed' && status !== 'invalid';
+}
+
+/** 一个会话的连接状态。 */
+interface SessionState {
+  status: TerminalStatus;
+  message: string;
 }
 
 interface TerminalPanelProps {
@@ -69,10 +79,13 @@ export function TerminalPanel({
     records: TerminalSessionRecord[];
   }>({ sandboxName, records: [] });
   const records = sessionTable.sandboxName === sandboxName ? sessionTable.records : [];
-  /** 当前标签的连接状态。 */
-  const [activeStatus, setActiveStatus] = useState<TerminalStatus>('connecting');
-  /** 当前标签的状态文案。 */
-  const [activeMessage, setActiveMessage] = useState('');
+  /**
+   * 每个会话的连接状态。
+   *
+   * 按会话标识存，不放单一状态：切换标签的瞬间，状态栏必须立刻反映新标签，
+   * 不能还挂着上一个会话的「已连接」。
+   */
+  const [sessionStates, setSessionStates] = useState<Record<string, SessionState>>({});
   const [error, setError] = useState('');
   /** 提示位：删除成功但有副作用（记录已不存在 / 关闭流程未走完 / 列表刷新失败）。 */
   const [notice, setNotice] = useState('');
@@ -83,20 +96,44 @@ export function TerminalPanel({
   const [closingBusy, setClosingBusy] = useState(false);
   /** 每个会话的重试令牌：手动点重试时自增，终端视图据此重建连接。 */
   const [retryTokens, setRetryTokens] = useState<Record<string, number>>({});
+  /** 刷新令牌：自增。旧响应回来时令牌对不上，一律丢弃。 */
+  const refreshTokenRef = useRef(0);
+  /** 本沙箱的标签序号登记表：序号跟会话身份绑定，关掉标签不重排。 */
+  const numbering = useMemo(() => sessionNumbering(sandboxName), [sandboxName]);
 
   /** 刷新会话列表；返回失败原因（成功返回 null）。 */
   const refresh = useCallback(async (): Promise<string | null> => {
+    const token = refreshTokenRef.current + 1;
+    refreshTokenRef.current = token;
     try {
       const list = await api.listTerminalSessions(sandboxName);
+      if (token !== refreshTokenRef.current) {
+        // 过期响应：已经有更新的刷新在飞，直接丢掉，别覆盖当前沙箱的标签条。
+        return null;
+      }
+      // 首次见到的会话按创建时间顺序分配标签序号（之后不再变）。
+      for (const record of sortSessionsByCreation(list)) {
+        numbering.numberOf(record.session_id);
+      }
       setSessionTable({ sandboxName, records: list });
+      // 刷新成功：上一轮的失败提示清掉。
+      setError('');
       return null;
     } catch (exc) {
+      if (token !== refreshTokenRef.current) {
+        return null;
+      }
       return exc instanceof Error ? exc.message : '读取终端会话列表失败';
     }
-  }, [sandboxName]);
+  }, [sandboxName, numbering]);
 
+  // 换沙箱：清空上一个沙箱的会话表与状态，重新拉一次。
   useEffect(() => {
     setSessionTable({ sandboxName, records: [] });
+    setSessionStates({});
+    setRetryTokens({});
+    setError('');
+    setNotice('');
     void refresh().then((failure) => {
       if (failure) {
         setError(failure);
@@ -104,15 +141,36 @@ export function TerminalPanel({
     });
   }, [refresh]);
 
-  /** 标签：会话表按创建时间排序，序号即标签序号。 */
+  // 轻轮询：会话表的变化（别的终端关掉了会话、后端回收了会话）能及时反映到标签条，
+  // 关闭确认弹窗的「还在跑」判定也能拿到较新的记录。
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      // 页面不可见时不轮询：省一次往返，也不让后台标签页堆积请求。
+      if (document.visibilityState !== 'visible') {
+        return;
+      }
+      void refresh().then((failure) => {
+        if (failure) {
+          setError(failure);
+        }
+      });
+    }, SESSION_POLL_INTERVAL);
+    return () => window.clearInterval(timer);
+  }, [refresh]);
+
+  /**
+   * 标签：会话表按创建时间定序，序号取自会话自己的登记号。
+   *
+   * 序号跟会话身份绑定：关掉中间一个标签，其余标签的序号不动。
+   */
   const tabs = useMemo<TerminalTabItem[]>(
     () =>
-      records.map((record, index) => ({
+      sortSessionsByCreation(records).map((record) => ({
         id: record.session_id,
-        title: `终端 ${index + 1}`,
+        title: `终端 ${numbering.numberOf(record.session_id)}`,
         state: record.state === SESSION_STATE_RUNNING ? 'running' : 'exited',
       })),
-    [records],
+    [records, numbering],
   );
 
   /** 当前选中的标签：路由指定的会话优先，路由没给（或已失效）时落到第一个。 */
@@ -122,6 +180,11 @@ export function TerminalPanel({
     }
     return tabs[0]?.id ?? null;
   }, [activeSessionId, tabs]);
+
+  /** 当前标签的连接状态：没有记录时按「连接中」算。 */
+  const activeState = activeId ? sessionStates[activeId] : undefined;
+  const activeStatus: TerminalStatus = activeState?.status ?? 'connecting';
+  const activeMessage = activeState?.message ?? '';
 
   const createTerminal = useCallback(async () => {
     setBusy(true);
@@ -150,10 +213,10 @@ export function TerminalPanel({
       const record = records.find((item) => item.session_id === sessionId);
       const recordRunning = record?.state === SESSION_STATE_RUNNING;
       // 保守口径：标签状态与后端记录任一 running 即按运行中处理。
-      const tabRunning = sessionId === activeId ? tabSaysRunning(activeStatus) : false;
+      const tabRunning = tabSaysRunning(sessionStates[sessionId]?.status);
       setClosing({ sessionId, running: recordRunning || tabRunning });
     },
-    [records, activeId, activeStatus],
+    [records, sessionStates],
   );
 
   /** 确认关闭：后端先关掉再删记录，成功后标签消失。 */
@@ -173,6 +236,11 @@ export function TerminalPanel({
         sandboxName: previous.sandboxName,
         records: previous.records.filter((item) => item.session_id !== sessionId),
       }));
+      setSessionStates((previous) => {
+        const next = { ...previous };
+        delete next[sessionId];
+        return next;
+      });
       const notes: string[] = [];
       if (!result.removed) {
         notes.push('记录已不存在（可能已被删除）');
@@ -282,11 +350,9 @@ export function TerminalPanel({
           <TerminalView
             key={activeId}
             sessionId={activeId}
-            active
             retryToken={retryTokens[activeId] ?? 0}
             onStateChange={(state) => {
-              setActiveStatus(state.status);
-              setActiveMessage(state.message);
+              setSessionStates((previous) => ({ ...previous, [activeId]: state }));
             }}
           />
         ) : (
