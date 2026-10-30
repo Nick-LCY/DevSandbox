@@ -1,18 +1,17 @@
 import { useCallback, useEffect, useState } from 'react';
 
-import { api } from '../api/client';
-import type { CreateSandboxResponse, HostImage } from '../api/types';
-import { ErrorBanner } from '../components/ErrorBanner';
-import { parseEnvLines } from '../lib/env';
-import { formatBytes, formatTimestamp } from '../lib/format';
+import { api } from '../../api/client';
+import type { CreateSandboxResponse, HostImage } from '../../api/types';
+import { parseEnvLines } from '../../lib/env';
+import { formatBytes, formatTimestamp } from '../../lib/format';
 import {
   formatMountDeclaration,
   parseMountDeclaration,
   validateMountDeclarations,
   type MountDeclaration,
-} from '../lib/mounts';
-import { sandboxDetailHash } from '../lib/router';
-import { validateImageSelection, validateSandboxName } from '../lib/validate';
+} from '../../lib/mounts';
+import { validateImageSelection, validateSandboxName } from '../../lib/validate';
+import { ModalShell } from './ModalShell';
 
 interface MountRow {
   id: string;
@@ -29,8 +28,29 @@ function newMountRow(): MountRow {
   return { id: `mount-${mountRowSeq}`, hostPath: '', containerPath: '', readOnly: false };
 }
 
-/** 新建沙箱页：镜像下拉 + 挂载声明 + 提交。 */
-export function SandboxCreatePage() {
+interface CreateSandboxDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /** 创建成功后回调（工作台据此选中新建的沙箱）。 */
+  onCreated: (name: string) => void;
+}
+
+const inputClass =
+  'h-8 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1 text-[13px] ' +
+  'text-foreground transition-colors outline-none placeholder:text-muted-foreground ' +
+  'focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 ' +
+  'disabled:pointer-events-none disabled:opacity-50';
+
+const labelClass = 'mb-1.5 block text-[12.5px] font-medium text-foreground';
+
+/**
+ * 新建沙箱弹窗。
+ *
+ * 字段与校验整体搬自旧的「新建沙箱」页：镜像下拉（可刷新）、挂载行增删、
+ * 启动命令、工作目录、环境变量。创建成功后原地切成功态，
+ * 「打开沙箱详情」= 选中该沙箱 + 关弹窗。
+ */
+export function CreateSandboxDialog({ open, onOpenChange, onCreated }: CreateSandboxDialogProps) {
   const [name, setName] = useState('');
   const [image, setImage] = useState('');
   const [images, setImages] = useState<HostImage[]>([]);
@@ -64,20 +84,31 @@ export function SandboxCreatePage() {
     }
   }, []);
 
+  // 弹窗打开时拉一次镜像，并清掉上一轮的表单与成功态。
   useEffect(() => {
+    if (!open) {
+      return;
+    }
+    setName('');
+    setMounts([]);
+    setCommand('');
+    setWorkdir('');
+    setEnvText('');
+    setError('');
+    setResult(null);
     void loadImages();
-  }, [loadImages]);
+  }, [open, loadImages]);
 
   // 页面重新可见时补拉一次镜像：镜像下拉要跟得上宿主上的真实变化。
   useEffect(() => {
     const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
+      if (document.visibilityState === 'visible' && open) {
         void loadImages();
       }
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
     return () => document.removeEventListener('visibilitychange', onVisibilityChange);
-  }, [loadImages]);
+  }, [loadImages, open]);
 
   const updateMount = useCallback((id: string, patch: Partial<MountRow>) => {
     setMounts((previous) =>
@@ -157,48 +188,102 @@ export function SandboxCreatePage() {
 
   const selectedImage = images.find((item) => item.reference === image) ?? null;
 
-  return (
-    <section className="page">
-      <div className="page-header">
-        <h2 className="page-title" data-testid="page-sandbox-create-title">
-          新建沙箱
-        </h2>
-        <a className="button" href="#/" data-testid="page-sandbox-create-back-button">
-          返回列表
-        </a>
-      </div>
+  const footer = result ? (
+    <>
+      <button
+        type="button"
+        onClick={() => onOpenChange(false)}
+        className="inline-flex h-8 items-center justify-center rounded-lg border border-border bg-background px-3 text-[13px] text-foreground transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+      >
+        关闭
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          onCreated(result.metadata.name);
+          onOpenChange(false);
+        }}
+        data-testid="page-sandbox-create-success-link"
+        className="inline-flex h-8 items-center justify-center rounded-lg border border-transparent bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/80 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+      >
+        打开沙箱详情
+      </button>
+    </>
+  ) : (
+    <>
+      <button
+        type="button"
+        onClick={() => onOpenChange(false)}
+        disabled={submitting}
+        className="inline-flex h-8 items-center justify-center rounded-lg border border-border bg-background px-3 text-[13px] text-foreground transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+      >
+        取消
+      </button>
+      <button
+        type="button"
+        onClick={() => void submit()}
+        disabled={submitting}
+        data-testid="page-sandbox-create-submit-button"
+        className="inline-flex h-8 items-center justify-center rounded-lg border border-transparent bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/80 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+      >
+        {submitting ? '正在创建…' : '创建沙箱'}
+      </button>
+    </>
+  );
 
-      <ErrorBanner message={error} testId="page-sandbox-create-error-message" />
+  return (
+    <ModalShell
+      open={open}
+      title="新建沙箱"
+      testId="page-sandbox-create-dialog"
+      onOpenChange={onOpenChange}
+      maxWidthClassName="max-w-[640px]"
+      footer={footer}
+    >
+      <h2 className="sr-only" data-testid="page-sandbox-create-title">
+        新建沙箱
+      </h2>
 
       {result && (
-        <div className="panel panel-success" data-testid="page-sandbox-create-success">
-          <p data-testid="page-sandbox-create-success-message">
+        <div
+          className="mb-4 rounded-lg border border-success/30 bg-success-soft px-3 py-3"
+          data-testid="page-sandbox-create-success"
+        >
+          <p className="text-[13px] text-success" data-testid="page-sandbox-create-success-message">
             沙箱 {result.metadata.name} 创建成功。
           </p>
-          <ol className="steps" data-testid="page-sandbox-create-steps">
+          <ol
+            className="mt-2 list-decimal space-y-0.5 pl-5 text-[12.5px] text-muted-foreground"
+            data-testid="page-sandbox-create-steps"
+          >
             {result.steps.map((step) => (
               <li key={step}>{step}</li>
             ))}
           </ol>
-          <p className="hint">{result.connection.exec_command}</p>
-          <a
-            className="button button-primary"
-            href={sandboxDetailHash(result.metadata.name)}
-            data-testid="page-sandbox-create-success-link"
-          >
-            打开沙箱详情
-          </a>
+          <p className="mt-2 font-mono text-[12px] break-all text-muted-foreground">
+            {result.connection.exec_command}
+          </p>
         </div>
       )}
 
-      <div className="panel">
-        <div className="field">
-          <label className="field-label" htmlFor="sandbox-name">
+      {error && (
+        <div
+          role="alert"
+          className="mb-4 rounded-lg border border-destructive/40 bg-destructive-soft px-3 py-2 text-[12.5px] text-destructive"
+          data-testid="page-sandbox-create-error-message"
+        >
+          {error}
+        </div>
+      )}
+
+      <div className="space-y-4">
+        <div>
+          <label className={labelClass} htmlFor="sandbox-name">
             沙箱名
           </label>
           <input
             id="sandbox-name"
-            className="input"
+            className={inputClass}
             type="text"
             value={name}
             placeholder="小写字母、数字、连字符与下划线，最长 24 位"
@@ -207,14 +292,14 @@ export function SandboxCreatePage() {
           />
         </div>
 
-        <div className="field">
-          <label className="field-label" htmlFor="sandbox-image">
+        <div>
+          <label className={labelClass} htmlFor="sandbox-image">
             启动镜像（宿主本地镜像）
           </label>
-          <div className="field-row">
+          <div className="flex items-center gap-2">
             <select
               id="sandbox-image"
-              className="input"
+              className={inputClass}
               value={image}
               onChange={(event) => setImage(event.target.value)}
               data-testid="page-sandbox-create-image-select"
@@ -228,60 +313,62 @@ export function SandboxCreatePage() {
             </select>
             <button
               type="button"
-              className="button"
               onClick={() => void loadImages()}
               disabled={loadingImages}
               data-testid="page-sandbox-create-image-refresh-button"
+              className="inline-flex h-8 shrink-0 items-center justify-center rounded-lg border border-border bg-card px-2.5 text-[13px] text-foreground transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
             >
               {loadingImages ? '正在刷新…' : '刷新镜像'}
             </button>
           </div>
           {imagesError && (
-            <p className="hint hint-error" data-testid="page-sandbox-create-image-error">
+            <p className="mt-1.5 text-[12px] text-destructive" data-testid="page-sandbox-create-image-error">
               {imagesError}
             </p>
           )}
           {!loadingImages && images.length === 0 && !imagesError && (
-            <p className="hint" data-testid="page-sandbox-create-image-empty">
+            <p className="mt-1.5 text-[12px] text-muted-foreground" data-testid="page-sandbox-create-image-empty">
               宿主上还没有本地镜像。请先在宿主构建或拉取镜像，再回来创建沙箱。
             </p>
           )}
           {selectedImage && (
-            <p className="hint" data-testid="page-sandbox-create-image-detail">
+            <p className="mt-1.5 text-[12px] text-muted-foreground" data-testid="page-sandbox-create-image-detail">
               {selectedImage.reference} · {formatBytes(selectedImage.size_bytes)} · 构建于{' '}
               {formatTimestamp(selectedImage.created_at)}
             </p>
           )}
-          <p className="hint">镜像来源固定为宿主本地（image_source=host）：平台从宿主导出注入，不经镜像代理拉取。</p>
+          <p className="mt-1.5 text-[12px] text-muted-foreground">
+            镜像来源固定为宿主本地（image_source=host）：平台从宿主导出注入，不经镜像代理拉取。
+          </p>
         </div>
 
-        <div className="field">
-          <div className="field-label-row">
-            <span className="field-label">挂载声明</span>
+        <div>
+          <div className="mb-1.5 flex items-center justify-between">
+            <span className={labelClass}>挂载声明</span>
             <button
               type="button"
-              className="button button-small"
               onClick={() => setMounts((previous) => [...previous, newMountRow()])}
               data-testid="page-sandbox-create-mount-add-button"
+              className="inline-flex h-7 items-center justify-center rounded-lg border border-border bg-card px-2 text-[12.5px] text-foreground transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
             >
               添加挂载
             </button>
           </div>
           {mounts.length === 0 && (
-            <p className="hint" data-testid="page-sandbox-create-mount-empty">
+            <p className="text-[12px] text-muted-foreground" data-testid="page-sandbox-create-mount-empty">
               暂未声明挂载。挂载格式为 宿主路径:容器路径[:ro]，平台不创建也不删除宿主目录。
             </p>
           )}
-          <ul className="mount-list">
+          <ul className="m-0 list-none space-y-2 p-0">
             {mounts.map((row) => (
               <li
                 key={row.id}
-                className="mount-row"
+                className="flex flex-wrap items-center gap-2"
                 data-testid="page-sandbox-create-mount-item"
                 data-mount-id={row.id}
               >
                 <input
-                  className="input"
+                  className={inputClass}
                   type="text"
                   placeholder="宿主路径，如 /data/project"
                   value={row.hostPath}
@@ -289,29 +376,28 @@ export function SandboxCreatePage() {
                   data-testid="page-sandbox-create-mount-host-input"
                 />
                 <input
-                  className="input"
+                  className={inputClass}
                   type="text"
                   placeholder="容器路径，如 /workspace"
                   value={row.containerPath}
                   onChange={(event) => updateMount(row.id, { containerPath: event.target.value })}
                   data-testid="page-sandbox-create-mount-container-input"
                 />
-                <label className="checkbox">
+                <label className="flex items-center gap-1.5 text-[12.5px] text-muted-foreground">
                   <input
                     type="checkbox"
                     checked={row.readOnly}
                     onChange={(event) => updateMount(row.id, { readOnly: event.target.checked })}
                     data-testid="page-sandbox-create-mount-readonly-checkbox"
+                    className="size-3.5 accent-primary"
                   />
                   只读
                 </label>
                 <button
                   type="button"
-                  className="button button-small"
-                  onClick={() =>
-                    setMounts((previous) => previous.filter((item) => item.id !== row.id))
-                  }
+                  onClick={() => setMounts((previous) => previous.filter((item) => item.id !== row.id))}
                   data-testid="page-sandbox-create-mount-remove-button"
+                  className="inline-flex h-7 items-center justify-center rounded-lg border border-destructive/40 px-2 text-[12.5px] text-destructive transition-colors hover:bg-destructive-soft focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
                 >
                   移除
                 </button>
@@ -320,13 +406,13 @@ export function SandboxCreatePage() {
           </ul>
         </div>
 
-        <div className="field">
-          <label className="field-label" htmlFor="sandbox-command">
+        <div>
+          <label className={labelClass} htmlFor="sandbox-command">
             容器启动命令（可选）
           </label>
           <input
             id="sandbox-command"
-            className="input"
+            className={inputClass}
             type="text"
             placeholder="留空则用镜像默认入口"
             value={command}
@@ -335,13 +421,13 @@ export function SandboxCreatePage() {
           />
         </div>
 
-        <div className="field">
-          <label className="field-label" htmlFor="sandbox-workdir">
+        <div>
+          <label className={labelClass} htmlFor="sandbox-workdir">
             容器工作目录（可选）
           </label>
           <input
             id="sandbox-workdir"
-            className="input"
+            className={inputClass}
             type="text"
             placeholder="如 /workspace"
             value={workdir}
@@ -350,13 +436,13 @@ export function SandboxCreatePage() {
           />
         </div>
 
-        <div className="field">
-          <label className="field-label" htmlFor="sandbox-env">
+        <div>
+          <label className={labelClass} htmlFor="sandbox-env">
             环境变量（可选，每行一条 键=值）
           </label>
           <textarea
             id="sandbox-env"
-            className="input textarea"
+            className={`${inputClass} h-auto min-h-16 py-1.5`}
             rows={3}
             placeholder={'FOO=bar\nBAZ=qux'}
             value={envText}
@@ -364,19 +450,7 @@ export function SandboxCreatePage() {
             data-testid="page-sandbox-create-env-input"
           />
         </div>
-
-        <div className="form-actions">
-          <button
-            type="button"
-            className="button button-primary"
-            onClick={() => void submit()}
-            disabled={submitting}
-            data-testid="page-sandbox-create-submit-button"
-          >
-            {submitting ? '正在创建…' : '创建沙箱'}
-          </button>
-        </div>
       </div>
-    </section>
+    </ModalShell>
   );
 }

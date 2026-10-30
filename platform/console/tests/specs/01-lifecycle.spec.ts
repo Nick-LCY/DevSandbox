@@ -67,14 +67,14 @@ test.describe('网页控制台全流程', () => {
 
       // ── ⑤ 停止：容器真的停了，用户与家目录保留
       await page.getByTestId('page-sandbox-detail-stop-button').click();
-      await expect(page.getByTestId('page-sandbox-detail-action-message')).toContainText('已停止');
+      await expect(page.getByTestId('page-sandbox-list-action-message')).toContainText('已停止');
       await expect(page.getByTestId('page-sandbox-detail-state')).toHaveText('已停止');
       expect(sandboxContainerState(systemUser, uid, containerName)).toBe('exited');
 
       // ── ⑥ 再启动：同一个用户、同一个子 ID 段、同一个守护进程
       const subidBefore = await detailField(page, 'page-sandbox-detail-subid');
       await page.getByTestId('page-sandbox-detail-start-button').click();
-      await expect(page.getByTestId('page-sandbox-detail-action-message')).toContainText('已启动');
+      await expect(page.getByTestId('page-sandbox-list-action-message')).toContainText('已启动');
       await expect(page.getByTestId('page-sandbox-detail-state')).toHaveText('运行中');
       expect(sandboxContainerState(systemUser, uid, containerName)).toBe('running');
       expect(await detailField(page, 'page-sandbox-detail-subid')).toBe(subidBefore);
@@ -95,9 +95,11 @@ test.describe('网页控制台全流程', () => {
       await expect(dialog).toBeHidden();
       await expect(page.getByTestId('page-sandbox-detail-title')).toBeVisible();
 
-      // 再打开并确认删除
+      // 再打开并确认删除（两步确认：第一次只是武装，第二次才真删）
       await page.getByTestId('page-sandbox-detail-delete-button').click();
       await expect(dialog).toBeVisible();
+      await page.getByTestId('page-sandbox-detail-delete-confirm-button').click();
+      await expect(page.getByTestId('page-sandbox-detail-delete-armed-hint')).toBeVisible();
       await page.getByTestId('page-sandbox-detail-delete-confirm-button').click();
       await expect(page.getByTestId('page-sandbox-list-title')).toBeVisible({ timeout: 120_000 });
       await expect(

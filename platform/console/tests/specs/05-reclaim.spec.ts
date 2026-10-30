@@ -89,14 +89,16 @@ test.describe('删除回收复验', () => {
       expect(planText).toContain(home);
       expect(planText).toContain('平台元数据');
 
-      // ── ④ 经网页列表页的回收清单弹窗删除
+      // ── ④ 经工作台的回收清单弹窗删除（选中沙箱 → 头部「删除」）
       await gotoList(page);
       const row = page.getByTestId('page-sandbox-list-item').filter({ hasText: SANDBOX_NAME });
       await expect(row).toHaveCount(1);
-      await row.getByTestId('page-sandbox-list-item-delete-button').click();
-      const dialog = page.getByTestId('page-sandbox-list-delete-dialog');
+      await row.click();
+      await expect(page.getByTestId('page-sandbox-detail-title')).toContainText(SANDBOX_NAME);
+      await page.getByTestId('page-sandbox-detail-delete-button').click();
+      const dialog = page.getByTestId('page-sandbox-detail-delete-dialog');
       await expect(dialog).toBeVisible();
-      await expect(page.getByTestId('page-sandbox-list-delete-untouched-note')).toHaveText(
+      await expect(page.getByTestId('page-sandbox-detail-delete-untouched-note')).toHaveText(
         '用户挂载的宿主机目录不受影响',
       );
       const dialogText = (await dialog.textContent()) ?? '';
@@ -109,7 +111,10 @@ test.describe('删除回收复验', () => {
           response.url().includes(`/api/sandboxes/${SANDBOX_NAME}`) &&
           response.request().method() === 'DELETE',
       );
-      await page.getByTestId('page-sandbox-list-delete-confirm-button').click();
+      // 两步确认：第一次只是武装，第二次才真删
+      await page.getByTestId('page-sandbox-detail-delete-confirm-button').click();
+      await expect(page.getByTestId('page-sandbox-detail-delete-armed-hint')).toBeVisible();
+      await page.getByTestId('page-sandbox-detail-delete-confirm-button').click();
       const response = await deleted;
       expect(response.status()).toBe(200);
       const result = (await response.json()) as DeleteResultModel;

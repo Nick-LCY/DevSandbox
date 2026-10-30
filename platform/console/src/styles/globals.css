@@ -17,10 +17,8 @@
  *
  * 2. 扫描范围
  *    `source(none)` 关掉 Tailwind 的自动内容探测，再用显式 `@source` 只扫
- *    index.html 与 src/**，并用 `@source not` 排除 src/pages/**（旧四页）。
- *    这样一次性视觉原型 `platform/console/prototype/` 与 node_modules 都不会被
- *    扫进来；旧四页里的语义类名（.table / .button / .panel 等）也不会被当成
- *    工具类混进产物 CSS。任务二删掉旧四页后可去掉这条排除。
+ *    index.html 与 src/**。这样一次性视觉原型
+ *    `platform/console/prototype/` 与 node_modules 都不会被扫进来。
  *
  * 3. 暗色变体
  *    `@custom-variant dark (&:where(.dark, .dark *))` 挂 `html.dark`，
@@ -34,32 +32,25 @@
  *    不会命中（选中态与 color-scheme 会退回浏览器默认值）。
  *
  * ---------------------------------------------------------------------------
- * 并存期口径（任务二删掉旧 styles.css 之前一直有效）：
+ * 旧四页已下线（任务二）：
  *
- * - 旧 `src/styles.css` 是**无层 CSS**（不在任何 @layer 里），规范里优先级
- *   高于 Tailwind 的 `@layer base` / `@layer utilities`，所以旧样式永远压得住
- *   新底座；反过来 Tailwind 的工具类也压不住旧样式。
- * - 引入顺序：`src/main.tsx` 里 **globals.css 在前、styles.css 在后**。
- * - 并存期禁止在旧四页（列表/新建/详情/设置）里混用 Tailwind 工具类，
- *   旧页面的外观必须逐像素不变。
- * - 旧四页依赖浏览器默认样式（<p> 外边距、标题字重、<ol> 编号、按钮默认字体），
- *   而 Tailwind 的 Preflight 会把这些默认值抹掉。所以本文件**不引入 Preflight**，
- *   只引 theme 层与 utilities 层（Tailwind 官方关掉 Preflight 的写法）。
- *   任务二删掉旧 styles.css 之后，再按新设计补一份自己的 reset。
+ * - 旧的无层样式表与 `src/pages/` 已删除，控制台只剩一套样式底座：
+ *   Tailwind 工具类 + 本文件的令牌。
+ * - 因此本文件**引入 Preflight**（Tailwind 的 reset）：旧四页依赖的浏览器
+ *   默认样式（<p> 外边距、标题字重、<ol> 编号）不再需要保持原样，新外壳
+ *   按 Tailwind 的默认重置走。
  * ==========================================================================*/
 
 @layer theme, base, components, utilities;
 
 @import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/preflight.css" layer(base);
 @import "tailwindcss/utilities.css" layer(utilities) source(none);
 @import "./fonts.css";
 @import "tw-animate-css";
 
 @source "../../index.html";
 @source "../../src/**/*.{ts,tsx}";
-/* 旧四页不参与工具类生成：它们的类名是旧 styles.css 的语义类名，被 Tailwind
-   当成工具类会混进产物 CSS（.table / .button / .panel 等）。 */
-@source not "../../src/pages/**/*.{ts,tsx}";
 
 /* 暗色变体：挂 html.dark（见 src/lib/theme.ts）。 */
 @custom-variant dark (&:where(.dark, .dark *));
@@ -235,7 +226,7 @@
 }
 
 .dark {
-  /* 逐项映射现有 styles.css 暗色变量；品牌色不用旧蓝 #4c8dff（降级为 --app-info），改常青绿 */
+  /* 逐项映射旧暗色变量；品牌色不用旧蓝 #4c8dff（降级为 --app-info），改常青绿 */
   --app-background: #0f1420;
   --app-card: #161d2c;
   --app-muted: #161d2c;
@@ -360,9 +351,8 @@
     font-family: var(--app-font-sans);
     font-size: 14px;
     line-height: 1.6;
-    /* 并存期**不**在这里设 -webkit-font-smoothing：它是继承属性，一设就会改掉
-       旧四页所有文字的抗锯齿，页面就不再逐像素一致了。任务二起新外壳落地时，
-       跟着新字体栈一起把 antialiased 加回来。 */
+    /* 自托管中文字体栈的抗锯齿：与视觉原型一致。 */
+    -webkit-font-smoothing: antialiased;
   }
 
   code,

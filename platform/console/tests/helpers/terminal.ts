@@ -35,7 +35,7 @@ export async function openTerminal(page: Page): Promise<string> {
 export async function selectTerminal(page: Page, sessionId: string): Promise<void> {
   const tab = page.locator(`[data-testid="page-sandbox-detail-terminal-tab"][data-session-id="${sessionId}"]`);
   await tab.getByTestId('page-sandbox-detail-terminal-tab-select').click();
-  await expect(tab).toHaveClass(/terminal-tab-active/);
+  await expect(tab).toHaveAttribute('data-active', 'true');
 }
 
 /** 断言终端会话已连接（看面板上的状态标签，不是终端屏幕）。 */

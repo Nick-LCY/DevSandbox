@@ -1,28 +1,33 @@
 /**
  * 控制台页面的通用操作。
+ *
+ * 控制台是单页工作台：沙箱列表在左侧边栏，选中沙箱后右侧是工作区；
+ * 新建沙箱 / 沙箱详情 / 代理设置都是弹窗。
  */
 
 import { expect, type Page } from '@playwright/test';
 
-/** 打开沙箱列表页。 */
+/** 打开工作台（沙箱列表在左侧边栏）。 */
 export async function gotoList(page: Page): Promise<void> {
   await page.goto('/#/');
   await expect(page.getByTestId('page-sandbox-list-title')).toBeVisible();
 }
 
-/** 打开新建沙箱页。 */
+/** 打开新建沙箱弹窗。 */
 export async function gotoCreate(page: Page): Promise<void> {
-  await page.goto('/#/new');
-  await expect(page.getByTestId('page-sandbox-create-title')).toBeVisible();
+  await page.goto('/#/');
+  // 侧栏与空态各有一个「新建沙箱」按钮，取第一个即可。
+  await page.getByTestId('page-sandbox-list-create-button').first().click();
+  await expect(page.getByTestId('page-sandbox-create-dialog')).toBeVisible();
 }
 
-/** 打开沙箱详情页。 */
+/** 打开某个沙箱的工作区（右侧显示摘要与终端会话标签）。 */
 export async function gotoDetail(page: Page, name: string): Promise<void> {
   await page.goto(`/#/sandboxes/${encodeURIComponent(name)}`);
-  await expect(page.getByTestId('page-sandbox-detail-title')).toBeVisible();
+  await expect(page.getByTestId('page-sandbox-detail-title')).toContainText(name);
 }
 
-/** 在新建页填一份完整的创建表单并提交，返回提交后等待成功提示的耗时（毫秒）。 */
+/** 在新建弹窗里填一份完整的创建表单并提交，返回提交后等待成功提示的耗时（毫秒）。 */
 export async function fillCreateForm(
   page: Page,
   options: {
@@ -60,7 +65,28 @@ export async function fillCreateForm(
   return Date.now() - started;
 }
 
-/** 取沙箱详情页上的某个字段文本。 */
+/** 打开沙箱详情弹窗（完整字段在弹窗里）。 */
+export async function openDetailDialog(page: Page): Promise<void> {
+  await page.getByTestId('page-sandbox-detail-detail-button').click();
+  await expect(page.getByTestId('page-sandbox-detail-dialog')).toBeVisible();
+}
+
+/**
+ * 取沙箱详情弹窗里的某个字段文本。
+ *
+ * 完整字段（镜像来源 / 系统用户 / 容器名 / 挂载 / 子 ID 段…）只在详情弹窗里，
+ * 所以先确保弹窗是开着的；读完顺手关掉，免得与工作区头部的同名字段撞车。
+ */
 export async function detailField(page: Page, testId: string): Promise<string> {
-  return ((await page.getByTestId(testId).textContent()) ?? '').trim();
+  const dialog = page.getByTestId('page-sandbox-detail-dialog');
+  const opened = !(await dialog.isVisible());
+  if (opened) {
+    await openDetailDialog(page);
+  }
+  const text = ((await dialog.getByTestId(testId).textContent()) ?? '').trim();
+  if (opened) {
+    await page.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
+  }
+  return text;
 }

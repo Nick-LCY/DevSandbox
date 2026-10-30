@@ -2,10 +2,8 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
 import App from './App';
-// 并存期引入顺序：globals.css 在前、styles.css 在后。
-// 旧 styles.css 是无层 CSS，优先级高于 Tailwind 的分层规则，旧四页外观不受新底座影响。
+// 新底座样式入口：Tailwind v4 + 双主题令牌 + shadcn/ui 原语。
 import './styles/globals.css';
-import './styles.css';
 
 const container = document.getElementById('root');
 if (!container) {

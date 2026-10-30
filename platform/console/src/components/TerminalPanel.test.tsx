@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 /**
- * 终端面板的删除会话交互。
+ * 终端面板的会话标签与关闭会话交互。
  *
  * 覆盖三件事：
- * - 运行中的会话：点「关闭」先轻确认，确认后真的删掉（列表项与标签都消失）；
- * - 已退出的会话：点「移除」直接执行，不多问一句；
- * - 删除失败：把后端的 `detail` 原样展示出来。
+ * - 后端会话表渲染成标签（一个标签 = 一个会话），点标签回调选中；
+ * - 关标签先弹确认：运行中的会话说「关闭并移除」，已退出的说「移除记录」；
+ * - 删除成功 / 有副作用（记录已不存在、关闭流程未走完）分别落在正确位置。
  */
 
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -20,6 +20,9 @@ const mocks = vi.hoisted(() => ({
   deleteTerminalSession: vi.fn(),
 }));
 
+/** 终端视图上报的状态：默认「连接中」，用来验证「标签状态与后端记录任一 running 即按运行中」。 */
+const viewMocks = vi.hoisted(() => ({ status: 'connecting' }));
+
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();
   return {
@@ -33,10 +36,27 @@ vi.mock('../api/client', async (importOriginal) => {
   };
 });
 
-// 终端视图要真 xterm 与真 WebSocket：这里只关心面板的交互，直接替掉
-vi.mock('./TerminalView', () => ({
-  TerminalView: () => null,
-}));
+// 终端视图要真 xterm 与真 WebSocket：这里只关心面板的交互，直接替掉。
+// 替掉的那份会按 viewMocks.status 上报一次连接状态。
+vi.mock('./TerminalView', async () => {
+  const { useEffect, useRef } = await import('react');
+  return {
+    TerminalView: ({
+      sessionId,
+      onStateChange,
+    }: {
+      sessionId: string;
+      onStateChange: (state: { status: string; message: string }) => void;
+    }) => {
+      const callbackRef = useRef(onStateChange);
+      callbackRef.current = onStateChange;
+      useEffect(() => {
+        callbackRef.current({ status: viewMocks.status, message: '模拟状态' });
+      }, [sessionId]);
+      return null;
+    },
+  };
+});
 
 function makeRecord(overrides: Partial<TerminalSessionRecord> = {}): TerminalSessionRecord {
   return {
@@ -57,20 +77,131 @@ function makeRecord(overrides: Partial<TerminalSessionRecord> = {}): TerminalSes
   };
 }
 
+function renderPanel(
+  onActiveSessionChange: (sessionId: string | null) => void = vi.fn(),
+): void {
+  render(
+    <TerminalPanel
+      sandboxName="demo"
+      sandboxRunning
+      activeSessionId={null}
+      onActiveSessionChange={onActiveSessionChange}
+    />,
+  );
+}
+
+/** 首次返回会话列表，之后返回空列表（会话已经被删掉了）。 */
+function mockSessions(records: TerminalSessionRecord[]): void {
+  mocks.listTerminalSessions.mockResolvedValueOnce(records);
+  mocks.listTerminalSessions.mockResolvedValue([]);
+}
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   mocks.listTerminalSessions.mockReset();
   mocks.createTerminalSession.mockReset();
   mocks.deleteTerminalSession.mockReset();
+  viewMocks.status = 'connecting';
 });
 
-describe('终端会话删除', () => {
-  it('运行中的会话：点关闭先轻确认，确认后才删', async () => {
-    mocks.listTerminalSessions.mockResolvedValue([]);
-    mocks.listTerminalSessions.mockResolvedValueOnce([
-      makeRecord({ session_id: 'sess-running', state: 'running' }),
+describe('终端会话标签', () => {
+  it('后端会话表渲染成标签：一个标签一个会话', async () => {
+    mockSessions([
+      makeRecord({ session_id: 'sess-a', state: 'running' }),
+      makeRecord({ session_id: 'sess-b', state: 'exited', exit_code: 0 }),
     ]);
+
+    renderPanel();
+
+    const tabs = await screen.findAllByTestId('page-sandbox-detail-terminal-tab');
+    expect(tabs).toHaveLength(2);
+    expect(tabs[0].getAttribute('data-session-id')).toBe('sess-a');
+    expect(tabs[1].getAttribute('data-session-id')).toBe('sess-b');
+    expect(
+      within(tabs[0]).getByTestId('page-sandbox-detail-terminal-tab-select').textContent,
+    ).toContain('终端 1');
+    expect(
+      within(tabs[1]).getByTestId('page-sandbox-detail-terminal-tab-select').textContent,
+    ).toContain('终端 2');
+  });
+
+  it('点标签：回调选中的会话标识', async () => {
+    mockSessions([
+      makeRecord({ session_id: 'sess-a', state: 'running' }),
+      makeRecord({ session_id: 'sess-b', state: 'running' }),
+    ]);
+    const onActiveSessionChange = vi.fn();
+
+    renderPanel(onActiveSessionChange);
+
+    const tabs = await screen.findAllByTestId('page-sandbox-detail-terminal-tab');
+    fireEvent.click(
+      within(tabs[1]).getByTestId('page-sandbox-detail-terminal-tab-select'),
+    );
+    expect(onActiveSessionChange).toHaveBeenCalledWith('sess-b');
+  });
+
+  it('新建终端：建出会话后刷新列表并选中新会话', async () => {
+    mocks.listTerminalSessions.mockResolvedValue([]);
+    mocks.createTerminalSession.mockResolvedValue({
+      session_id: 'sess-new',
+      sandbox: 'demo',
+      container_name: 'sandbox-demo',
+      cols: 80,
+      rows: 24,
+      state: 'running',
+      created_at: '2026-10-30T01:00:00+00:00',
+    });
+    const onActiveSessionChange = vi.fn();
+
+    renderPanel(onActiveSessionChange);
+
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-terminal-new-button'));
+    await waitFor(() => expect(mocks.createTerminalSession).toHaveBeenCalledWith('demo', 80, 24));
+    await waitFor(() => expect(onActiveSessionChange).toHaveBeenCalledWith('sess-new'));
+  });
+});
+
+describe('关闭终端会话', () => {
+  it('运行中的会话：弹确认，按钮是「关闭并移除」', async () => {
+    mockSessions([makeRecord({ session_id: 'sess-running', state: 'running' })]);
+
+    renderPanel();
+
+    const tab = await screen.findByTestId('page-sandbox-detail-terminal-tab');
+    fireEvent.click(within(tab).getByTestId('page-sandbox-detail-terminal-tab-close'));
+
+    const dialog = screen.getByTestId('page-sandbox-detail-terminal-remove-confirm');
+    expect(dialog.textContent).toContain('关闭终端会话');
+    expect(dialog.textContent).toContain('关闭会终止容器内该会话的进程树，终端现场不保留');
+    expect(
+      within(dialog).getByTestId('page-sandbox-detail-terminal-remove-confirm-button').textContent,
+    ).toBe('关闭并移除');
+    // 确认之前不发删除请求
+    expect(mocks.deleteTerminalSession).not.toHaveBeenCalled();
+  });
+
+  it('已退出的会话：弹确认，按钮是「移除记录」', async () => {
+    mockSessions([makeRecord({ session_id: 'sess-exited', state: 'exited', exit_code: 0 })]);
+    // 标签状态：会话已退出（连接侧也确认结束了）
+    viewMocks.status = 'closed';
+
+    renderPanel();
+
+    const tab = await screen.findByTestId('page-sandbox-detail-terminal-tab');
+    fireEvent.click(within(tab).getByTestId('page-sandbox-detail-terminal-tab-close'));
+
+    const dialog = screen.getByTestId('page-sandbox-detail-terminal-remove-confirm');
+    expect(dialog.textContent).toContain('移除终端会话记录');
+    expect(dialog.textContent).toContain('会话已退出，只移除记录，容器内无残留进程');
+    expect(
+      within(dialog).getByTestId('page-sandbox-detail-terminal-remove-confirm-button').textContent,
+    ).toBe('移除记录');
+  });
+
+  it('确认后删会话：标签消失', async () => {
+    mockSessions([makeRecord({ session_id: 'sess-running', state: 'running' })]);
     mocks.deleteTerminalSession.mockResolvedValue({
       session_id: 'sess-running',
       state: 'running',
@@ -78,129 +209,53 @@ describe('终端会话删除', () => {
       removed: true,
     });
 
-    render(<TerminalPanel sandboxName="demo" sandboxRunning />);
+    renderPanel();
 
-    const item = await screen.findByTestId('page-sandbox-detail-terminal-existing-item');
-    const button = within(item).getByTestId(
-      'page-sandbox-detail-terminal-existing-remove-button',
-    );
-    expect(button.textContent).toBe('关闭');
-
-    fireEvent.click(button);
-    // 轻确认条出现，删除请求还没发
-    expect(screen.getByTestId('page-sandbox-detail-terminal-remove-confirm')).toBeTruthy();
-    expect(mocks.deleteTerminalSession).not.toHaveBeenCalled();
-
+    const tab = await screen.findByTestId('page-sandbox-detail-terminal-tab');
+    fireEvent.click(within(tab).getByTestId('page-sandbox-detail-terminal-tab-close'));
     fireEvent.click(screen.getByTestId('page-sandbox-detail-terminal-remove-confirm-button'));
-    await waitFor(() => expect(mocks.deleteTerminalSession).toHaveBeenCalledWith('sess-running'));
+
     await waitFor(() =>
-      expect(screen.queryByTestId('page-sandbox-detail-terminal-existing-item')).toBeNull(),
+      expect(mocks.deleteTerminalSession).toHaveBeenCalledWith('sess-running'),
+    );
+    await waitFor(() =>
+      expect(screen.queryByTestId('page-sandbox-detail-terminal-tab')).toBeNull(),
     );
   });
 
-  it('轻确认可以取消：取消不发删除请求', async () => {
-    mocks.listTerminalSessions.mockResolvedValue([
-      makeRecord({ session_id: 'sess-running', state: 'running' }),
-    ]);
+  it('取消：确认条关掉，一个删除请求都不发', async () => {
+    mockSessions([makeRecord({ session_id: 'sess-running', state: 'running' })]);
 
-    render(<TerminalPanel sandboxName="demo" sandboxRunning />);
+    renderPanel();
 
-    const item = await screen.findByTestId('page-sandbox-detail-terminal-existing-item');
-    fireEvent.click(
-      within(item).getByTestId('page-sandbox-detail-terminal-existing-remove-button'),
-    );
+    const tab = await screen.findByTestId('page-sandbox-detail-terminal-tab');
+    fireEvent.click(within(tab).getByTestId('page-sandbox-detail-terminal-tab-close'));
     fireEvent.click(screen.getByTestId('page-sandbox-detail-terminal-remove-cancel-button'));
 
     expect(screen.queryByTestId('page-sandbox-detail-terminal-remove-confirm')).toBeNull();
     expect(mocks.deleteTerminalSession).not.toHaveBeenCalled();
   });
 
-  it('已退出的会话：点移除直接执行，不多问一句', async () => {
-    mocks.listTerminalSessions.mockResolvedValue([]);
-    mocks.listTerminalSessions.mockResolvedValueOnce([
-      makeRecord({ session_id: 'sess-exited', state: 'exited', exit_code: 0 }),
-    ]);
-    mocks.deleteTerminalSession.mockResolvedValue({
-      session_id: 'sess-exited',
-      state: 'exited',
-      closed: false,
-      removed: true,
-    });
-
-    render(<TerminalPanel sandboxName="demo" sandboxRunning />);
-
-    const item = await screen.findByTestId('page-sandbox-detail-terminal-existing-item');
-    const button = within(item).getByTestId(
-      'page-sandbox-detail-terminal-existing-remove-button',
-    );
-    expect(button.textContent).toBe('移除');
-
-    fireEvent.click(button);
-    expect(screen.queryByTestId('page-sandbox-detail-terminal-remove-confirm')).toBeNull();
-    await waitFor(() => expect(mocks.deleteTerminalSession).toHaveBeenCalledWith('sess-exited'));
-    await waitFor(() =>
-      expect(screen.queryByTestId('page-sandbox-detail-terminal-existing-item')).toBeNull(),
-    );
-  });
-
   it('删除失败：把后端的 detail 原样展示出来', async () => {
-    mocks.listTerminalSessions.mockResolvedValue([
-      makeRecord({ session_id: 'sess-gone', state: 'exited', exit_code: 0 }),
-    ]);
+    mockSessions([makeRecord({ session_id: 'sess-gone', state: 'exited', exit_code: 0 })]);
     mocks.deleteTerminalSession.mockRejectedValue(
       new Error('终端会话不存在或已失效：sess-gone'),
     );
 
-    render(<TerminalPanel sandboxName="demo" sandboxRunning />);
+    renderPanel();
 
-    const item = await screen.findByTestId('page-sandbox-detail-terminal-existing-item');
-    fireEvent.click(
-      within(item).getByTestId('page-sandbox-detail-terminal-existing-remove-button'),
-    );
+    const tab = await screen.findByTestId('page-sandbox-detail-terminal-tab');
+    fireEvent.click(within(tab).getByTestId('page-sandbox-detail-terminal-tab-close'));
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-terminal-remove-confirm-button'));
 
     const banner = await screen.findByTestId('page-sandbox-detail-terminal-error');
     expect(banner.textContent).toContain('终端会话不存在或已失效：sess-gone');
-    // 失败时列表项还在：用户还能重试
-    expect(screen.getByTestId('page-sandbox-detail-terminal-existing-item')).toBeTruthy();
-  });
-
-  it('标签上的关闭动作：删成功后标签消失', async () => {
-    mocks.listTerminalSessions.mockResolvedValue([]);
-    mocks.createTerminalSession.mockResolvedValue({
-      session_id: 'sess-tab',
-      sandbox: 'demo',
-      container_name: 'sandbox-demo',
-      cols: 80,
-      rows: 24,
-      state: 'running',
-      created_at: '2026-10-30T01:00:00+00:00',
-    });
-    mocks.deleteTerminalSession.mockResolvedValue({
-      session_id: 'sess-tab',
-      state: 'running',
-      closed: true,
-      removed: true,
-    });
-
-    render(<TerminalPanel sandboxName="demo" sandboxRunning />);
-
-    fireEvent.click(screen.getByTestId('page-sandbox-detail-terminal-new-button'));
-    const tab = await screen.findByTestId('page-sandbox-detail-terminal-tab');
-    const removeButton = within(tab).getByTestId('page-sandbox-detail-terminal-tab-remove-button');
-    expect(removeButton.textContent).toBe('关闭');
-
-    fireEvent.click(removeButton);
-    fireEvent.click(screen.getByTestId('page-sandbox-detail-terminal-remove-confirm-button'));
-    await waitFor(() => expect(mocks.deleteTerminalSession).toHaveBeenCalledWith('sess-tab'));
-    await waitFor(() =>
-      expect(screen.queryByTestId('page-sandbox-detail-terminal-tab')).toBeNull(),
-    );
+    // 失败时标签还在：用户还能重试
+    expect(screen.getByTestId('page-sandbox-detail-terminal-tab')).toBeTruthy();
   });
 
   it('删除响应说记录已不存在：单独提示，不当成失败', async () => {
-    mocks.listTerminalSessions.mockResolvedValue([
-      makeRecord({ session_id: 'sess-gone', state: 'exited', exit_code: 0 }),
-    ]);
+    mockSessions([makeRecord({ session_id: 'sess-gone', state: 'exited', exit_code: 0 })]);
     mocks.deleteTerminalSession.mockResolvedValue({
       session_id: 'sess-gone',
       state: 'exited',
@@ -208,12 +263,11 @@ describe('终端会话删除', () => {
       removed: false,
     });
 
-    render(<TerminalPanel sandboxName="demo" sandboxRunning />);
+    renderPanel();
 
-    const item = await screen.findByTestId('page-sandbox-detail-terminal-existing-item');
-    fireEvent.click(
-      within(item).getByTestId('page-sandbox-detail-terminal-existing-remove-button'),
-    );
+    const tab = await screen.findByTestId('page-sandbox-detail-terminal-tab');
+    fireEvent.click(within(tab).getByTestId('page-sandbox-detail-terminal-tab-close'));
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-terminal-remove-confirm-button'));
 
     const notice = await screen.findByTestId('page-sandbox-detail-terminal-notice');
     expect(notice.textContent).toContain('记录已不存在（可能已被删除）');
@@ -221,12 +275,32 @@ describe('终端会话删除', () => {
     expect(screen.queryByTestId('page-sandbox-detail-terminal-error')).toBeNull();
   });
 
+  it('关闭流程没走完：提示残留进程，不当成失败', async () => {
+    mockSessions([makeRecord({ session_id: 'sess-half', state: 'running' })]);
+    mocks.deleteTerminalSession.mockResolvedValue({
+      session_id: 'sess-half',
+      state: 'running',
+      closed: false,
+      removed: true,
+    });
+
+    renderPanel();
+
+    const tab = await screen.findByTestId('page-sandbox-detail-terminal-tab');
+    fireEvent.click(within(tab).getByTestId('page-sandbox-detail-terminal-tab-close'));
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-terminal-remove-confirm-button'));
+
+    const notice = await screen.findByTestId('page-sandbox-detail-terminal-notice');
+    expect(notice.textContent).toContain('会话记录已删除，但关闭流程未走完（容器内可能仍有残留进程）');
+    expect(screen.queryByTestId('page-sandbox-detail-terminal-error')).toBeNull();
+  });
+
   it('删除成功但列表刷新失败：成功语义不被覆盖', async () => {
-    mocks.listTerminalSessions.mockResolvedValue([]);
     mocks.listTerminalSessions.mockResolvedValueOnce([
       makeRecord({ session_id: 'sess-1', state: 'exited', exit_code: 0 }),
     ]);
     mocks.listTerminalSessions.mockRejectedValueOnce(new Error('读取终端会话列表失败'));
+    mocks.listTerminalSessions.mockResolvedValue([]);
     mocks.deleteTerminalSession.mockResolvedValue({
       session_id: 'sess-1',
       state: 'exited',
@@ -234,100 +308,15 @@ describe('终端会话删除', () => {
       removed: true,
     });
 
-    render(<TerminalPanel sandboxName="demo" sandboxRunning />);
+    renderPanel();
 
-    const item = await screen.findByTestId('page-sandbox-detail-terminal-existing-item');
-    fireEvent.click(
-      within(item).getByTestId('page-sandbox-detail-terminal-existing-remove-button'),
-    );
+    const tab = await screen.findByTestId('page-sandbox-detail-terminal-tab');
+    fireEvent.click(within(tab).getByTestId('page-sandbox-detail-terminal-tab-close'));
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-terminal-remove-confirm-button'));
 
     const notice = await screen.findByTestId('page-sandbox-detail-terminal-notice');
     expect(notice.textContent).toContain('会话列表刷新失败');
     // 删除已经成功：不把刷新失败说成删除失败
     expect(screen.queryByTestId('page-sandbox-detail-terminal-error')).toBeNull();
-  });
-
-  it('后端记录说已退出但标签还连着：按在跑处理，要确认', async () => {
-    mocks.listTerminalSessions.mockResolvedValue([
-      makeRecord({ session_id: 'sess-tab', state: 'exited', exit_code: 0 }),
-    ]);
-    mocks.createTerminalSession.mockResolvedValue({
-      session_id: 'sess-tab',
-      sandbox: 'demo',
-      container_name: 'sandbox-demo',
-      cols: 80,
-      rows: 24,
-      state: 'running',
-      created_at: '2026-10-30T01:00:00+00:00',
-    });
-    mocks.deleteTerminalSession.mockResolvedValue({
-      session_id: 'sess-tab',
-      state: 'exited',
-      closed: true,
-      removed: true,
-    });
-
-    render(<TerminalPanel sandboxName="demo" sandboxRunning />);
-
-    fireEvent.click(screen.getByTestId('page-sandbox-detail-terminal-new-button'));
-    const item = await screen.findByTestId('page-sandbox-detail-terminal-existing-item');
-    const button = within(item).getByTestId(
-      'page-sandbox-detail-terminal-existing-remove-button',
-    );
-    // 标签还连着：按「还在跑」处理
-    expect(button.textContent).toBe('关闭');
-
-    fireEvent.click(button);
-    expect(screen.getByTestId('page-sandbox-detail-terminal-remove-confirm')).toBeTruthy();
-    expect(mocks.deleteTerminalSession).not.toHaveBeenCalled();
-  });
-
-  it('多个会话并行删除：互不干扰', async () => {
-    mocks.listTerminalSessions.mockResolvedValue([
-      makeRecord({ session_id: 'sess-a', state: 'exited', exit_code: 0 }),
-      makeRecord({ session_id: 'sess-b', state: 'exited', exit_code: 0 }),
-    ]);
-    // 第一个删除故意不立即返回：验证第二个会话的删除不会把第一个的按钮解锁
-    let releaseFirst: (value: unknown) => void = () => {};
-    const firstDelete = new Promise((resolve) => {
-      releaseFirst = resolve;
-    });
-    mocks.deleteTerminalSession.mockImplementation((sessionId: string) => {
-      if (sessionId === 'sess-a') {
-        return firstDelete;
-      }
-      return Promise.resolve({
-        session_id: sessionId,
-        state: 'exited',
-        closed: true,
-        removed: true,
-      });
-    });
-
-    render(<TerminalPanel sandboxName="demo" sandboxRunning />);
-
-    const items = await screen.findAllByTestId('page-sandbox-detail-terminal-existing-item');
-    const buttons = items.map((item) =>
-      within(item).getByTestId('page-sandbox-detail-terminal-existing-remove-button'),
-    ) as HTMLButtonElement[];
-
-    fireEvent.click(buttons[0]);
-    await waitFor(() => expect(buttons[0].disabled).toBe(true));
-
-    fireEvent.click(buttons[1]);
-    await waitFor(() => expect(buttons[1].disabled).toBe(true));
-    // 第一个会话还在删：它的按钮不能被第二个会话的删除解锁
-    expect(buttons[0].disabled).toBe(true);
-
-    await waitFor(() => expect(mocks.deleteTerminalSession).toHaveBeenCalledTimes(2));
-    expect(mocks.deleteTerminalSession).toHaveBeenCalledWith('sess-a');
-    expect(mocks.deleteTerminalSession).toHaveBeenCalledWith('sess-b');
-
-    releaseFirst({
-      session_id: 'sess-a',
-      state: 'exited',
-      closed: true,
-      removed: true,
-    });
   });
 });

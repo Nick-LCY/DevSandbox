@@ -43,6 +43,45 @@ const RECONNECT_STABLE_AFTER = 5000;
 /** 连续失败上限：达到即停掉自动重连，等用户手动重试。 */
 const MAX_RECONNECT_FAILURES = 10;
 
+/**
+ * 浏览器保留快捷键（豁免清单）。
+ *
+ * 这些键交回浏览器处理：新标签页 / 新窗口 / 关闭窗口 / 切换标签页 /
+ * 刷新 / 全屏 / 开发者工具 / 打印 / 另存为。
+ *
+ * - Ctrl+N 与 Ctrl+Shift+N：新窗口与新隐身窗口
+ * - Ctrl+T 与 Ctrl+Shift+T：新标签页与恢复标签页
+ * - Ctrl+W 与 Ctrl+Shift+W：关闭标签页与窗口
+ * - Ctrl+Q：退出应用
+ * - Ctrl+Tab 与 Ctrl+Shift+Tab：切换浏览器标签页
+ * - F5：刷新页面
+ * - F11：全屏
+ * - F12：开发者工具
+ * - Alt+F4：关闭窗口
+ * - Ctrl+P：打印
+ * - Ctrl+S：另存为
+ */
+const RESERVED_CTRL_KEYS = new Set(['n', 't', 'w', 'q', 'p', 's', 'tab']);
+
+/**
+ * 这个按键是不是浏览器保留快捷键。
+ *
+ * 判定口径：带 Ctrl 或 Meta 的字母 / Tab 组合，以及 F5 / F11 / F12 与 Alt+F4。
+ * 单的 Shift（Shift+Tab、Shift+N）不算保留键：终端里要能正常用。
+ */
+function isBrowserReservedShortcut(event: KeyboardEvent): boolean {
+  if (event.key === 'F5' || event.key === 'F11' || event.key === 'F12') {
+    return true;
+  }
+  if (event.altKey && event.key === 'F4') {
+    return true;
+  }
+  if (!event.ctrlKey && !event.metaKey) {
+    return false;
+  }
+  return RESERVED_CTRL_KEYS.has(event.key.toLowerCase());
+}
+
 interface TerminalViewProps {
   sessionId: string;
   /** 当前是否可见：只有可见的标签才做尺寸自适应。 */
@@ -58,6 +97,10 @@ interface TerminalViewProps {
  * 帧协议：二进制帧是终端字节流，文本帧是 `hello` / `exit` / `error` / `resize`。
  * 断线后按退避节奏重连，**始终携带原 `session_id`**（服务端会先回放缓冲再接实时流）。
  * 服务端重启导致会话失效时，停止重连并提示需要新开终端。
+ *
+ * 快捷键：带 Ctrl / Meta / Alt 的组合一律拦下来（不触发浏览器行为），
+ * 但仍然编码后送进容器内的 shell（Ctrl+C 必须能到 pty）；
+ * 浏览器保留键（见下方豁免清单）交回浏览器。
  *
  * 重连退避的计数只在连接**真的可用**时才清零：收到服务端的 `hello` 帧，
  * 或连接稳定存活超过 5 秒。握手成功不等于连上了——服务端握手后立刻关闭时，
@@ -86,7 +129,16 @@ export function TerminalView({ sessionId, active, retryToken = 0, onStateChange 
 
     const term = new Terminal({
       cursorBlink: true,
-      fontSize: 13,
+      // 终端配色与字体固定：两套主题下都是深色终端，亮暗切换不影响可读性。
+      fontFamily:
+        "'Geist Mono', SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Noto Sans Mono CJK SC', monospace",
+      fontSize: 12.5,
+      theme: {
+        background: '#152019',
+        foreground: '#e3ebe5',
+        cursor: '#a7d8af',
+        selectionBackground: '#2b3d31',
+      },
       scrollback: 5000,
       convertEol: false,
       allowProposedApi: true,
@@ -96,6 +148,20 @@ export function TerminalView({ sessionId, active, retryToken = 0, onStateChange 
     term.open(container);
     termRef.current = term;
     fitRef.current = fitAddon;
+
+    // 快捷键全量拦截：带 Ctrl / Meta / Alt 的组合一律不交给浏览器，
+    // 但仍然让 xterm 编码后送进容器内的 shell（Ctrl+C 必须能到 pty）。
+    // 浏览器保留键（见上方豁免清单）原样交回浏览器。
+    term.attachCustomKeyEventHandler((event: KeyboardEvent): boolean => {
+      if (isBrowserReservedShortcut(event)) {
+        return true;
+      }
+      if (event.ctrlKey || event.metaKey || event.altKey) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      return true;
+    });
 
     const report = (status: TerminalStatus, message: string): void => {
       stateCallbackRef.current({ status, message });
@@ -298,7 +364,7 @@ export function TerminalView({ sessionId, active, retryToken = 0, onStateChange 
 
   return (
     <div
-      className="terminal-surface"
+      className="h-full min-h-0 overflow-auto rounded-xl border border-border bg-terminal-bg p-3"
       ref={containerRef}
       data-testid="page-sandbox-detail-terminal-surface"
       data-session-id={sessionId}

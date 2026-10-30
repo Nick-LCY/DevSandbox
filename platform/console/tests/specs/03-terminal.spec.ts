@@ -138,12 +138,12 @@ test.describe('网页终端', () => {
     const reconnected = await context.newPage();
     await gotoDetail(reconnected, SANDBOX_NAME);
 
-    // 后端保留着会话，可以重新附着
-    const item = reconnected.locator(
-      `[data-testid="page-sandbox-detail-terminal-existing-item"][data-session-id="${sessionId}"]`,
+    // 后端保留着会话，标签条里还在：点标签就是重新附着
+    const tab = reconnected.locator(
+      `[data-testid="page-sandbox-detail-terminal-tab"][data-session-id="${sessionId}"]`,
     );
-    await expect(item).toHaveCount(1, { timeout: 30_000 });
-    await item.getByTestId('page-sandbox-detail-terminal-existing-attach-button').click();
+    await expect(tab).toHaveCount(1, { timeout: 30_000 });
+    await tab.getByTestId('page-sandbox-detail-terminal-tab-select').click();
 
     // 现场不丢：之前输出过的内容回放出来了
     await expectTerminalText(reconnected, sessionId, 'RECONNECT_MARKER_77', 60_000);
