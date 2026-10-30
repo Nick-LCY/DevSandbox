@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import { expect, test } from '@playwright/test';
 
 import { getSandbox, listImages } from '../helpers/api';
-import { fillCreateForm, gotoCreate } from '../helpers/console';
+import { fillCreateForm, openCreateDialog } from '../helpers/console';
 import { sandboxExec, userUid } from '../helpers/host';
 import { RUNTIME_DIR } from '../helpers/paths';
 import { readFixtures } from '../helpers/sandbox';
@@ -39,8 +39,8 @@ test.describe('本地构建镜像（不存在于任何仓库）', () => {
       description: `${fixtures.localImage.manifestProbe}；${registryProbe}`,
     });
 
-    // ── ② 网页的镜像下拉里有它
-    await gotoCreate(page);
+    // ── ② 新建弹窗的镜像下拉里有它
+    await openCreateDialog(page);
     const select = page.getByTestId('page-sandbox-create-image-select');
     await expect(select.locator(`option[value="${reference}"]`)).toHaveCount(1);
     const images = await listImages();
@@ -57,6 +57,9 @@ test.describe('本地构建镜像（不存在于任何仓库）', () => {
     );
     await page.getByTestId('page-sandbox-create-success-link').click();
     await expect(page.getByTestId('page-sandbox-detail-title')).toBeVisible();
+
+    // 工作区头部摘要里就是这个镜像（不是详情弹窗）
+    await expect(page.getByTestId('page-sandbox-detail-image')).toHaveText(reference);
 
     const detail = await getSandbox(SANDBOX_NAME);
     expect(detail.image).toBe(reference);
@@ -84,7 +87,7 @@ test.describe('本地构建镜像（不存在于任何仓库）', () => {
   });
 
   test('宿主上没有的镜像不能被网页选用（报错说人话）', async ({ page }) => {
-    await gotoCreate(page);
+    await openCreateDialog(page);
     const select = page.getByTestId('page-sandbox-create-image-select');
     // 前端只允许选下拉里的镜像；这里直接绕过前端校验，
     // 用「宿主不存在的镜像」调接口，确认后端按契约报错而不是降级直连

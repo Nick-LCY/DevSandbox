@@ -6,7 +6,14 @@
 import { expect, test } from '@playwright/test';
 
 import { getSandbox, reclaimPlan, type DeleteResultModel } from '../helpers/api';
-import { fillCreateForm, gotoCreate, gotoList } from '../helpers/console';
+import {
+  confirmDeleteTwice,
+  fillCreateForm,
+  gotoWorkbench,
+  openCreateDialog,
+  openDeleteDialog,
+  selectSandbox,
+} from '../helpers/console';
 import {
   daemonProcessesForUid,
   dirExists,
@@ -29,7 +36,7 @@ test.describe('删除回收复验', () => {
 
     try {
       // ── ① 建沙箱（带一条用户声明挂载）
-      await gotoCreate(page);
+      await openCreateDialog(page);
       await fillCreateForm(page, {
         name: SANDBOX_NAME,
         image: IMAGE,
@@ -89,15 +96,10 @@ test.describe('删除回收复验', () => {
       expect(planText).toContain(home);
       expect(planText).toContain('平台元数据');
 
-      // ── ④ 经工作台的回收清单弹窗删除（选中沙箱 → 头部「删除」）
-      await gotoList(page);
-      const row = page.getByTestId('page-sandbox-list-item').filter({ hasText: SANDBOX_NAME });
-      await expect(row).toHaveCount(1);
-      await row.click();
-      await expect(page.getByTestId('page-sandbox-detail-title')).toContainText(SANDBOX_NAME);
-      await page.getByTestId('page-sandbox-detail-delete-button').click();
-      const dialog = page.getByTestId('page-sandbox-detail-delete-dialog');
-      await expect(dialog).toBeVisible();
+      // ── ④ 经工作台删除：侧栏选中 → 头部「删除」→ 弹窗里两步确认
+      await gotoWorkbench(page);
+      await selectSandbox(page, SANDBOX_NAME);
+      const dialog = await openDeleteDialog(page);
       await expect(page.getByTestId('page-sandbox-detail-delete-untouched-note')).toHaveText(
         '用户挂载的宿主机目录不受影响',
       );
@@ -106,15 +108,23 @@ test.describe('删除回收复验', () => {
       expect(dialogText).toContain(dependency);
       expect(dialogText).toContain(workspace.path);
 
+      // 清单的两类圆点：平台回收项是红点，用户声明的挂载是绿点
+      const redDots = dialog.locator(
+        '[data-testid="page-sandbox-detail-delete-item"] span[aria-hidden="true"]',
+      );
+      await expect(redDots.first()).toHaveClass(/bg-destructive/);
+      const greenDots = dialog.locator(
+        '[data-testid="page-sandbox-detail-delete-user-mount-item"] span[aria-hidden="true"]',
+      );
+      await expect(greenDots.first()).toHaveClass(/bg-success/);
+
       const deleted = page.waitForResponse(
         (response) =>
           response.url().includes(`/api/sandboxes/${SANDBOX_NAME}`) &&
           response.request().method() === 'DELETE',
       );
       // 两步确认：第一次只是武装，第二次才真删
-      await page.getByTestId('page-sandbox-detail-delete-confirm-button').click();
-      await expect(page.getByTestId('page-sandbox-detail-delete-armed-hint')).toBeVisible();
-      await page.getByTestId('page-sandbox-detail-delete-confirm-button').click();
+      await confirmDeleteTwice(page);
       const response = await deleted;
       expect(response.status()).toBe(200);
       const result = (await response.json()) as DeleteResultModel;

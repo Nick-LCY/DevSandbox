@@ -1,33 +1,58 @@
 /**
  * 控制台页面的通用操作。
  *
- * 控制台是单页工作台：沙箱列表在左侧边栏，选中沙箱后右侧是工作区；
- * 新建沙箱 / 沙箱详情 / 代理设置都是弹窗。
+ * 控制台是**单页工作台**：左侧边栏是沙箱列表，右侧工作区是选中沙箱的摘要与
+ * 网页终端；新建沙箱 / 沙箱详情 / 代理设置都是弹窗（不入路由）。
+ *
+ * 标识一律按 README 的标识表来，helper 与实现一一对应：
+ * - 工作台：`#/`；
+ * - 选中沙箱：`#/sandboxes/<名>`；
+ * - 选中沙箱 + 终端会话：`#/sandboxes/<名>/<会话标识>`。
  */
 
-import { expect, type Page } from '@playwright/test';
+import { expect, type Locator, type Page } from '@playwright/test';
 
-/** 打开工作台（沙箱列表在左侧边栏）。 */
-export async function gotoList(page: Page): Promise<void> {
+/**
+ * 打开工作台（沙箱列表在左侧边栏，右侧是空态引导块）。
+ */
+export async function gotoWorkbench(page: Page): Promise<void> {
   await page.goto('/#/');
   await expect(page.getByTestId('page-sandbox-list-title')).toBeVisible();
 }
 
-/** 打开新建沙箱弹窗。 */
-export async function gotoCreate(page: Page): Promise<void> {
-  await page.goto('/#/');
-  // 侧栏与空态各有一个「新建沙箱」按钮，取第一个即可。
+/**
+ * 打开新建沙箱弹窗。
+ *
+ * 「新建沙箱」按钮在页面上有两个挂载点（侧栏顶部 + 右侧空态引导块），
+ * 取第一个即可。
+ */
+export async function openCreateDialog(page: Page): Promise<void> {
+  await gotoWorkbench(page);
   await page.getByTestId('page-sandbox-list-create-button').first().click();
   await expect(page.getByTestId('page-sandbox-create-dialog')).toBeVisible();
 }
 
-/** 打开某个沙箱的工作区（右侧显示摘要与终端会话标签）。 */
+/**
+ * 打开某个沙箱的工作区（右侧显示摘要与终端会话标签）。
+ */
 export async function gotoDetail(page: Page, name: string): Promise<void> {
   await page.goto(`/#/sandboxes/${encodeURIComponent(name)}`);
   await expect(page.getByTestId('page-sandbox-detail-title')).toContainText(name);
 }
 
-/** 在新建弹窗里填一份完整的创建表单并提交，返回提交后等待成功提示的耗时（毫秒）。 */
+/**
+ * 在左侧边栏里选中一个沙箱（工作区切到它的摘要与终端）。
+ */
+export async function selectSandbox(page: Page, name: string): Promise<void> {
+  const item = page.getByTestId('page-sandbox-list-item').filter({ hasText: name });
+  await expect(item).toHaveCount(1);
+  await item.click();
+  await expect(page.getByTestId('page-sandbox-detail-title')).toContainText(name);
+}
+
+/**
+ * 在新建弹窗里填一份完整的创建表单并提交，返回提交后等待成功提示的耗时（毫秒）。
+ */
 export async function fillCreateForm(
   page: Page,
   options: {
@@ -78,37 +103,101 @@ const DIALOG_FIELD_IDS: Record<string, string> = {
   'updated-at': 'page-sandbox-detail-dialog-updated-at',
 };
 
+/** 详情弹窗里可读的字段名。 */
+export type DetailFieldName =
+  | 'state'
+  | 'image'
+  | 'created-at'
+  | 'updated-at'
+  | 'image-source'
+  | 'system-user'
+  | 'container-name'
+  | 'network-name'
+  | 'socket-path'
+  | 'socket-mount-path'
+  | 'workdir'
+  | 'command'
+  | 'subid'
+  | 'network-owned'
+  | 'env'
+  | 'mounts'
+  | 'dependencies';
+
 /** 字段名 → 弹窗里的定位标识。 */
-function dialogFieldId(field: string): string {
+function dialogFieldId(field: DetailFieldName): string {
   return DIALOG_FIELD_IDS[field] ?? `page-sandbox-detail-${field}`;
 }
 
-/** 打开沙箱详情弹窗（完整字段在弹窗里）。 */
+/**
+ * 打开沙箱详情弹窗（完整字段在弹窗里）。
+ */
 export async function openDetailDialog(page: Page): Promise<void> {
   await page.getByTestId('page-sandbox-detail-detail-button').click();
   await expect(page.getByTestId('page-sandbox-detail-dialog')).toBeVisible();
 }
 
 /**
+ * 关掉沙箱详情弹窗（Esc 关闭）。
+ */
+export async function closeDetailDialog(page: Page): Promise<void> {
+  const dialog = page.getByTestId('page-sandbox-detail-dialog');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+}
+
+/**
  * 取沙箱详情弹窗里的某个字段文本。
  *
- * 完整字段（镜像来源 / 系统用户 / 容器名 / 挂载 / 子 ID 段…）只在详情弹窗里，
- * 所以先确保弹窗是开着的；读完顺手关掉，免得与工作区头部的同名字段撞车。
+ * **完整字段只在详情弹窗里**：工作区头部只有状态 / 镜像 / 时间三项摘要，
+ * 镜像来源、系统用户、容器名、挂载、子 ID 段等都得进弹窗读。
+ *
+ * 弹窗没开着就顺手打开，读完再关掉（不让弹窗挡着后面的操作）；
+ * 调用方自己开着弹窗时，读完不动它。
  *
  * 字段名传字段本身（`image` / `image-source`），不传完整标识：
  * 与工作区头部重名的四个字段（状态 / 镜像 / 创建时间 / 更新时间）在弹窗里
  * 换了标识（`page-sandbox-detail-dialog-*`），映射关系只在本文件里维护。
  */
-export async function detailField(page: Page, field: string): Promise<string> {
+export async function detailField(page: Page, field: DetailFieldName): Promise<string> {
   const dialog = page.getByTestId('page-sandbox-detail-dialog');
   const opened = !(await dialog.isVisible());
   if (opened) {
     await openDetailDialog(page);
   }
-  const text = ((await dialog.getByTestId(dialogFieldId(field)).textContent()) ?? '').trim();
+  // 等详情读完：弹窗先显示「正在读取沙箱详情…」，字段后到。
+  await expect(dialog.getByTestId('page-sandbox-detail-loading')).toHaveCount(0, {
+    timeout: 30_000,
+  });
+  const target = dialog.getByTestId(dialogFieldId(field));
+  // 列表型字段（挂载 / 环境变量 / 依赖容器）为空时渲染的是「（无…）」占位元素。
+  const empty = dialog.getByTestId(`page-sandbox-detail-${field}-empty`);
+  const locator = (await target.count()) > 0 ? target : empty;
+  await expect(locator).toBeVisible({ timeout: 30_000 });
+  const text = ((await locator.textContent()) ?? '').trim();
   if (opened) {
-    await page.keyboard.press('Escape');
-    await expect(dialog).toBeHidden();
+    await closeDetailDialog(page);
   }
   return text;
+}
+
+/**
+ * 打开删除沙箱确认弹窗，返回弹窗容器。
+ *
+ * 回收清单要先读一遍（清单在弹窗里），所以拆成「打开」与「确认」两步。
+ */
+export async function openDeleteDialog(page: Page): Promise<Locator> {
+  await page.getByTestId('page-sandbox-detail-delete-button').click();
+  const dialog = page.getByTestId('page-sandbox-detail-delete-dialog');
+  await expect(dialog).toBeVisible();
+  return dialog;
+}
+
+/**
+ * 两步确认删除：第一次点只武装，第二次才真的发删除请求。
+ */
+export async function confirmDeleteTwice(page: Page): Promise<void> {
+  const confirm = page.getByTestId('page-sandbox-detail-delete-confirm-button');
+  await confirm.click();
+  await expect(page.getByTestId('page-sandbox-detail-delete-armed-hint')).toBeVisible();
+  await confirm.click();
 }

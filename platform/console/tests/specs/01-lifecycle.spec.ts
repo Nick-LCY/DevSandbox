@@ -1,13 +1,21 @@
 /**
- * 全流程验收：镜像下拉选择 → 创建沙箱（含挂载声明）→ 终端执行命令断言回显
- * → 停止 → 再启动 → 删除（走回收清单确认弹窗）。
+ * 全流程验收：弹窗建沙箱（选镜像 + 填表）→ 侧栏选中 → 工作区头部启停
+ * → 终端执行命令断言回显 → 删除（回收清单弹窗，两步确认）→ 回空态。
  *
  * 全程只经网页操作，不碰命令行；每一步都有可判定的断言。
  */
 
 import { expect, test } from '@playwright/test';
 
-import { detailField, fillCreateForm, gotoCreate, gotoDetail } from '../helpers/console';
+import {
+  confirmDeleteTwice,
+  detailField,
+  fillCreateForm,
+  gotoDetail,
+  gotoWorkbench,
+  openCreateDialog,
+  openDeleteDialog,
+} from '../helpers/console';
 import { sandboxContainerState, userUid } from '../helpers/host';
 import { readFixtures } from '../helpers/sandbox';
 import { expectTerminalConnected, expectTerminalText, openTerminal, typeInTerminal } from '../helpers/terminal';
@@ -24,8 +32,8 @@ test.describe('网页控制台全流程', () => {
     const fingerprintBefore = fingerprintDir(workspace.path);
 
     try {
-      // ── ① 新建页：镜像下拉里选宿主本地镜像
-      await gotoCreate(page);
+      // ── ① 新建弹窗：镜像下拉里选宿主本地镜像
+      await openCreateDialog(page);
       const select = page.getByTestId('page-sandbox-create-image-select');
       await expect(select).toBeVisible();
       await expect(select.locator(`option[value="${IMAGE}"]`)).toHaveCount(1);
@@ -44,10 +52,13 @@ test.describe('网页控制台全流程', () => {
         `沙箱 ${SANDBOX_NAME} 创建成功`,
       );
 
-      // ── ③ 进详情页核对创建结果
+      // ── ③ 点成功态里的「打开沙箱详情」：选中该沙箱，右侧工作区显示它的摘要
       await page.getByTestId('page-sandbox-create-success-link').click();
       await expect(page.getByTestId('page-sandbox-detail-title')).toContainText(SANDBOX_NAME);
       await expect(page.getByTestId('page-sandbox-detail-state')).toHaveText('运行中');
+      // 工作区头部摘要：镜像
+      await expect(page.getByTestId('page-sandbox-detail-image')).toHaveText(IMAGE);
+      // 完整字段在详情弹窗里读
       expect(await detailField(page, 'image')).toBe(IMAGE);
       expect(await detailField(page, 'image-source')).toBe('host');
       const mountText = await detailField(page, 'mounts');
@@ -80,9 +91,7 @@ test.describe('网页控制台全流程', () => {
       expect(await detailField(page, 'subid')).toBe(subidBefore);
 
       // ── ⑦ 删除：先看回收清单弹窗，确认后才真删
-      await page.getByTestId('page-sandbox-detail-delete-button').click();
-      const dialog = page.getByTestId('page-sandbox-detail-delete-dialog');
-      await expect(dialog).toBeVisible();
+      const dialog = await openDeleteDialog(page);
       await expect(page.getByTestId('page-sandbox-detail-delete-untouched-note')).toHaveText(
         '用户挂载的宿主机目录不受影响',
       );
@@ -96,12 +105,11 @@ test.describe('网页控制台全流程', () => {
       await expect(page.getByTestId('page-sandbox-detail-title')).toBeVisible();
 
       // 再打开并确认删除（两步确认：第一次只是武装，第二次才真删）
-      await page.getByTestId('page-sandbox-detail-delete-button').click();
-      await expect(dialog).toBeVisible();
-      await page.getByTestId('page-sandbox-detail-delete-confirm-button').click();
-      await expect(page.getByTestId('page-sandbox-detail-delete-armed-hint')).toBeVisible();
-      await page.getByTestId('page-sandbox-detail-delete-confirm-button').click();
-      await expect(page.getByTestId('page-sandbox-list-title')).toBeVisible({ timeout: 120_000 });
+      await openDeleteDialog(page);
+      await confirmDeleteTwice(page);
+      await expect(page.getByTestId('page-sandbox-detail-empty')).toBeVisible({
+        timeout: 120_000,
+      });
       await expect(
         page.getByTestId('page-sandbox-list-item').filter({ hasText: SANDBOX_NAME }),
       ).toHaveCount(0);
@@ -113,10 +121,10 @@ test.describe('网页控制台全流程', () => {
     }
   });
 
-  test('新建页能刷新宿主本地镜像列表', async ({ page }) => {
-    await gotoCreate(page);
+  test('新建弹窗能刷新宿主本地镜像列表', async ({ page }) => {
+    await openCreateDialog(page);
     const select = page.getByTestId('page-sandbox-create-image-select');
-    // 等镜像列表加载完（页面刚打开时只有一个占位选项）
+    // 等镜像列表加载完（弹窗刚打开时只有一个占位选项）
     await expect.poll(async () => select.locator('option').count(), { timeout: 30_000 }).toBeGreaterThan(1);
     const before = await select.locator('option').count();
     await page.getByTestId('page-sandbox-create-image-refresh-button').click();
@@ -126,9 +134,9 @@ test.describe('网页控制台全流程', () => {
     expect(await select.locator('option').count()).toBe(before);
   });
 
-  test('沙箱详情页刷新后字段保持一致', async ({ page }) => {
+  test('沙箱详情刷新后字段保持一致', async ({ page }) => {
     // 用一个独立的短命沙箱验证「详情 → 刷新 → 字段不变」
-    await gotoCreate(page);
+    await openCreateDialog(page);
     await fillCreateForm(page, {
       name: 'acc-refresh',
       image: IMAGE,
@@ -142,5 +150,14 @@ test.describe('网页控制台全流程', () => {
     expect(await detailField(page, 'image')).toBe(image);
     await gotoDetail(page, 'acc-refresh');
     await expect(page.getByTestId('page-sandbox-detail-state')).toHaveText('运行中');
+  });
+
+  test('工作台首页：侧栏列表与右侧空态', async ({ page }) => {
+    await gotoWorkbench(page);
+    // 侧栏列表在，右侧是空态引导块
+    await expect(page.getByTestId('page-sandbox-list-title')).toBeVisible();
+    await expect(page.getByTestId('page-sandbox-detail-empty')).toBeVisible();
+    // 空态里的「新建沙箱」按钮与侧栏的是两个挂载点，取第一个即可
+    await expect(page.getByTestId('page-sandbox-list-create-button')).toHaveCount(2);
   });
 });

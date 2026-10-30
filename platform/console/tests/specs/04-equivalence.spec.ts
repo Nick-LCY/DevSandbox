@@ -14,7 +14,13 @@ import { expect, test } from '@playwright/test';
 
 import { getSandbox, listSandboxes, reclaimPlan } from '../helpers/api';
 import { sandboxctl, sandboxctlMetadata } from '../helpers/cli';
-import { detailField, fillCreateForm, gotoCreate, gotoDetail, gotoList } from '../helpers/console';
+import {
+  detailField,
+  fillCreateForm,
+  gotoDetail,
+  gotoWorkbench,
+  openCreateDialog,
+} from '../helpers/console';
 import { sandboxContainerState, sandboxExec, userUid } from '../helpers/host';
 import { createWorkspace, removeWorkspace } from '../helpers/workspace';
 
@@ -70,7 +76,7 @@ test.describe('网页与命令行的等价性', () => {
     const workspace = createWorkspace('/workspace');
     try {
       // ── 网页建一个沙箱（带一条用户声明挂载）
-      await gotoCreate(page);
+      await openCreateDialog(page);
       await fillCreateForm(page, {
         name,
         image: IMAGE,
@@ -148,7 +154,7 @@ test.describe('网页与命令行的等价性', () => {
     const workspace = createWorkspace('/workspace');
     try {
       // 网页建
-      await gotoCreate(page);
+      await openCreateDialog(page);
       await fillCreateForm(page, {
         name: webName,
         image: IMAGE,
@@ -233,7 +239,7 @@ test.describe('网页与命令行的等价性', () => {
       const cliStart = sandboxctl(['start', webName]);
       expect(cliStart.code, cliStart.output).toBe(0);
       // 绕一圈回到详情页：确认页面重新拉取后看到的是命令行启动后的状态
-      await gotoList(page);
+      await gotoWorkbench(page);
       await gotoDetail(page, webName);
       await expect(page.getByTestId('page-sandbox-detail-state')).toHaveText('运行中');
       expect((sandboxctlMetadata(webName) as unknown as CliMetadata).state).toBe('running');

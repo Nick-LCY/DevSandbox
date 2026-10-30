@@ -78,20 +78,52 @@ CONSOLE_TEST_PORT=8200 pnpm run test:acceptance
 
 ---
 
-## 三、用例覆盖
+## 三、控制台 UI 改造后的四条新口径
+
+控制台已改造成**单页工作台**，验收脚本的定位方式跟着变了：
+
+| 口径 | 含义 | 对验收脚本的影响 |
+|---|---|---|
+| **单页工作台** | 左侧边栏是沙箱列表，右侧工作区是选中沙箱的摘要与终端；新建沙箱 / 沙箱详情 / 代理设置 / 删除确认都是弹窗 | 页面之间不再整页跳转，改成「开弹窗」的动作：`openCreateDialog` / `openDetailDialog` / `openDeleteDialog` |
+| **两层哈希路由** | 只有 `#/` 与 `#/sandboxes/<名>[/<会话标识>]` 两层，没有「列表页 / 详情页 / 终端页」之分 | 导航只有两个动作：`gotoWorkbench`（回工作台）与 `gotoDetail`（进沙箱工作区）；刷新与粘贴链接落到同一个位置 |
+| **删除两步确认** | 第一次点「确认删除」只进入武装状态（5 秒窗口，按钮变「再点一次确认删除」），第二次才真的发 `DELETE` | 删除一律走 `confirmDeleteTwice`：两次点击之间断言武装提示条出现 |
+| **标签 = 会话** | 终端标签条的数据源就是后端会话表，一个标签一个会话；点标签即附着到该会话（服务端回放现场缓冲） | 没有第二份「后端保留的会话」列表；重新附着用 `reattachTerminal`（点已有标签） |
+
+**helper 与实现标识的对应关系**（helper 里的标识一律照 README 的标识表，不另造名字）：
+
+| helper | 动作 | 落到的标识 |
+|---|---|---|
+| `gotoWorkbench` | 回工作台首页 | `#/` → `page-sandbox-list-title` |
+| `openCreateDialog` | 开新建沙箱弹窗 | `page-sandbox-list-create-button`（**双挂载，取第一个**）→ `page-sandbox-create-dialog` |
+| `gotoDetail` | 进某个沙箱的工作区 | `#/sandboxes/<名>` → `page-sandbox-detail-title` |
+| `selectSandbox` | 在侧栏里选中沙箱 | `page-sandbox-list-item` → `page-sandbox-detail-title` |
+| `openDetailDialog` / `detailField` | 开详情弹窗 / 读详情字段 | `page-sandbox-detail-detail-button` → `page-sandbox-detail-dialog` |
+| `openDeleteDialog` / `confirmDeleteTwice` | 开删除弹窗 / 两步确认删除 | `page-sandbox-detail-delete-button` → `page-sandbox-detail-delete-dialog` → `page-sandbox-detail-delete-confirm-button` |
+| `openTerminal` | 新建一个终端会话 | `page-sandbox-detail-terminal-new-button` → `page-sandbox-detail-terminal-tab` |
+| `reattachTerminal` | 附着到已有会话（点已有标签） | `page-sandbox-detail-terminal-tab[data-session-id=…]` → `page-sandbox-detail-terminal-tab-select` |
+
+**同页双挂载的标识**：`page-sandbox-list-create-button` 在侧栏顶部与右侧空态引导块各挂一个（同页同时存在），取第一个即可：
+
+```ts
+await page.getByTestId('page-sandbox-list-create-button').first().click();
+```
+
+---
+
+## 四、用例覆盖
 
 | 用例文件 | 覆盖的验收标准 |
 |---|---|
-| `01-lifecycle` | 下拉选镜像 → 创建（带挂载声明）→ 终端执行命令断言回显 → 停止 → 再启动 → 删除（走回收清单确认弹窗，先取消再确认）；镜像列表刷新；详情刷新后字段一致 |
+| `01-lifecycle` | 弹窗里下拉选镜像 → 创建（带挂载声明）→ 侧栏选中后核对详情 → 终端执行命令断言回显 → 停止 → 再启动 → 删除（回收清单弹窗先取消、再两步确认）→ 回空态；镜像列表刷新；详情刷新后字段一致 |
 | `02-local-image` | 本地构建镜像出现在网页下拉里；选中后创建成功；沙箱守护进程里确实拿到了它（注入路径走通）；宿主没有的镜像按契约报错，不降级直连 |
-| `03-terminal` | 同一沙箱两个终端并行可用且互不串扰；断开浏览器后重连，终端现场（已输出内容与仍在运行的进程）不丢；重启服务后旧会话失效且页面明确提示 |
+| `03-terminal` | 同一沙箱两个终端并行可用且互不串扰；终端聚焦时 Ctrl+C 真的到达容器内的 shell（提示符回归 + 退出码 130）；断开浏览器后重连（点已有标签重新附着），终端现场（已输出内容与仍在运行的进程）不丢；重启服务后旧会话失效且页面明确提示 |
 | `04-equivalence` | 同一沙箱：网页与命令行的列表字段、挂载清单、容器状态、回收清单逐项一致；参数相同的两个沙箱（网页建 / 命令行建）挂载与状态流转等价 |
-| `05-reclaim` | 按一期回收清单逐项核对（沙箱容器、依赖容器、守护进程、systemd 单元、用户与家目录、子 UID/GID 段、平台元数据）；用户声明挂载的外部目录原样存在、内容未变；重复删除幂等 |
+| `05-reclaim` | 经工作台删除（侧栏选中 → 头部删除 → 弹窗两步确认），回收清单的红点 / 绿点区分平台资源与用户挂载；按一期回收清单逐项核对（沙箱容器、依赖容器、守护进程、systemd 单元、用户与家目录、子 UID/GID 段、平台元数据）；用户声明挂载的外部目录原样存在、内容未变；重复删除幂等 |
 | `06-boundary` | 沙箱内依赖镜像拉取统一经镜像代理（代理访问日志 + 守护进程单元环境变量取证）；服务只监听回环、不做认证、不暴露接口文档 |
 
 ---
 
-## 四、断言口径
+## 五、断言口径
 
 - **终端内容**：xterm.js 用 DOM 渲染器，屏幕文本在 `.xterm-rows` 里，用 `textContent()` 读
   （`innerText()` 对隐藏元素返回空串，切换终端标签时会踩坑）。
@@ -102,7 +134,7 @@ CONSOLE_TEST_PORT=8200 pnpm run test:acceptance
 
 ---
 
-## 五、产物
+## 六、产物
 
 失败现场与全部用例的截图、trace 都留在 `tests/artifacts/`：
 

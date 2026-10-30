@@ -2,7 +2,8 @@
  * 网页终端验收：
  * 一、同一沙箱开两个终端并行可用，两端互不串扰；
  * 二、断开浏览器后重连，终端现场（已输出内容与仍在运行的进程）不丢；
- * 三、重启服务后旧会话失效，且页面给出明确提示。
+ * 三、重启服务后旧会话失效，且页面给出明确提示；
+ * 四、终端聚焦时 Ctrl+C 真的送到了容器内的 shell。
  */
 
 import { expect, test, type Page } from '@playwright/test';
@@ -12,10 +13,12 @@ import { gotoDetail } from '../helpers/console';
 import { sandboxContainerState, userUid } from '../helpers/host';
 import { readFixtures } from '../helpers/sandbox';
 import {
+  expectInterruptReachedShell,
   expectTerminalConnected,
   expectTerminalText,
   expectTerminalTextAbsent,
   openTerminal,
+  reattachTerminal,
   selectTerminal,
   terminalText,
   typeInTerminal,
@@ -106,6 +109,25 @@ test.describe('网页终端', () => {
     });
   });
 
+  test('终端聚焦时 Ctrl+C 到达容器内的 shell', async ({ page }) => {
+    await gotoDetail(page, SANDBOX_NAME);
+
+    const sessionId = await openTerminal(page);
+    await expectTerminalConnected(page);
+
+    // 让 shell 跑一条前台长命令：它会阻塞住终端
+    await typeInTerminal(page, sessionId, 'sleep 300');
+    await expectTerminalText(page, sessionId, 'sleep 300');
+    // 等 shell 真的进了 sleep（命令回显早于进程启动）
+    await page.waitForTimeout(1000);
+
+    // 发 Ctrl+C：浏览器不能抢走这个键，它必须编码后送进容器内的 pty
+    await page.keyboard.press('Control+C');
+
+    // 提示符回归（或 ^C 回显）+ 退出码 130（128 + SIGINT）
+    await expectInterruptReachedShell(page, sessionId, 60_000);
+  });
+
   test('断开浏览器后重连，终端现场不丢（输出与仍在运行的进程都还在）', async ({ page, browser }) => {
     await gotoDetail(page, SANDBOX_NAME);
     const sessionId = await openTerminal(page);
@@ -133,17 +155,13 @@ test.describe('网页终端', () => {
     await page.context().close();
     await new Promise((resolve) => setTimeout(resolve, 4000));
 
-    // ── 重连：开一个全新的浏览器上下文
+    // ── 重连：开一个全新的浏览器上下文，直接落到该沙箱的工作区
     const context = await browser.newContext();
     const reconnected = await context.newPage();
     await gotoDetail(reconnected, SANDBOX_NAME);
 
     // 后端保留着会话，标签条里还在：点标签就是重新附着
-    const tab = reconnected.locator(
-      `[data-testid="page-sandbox-detail-terminal-tab"][data-session-id="${sessionId}"]`,
-    );
-    await expect(tab).toHaveCount(1, { timeout: 30_000 });
-    await tab.getByTestId('page-sandbox-detail-terminal-tab-select').click();
+    await reattachTerminal(reconnected, sessionId);
 
     // 现场不丢：之前输出过的内容回放出来了
     await expectTerminalText(reconnected, sessionId, 'RECONNECT_MARKER_77', 60_000);
