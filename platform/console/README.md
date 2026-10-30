@@ -64,6 +64,25 @@ pnpm run test       # vitest run，纯数据转换逻辑的单元测试
 
 单元测试覆盖挂载声明解析、环境变量解析、路由解析（含畸形百分号编码）、字节与时间格式化、终端帧协议解析、代理状态文案转换。
 
+## 端到端验收
+
+验收脚本在 `platform/console/tests/`：Playwright 驱动真实浏览器，打真实控制台服务与真实沙箱。
+
+```bash
+pnpm install                # 首次：装 @playwright/test
+pnpm run test:acceptance    # 一条命令跑完全部用例，退出码 0 = 通过
+```
+
+宿主 8000 端口被无关进程占用时用环境变量换端口（默认 8100）：
+
+```bash
+CONSOLE_TEST_PORT=8200 pnpm run test:acceptance
+```
+
+环境前提：Playwright chromium 1.64.1、免密 sudo、宿主 Docker、镜像代理在跑。
+验收脚本自己会构建前端产物、构建一个「不存在于任何仓库」的测试镜像、拉起控制台服务并在收尾时清理干净。
+用例清单、断言口径与产物位置见 `platform/console/tests/README.md`；实测数据见 `platform/console/RESULTS.md`。
+
 ## 目录结构
 
 ```

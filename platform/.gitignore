@@ -14,5 +14,9 @@ build/
 console/node_modules/
 console/dist/
 
+# 端到端验收产物（截图 / trace / 报告 / 运行期状态）
+console/tests/artifacts/
+console/tests/.runtime/
+
 # 平台运行期数据（默认数据根目录在 /var/lib，这里兜底本地调试目录）
 platform-home/
