@@ -1,0 +1,33 @@
+{
+  "name": "@sandbox-platform/console",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "沙箱平台网页控制台前端：沙箱列表 / 新建沙箱 / 沙箱详情与网页终端 / 代理设置",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.32.1",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "0.10.0",
+    "@xterm/xterm": "5.5.0",
+    "react": "19.2.0",
+    "react-dom": "19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.1",
+    "@vitejs/plugin-react": "5.0.4",
+    "typescript": "5.9.3",
+    "vite": "7.1.9",
+    "vitest": "3.2.7"
+  }
+}

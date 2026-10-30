@@ -1,0 +1,129 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  formatMountDeclaration,
+  isSensitiveHostPath,
+  parseMountDeclaration,
+  validateMountDeclarations,
+} from './mounts';
+
+describe('parseMountDeclaration', () => {
+  it('解析 宿主路径:容器路径', () => {
+    const result = parseMountDeclaration('/data/project:/workspace');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.declaration).toEqual({
+        hostPath: '/data/project',
+        containerPath: '/workspace',
+        readOnly: false,
+      });
+    }
+  });
+
+  it('解析只读后缀 :ro', () => {
+    const result = parseMountDeclaration('/data/project:/workspace:ro');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.declaration.readOnly).toBe(true);
+    }
+  });
+
+  it('空声明报空', () => {
+    const result = parseMountDeclaration('   ');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('不能为空');
+    }
+  });
+
+  it('段数不对报格式非法', () => {
+    const result = parseMountDeclaration('/a:/b:/c:/d');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('格式非法');
+    }
+  });
+
+  it('宿主路径必须绝对', () => {
+    const result = parseMountDeclaration('relative/path:/workspace');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('绝对路径');
+    }
+  });
+
+  it('容器路径必须绝对', () => {
+    const result = parseMountDeclaration('/data:workspace');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('绝对路径');
+    }
+  });
+
+  it('路径含逗号一律拒绝', () => {
+    const result = parseMountDeclaration('/data/a,b:/workspace');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('逗号');
+    }
+  });
+
+  it('挂载模式只认 ro 与 rw', () => {
+    const result = parseMountDeclaration('/data:/workspace:xx');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('ro');
+    }
+  });
+
+  it('宿主敏感目录一律拒绝', () => {
+    const result = parseMountDeclaration('/etc:/host-etc');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('敏感清单');
+    }
+  });
+});
+
+describe('isSensitiveHostPath', () => {
+  it('命中敏感目录及其子目录', () => {
+    expect(isSensitiveHostPath('/etc')).toBe(true);
+    expect(isSensitiveHostPath('/etc/passwd')).toBe(true);
+    expect(isSensitiveHostPath('/proc/1')).toBe(true);
+    expect(isSensitiveHostPath('/var/run/docker.sock')).toBe(true);
+  });
+
+  it('普通目录不算敏感', () => {
+    expect(isSensitiveHostPath('/data/project')).toBe(false);
+    expect(isSensitiveHostPath('/etcetera')).toBe(false);
+  });
+});
+
+describe('formatMountDeclaration', () => {
+  it('可读写不带后缀，只读带 :ro', () => {
+    expect(
+      formatMountDeclaration({ hostPath: '/data', containerPath: '/workspace', readOnly: false }),
+    ).toBe('/data:/workspace');
+    expect(
+      formatMountDeclaration({ hostPath: '/data', containerPath: '/workspace', readOnly: true }),
+    ).toBe('/data:/workspace:ro');
+  });
+});
+
+describe('validateMountDeclarations', () => {
+  it('容器路径重复时报错', () => {
+    const error = validateMountDeclarations([
+      { hostPath: '/a', containerPath: '/workspace', readOnly: false },
+      { hostPath: '/b', containerPath: '/workspace', readOnly: false },
+    ]);
+    expect(error).toContain('重复');
+  });
+
+  it('容器路径各不相同则通过', () => {
+    const error = validateMountDeclarations([
+      { hostPath: '/a', containerPath: '/workspace', readOnly: false },
+      { hostPath: '/b', containerPath: '/data', readOnly: false },
+    ]);
+    expect(error).toBeNull();
+  });
+});

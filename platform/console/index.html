@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>沙箱平台控制台</title>
+  </head>
+  <body>
+    <!--
+      静态外壳：后端健康门禁要读原始 HTML 里的 data-testid，
+      React 挂载后会把这段占位内容替换成真正的页面。
+    -->
+    <div id="root">
+      <h1 data-testid="page-layout-title">沙箱平台控制台</h1>
+      <p data-testid="page-layout-loading">控制台正在加载…</p>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
