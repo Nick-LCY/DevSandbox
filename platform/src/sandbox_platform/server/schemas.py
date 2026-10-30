@@ -405,6 +405,27 @@ class TerminalSessionResponse(BaseModel):
         )
 
 
+class TerminalSessionDeleteResponse(BaseModel):
+    """删除终端会话的结果。"""
+
+    session_id: str
+    state: str = Field(description="移除前的会话状态（running / exited）")
+    closed: bool = Field(
+        description="是否走了一遍完整关闭流程（运行中的会话为真，已退出的为假）"
+    )
+    removed: bool = Field(description="会话记录文件是否确实删掉了")
+
+    @classmethod
+    def from_removal(cls, removal: Any) -> TerminalSessionDeleteResponse:
+        """由会话移除结果生成。"""
+        return cls(
+            session_id=removal.session_id,
+            state=removal.state,
+            closed=removal.closed,
+            removed=removal.removed,
+        )
+
+
 class TerminalSessionModel(BaseModel):
     """终端会话表的一行（会话元数据）。"""
 

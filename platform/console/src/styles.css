@@ -507,7 +507,8 @@ a:hover {
 }
 
 .terminal-tab-button,
-.terminal-tab-close {
+.terminal-tab-close,
+.terminal-tab-remove {
   border: none;
   background: transparent;
   color: var(--text);
@@ -523,6 +524,41 @@ a:hover {
 
 .terminal-tab-close:hover {
   color: var(--danger);
+}
+
+/* 删除会话（运行中＝关闭，已退出＝移除）：与「断开连接」的叉号分开 */
+.terminal-tab-remove {
+  color: var(--text-dim);
+  border-left: 1px solid var(--border);
+}
+
+.terminal-tab-remove:hover {
+  color: var(--danger);
+}
+
+.terminal-tab-remove:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 关闭运行中会话的轻确认条 */
+.terminal-confirm {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  margin: 8px 0;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  font-size: 12px;
+  color: var(--text);
+}
+
+.terminal-confirm-text {
+  flex: 1;
+  min-width: 220px;
 }
 
 .terminal-host {

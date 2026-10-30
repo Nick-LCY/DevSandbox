@@ -157,6 +157,17 @@ export interface TerminalSessionRecord {
   host_pid: number;
 }
 
+/** 删除终端会话的结果。 */
+export interface TerminalSessionDeleteResult {
+  session_id: string;
+  /** 移除前的会话状态（running / exited）。 */
+  state: string;
+  /** 是否走了一遍完整关闭流程（运行中的会话为 true）。 */
+  closed: boolean;
+  /** 会话记录文件是否确实删掉了。 */
+  removed: boolean;
+}
+
 /** 创建沙箱的请求体。字段与后端 `CreateSandboxRequest` 一致。 */
 export interface CreateSandboxRequest {
   name: string;

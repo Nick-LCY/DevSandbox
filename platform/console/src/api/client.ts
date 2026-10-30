@@ -16,6 +16,7 @@ import type {
   SandboxDetail,
   SandboxSummary,
   TerminalSession,
+  TerminalSessionDeleteResult,
   TerminalSessionRecord,
 } from './types';
 
@@ -118,5 +119,17 @@ export const api = {
       sandbox === undefined
         ? '/api/terminal/sessions'
         : `/api/terminal/sessions?sandbox=${encodeURIComponent(sandbox)}`,
+    ),
+
+  /**
+   * 删除一个终端会话。
+   *
+   * 运行中的会话后端先完整关闭再删记录；已退出的会话直接删记录。
+   * 会话不存在回 404，错误消息取后端 `detail`。
+   */
+  deleteTerminalSession: (sessionId: string) =>
+    request<TerminalSessionDeleteResult>(
+      `/api/terminal/sessions/${encodeURIComponent(sessionId)}`,
+      { method: 'DELETE' },
     ),
 };

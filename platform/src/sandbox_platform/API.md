@@ -385,6 +385,7 @@
 | POST | `/api/proxy/restart` | — | `ProxyRestartModel` | `SandboxService.restart_proxy` |
 | POST | `/api/terminal/sessions` | `TerminalSessionCreateRequest` | 201 + `TerminalSessionResponse` | 终端会话管理器（见第 12 节） |
 | GET | `/api/terminal/sessions` | 查询参数 `sandbox`（可选） | `TerminalSessionModel[]` | 终端会话管理器（见第 12 节） |
+| DELETE | `/api/terminal/sessions/{session_id}` | — | `TerminalSessionDeleteResponse` | 终端会话管理器（见第 12 节） |
 | WS | `/api/terminal/sessions/{session_id}` | 帧协议见 12.3 | 二进制帧 + 文本帧 | 终端会话管理器（见第 12 节） |
 
 ### 11.2 请求字段
@@ -472,6 +473,7 @@
 |---|---|---|---|---|
 | POST | `/api/terminal/sessions` | `TerminalSessionCreateRequest` | 201 + `TerminalSessionResponse` | 新建终端会话（沙箱内起一个交互式 shell） |
 | GET | `/api/terminal/sessions` | 查询参数 `sandbox`（可选） | `TerminalSessionModel[]` | 列出会话；给了沙箱名则只列该沙箱的会话，缺省列全部 |
+| DELETE | `/api/terminal/sessions/{session_id}` | — | `TerminalSessionDeleteResponse` | 删除会话（会话不存在 → 404） |
 | WS | `/api/terminal/sessions/{session_id}` | 见 12.3 帧协议 | 二进制帧 + 文本帧 | 附着到已有会话（先回放缓冲再接实时流） |
 
 ### 12.2 请求与响应字段
@@ -508,6 +510,25 @@
 | `attached_count` | 当前附着的浏览器连接数 |
 | `host_pid` | 建会话的服务进程号（启动清理时用来识别「这条记录是不是另一个实例的」） |
 
+`TerminalSessionDeleteResponse`（删除会话的结果）：
+
+| 字段 | 说明 |
+|---|---|
+| `session_id` | 被移除的会话标识 |
+| `state` | 移除前的会话状态（`running` / `exited`） |
+| `closed` | 是否走了一遍完整关闭流程：运行中的会话为 `true`（宿主伪终端已终止、容器内按会话标识清过进程树），已退出的会话为 `false` |
+| `removed` | 会话记录文件是否确实删掉了 |
+
+### 12.2bis 删除会话的口径
+
+| 场景 | 行为 |
+|---|---|
+| 运行中的会话 | 先走完整关闭流程（终止宿主伪终端、容器内按会话标识清进程树、状态落盘），再删会话记录；两件事都做完才回 200 |
+| 已退出 / 孤儿的会话 | 直接删会话记录（不再重复关闭） |
+| 附着中的浏览器连接 | 走**既有的退出帧路径**：服务端发 `exit` 帧后断开连接，浏览器据此收尾 |
+| 会话不存在 | 回 404，`detail` 为「终端会话不存在或已失效：<会话标识>」 |
+| 已退出的会话的自动清理 | **不做**：已退出的会话不进空闲回收，保留在列表里等用户手动删 |
+
 ### 12.3 WebSocket 帧协议
 
 | 方向 | 帧类型 | 载荷 | 说明 |
@@ -539,8 +560,8 @@
 | 服务启动 | 全部遗留记录标记为 `orphaned`，按记录的 `pid` 终止遗留 exec 进程（**仅当该进程命令行含本次会话标识时才终止**，避免误杀被复用的进程号），再按同一个标识把容器内残留的 shell 收掉（杀宿主侧 exec 客户端收不掉容器内进程），随后删除记录文件。容器已被删除时静默跳过 |
 | 服务启动（多实例） | 记录的 `host_pid` 不是本进程且那个进程号还活着时**跳过清理**：那是另一个实例正在用的会话 |
 | 服务退出 | 关闭全部会话：容器内进程一并收掉（宿主侧 exec 进程终止 + 容器内按标识清理） |
-| 会话数超限 | 全部会话达 20 个、或单沙箱达 5 个时，`POST /api/terminal/sessions` 回 400，不创建会话（上限可用环境变量 `SANDBOX_TERMINAL_MAX_SESSIONS` / `SANDBOX_TERMINAL_MAX_SESSIONS_PER_SANDBOX` 覆盖） |
-| 会话空闲 | 无浏览器附着且空闲超过 30 分钟的会话自动回收（走正常关闭流程 + 会话表更新；时长可用环境变量 `SANDBOX_TERMINAL_IDLE_TIMEOUT` 覆盖，单位秒） |
+| 会话数超限 | 全部会话达 20 个、或单沙箱达 5 个时，`POST /api/terminal/sessions` 回 400，不创建会话（上限可用环境变量 `SANDBOX_TERMINAL_MAX_SESSIONS` / `SANDBOX_TERMINAL_MAX_SESSIONS_PER_SANDBOX` 覆盖）。**已退出的会话也占名额**（它们不做自动清理），要腾位置就手动删掉 |
+| 会话空闲 | 无浏览器附着且空闲超过 30 分钟的**运行中**会话自动回收（走正常关闭流程 + 会话表更新；时长可用环境变量 `SANDBOX_TERMINAL_IDLE_TIMEOUT` 覆盖，单位秒）。**已退出的会话不纳入回收**：它不留现场，保留在列表里等用户手动删 |
 | 沙箱不存在 | `POST /api/terminal/sessions` 回 404，不创建会话 |
 | 沙箱未运行 / 容器已被删除 | `POST /api/terminal/sessions` 回 400 并给出中文错误，不创建空会话 |
 | 沙箱名 / 入参非法 | 回 400 |
@@ -572,6 +593,6 @@ TTY 负责（容器内拿到的是真实 TTY，默认 termios 生效）。
 
 | 模块 | 职责 |
 |---|---|
-| `sandbox_platform/server/terminal.py` | 终端会话管理器与会话承载：起会话、伪终端 I/O 线程、输出环形缓冲、实时流投递、会话上限与空闲回收、落盘合并写 |
+| `sandbox_platform/server/terminal.py` | 终端会话管理器与会话承载：起会话、伪终端 I/O 线程、输出环形缓冲、实时流投递、会话上限与空闲回收、落盘合并写、会话删除 |
 | `sandbox_platform/server/sessions.py` | 终端会话表：记录读写与原子落盘、遗留记录清理（含跨实例保护） |
-| `sandbox_platform/server/routes/terminal.py` | 三条终端路由与 WebSocket 帧协议 |
+| `sandbox_platform/server/routes/terminal.py` | 四条终端路由与 WebSocket 帧协议 |

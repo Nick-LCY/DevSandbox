@@ -59,10 +59,10 @@ uv run python -m sandbox_platform.server        # 默认监听 127.0.0.1:8000
 
 ```bash
 pnpm run typecheck  # tsc --noEmit，零错误
-pnpm run test       # vitest run，纯数据转换逻辑的单元测试
+pnpm run test       # vitest run，纯数据转换逻辑与组件交互的单元测试
 ```
 
-单元测试覆盖挂载声明解析、环境变量解析、路由解析（含畸形百分号编码）、字节与时间格式化、终端帧协议解析、代理状态文案转换。
+单元测试覆盖挂载声明解析、环境变量解析、路由解析（含畸形百分号编码）、字节与时间格式化、终端帧协议解析、代理状态文案转换，以及终端面板的删除会话交互（关闭/移除、确认与取消、失败提示）。组件测试用 jsdom 环境（文件头部 `@vitest-environment jsdom` 注解切换），依赖 `@testing-library/react` 与 `jsdom`。
 
 ## 端到端验收
 
@@ -170,6 +170,14 @@ platform/console/
 - 后端服务重启会让全部会话失效：此时前端明确提示「终端会话已失效（后端服务已重启），请新建终端」，并停止重连。
 - 服务端发来的 `error` 帧有独立的告警样式（黄色），不会与「已连接」混成一个文案。
 
+### 删除终端会话
+
+- **运行中的会话 = 关闭并移除**：标签与「后端保留的会话」列表里都有「关闭」按钮，点一下先弹一条轻确认（提示会终止容器内该会话的进程，现场不保留），确认后发 `DELETE /api/terminal/sessions/{session_id}`；后端先完整关闭（终止宿主伪终端、容器内按会话标识清进程树）再删记录。
+- **已退出的会话 = 直接移除**：按钮文案是「移除」，点一下直接发删除请求，不多问一句。
+- 已退出的会话**保留显示，不做自动清理**：后端的空闲回收只回收运行中且无附着的会话，已退出的会话一直列在「后端保留的会话」里，等用户手动删。
+- 删除成功后标签与列表项都消失；删除失败时展示后端 `detail` 原文。
+- 标签上的叉号只断开浏览器连接（容器内的进程继续跑，可重新附着），与「关闭」（连会话一起删掉）是两回事。
+
 ### 代理设置
 
 顶部先给一行状态摘要（容器 / 健康 / 证书），下面展示容器运行状态、健康状态、端口连通、CA 是否可取回、缓存目录占用、证书就绪状态与代理访问地址。「重启代理」按钮在重启期间提示「代理正在重启，重启期间依赖镜像拉取会失败，属预期行为」；重启结果按 `restarted` / `ca_changed` / `ca_reinstalled` / `reinstalled_users` / `failed_users` 如实展示，不把未修复报成已修复。
@@ -182,7 +190,7 @@ platform/console/
 |---|---|---|
 | 沙箱列表 | `sandbox-list` | `page-sandbox-list-title` / `-table` / `-item` / `-item-name` / `-item-state` / `-item-image` / `-item-created-at` / `-item-start-button` / `-item-stop-button` / `-item-detail-button` / `-item-delete-button` / `-refresh-button` / `-create-button` / `-error-message` / `-empty` |
 | 新建沙箱 | `sandbox-create` | `page-sandbox-create-title` / `-name-input` / `-image-select` / `-image-refresh-button` / `-image-detail` / `-mount-add-button` / `-mount-item` / `-mount-host-input` / `-mount-container-input` / `-mount-readonly-checkbox` / `-mount-remove-button` / `-command-input` / `-workdir-input` / `-env-input` / `-submit-button` / `-error-message` / `-success` / `-success-link` |
-| 沙箱详情 | `sandbox-detail` | `page-sandbox-detail-title` / `-state` / `-image` / `-image-source` / `-system-user` / `-container-name` / `-network-name` / `-created-at` / `-updated-at` / `-socket-path` / `-workdir` / `-command` / `-env` / `-mounts` / `-dependencies` / `-start-button` / `-stop-button` / `-delete-button` / `-refresh-button` / `-back-button` / `-terminal-panel` / `-terminal-new-button` / `-terminal-tab` / `-terminal-status` / `-terminal-message` / `-terminal-surface` / `-terminal-retry-button` / `-terminal-existing-list` / `-terminal-existing-item` / `-terminal-existing-attach-button` |
+| 沙箱详情 | `sandbox-detail` | `page-sandbox-detail-title` / `-state` / `-image` / `-image-source` / `-system-user` / `-container-name` / `-network-name` / `-created-at` / `-updated-at` / `-socket-path` / `-workdir` / `-command` / `-env` / `-mounts` / `-dependencies` / `-start-button` / `-stop-button` / `-delete-button` / `-refresh-button` / `-back-button` / `-terminal-panel` / `-terminal-new-button` / `-terminal-tab` / `-terminal-status` / `-terminal-message` / `-terminal-surface` / `-terminal-retry-button` / `-terminal-existing-list` / `-terminal-existing-item` / `-terminal-existing-attach-button` / `-terminal-existing-remove-button` / `-terminal-tab-remove-button` / `-terminal-remove-confirm` / `-terminal-remove-confirm-button` / `-terminal-remove-cancel-button` |
 | 代理设置 | `settings` | `page-settings-title` / `-summary` / `-container-running` / `-healthy` / `-tcp-ok` / `-ca-fetchable` / `-cache-size` / `-certificate-ready` / `-proxy-url` / `-detail` / `-restart-button` / `-restarting-message` / `-restarted` / `-restart-message` / `-ca-changed` / `-ca-reinstalled` / `-ca-conclusion` / `-reinstalled-users` / `-failed-users` / `-error-message` |
 | 外壳 | `layout` | `page-layout-title` / `page-layout-health` / `page-layout-nav-sandboxes` / `page-layout-nav-create` / `page-layout-nav-settings` |
 
@@ -218,6 +226,7 @@ const tab = page.getByTestId('page-sandbox-detail-terminal-tab').filter({ hasTex
 | POST | `/api/proxy/restart` | 重启代理 |
 | POST | `/api/terminal/sessions` | 新建终端会话 |
 | GET | `/api/terminal/sessions?sandbox=` | 列出可重新附着的会话（裸数组） |
+| DELETE | `/api/terminal/sessions/{session_id}` | 删除会话（运行中＝先关后删，已退出＝直接删） |
 | WS | `/api/terminal/sessions/{session_id}` | 终端帧桥接 |
 
 错误消息一律直接展示后端 `{"detail": "中文消息"}` 里的 `detail`，前端不另造说法。

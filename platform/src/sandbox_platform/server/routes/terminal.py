@@ -1,4 +1,4 @@
-"""终端路由：新建会话、列出会话、WebSocket 附着。
+"""终端路由：新建会话、列出会话、删除会话、WebSocket 附着。
 
 协议固定（与前端约定一致）：
 
@@ -13,11 +13,14 @@ import json
 import logging
 
 from fastapi import APIRouter, Depends, WebSocket
+from sandbox_platform import NotFoundError
+from starlette.concurrency import run_in_threadpool
 from starlette.websockets import WebSocketDisconnect, WebSocketDisconnected
 
 from ..deps import get_terminal_manager, get_terminal_manager_ws
 from ..schemas import (
     TerminalSessionCreateRequest,
+    TerminalSessionDeleteResponse,
     TerminalSessionModel,
     TerminalSessionResponse,
 )
@@ -67,6 +70,30 @@ def list_terminal_sessions(
         TerminalSessionModel.from_record(record)
         for record in manager.list_records(sandbox)
     ]
+
+
+@router.delete(
+    "/sessions/{session_id}",
+    response_model=TerminalSessionDeleteResponse,
+    summary="删除终端会话",
+)
+async def delete_terminal_session(
+    session_id: str,
+    manager=Depends(get_terminal_manager),
+) -> TerminalSessionDeleteResponse:
+    """删除一个终端会话。
+
+    运行中的会话先走完整关闭流程（终止宿主伪终端、按会话标识收掉容器内残留
+    进程、状态落盘），再删掉记录；已退出的会话直接删记录。两种情况都会把
+    会话从内存里摘掉。
+
+    还连着的浏览器会收到退出帧并断开（走的是进程自然退出的同一条路径）。
+    会话不存在回 404。
+    """
+    removal = await run_in_threadpool(manager.remove_session, session_id)
+    if removal is None:
+        raise NotFoundError(f"终端会话不存在或已失效：{session_id}")
+    return TerminalSessionDeleteResponse.from_removal(removal)
 
 
 @router.websocket("/sessions/{session_id}")

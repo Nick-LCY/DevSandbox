@@ -29,6 +29,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 
 from sandbox_platform import (
     PlatformConfig,
@@ -41,6 +42,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .sessions import (
     SESSION_STATE_EXITED,
+    SESSION_STATE_RUNNING,
     TerminalSessionRecord,
     TerminalSessionTable,
     new_session_record,
@@ -136,6 +138,19 @@ class TerminalFrame:
     kind: str
     payload: bytes = b""
     message: str = ""
+
+
+@dataclass(frozen=True)
+class TerminalSessionRemoval:
+    """一次会话移除的结果。"""
+
+    session_id: str
+    # 移除前的会话状态（running / exited）
+    state: str
+    # 是否走了一遍完整关闭流程（运行中的会话为真，已退出的为假）
+    closed: bool
+    # 会话记录文件是否确实删掉了
+    removed: bool
 
 
 class TerminalStream:
@@ -299,10 +314,13 @@ class TerminalSession:
                 return
             self._closed = True
             self.record.attached_count = 0
-            if self.record.state != SESSION_STATE_EXITED:
+            # 会话原本还在跑：关掉它算一次「被关闭」，要给附着的浏览器发结束标记
+            was_running = self.record.state != SESSION_STATE_EXITED
+            if was_running:
                 self.record.state = SESSION_STATE_EXITED
                 if self.record.exit_code is None:
                     self.record.exit_code = -1
+            streams = list(self._streams)
         self._stop.set()
         self._wake()
         self.pty.terminate()
@@ -323,6 +341,10 @@ class TerminalSession:
         self._thread.join(timeout=5)
         self.pty.close()
         self._mark_dirty()
+        if was_running:
+            # 还连着的浏览器必须知道会话没了：走既有的退出帧路径，它们据此
+            # 收到结束标记并断开，而不是一直挂着等超时
+            self._notify_exit(streams)
 
     # ---------------------------------------------------------------- I/O 线程
     def _io_loop(self) -> None:
@@ -402,6 +424,20 @@ class TerminalSession:
             try:
                 self._loop.call_soon_threadsafe(self._deliver, stream, 0, frame)
             except RuntimeError:
+                return
+
+    def _notify_exit(self, streams: list[TerminalStream]) -> None:
+        """给还连着的浏览器推结束标记。
+
+        关闭一个正在运行的会话时，附着的连接必须知道「会话没了」：结束标记
+        走的是与进程自然退出同一条路径，浏览器据此收尾并断开。
+        """
+        frame = TerminalFrame(kind=FRAME_EXIT)
+        for stream in streams:
+            try:
+                self._loop.call_soon_threadsafe(self._deliver, stream, 0, frame)
+            except RuntimeError:
+                # 事件循环已关闭（服务正在退出）：没有连接可通知了
                 return
 
     def _deliver(self, stream: TerminalStream, seq: int, frame: TerminalFrame) -> None:
@@ -534,7 +570,12 @@ class TerminalSessionManager:
         # 落盘合并：立即写的一桶 + 合并窗口内写的一桶
         self._pending_now: dict[str, TerminalSessionRecord] = {}
         self._pending_later: dict[str, TerminalSessionRecord] = {}
-        self._pending_lock = threading.Lock()
+        # 会话表的锁：落盘队列、墓碑集合与文件读写共用一把锁。
+        # 删除与落盘必须串行，否则删掉的记录会被晚到的落盘写回磁盘。
+        self._store_lock = threading.Lock()
+        # 被手动移除的会话：这些会话的记录不再落盘（关闭流程与退出回调的落盘
+        # 都会晚到，不挡住就会把删掉的记录写回来）
+        self._removed: set[str] = set()
         self._save_event = threading.Event()
         self._stop = threading.Event()
         self._flusher: threading.Thread | None = None
@@ -588,7 +629,7 @@ class TerminalSessionManager:
         with self._lock:
             self._sessions[record.session_id] = session
         try:
-            await run_in_threadpool(self.table.save, record)
+            await run_in_threadpool(self._save_record, record)
         except Exception:
             session.close()
             with self._lock:
@@ -633,6 +674,32 @@ class TerminalSessionManager:
             if thread is not None and thread.is_alive():
                 thread.join(timeout=2)
 
+    def remove_session(self, session_id: str) -> TerminalSessionRemoval | None:
+        """移除一个终端会话。
+
+        运行中的会话先走完整关闭流程（终止宿主伪终端、按会话标识收掉容器内
+        残留进程、状态落盘），再删掉会话记录；已退出的会话直接删记录。
+        两种情况都会把会话从内存里摘掉。
+
+        会话不存在返回 ``None``（路由据此回 404）。
+        """
+        with self._lock:
+            session = self._sessions.pop(session_id, None)
+        if session is None:
+            return None
+        state = session.state
+        try:
+            session.close()
+        finally:
+            # 记录必须删掉：否则会话还会出现在列表里，用户看着像没删掉
+            removed = self._forget_record(session_id)
+        return TerminalSessionRemoval(
+            session_id=session_id,
+            state=state,
+            closed=state == SESSION_STATE_RUNNING,
+            removed=removed,
+        )
+
     # ---------------------------------------------------------------- 上限与回收
     def _check_capacity(self, sandbox_name: str) -> None:
         """会话数超限时直接失败。"""
@@ -652,6 +719,9 @@ class TerminalSessionManager:
     def reap_idle_sessions(self, *, now: datetime | None = None) -> list[str]:
         """回收无附着且空闲超时的会话，返回被回收的会话标识。
 
+        只回收**运行中**的会话：已退出的会话不留任何现场（进程已死），保留
+        下来给用户自己删，不做自动清理。
+
         回收走正常关闭流程：终止进程、收掉容器内残留进程、会话表更新为已退出。
         """
         moment = now or datetime.now(UTC)
@@ -660,6 +730,9 @@ class TerminalSessionManager:
         reaped: list[str] = []
         for session in sessions:
             if session.record.attached_count > 0:
+                continue
+            if session.record.state != SESSION_STATE_RUNNING:
+                # 已退出的会话不纳入回收
                 continue
             idle = _idle_seconds(session.record.last_attached_at, moment)
             if idle < self.idle_timeout:
@@ -712,26 +785,49 @@ class TerminalSessionManager:
 
     def _flush_pending(self, bucket: dict[str, TerminalSessionRecord]) -> None:
         """把一桶待写记录落盘（写失败只记日志）。"""
-        with self._pending_lock:
+        with self._store_lock:
             if not bucket:
                 return
             records = list(bucket.values())
             bucket.clear()
-        for record in records:
-            try:
-                self.table.save(record)
-            except Exception as exc:  # pragma: no cover - 落盘失败不影响会话
-                logger.error("落盘终端会话 %s 失败：%s", record.session_id, exc)
+            for record in records:
+                if record.session_id in self._removed:
+                    # 已被手动移除：不再落盘（否则删掉的记录会被写回来）
+                    continue
+                try:
+                    self.table.save(record)
+                except Exception as exc:  # pragma: no cover - 落盘失败不影响会话
+                    logger.error("落盘终端会话 %s 失败：%s", record.session_id, exc)
 
     def _mark_dirty(self, record: TerminalSessionRecord, *, immediate: bool = True) -> None:
         """把会话记录挂到落盘队列。
 
         ``immediate=False`` 走合并窗口：高频变更（窗口大小）不会每次都写文件。
         """
-        with self._pending_lock:
+        with self._store_lock:
+            if record.session_id in self._removed:
+                # 已被手动移除：不再落盘
+                return
             bucket = self._pending_now if immediate else self._pending_later
             bucket[record.session_id] = record
         self._save_event.set()
+
+    def _save_record(self, record: TerminalSessionRecord) -> Path:
+        """落盘一条会话记录（与落盘队列串行，避免与删除撞车）。"""
+        with self._store_lock:
+            return self.table.save(record)
+
+    def _forget_record(self, session_id: str) -> bool:
+        """把会话记录从落盘队列里摘掉并删掉记录文件。
+
+        关闭流程与退出回调都会触发落盘，而且落盘是异步的（后台合并写）：
+        不摘干净的话，用户刚删掉的记录会被晚到的落盘写回磁盘。
+        """
+        with self._store_lock:
+            self._removed.add(session_id)
+            self._pending_now.pop(session_id, None)
+            self._pending_later.pop(session_id, None)
+            return self.table.delete(session_id)
 
     def _reap_loop(self) -> None:
         """空闲回收线程：定期回收无附着且空闲超时的会话。"""

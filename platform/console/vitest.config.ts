@@ -1,9 +1,11 @@
 import { defineConfig } from 'vitest/config';
 
-// 单元测试只覆盖纯数据转换逻辑（不依赖浏览器环境），跑 Node 环境即可。
+// 单元测试覆盖两类：
+// - 纯数据转换逻辑（不依赖浏览器环境），跑 Node 环境即可；
+// - 组件交互（终端面板的关闭/移除），用 jsdom 环境（文件头部注解切换）。
 export default defineConfig({
   test: {
     environment: 'node',
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
   },
 });
