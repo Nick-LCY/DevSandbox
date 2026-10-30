@@ -25,3 +25,4 @@
 
 ## 清单
 - [[prds/sandbox-platform.md]] — Agent 开发沙箱平台：一期本地闭环 / 二期控制面服务化 / 三期代理与多沙箱运营
+- [[prds/phase2-console.md]] — 二期：控制面服务化与网页控制台（FastAPI 服务 + 网页控制台 + 网页终端）

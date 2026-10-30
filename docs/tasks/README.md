@@ -35,6 +35,12 @@ status: todo        # todo | doing | done | blocked
 - [[tasks/sandbox-platform/04-lifecycle-core-cli.md]] — 生命周期核心模块与 CLI
 - [[tasks/sandbox-platform/05-e2e-harness.md]] — 端到端测试基建
 - [[tasks/sandbox-platform/06-sample-app-acceptance.md]] — 示例全栈项目与一期验收演练
+- [[tasks/phase2-console/README.md]] — 沙箱平台二期（控制面服务化与网页控制台）任务集索引，含依赖顺序
+- [[tasks/phase2-console/01-service-core-api.md]] — 控制面服务骨架与沙箱管理 HTTP 接口
+- [[tasks/phase2-console/02-image-proxy-api.md]] — 宿主镜像枚举与代理状态管理接口
+- [[tasks/phase2-console/03-web-terminal.md]] — 网页终端：伪终端会话管理与 WebSocket 桥接
+- [[tasks/phase2-console/04-console-frontend.md]] — 网页控制台前端（React + Vite）
+- [[tasks/phase2-console/05-acceptance-regression.md]] — 二期端到端验收与一期回归复验
 
 ## 看板
 任务状态汇总见 [[current-state.md]]，由人维护。
