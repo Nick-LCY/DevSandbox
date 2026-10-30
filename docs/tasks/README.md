@@ -41,6 +41,7 @@ status: todo        # todo | doing | done | blocked
 - [[tasks/phase2-console/03-web-terminal.md]] — 网页终端：伪终端会话管理与 WebSocket 桥接
 - [[tasks/phase2-console/04-console-frontend.md]] — 网页控制台前端（React + Vite）
 - [[tasks/phase2-console/05-acceptance-regression.md]] — 二期端到端验收与一期回归复验
+- [[tasks/phase2-console/07-console-ui-overhaul.md]] — 控制台 UI 全面改造（单页工作台 + 新视觉底座）
 
 ## 看板
 任务状态汇总见 [[current-state.md]]，由人维护。
