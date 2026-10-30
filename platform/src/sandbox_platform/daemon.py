@@ -13,18 +13,21 @@ import fcntl
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import struct
 import subprocess
 import sys
 import termios
+import threading
 import time
 import tty
 from dataclasses import dataclass
 from pathlib import Path
 
 from .command import CommandResult, run
+from .errors import ValidationError
 from .mounts import MountSpec, mounts_to_docker_args
 from .userspace import Privilege
 
@@ -46,6 +49,13 @@ PTY_DEFAULT_ROWS = 24
 # 会话标记：注入容器内进程的环境变量名。该值同时出现在宿主侧 exec 进程的命令行里，
 # 服务重启后据此判断「记录里的进程号是不是本次会话留下的」，避免误杀被复用的进程号。
 PTY_SESSION_ENV = "SANDBOX_TERMINAL_SESSION"
+
+# 会话标识的合法形态：进容器内命令构造前必须过这一关（标识会拼进 shell 脚本）
+PTY_SESSION_ID_PATTERN = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+
+# 容器内 shell 探测结果的进程内缓存（按容器名）：每次建会话都探测一次会多一次 exec
+_SHELL_CACHE: dict[str, str] = {}
+_SHELL_CACHE_LOCK = threading.Lock()
 
 # 伪终端启动引导：子进程先拿到伪终端从端的控制终端身份，再 exec 真正的命令。
 # 为什么必须有控制终端：容器客户端靠终端的 SIGWINCH 感知窗口大小变化，
@@ -417,11 +427,17 @@ class UserDaemon:
         """探测容器内可用的交互式 shell。
 
         优先用 bash（有历史与行编辑），容器内没有 bash 时退回 sh。
+        探测结果按容器名在进程内缓存：建会话时不必每次都多跑一次 exec。
         """
+        with _SHELL_CACHE_LOCK:
+            cached = _SHELL_CACHE.get(name)
+        if cached is not None:
+            return cached
         result = self.exec_in_container(name, ["sh", "-c", "command -v bash"], check=False, timeout=30)
-        if result.ok and result.stdout.strip():
-            return "bash"
-        return "sh"
+        shell = "bash" if (result.ok and result.stdout.strip()) else "sh"
+        with _SHELL_CACHE_LOCK:
+            _SHELL_CACHE[name] = shell
+        return shell
 
     def exec_pty(
         self,
@@ -429,13 +445,17 @@ class UserDaemon:
         *,
         cols: int = PTY_DEFAULT_COLS,
         rows: int = PTY_DEFAULT_ROWS,
+        marker: str | None = None,
     ) -> "PtyProcess":
         """以沙箱用户身份在伪终端里执行命令。
 
         执行身份、环境变量与权限前缀复用 :meth:`user_argv`：与既有宿主命令
         完全一致，只把「收集输出」换成「挂一个伪终端」。
+
+        ``marker`` 是会话标识：伪终端句柄终止前会拿它复核命令行，防止进程号
+        被复用后误杀无关进程。
         """
-        return spawn_pty(self.user_argv(argv), cols=cols, rows=rows)
+        return spawn_pty(self.user_argv(argv), cols=cols, rows=rows, marker=marker)
 
     def exec_pty_shell(
         self,
@@ -461,7 +481,30 @@ class UserDaemon:
             shell,
             "-i",
         ]
-        return self.exec_pty(argv, cols=cols, rows=rows)
+        return self.exec_pty(argv, cols=cols, rows=rows, marker=session_id)
+
+    def kill_container_session(self, container: str, session_id: str) -> bool:
+        """在容器内按会话标识终止本次会话留下的进程。
+
+        宿主侧的 exec 客户端退出**不会**带走容器内的 shell：客户端与容器内的
+        进程是两段生命周期，客户端断了容器里的 shell 还在跑，服务重启后容器里
+        会堆积无主 shell。这里按注入的环境标识在容器内找进程并收掉。
+
+        容器已被删除时静默跳过（返回 ``False``，不算失败）。
+        """
+        script = container_session_kill_script(session_id)
+        if not self.container_exists(container):
+            logger.info("容器 %s 已不存在，跳过容器内会话清理", container)
+            return False
+        result = self.exec_in_container(container, ["sh", "-c", script], check=False, timeout=30)
+        if not result.ok:
+            logger.info(
+                "在容器 %s 内终止会话进程失败（忽略）：%s",
+                container,
+                result.stderr.strip()[:200],
+            )
+            return False
+        return True
 
 
 # ---------------------------------------------------------------- 伪终端实现
@@ -470,18 +513,36 @@ class PtyProcess:
 
     ``master_fd`` 是伪终端主端文件描述符：宿主侧所有输入写进它、所有输出从它读出。
     进程与伪终端同生共死——主端关闭后，容器内的交互式进程也会收到挂断。
+
+    主端是非阻塞的：写入侧永不因为「容器内进程不读输入」而卡死（详见
+    :func:`spawn_pty`）。
     """
 
-    def __init__(self, pid: int, master_fd: int, process: "subprocess.Popen[bytes]") -> None:
+    def __init__(
+        self,
+        pid: int,
+        master_fd: int,
+        process: "subprocess.Popen[bytes]",
+        marker: str | None = None,
+    ) -> None:
         self.pid = pid
         self.master_fd = master_fd
         self._process = process
+        self._marker = marker
         self._closed = False
+        self._terminated = False
 
     def read(self, size: int = 65536) -> bytes:
-        """读一段输出；进程结束返回空字节。"""
+        """读一段输出；进程结束返回空字节。
+
+        主端是非阻塞的：暂时没有数据时抛 ``BlockingIOError``（调用方应等到
+        「可读」事件后再读），进程结束返回空字节。
+        """
         try:
             return os.read(self.master_fd, size)
+        except BlockingIOError:
+            # 主端非阻塞：暂时没数据，交给调用方等下一次可读事件
+            raise
         except OSError as exc:
             # 从端全部关闭后，主端读会返回 EIO（等价于 EOF）
             if exc.errno in (errno.EIO, errno.EBADF):
@@ -489,11 +550,18 @@ class PtyProcess:
             raise
 
     def write(self, data: bytes) -> int:
-        """写入输入字节，返回实际写入长度。"""
+        """写入输入字节，返回实际写入长度。
+
+        主端非阻塞：内核输入缓冲满时抛 ``BlockingIOError``，此时**一个字节都
+        没写进去**，返回 0 让调用方保留待写数据、等下一次可写事件。
+        """
         if not data:
             return 0
         try:
             return os.write(self.master_fd, data)
+        except BlockingIOError:
+            # 输入缓冲满：一个字节都没写，调用方保留数据重试
+            return 0
         except OSError as exc:
             if exc.errno in (errno.EIO, errno.EBADF, errno.EPIPE):
                 return 0
@@ -511,6 +579,14 @@ class PtyProcess:
         """取退出码；进程仍在跑返回 ``None``。"""
         return self._process.poll()
 
+    def is_alive(self) -> bool:
+        """进程是否还活着。
+
+        自有子进程用 ``os.waitpid(pid, os.WNOHANG)`` 判活（非阻塞回收一次）：
+        收不到退出状态就说明还活着。``Popen.poll()`` 内部做的正是这件事。
+        """
+        return self._process.poll() is None
+
     def wait(self, timeout: float | None = None) -> int | None:
         """等待进程退出并返回退出码；超时返回 ``None``。"""
         try:
@@ -519,8 +595,21 @@ class PtyProcess:
             return None
 
     def terminate(self) -> bool:
-        """终止进程（连同整个进程组）。"""
-        return terminate_pty_process(self.pid)
+        """终止进程（连同整个进程组）；幂等。
+
+        终止前先确认这个进程号还指着「自己的子进程」：子进程退出后进程号会被
+        系统复用，此时再按进程号发信号会误杀无关进程组。有会话标识时还会拿
+        标识复核命令行。
+        """
+        if self._terminated:
+            return True
+        if not self.is_alive():
+            # 自己的子进程已经退出并被回收：进程号随时可能被复用，不再发信号
+            self._terminated = True
+            return True
+        ok = terminate_pty_process(self.pid, self._marker)
+        self._terminated = True
+        return ok
 
     def close(self) -> None:
         """关闭主端文件描述符（幂等）。"""
@@ -563,12 +652,20 @@ def spawn_pty(
     cols: int = PTY_DEFAULT_COLS,
     rows: int = PTY_DEFAULT_ROWS,
     env: dict[str, str] | None = None,
+    marker: str | None = None,
 ) -> PtyProcess:
     """在宿主伪终端里起一个进程，返回进程句柄与主端文件描述符。
 
     子进程自带新会话（``setsid``）并把伪终端从端设为自己的控制终端：
     窗口大小变化时内核会给前台进程组发 SIGWINCH，容器客户端据此把新尺寸
     转发到容器内的 TTY。
+
+    **主端是非阻塞的**：写输入时内核缓冲一满就返回，而不是把调用方挂住。
+    阻塞式主端会造出双向死锁——用户粘贴大文本时写入侧卡在 ``write`` 上不再
+    读输出，输出写满后容器内的 shell 卡在写 stdout，两边互等，Ctrl-C 都送不进去。
+    调用方要按「可写事件」重试没写完的字节。
+
+    ``marker`` 是会话标识：句柄终止前拿它复核命令行，避免进程号被复用后误杀。
     """
     argv = [str(item) for item in argv]
     if not argv:
@@ -578,13 +675,18 @@ def spawn_pty(
         raise FileNotFoundError(f"命令不存在：{argv[0]}")
     command = [program, *argv[1:]]
     bootstrap = sys.executable
-    if bootstrap:
-        # 经引导进程拿控制终端：exec 之后进程号不变，命令行仍是真正的命令
-        command = [bootstrap, "-c", PTY_BOOTSTRAP, *command]
+    if not bootstrap:
+        # 没有引导进程就拿不到控制终端：容器内窗口大小永远同步不上。
+        # 这里直接报错，不静默降级成「能跑但窗口大小不跟随」的半残状态。
+        raise RuntimeError("Python 解释器路径不可用，无法给伪终端子进程设置控制终端")
+    # 经引导进程拿控制终端：exec 之后进程号不变，命令行仍是真正的命令
+    command = [bootstrap, "-c", PTY_BOOTSTRAP, *command]
     master_fd, slave_fd = os.openpty()
     try:
         set_pty_winsize(master_fd, cols, rows)
         set_pty_raw(master_fd)
+        # 主端非阻塞：输入写不进去时立即返回，绝不把调用方挂死在 write 上
+        os.set_blocking(master_fd, False)
         process = subprocess.Popen(  # noqa: S603 - 参数全部来自平台内部构造，不经 shell
             command,
             stdin=slave_fd,
@@ -599,21 +701,151 @@ def spawn_pty(
         os.close(slave_fd)
         raise
     os.close(slave_fd)
-    return PtyProcess(process.pid, master_fd, process)
+    return PtyProcess(process.pid, master_fd, process, marker=marker)
 
 
 def process_cmdline(pid: int) -> str | None:
     """取进程的完整命令行文本。
 
-    进程不存在返回 ``None``；存在但取不到命令行（内核线程等）返回空串。
+    进程不存在返回 ``None``；存在但取不到命令行（内核线程、僵尸进程）返回空串。
     """
     try:
         raw = Path(f"/proc/{pid}/cmdline").read_bytes()
     except FileNotFoundError:
         return None
+    except ProcessLookupError:
+        return None
     except OSError:
         return ""
     return raw.replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
+
+
+def _stat_fields(pid: int) -> list[str] | None:
+    """读 ``/proc/<pid>/stat`` 里「进程名之后」的那段字段。
+
+    进程名（``comm``）可能含空格与括号，只能从最后一个右括号之后切。
+    进程不存在返回 ``None``。
+    """
+    try:
+        text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+    except OSError:
+        return None
+    try:
+        return text[text.rindex(")") + 1 :].split()
+    except ValueError:
+        return None
+
+
+def process_state(pid: int) -> str | None:
+    """取进程状态字符；进程不存在返回 ``None``。
+
+    ``Z`` 表示僵尸（已经死了，只是还没被父进程回收）。
+    """
+    fields = _stat_fields(pid)
+    if not fields:
+        return None
+    return fields[0]
+
+
+def process_identity(pid: int) -> tuple[int, int] | None:
+    """取进程的身份指纹：``(进程组号, 启动时刻)``。
+
+    启动时刻（``/proc/<pid>/stat`` 第 22 字段，开机后的时钟滴答）能唯一标识
+    一次进程生命周期：进程号被复用时，新进程的启动时刻必然不同。拿它做
+    「杀前复核」，就能识别「进程号已被复用」这种最危险的误杀场景。
+    """
+    fields = _stat_fields(pid)
+    if not fields or len(fields) < 20:
+        return None
+    try:
+        return int(fields[2]), int(fields[19])
+    except ValueError:
+        return None
+
+
+def _read_cmdline(pid: int) -> str | None:
+    """读进程命令行，并区分「暂时读不到」与「确实死了」。
+
+    - 返回 ``None``：进程不存在；
+    - 返回空串：进程确实死了（僵尸、内核线程）；
+    - 返回非空：命令行文本。
+
+    进程正在 exec 切换时命令行会短暂为空：这时进程明明活着，不能当成死进程，
+    所以空串时再看一眼进程状态，活着就稍等重读。
+    """
+    for _ in range(5):
+        cmdline = process_cmdline(pid)
+        if cmdline:
+            return cmdline
+        state = process_state(pid)
+        if state is None:
+            return None
+        if state == "Z":
+            # 僵尸：进程早就死了，只等父进程回收
+            return ""
+        time.sleep(0.05)
+    return process_cmdline(pid)
+
+
+def pid_alive(pid: int) -> bool:
+    """进程号是否还指向一个活着的进程（僵尸算活着，僵尸已被回收算没了）。"""
+    if pid <= 1:
+        return False
+    return process_state(pid) is not None
+
+
+def _open_pidfd(pid: int) -> int | None:
+    """打开进程的文件描述符句柄：拿住「这个进程」的身份。
+
+    有了 pidfd，即便进程号之后被复用，我们手里的句柄仍然指着原来那个进程。
+    打不开（进程已退出、权限不足、内核不支持）时返回 ``None``，调用方退化为
+    「命令行 + 身份指纹」双重复核——指纹里的启动时刻同样能识别进程号复用。
+    """
+    opener = getattr(os, "pidfd_open", None)
+    if opener is None:
+        # 解释器没编译这个接口（部分发行版自带构建如此）：退化为指纹复核
+        return None
+    try:
+        return opener(pid)
+    except ProcessLookupError:
+        return None
+    except OSError as exc:
+        logger.info("无法为进程 %s 打开 pidfd（%s），退化为命令行与身份复核", pid, exc)
+        return None
+
+
+def _signal_target(
+    pid: int, pgid: int, group: bool, sig: int, pidfd: int | None
+) -> bool:
+    """给进程（或它的进程组）发信号；成功返回 ``True``。"""
+    if group:
+        # 进程组：组长必须还是同一个进程，否则进程组号可能已被别的组复用
+        if process_identity(pid) is None:
+            logger.info("进程组组长 %s 已消失，跳过杀组", pid)
+            return False
+        try:
+            os.killpg(pgid, sig)
+            return True
+        except OSError as exc:
+            logger.warning("终止进程组 %s 失败：%s", pgid, exc)
+            return False
+    if pidfd is not None:
+        sender = getattr(signal, "pidfd_send_signal", None)
+        if sender is not None:
+            try:
+                sender(pidfd, sig)
+                return True
+            except OSError:
+                # 内核不支持 pidfd 发信号或句柄已失效：退回到按进程号发
+                pass
+    try:
+        os.kill(pid, sig)
+        return True
+    except OSError as exc:
+        logger.warning("终止进程 %s 失败：%s", pid, exc)
+        return False
 
 
 def terminate_pty_process(
@@ -624,39 +856,105 @@ def terminate_pty_process(
 ) -> bool:
     """按进程号终止遗留的伪终端进程。
 
-    只有当该进程的命令行含 ``marker``（会话标识）时才终止：进程号会被系统
-    复用，误杀无关进程的后果比留下一个僵尸严重得多。返回是否真的终止了进程。
+    三道防线，依次收紧：
+
+    1. 命令行含 ``marker``（会话标识）才终止——进程号会被系统复用，误杀无关
+       进程的后果比留下一个僵尸严重得多；
+    2. 先用 ``pidfd`` 拿住进程身份，再拿「进程组号 + 启动时刻」当身份指纹；
+    3. 真正发信号前再复核一次命令行与身份指纹——这中间进程可能刚好退出、
+       进程号被复用，指纹不一致就放弃。
+
+    命令行为空（进程已是僵尸）时立即返回：不必再等宽限期，更不该对僵尸发
+    无效的强杀信号。
+
+    返回是否真的终止了进程。
     """
     if pid <= 1:
         return False
-    cmdline = process_cmdline(pid)
+    cmdline = _read_cmdline(pid)
     if cmdline is None:
+        # 进程已经不存在
         return False
+    if not cmdline:
+        # 命令行为空 = 已经是僵尸（或内核线程）：进程早就死了
+        return True
     if marker and marker not in cmdline:
         logger.info("进程 %s 的命令行不含会话标记，跳过终止", pid)
         return False
+
+    identity = process_identity(pid)
+    pidfd = _open_pidfd(pid)
     try:
-        pgid = os.getpgid(pid)
-    except OSError:
-        return False
-    try:
-        if pgid == pid:
-            os.killpg(pgid, signal.SIGTERM)
-        else:
-            os.kill(pid, signal.SIGTERM)
-    except OSError as exc:
-        logger.warning("终止遗留进程 %s 失败：%s", pid, exc)
-        return False
-    deadline = time.monotonic() + grace
-    while time.monotonic() < deadline:
-        if process_cmdline(pid) is None:
+        # 拿住身份后复核一次：进程可能刚好退出，进程号被别的进程复用
+        cmdline = _read_cmdline(pid)
+        if cmdline is None:
+            return False
+        if not cmdline:
             return True
-        time.sleep(0.1)
-    try:
-        if pgid == pid:
-            os.killpg(pgid, signal.SIGKILL)
-        else:
-            os.kill(pid, signal.SIGKILL)
-    except OSError:
-        pass
-    return True
+        if marker and marker not in cmdline:
+            logger.info("进程 %s 的命令行已变化，跳过终止", pid)
+            return False
+        if identity is not None and process_identity(pid) != identity:
+            logger.info("进程 %s 的身份指纹已变化（进程号被复用），跳过终止", pid)
+            return False
+
+        pgid = identity[0] if identity is not None else None
+        if pgid is None:
+            try:
+                pgid = os.getpgid(pid)
+            except OSError:
+                return False
+        group = pgid == pid
+
+        if not _signal_target(pid, pgid, group, signal.SIGTERM, pidfd):
+            return False
+
+        deadline = time.monotonic() + grace
+        while time.monotonic() < deadline:
+            state = process_state(pid)
+            if state is None or state == "Z":
+                return True
+            time.sleep(0.1)
+
+        # 宽限期到：再复核一次身份与命令行，确认还是同一个进程才强杀
+        cmdline = _read_cmdline(pid)
+        if cmdline is None or not cmdline:
+            return True
+        if marker and marker not in cmdline:
+            return False
+        if identity is not None and process_identity(pid) != identity:
+            return False
+        _signal_target(pid, pgid, group, signal.SIGKILL, pidfd)
+        return True
+    finally:
+        if pidfd is not None:
+            try:
+                os.close(pidfd)
+            except OSError:
+                pass
+
+
+def container_session_kill_script(session_id: str) -> str:
+    """构造「在容器内按会话标识终止进程」的 shell 脚本。
+
+    容器内 shell 的**命令行**里没有会话标识（标识注在环境变量里），所以按
+    ``/proc/<pid>/environ`` 匹配：环境变量会被子进程继承，标识因此覆盖整棵
+    进程树，而不是只杀掉最外层的 shell。
+
+    会话标识会拼进脚本，先过白名单校验再拼：非法标识直接报错，不进命令。
+    """
+    if not PTY_SESSION_ID_PATTERN.fullmatch(session_id):
+        raise ValidationError(f"会话标识非法，无法在容器内终止进程：{session_id!r}")
+    marker = f"{PTY_SESSION_ENV}={session_id}"
+    scan = (
+        'for e in /proc/[0-9]*/environ; do '
+        '[ -r "$e" ] || continue; '
+        'p=${e#/proc/}; p=${p%/environ}; '
+        'if tr "\\0" "\\n" 2>/dev/null < "$e" | grep -Fqx "' + marker + '"; then '
+        'kill -@SIG@ "$p" 2>/dev/null; fi; done'
+    )
+    return (
+        scan.replace("@SIG@", "TERM")
+        + "; sleep 1; "
+        + scan.replace("@SIG@", "KILL")
+    )

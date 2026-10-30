@@ -21,7 +21,14 @@ from ..schemas import (
     TerminalSessionModel,
     TerminalSessionResponse,
 )
-from ..terminal import TerminalSession, TerminalStream
+from ..terminal import (
+    FRAME_DATA,
+    FRAME_ERROR,
+    FRAME_EXIT,
+    SNAPSHOT_CHUNK,
+    TerminalSession,
+    TerminalStream,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +94,13 @@ async def attach_terminal_session(
 async def _serve_session(websocket: WebSocket, session: TerminalSession) -> None:
     """一个浏览器连接在会话上的完整桥接过程。"""
     stream, snapshot = session.open_stream()
+    # 先登记附着再发首帧：登记在前，断开时才有对称的「减一次」可做。
+    # 反过来（先发首帧后登记）时，首帧发送失败会走 finally 里的断开流程，
+    # 把没登记过的连接数减掉，后续连接的计数就全错位了。
+    attached = False
     try:
+        session.attach()
+        attached = True
         await websocket.send_text(
             json.dumps(
                 {
@@ -100,9 +113,9 @@ async def _serve_session(websocket: WebSocket, session: TerminalSession) -> None
                 ensure_ascii=False,
             )
         )
-        if snapshot:
-            await websocket.send_bytes(snapshot)
-        session.attach()
+        # 回放按块切：整段历史一次发出可能超过中间代理的单帧上限
+        for offset in range(0, len(snapshot), SNAPSHOT_CHUNK):
+            await websocket.send_bytes(snapshot[offset : offset + SNAPSHOT_CHUNK])
         output_task = asyncio.create_task(_pump_output(websocket, stream))
         input_task = asyncio.create_task(_pump_input(websocket, session))
         done, pending = await asyncio.wait(
@@ -127,23 +140,36 @@ async def _serve_session(websocket: WebSocket, session: TerminalSession) -> None
             )
     except (WebSocketDisconnect, WebSocketDisconnected):
         logger.debug("终端会话 %s 的浏览器连接已断开", session.session_id)
+    except Exception as exc:
+        # 兜底：任何未预期异常都走正常清理流程，不让连接以 1011 收场
+        logger.warning(
+            "终端会话 %s 的桥接异常：%s", session.session_id, exc, exc_info=True
+        )
     finally:
         session.close_stream(stream)
-        session.detach()
+        if attached:
+            session.detach()
         try:
             await websocket.close()
-        except (WebSocketDisconnect, WebSocketDisconnected, RuntimeError):
+        except Exception:
+            # 关闭失败（连接已断、事件循环在关）不影响会话收尾
             pass
 
 
 async def _pump_output(websocket: WebSocket, stream: TerminalStream) -> None:
     """把容器内输出持续推给浏览器。"""
     while True:
-        chunk = await stream.queue.get()
-        if chunk is None:
+        frame = await stream.queue.get()
+        if frame.kind == FRAME_EXIT:
             # 容器内进程已退出
             return
-        await websocket.send_bytes(chunk)
+        if frame.kind == FRAME_ERROR:
+            await websocket.send_text(
+                json.dumps({"type": "error", "message": frame.message}, ensure_ascii=False)
+            )
+            continue
+        if frame.kind == FRAME_DATA:
+            await websocket.send_bytes(frame.payload)
 
 
 async def _pump_input(websocket: WebSocket, session: TerminalSession) -> None:

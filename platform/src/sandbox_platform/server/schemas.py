@@ -420,6 +420,7 @@ class TerminalSessionModel(BaseModel):
     cols: int
     rows: int
     attached_count: int
+    host_pid: int
 
     @classmethod
     def from_record(cls, record: Any) -> TerminalSessionModel:
@@ -437,4 +438,5 @@ class TerminalSessionModel(BaseModel):
             cols=record.cols,
             rows=record.rows,
             attached_count=record.attached_count,
+            host_pid=getattr(record, "host_pid", 0),
         )

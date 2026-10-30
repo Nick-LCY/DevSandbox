@@ -13,6 +13,7 @@ import asyncio
 import fcntl
 import json
 import os
+import signal
 import struct
 import sys
 import termios
@@ -28,8 +29,13 @@ from sandbox_platform import (
     PlatformConfig,
     PtyProcess,
     SandboxMetadata,
+    UserContext,
+    UserDaemon,
     ValidationError,
+    container_session_kill_script,
+    process_state,
     spawn_pty,
+    terminate_pty_process,
 )
 from sandbox_platform.server import create_app
 from sandbox_platform.server.deps import get_terminal_manager, get_terminal_manager_ws
@@ -43,10 +49,14 @@ from sandbox_platform.server.sessions import (
     purge_leftover_sessions,
 )
 from sandbox_platform.server.terminal import (
+    FRAME_ERROR,
+    MAX_PENDING_INPUT,
+    TerminalFrame,
     TerminalSession,
     TerminalSessionManager,
     TerminalSpawnRequest,
 )
+from sandbox_platform.userspace import Privilege
 
 # ---------------------------------------------------------------- 夹具
 RECORD_FIELDS = {
@@ -62,6 +72,7 @@ RECORD_FIELDS = {
     "cols",
     "rows",
     "attached_count",
+    "host_pid",
 }
 
 
@@ -101,6 +112,7 @@ def make_record(session_id: str = "sess-1", **kwargs: Any) -> TerminalSessionRec
         "cols": 80,
         "rows": 24,
         "attached_count": 0,
+        "host_pid": 0,
     }
     payload.update(kwargs)
     return TerminalSessionRecord(**payload)
@@ -120,6 +132,30 @@ class FakeService:
         if name != self.metadata.name:
             raise NotFoundError(f"沙箱不存在：{name}")
         return self.metadata
+
+
+class FakeDaemon:
+    """假的沙箱守护进程入口：只记下「按会话标识收进程」的调用。"""
+
+    def __init__(self) -> None:
+        self.killed: list[tuple[str, str]] = []
+
+    def kill_container_session(self, container: str, session_id: str) -> bool:
+        """记录一次容器内会话清理。"""
+        self.killed.append((container, session_id))
+        return True
+
+
+class FakeServiceWithDaemon(FakeService):
+    """带守护进程入口的假服务。"""
+
+    def __init__(self, metadata: SandboxMetadata | None = None) -> None:
+        super().__init__(metadata)
+        self.daemon = FakeDaemon()
+
+    def daemon_for(self, name: str) -> FakeDaemon:
+        """取沙箱对应的守护进程入口。"""
+        return self.daemon
 
 
 def pty_spawner(command: list[str]):
@@ -179,9 +215,43 @@ def collect(stream, loop, timeout: float = 2.0) -> bytes:
             item = await asyncio.wait_for(stream.queue.get(), timeout=timeout)
         except asyncio.TimeoutError:
             return b""
-        return item if item is not None else b""
+        if item is None:
+            return b""
+        if isinstance(item, TerminalFrame):
+            return item.payload
+        return bytes(item)
 
     return asyncio.run_coroutine_threadsafe(_take(), loop).result(timeout=timeout + 10)
+
+
+def collect_frame(stream, loop, timeout: float = 2.0) -> TerminalFrame | None:
+    """从会话的实时输出流里取一帧（拿提示帧用）。"""
+
+    async def _take() -> TerminalFrame | None:
+        try:
+            return await asyncio.wait_for(stream.queue.get(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return None
+
+    return asyncio.run_coroutine_threadsafe(_take(), loop).result(timeout=timeout + 10)
+
+
+def wait_record(
+    config: PlatformConfig,
+    session_id: str,
+    predicate,
+    timeout: float = 5.0,
+) -> TerminalSessionRecord | None:
+    """等会话记录落盘到满足条件（落盘走后台线程的合并写，不是即时的）。"""
+    table = TerminalSessionTable(config)
+    deadline = time.monotonic() + timeout
+    while True:
+        record = table.load(session_id)
+        if record is not None and predicate(record):
+            return record
+        if time.monotonic() >= deadline:
+            return record
+        time.sleep(0.05)
 
 
 def pty_winsize(session: TerminalSession) -> tuple[int, int]:
@@ -311,12 +381,16 @@ def test_attach_and_detach_update_counter(
     try:
         session.attach()
         session.attach()
-        stored = TerminalSessionTable(config).load(session.session_id)
+        stored = wait_record(
+            config, session.session_id, lambda item: item.attached_count == 2
+        )
         assert stored is not None
         assert stored.attached_count == 2
 
         session.detach()
-        stored = TerminalSessionTable(config).load(session.session_id)
+        stored = wait_record(
+            config, session.session_id, lambda item: item.attached_count == 1
+        )
         assert stored is not None
         assert stored.attached_count == 1
     finally:
@@ -411,7 +485,9 @@ def test_exit_persists_state_and_code(
 
     assert session.exited
     assert session.exit_code == 7
-    stored = TerminalSessionTable(config).load(session.session_id)
+    stored = wait_record(
+        config, session.session_id, lambda item: item.state == SESSION_STATE_EXITED
+    )
     assert stored is not None
     assert stored.state == SESSION_STATE_EXITED
     assert stored.exit_code == 7
@@ -660,3 +736,333 @@ def test_websocket_reports_exit_code(
                     break
             assert frames[-1]["type"] == "exit"
             assert frames[-1]["code"] == 5
+
+
+# ---------------------------------------------------------------- 伪终端底层
+def test_exec_pty_shell_injects_session_marker(monkeypatch: pytest.MonkeyPatch) -> None:
+    """容器内 shell 的命令行带会话标识与容器名。
+
+    会话标识是「按标识收进程」的唯一依据：宿主侧 exec 进程的命令行里要有它
+    （清理遗留进程用），容器内进程的环境变量里也要有它（容器内清理用）。
+    """
+    captured: dict[str, Any] = {}
+
+    def fake_spawn_pty(argv, *, cols=80, rows=24, env=None, marker=None):
+        captured["argv"] = list(argv)
+        captured["marker"] = marker
+        return spawn_pty(["cat"], cols=cols, rows=rows)
+
+    monkeypatch.setattr("sandbox_platform.daemon.spawn_pty", fake_spawn_pty)
+    daemon = UserDaemon(
+        UserContext(
+            user="sandbox-demo",
+            uid=1001,
+            gid=1001,
+            home=Path("/home/sandbox-demo"),
+        ),
+        privilege=Privilege(enabled=False),
+    )
+    process = daemon.exec_pty_shell("sandbox-demo", session_id="sess-marker-9")
+    try:
+        argv = captured["argv"]
+        assert "--env" in argv
+        assert "SANDBOX_TERMINAL_SESSION=sess-marker-9" in argv
+        assert "sandbox-demo" in argv
+        assert captured["marker"] == "sess-marker-9"
+    finally:
+        process.close()
+
+
+def test_container_session_kill_script_validates_session_id() -> None:
+    """会话标识非法时不进命令构造（标识会拼进容器内的 shell 脚本）。"""
+    with pytest.raises(Exception):
+        container_session_kill_script("abc; rm -rf /")
+    script = container_session_kill_script("sess-1")
+    assert "SANDBOX_TERMINAL_SESSION=sess-1" in script
+    # 容器内 shell 的命令行里没有标识，只能按环境变量匹配
+    assert "/proc/[0-9]*/environ" in script
+
+
+def test_spawn_pty_requires_python_interpreter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """拿不到解释器路径时直接报错，不静默降级。
+
+    降级的后果是子进程拿不到控制终端：容器内窗口大小永远同步不上，而且
+    没有任何日志提示。
+    """
+    monkeypatch.setattr("sandbox_platform.daemon.sys.executable", "")
+    with pytest.raises(RuntimeError):
+        spawn_pty(["cat"])
+
+
+def test_terminate_pty_process_returns_immediately_for_zombie() -> None:
+    """进程已是僵尸时立即返回：不白等宽限期，也不发无效的强杀信号。"""
+    victim = spawn_pty([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        os.kill(victim.pid, signal.SIGKILL)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and process_state(victim.pid) != "Z":
+            time.sleep(0.05)
+        assert process_state(victim.pid) == "Z"
+
+        started = time.monotonic()
+        assert terminate_pty_process(victim.pid, "sess-none") is True
+        assert time.monotonic() - started < 1.0
+    finally:
+        victim.close()
+
+
+def test_terminate_pty_process_skips_process_without_marker() -> None:
+    """命令行不含会话标识的进程一律不碰（进程号被复用时不能误杀）。"""
+    bystander = spawn_pty([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        assert terminate_pty_process(bystander.pid, "sess-other") is False
+        assert bystander.poll() is None
+    finally:
+        bystander.close()
+
+
+# ---------------------------------------------------------------- 会话上限与回收
+def test_session_count_limits_are_enforced(
+    config: PlatformConfig, fake_service: FakeService, loop
+) -> None:
+    """会话数上限：单沙箱上限与全局上限都拦得住，不产生空会话。"""
+    per_sandbox = TerminalSessionManager(
+        config,
+        fake_service,
+        spawner=pty_spawner(["cat"]),
+        max_sessions=5,
+        max_sessions_per_sandbox=1,
+    )
+    overall = TerminalSessionManager(
+        config,
+        fake_service,
+        spawner=pty_spawner(["cat"]),
+        max_sessions=1,
+        max_sessions_per_sandbox=5,
+    )
+    try:
+        first = create_session(per_sandbox, loop)
+        try:
+            with pytest.raises(ValidationError):
+                asyncio.run_coroutine_threadsafe(
+                    per_sandbox.create("demo"), loop
+                ).result(timeout=30)
+            assert len(per_sandbox.list_records()) == 1
+        finally:
+            first.close()
+
+        only = create_session(overall, loop)
+        try:
+            with pytest.raises(ValidationError):
+                asyncio.run_coroutine_threadsafe(
+                    overall.create("demo"), loop
+                ).result(timeout=30)
+            assert len(overall.list_records()) == 1
+        finally:
+            only.close()
+    finally:
+        per_sandbox.close_all()
+        overall.close_all()
+
+
+def test_idle_sessions_are_reclaimed(
+    config: PlatformConfig, fake_service: FakeService, loop
+) -> None:
+    """无附着且空闲超时的会话被自动回收：走正常关闭流程 + 会话表更新。"""
+    manager = TerminalSessionManager(
+        config, fake_service, spawner=pty_spawner(["cat"]), idle_timeout=60
+    )
+    session = create_session(manager, loop)
+    try:
+        # 有浏览器连着的会话不回收
+        session.attach()
+        assert manager.reap_idle_sessions() == []
+        session.detach()
+
+        # 把最近附着时间推到过去，模拟长时间没人用
+        session.record.last_attached_at = "2020-01-01T00:00:00+00:00"
+        assert manager.reap_idle_sessions() == [session.session_id]
+        assert manager.get(session.session_id) is None
+
+        stored = wait_record(
+            config, session.session_id, lambda item: item.state == SESSION_STATE_EXITED
+        )
+        assert stored is not None
+        assert stored.state == SESSION_STATE_EXITED
+    finally:
+        manager.close_all()
+
+
+def test_resize_is_persisted(
+    config: PlatformConfig, fake_service: FakeService, loop
+) -> None:
+    """窗口大小变更也落盘（浏览器拖窗口会连发 resize，落盘走合并写）。"""
+    manager = TerminalSessionManager(config, fake_service, spawner=pty_spawner(["cat"]))
+    session = create_session(manager, loop, cols=80, rows=24)
+    try:
+        session.resize(132, 43)
+        stored = wait_record(config, session.session_id, lambda item: item.cols == 132)
+        assert stored is not None
+        assert stored.cols == 132
+        assert stored.rows == 43
+    finally:
+        session.close()
+        manager.close_all()
+
+
+# ---------------------------------------------------------------- 输入与输出
+def test_input_over_limit_drops_newest_and_warns(
+    config: PlatformConfig, fake_service: FakeService, loop
+) -> None:
+    """待发输入超上限：丢最新的字节（保最旧的），并给客户端发一条提示帧。"""
+    manager = TerminalSessionManager(
+        config,
+        fake_service,
+        spawner=pty_spawner([sys.executable, "-c", "import time; time.sleep(60)"]),
+    )
+    session = create_session(manager, loop)
+    try:
+        stream, _ = session.open_stream()
+        # 容器内进程不读 stdin：待发缓冲填满后不会再被消费
+        session._write_buffer.extend(b"x" * MAX_PENDING_INPUT)
+        session.write(b"newest-bytes")
+        assert b"newest-bytes" not in bytes(session._write_buffer)
+
+        frame = collect_frame(stream, loop, timeout=5.0)
+        assert frame is not None
+        assert frame.kind == FRAME_ERROR
+        assert "截断" in frame.message
+    finally:
+        session.close()
+        manager.close_all()
+
+
+def test_concurrent_attaches_do_not_duplicate_output(
+    manager: TerminalSessionManager, loop
+) -> None:
+    """两个浏览器同时附着同一会话：每块输出各收一次；快照覆盖的序号不重复投递。"""
+    session = create_session(manager, loop)
+    try:
+        first, first_snapshot = session.open_stream()
+        second, second_snapshot = session.open_stream()
+        assert first_snapshot == second_snapshot == b""
+
+        session.write(b"shared-line\n")
+        first_data = collect(first, loop, timeout=3.0)
+        second_data = collect(second, loop, timeout=3.0)
+        assert first_data.count(b"shared-line") == 1
+        assert second_data.count(b"shared-line") == 1
+
+        # 重连：快照已经覆盖刚才那块，实时流不再重复投递（序号去重）
+        third, third_snapshot = session.open_stream()
+        assert b"shared-line" in third_snapshot
+        assert collect(third, loop, timeout=0.5) == b""
+    finally:
+        session.close()
+
+
+def test_close_reclaims_io_thread(manager: TerminalSessionManager, loop) -> None:
+    """关闭会话：I/O 线程真的退出，不留悬着的后台线程。"""
+    session = create_session(manager, loop)
+    thread = session._thread
+    assert thread.is_alive()
+    session.close()
+    assert not thread.is_alive()
+
+
+def test_close_kills_container_side_session(
+    config: PlatformConfig, loop
+) -> None:
+    """关闭会话：按会话标识把容器内的残留进程收掉。
+
+    杀宿主侧的 exec 客户端收不掉容器内的 shell：容器里会堆积无主 shell。
+    """
+    service = FakeServiceWithDaemon()
+    manager = TerminalSessionManager(config, service, spawner=pty_spawner(["cat"]))
+    session = create_session(manager, loop)
+    session.close()
+    assert service.daemon.killed == [("sandbox-demo", session.session_id)]
+    manager.close_all()
+
+
+# 子进程：先不读 stdin（模拟容器内进程停止读输入），持续写输出；
+# 之后再读 stdin 并回显（用来验证 Ctrl-C 仍能送达）
+SLOW_READER = """
+import os, sys, time
+
+deadline = time.time() + 1.5
+while time.time() < deadline:
+    sys.stdout.write("tick\\n")
+    sys.stdout.flush()
+    time.sleep(0.02)
+while True:
+    chunk = os.read(0, 4096)
+    if not chunk:
+        break
+    sys.stdout.write(chunk.decode("latin-1"))
+    sys.stdout.flush()
+"""
+
+
+def test_large_paste_does_not_deadlock(
+    config: PlatformConfig, fake_service: FakeService, loop, tmp_path: Path
+) -> None:
+    """大文本粘贴不卡死：输出照常流动，Ctrl-C 仍能送达。
+
+    阻塞式写入会造出双向死锁：写侧卡在 write 上不再读输出，输出写满后容器内
+    的 shell 卡在写 stdout，两边互等，Ctrl-C 都送不进去。
+    """
+    script = tmp_path / "slow_reader.py"
+    script.write_text(SLOW_READER, encoding="utf-8")
+    manager = TerminalSessionManager(
+        config,
+        fake_service,
+        spawner=pty_spawner([sys.executable, str(script)]),
+    )
+    session = create_session(manager, loop)
+    try:
+        stream, _ = session.open_stream()
+        # 粘贴一大段文本：容器内进程此时不读 stdin，写侧必然写不进去
+        session.write(b"A" * 262144)
+        time.sleep(0.3)
+
+        # 写侧没有卡死：待写字节还在排队，I/O 线程也还活着
+        assert session._pending_size() > 0
+        assert session._thread.is_alive()
+
+        # 输出照常流动（真死锁时这里收不到任何输出）
+        assert b"tick" in collect(stream, loop, timeout=5.0)
+
+        # Ctrl-C 仍能送达：子进程开始读 stdin 之后能收到它
+        session.write(b"\x03")
+        deadline = time.monotonic() + 30
+        seen = b""
+        while time.monotonic() < deadline and b"\x03" not in seen:
+            seen += collect(stream, loop, timeout=5.0)
+        assert b"\x03" in seen
+    finally:
+        session.close()
+        manager.close_all()
+
+
+# ---------------------------------------------------------------- 跨实例保护
+def test_purge_skips_sessions_owned_by_live_instance(
+    config: PlatformConfig,
+) -> None:
+    """记录属于另一个还活着的服务实例时跳过清理：那个实例正在用这些会话。"""
+    prepare_sessions_dir(config)
+    table = TerminalSessionTable(config)
+    table.save(make_record("sess-foreign", pid=0, host_pid=os.getppid()))
+
+    assert purge_leftover_sessions(config) == []
+    assert table.load("sess-foreign") is not None
+
+
+def test_purge_cleans_sessions_of_dead_instance(config: PlatformConfig) -> None:
+    """记录属于已经死掉的服务实例时照常清理。"""
+    prepare_sessions_dir(config)
+    table = TerminalSessionTable(config)
+    table.save(make_record("sess-dead", pid=0, host_pid=999999))
+
+    assert purge_leftover_sessions(config) == ["sess-dead"]
+    assert table.list_all() == []

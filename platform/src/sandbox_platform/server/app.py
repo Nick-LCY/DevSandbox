@@ -64,14 +64,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("平台数据目录已就绪：%s", config.home)
 
     prepare_sessions_dir(config)
-    removed = purge_leftover_sessions(config)
-    logger.info("已清理上次遗留的终端会话记录：%d 条", len(removed))
 
     # 终端会话管理器整个进程共用一个：伪终端与容器内进程都活在它身上
     service = getattr(app.state, "sandbox_service", None)
     if service is None:
         service = SandboxService(config)
         app.state.sandbox_service = service
+
+    # 清理上次遗留的会话：宿主侧的 exec 进程按会话标识终止，容器内残留的
+    # shell 按同一个标识在容器里收掉（杀宿主侧客户端收不掉容器内进程）
+    removed = purge_leftover_sessions(
+        config, container_killer=_container_session_killer(service)
+    )
+    logger.info("已清理上次遗留的终端会话记录：%d 条", len(removed))
+
     manager = TerminalSessionManager(config, service)
     app.state.terminal_manager = manager
     try:
@@ -79,6 +85,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         # 服务重启则会话全部失效：容器内进程一并收掉
         manager.close_all()
+
+
+def _container_session_killer(service: SandboxService):
+    """构造「在容器内按会话标识终止残留进程」的清理回调。"""
+
+    def killer(sandbox_name: str, container_name: str, session_id: str) -> None:
+        try:
+            daemon = service.daemon_for(sandbox_name)
+        except Exception as exc:
+            logger.info("沙箱 %s 已不可用，跳过容器内会话清理：%s", sandbox_name, exc)
+            return
+        daemon.kill_container_session(container_name, session_id)
+
+    return killer
 
 
 def create_app(config: PlatformConfig | None = None) -> FastAPI:

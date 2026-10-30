@@ -6,6 +6,14 @@
 
 会话的宿主侧资源（伪终端、容器内进程）活在服务进程内存里，伪终端本身由核心包
 的伪终端入口分配；本模块只做编排：起会话、收字节、喂缓冲、登记会话表。
+
+两条贯穿全局的约束：
+
+- **写侧永不阻塞**：伪终端主端是非阻塞的，I/O 线程只在「可写事件」里写，写不
+  进去就留着字节下次再写。阻塞式写入会造出双向死锁——用户粘贴大文本时写入侧
+  卡住不再读输出，输出写满后容器内的 shell 卡在写 stdout，两边互等。
+- **落盘走合并写**：会话表的写入集中在后台线程，窗口大小抖动这类高频变更在
+  合并窗口内只写一次，事件循环线程不做文件 I/O。
 """
 
 from __future__ import annotations
@@ -16,8 +24,11 @@ import os
 import secrets
 import select
 import threading
+import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from sandbox_platform import (
     PlatformConfig,
@@ -46,15 +57,61 @@ DEFAULT_RING_SIZE = 256 * 1024
 DEFAULT_QUEUE_SIZE = 128
 # 单次读取的字节数
 READ_CHUNK = 65536
+# 单次写入伪终端的字节上限：写太多会长时间占住 I/O 线程，也让「可写事件」更细
+WRITE_CHUNK = 4096
 # 待发输入的上限（字节）：容器内进程不读时不让缓冲无限涨
 MAX_PENDING_INPUT = 1024 * 1024
 # 唤醒管道：写入侧通知 I/O 线程有活干（管道满时忽略，不阻塞调用方）
 WAKE_TOKEN = b"\x01"
 
+# 回放快照的单帧上限（字节）：一帧太长会被中间代理截断
+SNAPSHOT_CHUNK = 64 * 1024
+
+# ---------------------------------------------------------------- 会话数量与回收
+# 全部会话的总数上限
+DEFAULT_MAX_SESSIONS = 20
+# 单个沙箱的会话数上限
+DEFAULT_MAX_SESSIONS_PER_SANDBOX = 5
+# 无附着会话的空闲回收时长（秒）
+DEFAULT_IDLE_TIMEOUT = 30 * 60
+# 空闲回收的巡检间隔（秒）
+DEFAULT_IDLE_SWEEP_INTERVAL = 30
+# 落盘合并窗口（秒）：窗口内的多次变更合并成一次落盘
+SAVE_DEBOUNCE = 0.5
+
+# 上限与回收时长的环境变量（可覆盖默认值）
+ENV_MAX_SESSIONS = "SANDBOX_TERMINAL_MAX_SESSIONS"
+ENV_MAX_SESSIONS_PER_SANDBOX = "SANDBOX_TERMINAL_MAX_SESSIONS_PER_SANDBOX"
+ENV_IDLE_TIMEOUT = "SANDBOX_TERMINAL_IDLE_TIMEOUT"
+
+# ---------------------------------------------------------------- 帧类型
+# 输出字节
+FRAME_DATA = "data"
+# 提示帧（例：输入被截断）
+FRAME_ERROR = "error"
+# 结束标记（容器内进程已退出）
+FRAME_EXIT = "exit"
+
 
 def new_session_id() -> str:
     """生成会话标识（十六进制随机串，可直接当文件名用）。"""
     return secrets.token_hex(8)
+
+
+def _env_int(name: str, default: int) -> int:
+    """读一个正整数环境变量；缺省或非法时用默认值。"""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("环境变量 %s 取值非法（%r），改用默认值 %d", name, raw, default)
+        return default
+    if value <= 0:
+        logger.warning("环境变量 %s 取值非法（%r），改用默认值 %d", name, raw, default)
+        return default
+    return value
 
 
 @dataclass(frozen=True)
@@ -67,6 +124,18 @@ class TerminalSpawnRequest:
     system_user: str
     cols: int
     rows: int
+
+
+@dataclass(frozen=True)
+class TerminalFrame:
+    """往浏览器推的一帧。
+
+    帧类型显式化，服务端才能在输出字节之外夹带提示（例：输入被截断）。
+    """
+
+    kind: str
+    payload: bytes = b""
+    message: str = ""
 
 
 class TerminalStream:
@@ -93,18 +162,23 @@ class TerminalSession:
         table: TerminalSessionTable,
         *,
         ring_size: int = DEFAULT_RING_SIZE,
+        mark_dirty: Callable[..., None] | None = None,
+        container_cleanup: Callable[[], None] | None = None,
     ) -> None:
         self.record = record
         self.pty = pty
         self._loop = loop
         self._table = table
         self._ring_size = ring_size
-        self._ring = bytearray()
+        self._mark_dirty_cb = mark_dirty
+        self._container_cleanup = container_cleanup
         self._streams: list[TerminalStream] = []
+        self._ring = bytearray()
         self._write_buffer = bytearray()
         self._seq = 0
         self._lock = threading.RLock()
         self._stop = threading.Event()
+        self._closed = False
         self._wake_r, self._wake_w = os.pipe()
         os.set_blocking(self._wake_w, False)
         self._thread = threading.Thread(
@@ -149,7 +223,7 @@ class TerminalSession:
             snapshot = bytes(self._ring)
             exited = self.record.state == SESSION_STATE_EXITED
         if exited:
-            queue.put_nowait(None)
+            queue.put_nowait(TerminalFrame(kind=FRAME_EXIT))
         return stream, snapshot
 
     def close_stream(self, stream: TerminalStream) -> None:
@@ -160,18 +234,34 @@ class TerminalSession:
 
     # ---------------------------------------------------------------- 输入
     def write(self, data: bytes) -> None:
-        """把浏览器送来的输入字节塞进伪终端。"""
+        """把浏览器送来的输入字节塞进伪终端。
+
+        待发输入超过上限时**丢最新的字节**（保最旧的）：开头的内容通常是命令
+        主体，把刚粘进来的尾巴丢掉比把开头丢掉更让人困惑。截断时给客户端发一
+        条提示帧，让用户知道粘贴被截了。
+        """
         if not data or self.exited:
             return
+        dropped = 0
         with self._lock:
-            self._write_buffer.extend(data)
-            overflow = 0
-            if len(self._write_buffer) > MAX_PENDING_INPUT:
-                overflow = len(self._write_buffer) - MAX_PENDING_INPUT
-                del self._write_buffer[:overflow]
-        if overflow:
+            room = MAX_PENDING_INPUT - len(self._write_buffer)
+            if room <= 0:
+                dropped = len(data)
+                data = b""
+            elif len(data) > room:
+                dropped = len(data) - room
+                data = data[:room]
+            if data:
+                self._write_buffer.extend(data)
+        if dropped:
             logger.warning(
-                "终端会话 %s 的待发输入超过上限，丢弃 %d 字节", self.session_id, overflow
+                "终端会话 %s 的待发输入超过上限，丢弃最新的 %d 字节",
+                self.session_id,
+                dropped,
+            )
+            self._publish_error(
+                f"待发输入超过 {MAX_PENDING_INPUT // 1024} KiB 上限，"
+                f"最新的 {dropped} 字节已被截断"
             )
         self._wake()
 
@@ -182,8 +272,11 @@ class TerminalSession:
         except OSError as exc:
             logger.debug("同步终端会话 %s 的窗口大小失败：%s", self.session_id, exc)
             return
-        self.record.cols = cols
-        self.record.rows = rows
+        with self._lock:
+            self.record.cols = cols
+            self.record.rows = rows
+        # 窗口大小也落盘：浏览器拖窗口会连发 resize，合并窗口内只写一次
+        self._mark_dirty(immediate=False)
 
     # ---------------------------------------------------------------- 附着
     def attach(self) -> None:
@@ -191,21 +284,45 @@ class TerminalSession:
         with self._lock:
             self.record.attached_count += 1
             self.record.last_attached_at = utc_now()
-        self._table.save(self.record)
+        self._mark_dirty()
 
     def detach(self) -> None:
         """登记一次断开（连接数减一，落盘）。"""
         with self._lock:
             self.record.attached_count = max(0, self.record.attached_count - 1)
-        self._table.save(self.record)
+        self._mark_dirty()
 
     def close(self) -> None:
         """关闭会话：终止容器内进程并回收伪终端。"""
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self.record.attached_count = 0
+            if self.record.state != SESSION_STATE_EXITED:
+                self.record.state = SESSION_STATE_EXITED
+                if self.record.exit_code is None:
+                    self.record.exit_code = -1
         self._stop.set()
         self._wake()
         self.pty.terminate()
+        # 宿主侧的 exec 客户端退出**不会**带走容器内的 shell：按会话标识在容器内
+        # 把残留进程收掉，否则服务重启后容器里会堆积无主 shell
+        if self._container_cleanup is not None:
+            try:
+                self._container_cleanup()
+            except Exception as exc:  # pragma: no cover - 清理失败不影响会话收尾
+                logger.warning(
+                    "清理容器 %s 内的终端会话 %s 失败：%s",
+                    self.record.container_name,
+                    self.session_id,
+                    exc,
+                )
+        # 主端文件描述符在 I/O 线程退出之后再关：先关会让线程里的读写打到
+        # 可能已被复用的文件描述符上
+        self._thread.join(timeout=5)
         self.pty.close()
-        self._thread.join(timeout=2)
+        self._mark_dirty()
 
     # ---------------------------------------------------------------- I/O 线程
     def _io_loop(self) -> None:
@@ -224,9 +341,14 @@ class TerminalSession:
                     self._drain_wake()
                 if fd in readable:
                     data = self._read_output()
-                    if not data:
+                    if data is None:
+                        # 可读事件里没数据（主端非阻塞，可能被别的线程抢走）
+                        pass
+                    elif not data:
+                        # 容器内进程结束
                         break
-                    self._publish(data)
+                    else:
+                        self._publish(data)
                 if pending and fd in writable:
                     self._flush_output(fd)
         except Exception:  # pragma: no cover - I/O 线程兜底，不让线程静默死掉
@@ -239,10 +361,16 @@ class TerminalSession:
                 logger.debug("终端会话 %s 的事件循环已关闭，退出状态不再投递", self.session_id)
             self._close_wake()
 
-    def _read_output(self) -> bytes:
-        """读一段容器内输出。"""
+    def _read_output(self) -> bytes | None:
+        """读一段容器内输出。
+
+        返回 ``None`` 表示「可读事件里没数据」；返回空字节表示进程已经结束。
+        """
         try:
             return self.pty.read(READ_CHUNK)
+        except BlockingIOError:
+            # 主端非阻塞：暂时没数据，等下一次可读事件
+            return None
         except OSError as exc:
             logger.debug("读取终端会话 %s 的输出失败：%s", self.session_id, exc)
             return b""
@@ -256,21 +384,33 @@ class TerminalSession:
             if len(self._ring) > self._ring_size:
                 del self._ring[: len(self._ring) - self._ring_size]
             streams = list(self._streams)
+        frame = TerminalFrame(kind=FRAME_DATA, payload=data)
         for stream in streams:
             try:
-                self._loop.call_soon_threadsafe(self._deliver, stream, seq, data)
+                self._loop.call_soon_threadsafe(self._deliver, stream, seq, frame)
             except RuntimeError:
                 # 事件循环已关闭（服务正在退出）：实时流无处可投，缓冲仍在
                 logger.debug("终端会话 %s 的事件循环已关闭，实时输出不再投递", self.session_id)
                 return
 
-    def _deliver(self, stream: TerminalStream, seq: int, data: bytes) -> None:
-        """投递一块实时输出（跑在事件循环线程上）。"""
-        if seq <= stream.start_seq:
+    def _publish_error(self, message: str) -> None:
+        """给所有浏览器连接发一条提示帧。"""
+        with self._lock:
+            streams = list(self._streams)
+        frame = TerminalFrame(kind=FRAME_ERROR, message=message)
+        for stream in streams:
+            try:
+                self._loop.call_soon_threadsafe(self._deliver, stream, 0, frame)
+            except RuntimeError:
+                return
+
+    def _deliver(self, stream: TerminalStream, seq: int, frame: TerminalFrame) -> None:
+        """投递一帧（跑在事件循环线程上）。"""
+        if frame.kind == FRAME_DATA and seq <= stream.start_seq:
             # 已经在回放快照里，不重复投递
             return
         try:
-            stream.queue.put_nowait(data)
+            stream.queue.put_nowait(frame)
         except asyncio.QueueFull:
             # 浏览器消费不过来：丢最旧的一块，保证最新输出还能到达
             try:
@@ -278,19 +418,28 @@ class TerminalSession:
             except asyncio.QueueEmpty:
                 pass
             try:
-                stream.queue.put_nowait(data)
+                stream.queue.put_nowait(frame)
             except asyncio.QueueFull:  # pragma: no cover - 队列刚腾出一格
                 pass
 
     def _flush_output(self, fd: int) -> None:
-        """把待发输入写进伪终端。"""
+        """把待发输入写进伪终端。
+
+        主端是非阻塞的：内核缓冲满时一个字节都写不进去（``BlockingIOError``），
+        此时保留全部待写字节，等下一个「可写事件」再试。这里绝不能阻塞——
+        阻塞会把 I/O 线程卡死，输出也就没人读了（双向死锁）。
+        """
         with self._lock:
             if not self._write_buffer:
                 return
-            chunk = bytes(self._write_buffer[:READ_CHUNK])
+            chunk = bytes(self._write_buffer[:WRITE_CHUNK])
         try:
             written = os.write(fd, chunk)
-        except OSError:
+        except BlockingIOError:
+            # 缓冲满：待写字节原样留着，等下一次可写事件
+            return
+        except OSError as exc:
+            logger.debug("写入终端会话 %s 的输入失败：%s", self.session_id, exc)
             return
         with self._lock:
             del self._write_buffer[:written]
@@ -322,6 +471,12 @@ class TerminalSession:
             except OSError:
                 pass
 
+    def _mark_dirty(self, *, immediate: bool = True) -> None:
+        """把会话记录交给落盘合并队列。"""
+        if self._mark_dirty_cb is None:
+            return
+        self._mark_dirty_cb(self.record, immediate=immediate)
+
     def _mark_exited(self, code: int | None) -> None:
         """标记会话已退出（跑在事件循环线程上），并落盘。"""
         with self._lock:
@@ -332,13 +487,10 @@ class TerminalSession:
             self.record.exit_code = exit_code if exit_code is not None else -1
             self.record.attached_count = 0
             streams = list(self._streams)
-        try:
-            self._table.save(self.record)
-        except Exception as exc:  # pragma: no cover - 落盘失败不影响会话收尾
-            logger.error("落盘终端会话退出状态失败：%s（%s）", self.session_id, exc)
+        self._mark_dirty()
         for stream in streams:
             try:
-                stream.queue.put_nowait(None)
+                stream.queue.put_nowait(TerminalFrame(kind=FRAME_EXIT))
             except asyncio.QueueFull:  # pragma: no cover - 队列满时结束标记可能丢
                 logger.warning("终端会话 %s 的输出队列已满，结束标记可能丢失", self.session_id)
 
@@ -353,14 +505,40 @@ class TerminalSessionManager:
         spawner: Callable[[TerminalSpawnRequest], PtyProcess] | None = None,
         *,
         ring_size: int = DEFAULT_RING_SIZE,
+        max_sessions: int | None = None,
+        max_sessions_per_sandbox: int | None = None,
+        idle_timeout: int | None = None,
     ) -> None:
         self.config = config
         self.service = service
         self.table = TerminalSessionTable(config)
         self.ring_size = ring_size
+        self.max_sessions = (
+            max_sessions
+            if max_sessions is not None
+            else _env_int(ENV_MAX_SESSIONS, DEFAULT_MAX_SESSIONS)
+        )
+        self.max_sessions_per_sandbox = (
+            max_sessions_per_sandbox
+            if max_sessions_per_sandbox is not None
+            else _env_int(ENV_MAX_SESSIONS_PER_SANDBOX, DEFAULT_MAX_SESSIONS_PER_SANDBOX)
+        )
+        self.idle_timeout = (
+            idle_timeout
+            if idle_timeout is not None
+            else _env_int(ENV_IDLE_TIMEOUT, DEFAULT_IDLE_TIMEOUT)
+        )
         self._spawner = spawner or self._spawn
         self._sessions: dict[str, TerminalSession] = {}
         self._lock = threading.Lock()
+        # 落盘合并：立即写的一桶 + 合并窗口内写的一桶
+        self._pending_now: dict[str, TerminalSessionRecord] = {}
+        self._pending_later: dict[str, TerminalSessionRecord] = {}
+        self._pending_lock = threading.Lock()
+        self._save_event = threading.Event()
+        self._stop = threading.Event()
+        self._flusher: threading.Thread | None = None
+        self._reaper: threading.Thread | None = None
 
     # ---------------------------------------------------------------- 会话
     async def create(
@@ -373,9 +551,13 @@ class TerminalSessionManager:
         """新建一个终端会话。
 
         沙箱不存在 / 未运行 / 容器已被删除时直接失败，不产生空会话。
+        会话数超过上限（全局或单沙箱）时直接失败，不产生空会话。
         """
         loop = asyncio.get_running_loop()
         metadata = await run_in_threadpool(self.service.get, sandbox_name)
+        # 先回收空闲会话，给新会话腾位置
+        await run_in_threadpool(self.reap_idle_sessions)
+        self._check_capacity(metadata.name)
         request = TerminalSpawnRequest(
             session_id=new_session_id(),
             sandbox_name=metadata.name,
@@ -395,17 +577,24 @@ class TerminalSessionManager:
             rows=rows,
         )
         session = TerminalSession(
-            record, pty, loop, self.table, ring_size=self.ring_size
+            record,
+            pty,
+            loop,
+            self.table,
+            ring_size=self.ring_size,
+            mark_dirty=self._mark_dirty,
+            container_cleanup=lambda: self._kill_container_session(record),
         )
         with self._lock:
             self._sessions[record.session_id] = session
         try:
-            self.table.save(record)
+            await run_in_threadpool(self.table.save, record)
         except Exception:
             session.close()
             with self._lock:
                 self._sessions.pop(record.session_id, None)
             raise
+        self._ensure_background()
         logger.info(
             "已创建终端会话：%s（沙箱 %s，容器 %s，进程号 %s）",
             record.session_id,
@@ -430,11 +619,128 @@ class TerminalSessionManager:
 
     def close_all(self) -> None:
         """关闭全部会话（进程退出时兜底）。"""
+        self._stop.set()
+        self._save_event.set()
         with self._lock:
             sessions = list(self._sessions.values())
             self._sessions.clear()
+        if sessions:
+            # 并行收尾：每个会话都要跑一次容器内清理，串行会把退出拖得很长
+            with ThreadPoolExecutor(max_workers=min(8, len(sessions))) as pool:
+                for session in sessions:
+                    pool.submit(session.close)
+        for thread in (self._flusher, self._reaper):
+            if thread is not None and thread.is_alive():
+                thread.join(timeout=2)
+
+    # ---------------------------------------------------------------- 上限与回收
+    def _check_capacity(self, sandbox_name: str) -> None:
+        """会话数超限时直接失败。"""
+        with self._lock:
+            sessions = list(self._sessions.values())
+        if len(sessions) >= self.max_sessions:
+            raise ValidationError(
+                f"终端会话数已达上限（{self.max_sessions} 个），请先关闭不用的会话"
+            )
+        per_sandbox = sum(1 for item in sessions if item.record.sandbox_name == sandbox_name)
+        if per_sandbox >= self.max_sessions_per_sandbox:
+            raise ValidationError(
+                f"沙箱 {sandbox_name} 的终端会话数已达上限"
+                f"（{self.max_sessions_per_sandbox} 个），请先关闭不用的会话"
+            )
+
+    def reap_idle_sessions(self, *, now: datetime | None = None) -> list[str]:
+        """回收无附着且空闲超时的会话，返回被回收的会话标识。
+
+        回收走正常关闭流程：终止进程、收掉容器内残留进程、会话表更新为已退出。
+        """
+        moment = now or datetime.now(UTC)
+        with self._lock:
+            sessions = list(self._sessions.values())
+        reaped: list[str] = []
         for session in sessions:
-            session.close()
+            if session.record.attached_count > 0:
+                continue
+            idle = _idle_seconds(session.record.last_attached_at, moment)
+            if idle < self.idle_timeout:
+                continue
+            reaped.append(session.session_id)
+            self._close_session(session.session_id)
+        if reaped:
+            logger.info("已回收空闲终端会话：%s", "、".join(reaped))
+        return reaped
+
+    def _close_session(self, session_id: str) -> None:
+        """关掉一个会话并从会话表里摘掉。"""
+        with self._lock:
+            session = self._sessions.pop(session_id, None)
+        if session is None:
+            return
+        session.close()
+
+    # ---------------------------------------------------------------- 后台线程
+    def _ensure_background(self) -> None:
+        """确保后台线程已启动（落盘合并 + 空闲回收）。"""
+        with self._lock:
+            if self._flusher is None or not self._flusher.is_alive():
+                self._flusher = threading.Thread(
+                    target=self._flush_loop, name="terminal-flush", daemon=True
+                )
+                self._flusher.start()
+            if self._reaper is None or not self._reaper.is_alive():
+                self._reaper = threading.Thread(
+                    target=self._reap_loop, name="terminal-reap", daemon=True
+                )
+                self._reaper.start()
+
+    def _flush_loop(self) -> None:
+        """落盘线程：把会话记录的变更写进会话表。"""
+        while not self._stop.is_set():
+            self._save_event.wait(timeout=0.5)
+            if self._stop.is_set():
+                break
+            self._save_event.clear()
+            self._flush_pending(self._pending_now)
+            if self._pending_later:
+                # 合并窗口：窗口内的连续变更（窗口大小抖动）合并成一次落盘
+                time.sleep(SAVE_DEBOUNCE)
+                self._save_event.clear()
+                self._flush_pending(self._pending_later)
+        # 退出前把待写的写完
+        self._flush_pending(self._pending_now)
+        self._flush_pending(self._pending_later)
+
+    def _flush_pending(self, bucket: dict[str, TerminalSessionRecord]) -> None:
+        """把一桶待写记录落盘（写失败只记日志）。"""
+        with self._pending_lock:
+            if not bucket:
+                return
+            records = list(bucket.values())
+            bucket.clear()
+        for record in records:
+            try:
+                self.table.save(record)
+            except Exception as exc:  # pragma: no cover - 落盘失败不影响会话
+                logger.error("落盘终端会话 %s 失败：%s", record.session_id, exc)
+
+    def _mark_dirty(self, record: TerminalSessionRecord, *, immediate: bool = True) -> None:
+        """把会话记录挂到落盘队列。
+
+        ``immediate=False`` 走合并窗口：高频变更（窗口大小）不会每次都写文件。
+        """
+        with self._pending_lock:
+            bucket = self._pending_now if immediate else self._pending_later
+            bucket[record.session_id] = record
+        self._save_event.set()
+
+    def _reap_loop(self) -> None:
+        """空闲回收线程：定期回收无附着且空闲超时的会话。"""
+        interval = max(1.0, min(float(DEFAULT_IDLE_SWEEP_INTERVAL), self.idle_timeout / 4))
+        while not self._stop.wait(interval):
+            try:
+                self.reap_idle_sessions()
+            except Exception:  # pragma: no cover - 巡检失败不影响服务
+                logger.exception("回收空闲终端会话失败")
 
     # ---------------------------------------------------------------- 起会话
     def _spawn(self, request: TerminalSpawnRequest) -> PtyProcess:
@@ -457,3 +763,25 @@ class TerminalSessionManager:
             rows=request.rows,
             shell=shell,
         )
+
+    def _kill_container_session(self, record: TerminalSessionRecord) -> None:
+        """按会话标识收掉容器内残留的进程。"""
+        try:
+            daemon = self.service.daemon_for(record.sandbox_name)
+        except Exception as exc:
+            logger.info(
+                "沙箱 %s 已不可用，跳过容器内会话清理：%s", record.sandbox_name, exc
+            )
+            return
+        daemon.kill_container_session(record.container_name, record.session_id)
+
+
+def _idle_seconds(last_attached_at: str, now: datetime) -> float:
+    """会话距上次附着的空闲秒数；时间戳坏了按 0 算（不当成空闲）。"""
+    try:
+        moment = datetime.fromisoformat(last_attached_at)
+    except (TypeError, ValueError):
+        return 0.0
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return (now - moment).total_seconds()

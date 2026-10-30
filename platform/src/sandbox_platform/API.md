@@ -506,6 +506,7 @@
 | `pid` | 宿主侧 exec 进程号（服务重启后据此清理遗留进程） |
 | `cols` / `rows` | 最近一次窗口大小 |
 | `attached_count` | 当前附着的浏览器连接数 |
+| `host_pid` | 建会话的服务进程号（启动清理时用来识别「这条记录是不是另一个实例的」） |
 
 ### 12.3 WebSocket 帧协议
 
@@ -516,24 +517,30 @@
 | 服务端 → 客户端 | 二进制 | 终端输出字节 | 容器内进程的输出 |
 | 服务端 → 客户端 | 文本 | `{"type":"hello","session_id":..,"sandbox":..,"cols":..,"rows":..}` | 附着成功，回当前窗口大小 |
 | 服务端 → 客户端 | 文本 | `{"type":"exit","code":n}` | 容器内进程已退出，`code` 是退出码 |
-| 服务端 → 客户端 | 文本 | `{"type":"error","message":".."}` | 指令非法或会话不存在 |
+| 服务端 → 客户端 | 文本 | `{"type":"error","message":".."}` | 指令非法、会话不存在，或输入被截断（待发输入超过 1 MiB 上限，丢的是最新的字节） |
 
 握手与时序：
 
 1. 浏览器连上 `WS /api/terminal/sessions/{session_id}`；
-2. 服务端先回 `hello`，再把环形缓冲里的历史输出作为二进制帧**回放**，之后接实时流；
-3. 浏览器断开：容器内进程不退出，输出继续写进环形缓冲，重连同一 `session_id` 即可恢复现场；
-4. 服务重启：全部会话失效（见 12.4），旧 `session_id` 不可再附着。
+2. 服务端先登记附着（连接数加一），再回 `hello`；
+3. 接着把环形缓冲里的历史输出作为二进制帧**回放**（单帧不超过 64 KiB，超出就切多帧），之后接实时流；
+4. 浏览器断开：容器内进程不退出，输出继续写进环形缓冲，重连同一 `session_id` 即可恢复现场；
+5. 服务重启：全部会话失效（见 12.4），旧 `session_id` 不可再附着。
 
 ### 12.4 终端会话表
 
 会话表落在 `<平台数据根>/terminal-sessions/<session_id>.json`，字段见 12.2 的
-`TerminalSessionModel`。会话创建、退出、附着、断开四个时机落盘。
+`TerminalSessionModel`。会话创建、退出、附着、断开、窗口大小变更五个时机落盘；
+落盘走后台线程的合并写（窗口大小抖动这类高频变更在合并窗口内只写一次），
+事件循环线程不做文件 I/O。
 
 | 场景 | 行为 |
 |---|---|
-| 服务启动 | 全部遗留记录标记为 `orphaned`，按记录的 `pid` 终止遗留 exec 进程（**仅当该进程命令行含本次会话标识时才终止**，避免误杀被复用的进程号），随后删除记录文件 |
-| 服务退出 | 关闭全部会话：容器内进程一并收掉（伪终端与进程同生共死） |
+| 服务启动 | 全部遗留记录标记为 `orphaned`，按记录的 `pid` 终止遗留 exec 进程（**仅当该进程命令行含本次会话标识时才终止**，避免误杀被复用的进程号），再按同一个标识把容器内残留的 shell 收掉（杀宿主侧 exec 客户端收不掉容器内进程），随后删除记录文件。容器已被删除时静默跳过 |
+| 服务启动（多实例） | 记录的 `host_pid` 不是本进程且那个进程号还活着时**跳过清理**：那是另一个实例正在用的会话 |
+| 服务退出 | 关闭全部会话：容器内进程一并收掉（宿主侧 exec 进程终止 + 容器内按标识清理） |
+| 会话数超限 | 全部会话达 20 个、或单沙箱达 5 个时，`POST /api/terminal/sessions` 回 400，不创建会话（上限可用环境变量 `SANDBOX_TERMINAL_MAX_SESSIONS` / `SANDBOX_TERMINAL_MAX_SESSIONS_PER_SANDBOX` 覆盖） |
+| 会话空闲 | 无浏览器附着且空闲超过 30 分钟的会话自动回收（走正常关闭流程 + 会话表更新；时长可用环境变量 `SANDBOX_TERMINAL_IDLE_TIMEOUT` 覆盖，单位秒） |
 | 沙箱不存在 | `POST /api/terminal/sessions` 回 404，不创建会话 |
 | 沙箱未运行 / 容器已被删除 | `POST /api/terminal/sessions` 回 400 并给出中文错误，不创建空会话 |
 | 沙箱名 / 入参非法 | 回 400 |
@@ -542,22 +549,29 @@
 
 | 入口 | 签名 | 说明 |
 |---|---|---|
-| 起伪终端 | `spawn_pty(argv, *, cols=80, rows=24, env=None) -> PtyProcess` | 分配伪终端并在独立会话里起进程，返回进程句柄与主端文件描述符 |
-| 伪终端句柄 | `PtyProcess` | `read` / `write` / `resize` / `winsize` / `poll` / `wait` / `terminate` / `close` |
+| 起伪终端 | `spawn_pty(argv, *, cols=80, rows=24, env=None, marker=None) -> PtyProcess` | 分配伪终端并在独立会话里起进程，返回进程句柄与主端文件描述符；**主端是非阻塞的**（写不进去立即返回，调用方等「可写事件」重试）；`marker` 是会话标识，终止前拿它复核命令行 |
+| 伪终端句柄 | `PtyProcess` | `read` / `write` / `resize` / `winsize` / `poll` / `is_alive` / `wait` / `terminate` / `close`；`terminate` 幂等，且终止前先确认这个进程号还指着「自己的子进程」 |
 | 窗口大小 | `set_pty_winsize(fd, cols, rows)` / `get_pty_winsize(fd) -> (rows, cols)` | 伪终端窗口大小读写 |
-| 以沙箱用户身份执行 | `UserDaemon.exec_pty(argv, *, cols=80, rows=24) -> PtyProcess` | 执行身份、环境变量与权限前缀复用 `UserDaemon.user_argv` |
+| 以沙箱用户身份执行 | `UserDaemon.exec_pty(argv, *, cols=80, rows=24, marker=None) -> PtyProcess` | 执行身份、环境变量与权限前缀复用 `UserDaemon.user_argv` |
 | 容器内交互式 shell | `UserDaemon.exec_pty_shell(container, *, session_id, cols=80, rows=24, shell="bash") -> PtyProcess` | 容器内进程拿到真实 TTY；会话标识注入容器内进程的环境变量，同时出现在宿主侧 exec 进程的命令行里 |
-| 容器内 shell 探测 | `UserDaemon.container_shell(name) -> str` | 优先 `bash`，没有则退回 `sh` |
-| 遗留进程清理 | `terminate_pty_process(pid, marker=None, *, grace=3.0) -> bool` | 按进程号终止遗留进程；给了 `marker` 时只在进程命令行含该标记时才终止 |
+| 容器内 shell 探测 | `UserDaemon.container_shell(name) -> str` | 优先 `bash`，没有则退回 `sh`；结果按容器名在进程内缓存 |
+| 容器内会话清理 | `UserDaemon.kill_container_session(container, session_id) -> bool` | 按会话标识在容器内终止本次会话的残留进程（容器已删时静默跳过） |
+| 容器内清理脚本 | `container_session_kill_script(session_id) -> str` | 构造按环境变量匹配的容器内 shell 脚本；会话标识先过白名单校验再拼进命令 |
+| 遗留进程清理 | `terminate_pty_process(pid, marker=None, *, grace=3.0) -> bool` | 按进程号终止遗留进程；给了 `marker` 时只在进程命令行含该标记时才终止；终止前拿进程身份（进程组号 + 启动时刻）复核，进程号被复用就放弃 |
 | 进程命令行 | `process_cmdline(pid) -> str \| None` | 读 `/proc/<pid>/cmdline`；进程不存在返回 `None` |
+| 进程状态与身份 | `process_state(pid) -> str \| None` / `process_identity(pid) -> tuple[int, int] \| None` / `pid_alive(pid) -> bool` | 进程状态字符（含 `Z` 僵尸）、身份指纹（进程组号 + 启动时刻）、存活判定 |
 
 宿主侧伪终端设为 raw 模式：宿主只做字节搬运，行编辑、回显与 Ctrl-C 全部由容器内的
 TTY 负责（容器内拿到的是真实 TTY，默认 termios 生效）。
+
+**写侧不阻塞**：伪终端主端是非阻塞的。用户粘贴大文本、而容器内进程停止读 stdin 时，
+写入侧不会卡死（内核缓冲满就留着字节等下一个「可写事件」），I/O 线程因此不会停止读
+输出，容器内 shell 不会被输出写满卡住，Ctrl-C 始终送得进去。
 
 ### 12.6 服务层新增模块
 
 | 模块 | 职责 |
 |---|---|
-| `sandbox_platform/server/terminal.py` | 终端会话管理器与会话承载：起会话、伪终端 I/O 线程、输出环形缓冲、实时流投递 |
-| `sandbox_platform/server/sessions.py` | 终端会话表：记录读写与原子落盘、遗留记录清理 |
+| `sandbox_platform/server/terminal.py` | 终端会话管理器与会话承载：起会话、伪终端 I/O 线程、输出环形缓冲、实时流投递、会话上限与空闲回收、落盘合并写 |
+| `sandbox_platform/server/sessions.py` | 终端会话表：记录读写与原子落盘、遗留记录清理（含跨实例保护） |
 | `sandbox_platform/server/routes/terminal.py` | 三条终端路由与 WebSocket 帧协议 |

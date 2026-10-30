@@ -6,7 +6,12 @@
 
 服务启动时（应用 lifespan 调用 :func:`purge_leftover_sessions`）把表里全部记录
 标记为孤儿并清理：按记录里的宿主进程号终止遗留进程，仅当该进程命令行含本次
-会话标识时才终止，避免误杀被复用的进程号；随后删除记录文件。
+会话标识时才终止，避免误杀被复用的进程号；再按同一个会话标识把容器内残留的
+shell 收掉（杀宿主侧 exec 客户端收不掉容器内进程）；随后删除记录文件。
+
+记录里带 ``host_pid``（建会话的服务进程号）：同一个平台数据根可能被两个服务
+实例共用，启动清理时发现记录属于**另一个还活着的实例**，就不动它——那个实例
+正在用这些会话，误杀会打断别人的终端。
 """
 
 from __future__ import annotations
@@ -15,11 +20,12 @@ import json
 import logging
 import os
 import tempfile
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from sandbox_platform import ConfigError, PlatformConfig, terminate_pty_process
+from sandbox_platform import ConfigError, PlatformConfig, pid_alive, terminate_pty_process
 from sandbox_platform.metadata import utc_now
 
 logger = logging.getLogger(__name__)
@@ -30,6 +36,10 @@ TERMINAL_SESSIONS_DIRNAME = "terminal-sessions"
 SESSION_STATE_RUNNING = "running"
 SESSION_STATE_EXITED = "exited"
 SESSION_STATE_ORPHANED = "orphaned"
+
+# 清理遗留会话时可选的「容器内进程清理」回调：
+# (沙箱名, 容器名, 会话标识) -> None
+ContainerSessionKiller = Callable[[str, str, str], None]
 
 
 def sessions_dir(config: PlatformConfig) -> Path:
@@ -63,6 +73,8 @@ class TerminalSessionRecord:
     cols: int
     rows: int
     attached_count: int
+    # 建会话的服务进程号：启动清理时用来判断「这条记录是不是另一个实例的」
+    host_pid: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         """转为可 JSON 序列化的字典。"""
@@ -84,6 +96,7 @@ class TerminalSessionRecord:
             cols=int(data.get("cols", 0) or 0),
             rows=int(data.get("rows", 0) or 0),
             attached_count=int(data.get("attached_count", 0) or 0),
+            host_pid=int(data.get("host_pid", 0) or 0),
         )
 
 
@@ -174,12 +187,20 @@ class TerminalSessionTable:
         return True
 
 
-def purge_leftover_sessions(config: PlatformConfig) -> list[str]:
+def purge_leftover_sessions(
+    config: PlatformConfig,
+    *,
+    container_killer: ContainerSessionKiller | None = None,
+) -> list[str]:
     """清理上次遗留的终端会话记录，返回被清理的会话标识。
 
     服务重启后终端会话全部失效：全部记录标记为孤儿，按记录的宿主进程号终止
     遗留进程（仅当该进程命令行含本次会话标识时才终止，避免误杀复用的进程号），
-    随后删除记录文件。单个记录处理失败只记日志，不影响服务启动。
+    再按会话标识把容器内残留的 shell 收掉（杀宿主侧 exec 客户端收不掉容器内
+    进程），随后删除记录文件。单个记录处理失败只记日志，不影响服务启动。
+
+    记录属于**另一个还活着的服务实例**时跳过：那个实例正在用这些会话，
+    误杀会打断别人的终端。容器已被删除时静默跳过。
     """
     table = TerminalSessionTable(config)
     directory = table.directory
@@ -196,6 +217,13 @@ def purge_leftover_sessions(config: PlatformConfig) -> list[str]:
         except ConfigError as exc:
             logger.error("遗留终端会话记录不可读，直接删除：%s（%s）", path, exc)
             record = None
+        if record is not None and _owned_by_other_instance(record):
+            logger.info(
+                "终端会话 %s 属于另一个仍在运行的服务实例（进程号 %s），跳过清理",
+                record.session_id,
+                record.host_pid,
+            )
+            continue
         if record is not None:
             record.state = SESSION_STATE_ORPHANED
             try:
@@ -207,6 +235,8 @@ def purge_leftover_sessions(config: PlatformConfig) -> list[str]:
                     logger.info(
                         "已终止遗留终端进程：%s（会话 %s）", record.pid, record.session_id
                     )
+            if container_killer is not None:
+                _kill_container_session(container_killer, record)
         # 按文件路径删除：记录内容损坏时也要删得掉
         try:
             path.unlink()
@@ -215,6 +245,33 @@ def purge_leftover_sessions(config: PlatformConfig) -> list[str]:
             continue
         removed.append(path.stem)
     return removed
+
+
+def _owned_by_other_instance(record: TerminalSessionRecord) -> bool:
+    """这条记录是不是另一个仍在运行的服务实例建的。
+
+    判据：记录的 ``host_pid`` 不是本进程，且那个进程号还活着。
+    """
+    if not record.host_pid or record.host_pid == os.getpid():
+        return False
+    return pid_alive(record.host_pid)
+
+
+def _kill_container_session(
+    container_killer: ContainerSessionKiller, record: TerminalSessionRecord
+) -> None:
+    """按会话标识收掉容器内残留的进程（失败只记日志）。"""
+    try:
+        container_killer(
+            record.sandbox_name, record.container_name, record.session_id
+        )
+    except Exception as exc:  # pragma: no cover - 清理失败不影响服务启动
+        logger.warning(
+            "清理容器 %s 内的遗留终端会话 %s 失败：%s",
+            record.container_name,
+            record.session_id,
+            exc,
+        )
 
 
 def new_session_record(
@@ -226,6 +283,7 @@ def new_session_record(
     pid: int,
     cols: int,
     rows: int,
+    host_pid: int | None = None,
 ) -> TerminalSessionRecord:
     """新建一条会话记录（状态：运行中，尚未附着过）。"""
     now = utc_now()
@@ -242,4 +300,5 @@ def new_session_record(
         cols=cols,
         rows=rows,
         attached_count=0,
+        host_pid=os.getpid() if host_pid is None else host_pid,
     )
