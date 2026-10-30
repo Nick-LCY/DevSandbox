@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from sandbox_platform import (
     RECLAIM_UNTOUCHED_NOTE,
+    ConnectionInfo,
     CreateRequest,
+    CreateResult,
     MetadataStore,
     MountSpec,
     NotFoundError,
@@ -142,3 +146,112 @@ def test_service_constructible_without_cli(config) -> None:
     service = SandboxService(config)
     assert service.list() == []
     assert service.find("nothing") is None
+
+
+# ---------------------------------------------------------------- 同名并发
+def test_name_claim_is_atomic(service: SandboxService) -> None:
+    """占位文件是原子的：并发占用同一个沙箱名只有一个能占住。"""
+    from sandbox_platform import AlreadyExistsError
+
+    claimed = threading.Event()
+    release = threading.Event()
+    outcomes: list[str] = []
+
+    def worker() -> None:
+        try:
+            with service._name_claim("demo"):
+                outcomes.append("claimed")
+                claimed.set()
+                release.wait(timeout=10)
+        except AlreadyExistsError:
+            outcomes.append("busy")
+
+    first = threading.Thread(target=worker)
+    first.start()
+    assert claimed.wait(timeout=10)
+    second = threading.Thread(target=worker)
+    second.start()
+    second.join(timeout=10)
+    release.set()
+    first.join(timeout=10)
+
+    assert sorted(outcomes) == ["busy", "claimed"]
+
+
+def test_concurrent_create_of_same_name_is_serialized(
+    service: SandboxService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同名并发创建串行化：第二个请求不并行进入创建流程，只拿到「已存在」。"""
+    from sandbox_platform import AlreadyExistsError
+
+    entered: list[str] = []
+    inside = threading.Event()
+    release = threading.Event()
+    guard = threading.Lock()
+    outcomes: list[str] = []
+
+    def fake_create(request: CreateRequest, name: str, system_user_name: str) -> CreateResult:
+        with guard:
+            entered.append(name)
+        inside.set()
+        release.wait(timeout=10)
+        service.store.save(_metadata(name))
+        return CreateResult(
+            metadata=_metadata(name),
+            connection=ConnectionInfo(
+                socket_path="/run/user/1001/docker.sock",
+                container_name=f"sandbox-{name}",
+                exec_command="docker exec -it sandbox-demo bash",
+                docker_command="docker ps",
+            ),
+            steps=CREATE_STEP_NAMES,
+        )
+
+    monkeypatch.setattr(service, "_create_locked", fake_create)
+
+    def worker() -> None:
+        try:
+            service.create(CreateRequest(name="demo"))
+            outcomes.append("created")
+        except AlreadyExistsError:
+            outcomes.append("exists")
+
+    first = threading.Thread(target=worker)
+    first.start()
+    assert inside.wait(timeout=10)
+    second = threading.Thread(target=worker)
+    second.start()
+    time.sleep(0.3)
+    release.set()
+    first.join(timeout=10)
+    second.join(timeout=10)
+
+    assert entered == ["demo"]
+    assert sorted(outcomes) == ["created", "exists"]
+
+
+def test_failed_create_releases_the_name_claim(
+    service: SandboxService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """创建失败时占位文件被回收：名字重新可用，不留残留。"""
+    from sandbox_platform import LifecycleError
+
+    def boom(request: CreateRequest, name: str, system_user_name: str) -> CreateResult:
+        raise LifecycleError("创建专属用户", "故意失败")
+
+    monkeypatch.setattr(service, "_create_locked", boom)
+    with pytest.raises(LifecycleError):
+        service.create(CreateRequest(name="demo"))
+    assert not service._name_claim_path("demo").exists()
+
+
+def test_delete_releases_the_name_claim(service: SandboxService) -> None:
+    """删除沙箱后名字重新可用：占位文件被回收。"""
+    service.store.save(_metadata("demo"))
+    claim = service._name_claim_path("demo")
+    claim.parent.mkdir(parents=True, exist_ok=True)
+    claim.write_text("12345\n", encoding="utf-8")
+
+    service.delete("demo")
+
+    assert not claim.exists()

@@ -10,14 +10,20 @@
 - 沙箱名、镜像名、网络名、环境变量名一律先校验再使用。
 - 删除路径不信任元数据：用户信息现查 ``getent passwd``，家目录取查询结果，
   单元路径按查询到的家目录重算，网络只回收平台自建的那一个。
+- 同名沙箱的创建 / 启动 / 停止 / 删除按名串行化：并发创建同名沙箱会并行建同一套
+  用户、子 ID 段与容器，后到者的回滚会删掉先到者已跑起来的沙箱。
 """
 
 from __future__ import annotations
 
+import fcntl
 import logging
 import os
 import re
 import shutil
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -33,6 +39,7 @@ from .daemon import (
 )
 from .errors import (
     AlreadyExistsError,
+    ConfigError,
     ImageError,
     LifecycleError,
     NotFoundError,
@@ -217,6 +224,132 @@ class SandboxService:
         self.images = ImageManager(self.config, self.privilege)
         self.proxy = RegistryProxyManager(self.config, self.privilege)
         self.store = MetadataStore(self.config)
+        # 按沙箱名的进程内互斥锁：同名沙箱的操作必须串行
+        self._name_locks: dict[str, threading.RLock] = {}
+        self._name_locks_guard = threading.Lock()
+
+    # ---------------------------------------------------------------- 按名互斥
+    def _name_lock(self, name: str) -> threading.RLock:
+        """取某个沙箱名的进程内互斥锁（同名串行化）。
+
+        用可重入锁：将来某个操作内部再调用同名操作时不会自锁死。
+        """
+        with self._name_locks_guard:
+            lock = self._name_locks.get(name)
+            if lock is None:
+                lock = threading.RLock()
+                self._name_locks[name] = lock
+            return lock
+
+    def _name_claim_path(self, name: str) -> Path:
+        """沙箱名的占位文件路径（``<平台数据根>/locks/<name>.lock``）。"""
+        return self.config.lock_root / f"{name}.lock"
+
+    @contextmanager
+    def _name_claim(self, name: str) -> Iterator[Path]:
+        """原子占用沙箱名（占位文件用 ``O_EXCL`` 落）。
+
+        「查-用」不是原子的：两个并发创建同名沙箱会同时通过存在性检查，
+        并行建同一套用户、子 ID 段与容器。占位文件让「占用名字」这一步变成
+        原子操作：并发时只有一个能占住，另一个直接拿到「沙箱已存在」。
+
+        占位文件在创建失败时回收；创建成功后保留（名字随沙箱一起被占用），
+        删除沙箱时释放。
+        """
+        path = self._name_claim_path(name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = self._claim_name_fd(path, name)
+        if fd is None:
+            raise AlreadyExistsError(f"沙箱已存在：{name}")
+        try:
+            # 持有独占锁期间别人不能把占位文件当成残留接管
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                yield path
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        except BaseException:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:  # pragma: no cover - 回收失败只记日志
+                logger.warning("回收沙箱名占位文件失败：%s（%s）", path, exc)
+            raise
+        finally:
+            os.close(fd)
+
+    def _claim_name_fd(self, path: Path, name: str) -> int | None:
+        """占住沙箱名并返回已打开的文件描述符；失败返回 ``None``。"""
+        if self.store.exists(name):
+            return None
+        for _ in range(2):
+            try:
+                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+            except FileExistsError:
+                if not self._takeover_stale_claim(path, name):
+                    return None
+                continue
+            except OSError as exc:
+                raise ConfigError(f"无法占用沙箱名 {name}：{exc}") from exc
+            try:
+                os.write(fd, f"{os.getpid()}\n".encode("utf-8"))
+            except OSError:  # pragma: no cover - 写占位文件失败属于异常宿主状态
+                os.close(fd)
+                raise
+            return fd
+        return None
+
+    def _takeover_stale_claim(self, path: Path, name: str) -> bool:
+        """接管上次中断留下的占位文件。
+
+        拿不到文件的独占锁说明有进程正在创建同名沙箱（占位仍然有效），
+        此时不接管，直接判定名字已被占用。
+        """
+        if self.store.exists(name):
+            return False
+        try:
+            fd = os.open(path, os.O_RDWR)
+        except OSError:
+            return False
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return False
+            if self.store.exists(name):
+                return False
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:  # pragma: no cover - 清理失败只记日志
+                logger.warning("清理残留的沙箱名占位文件失败：%s（%s）", path, exc)
+                return False
+            return True
+        finally:
+            os.close(fd)
+
+    def _release_name_claim(self, name: str) -> bool:
+        """释放沙箱名的占位文件（名字重新变为可用）。"""
+        path = self._name_claim_path(name)
+        try:
+            fd = os.open(path, os.O_RDWR)
+        except FileNotFoundError:
+            return False
+        except OSError as exc:  # pragma: no cover - 释放失败只记日志
+            logger.warning("释放沙箱名占位失败：%s（%s）", name, exc)
+            return False
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                # 有进程正在创建同名沙箱，占位仍然有效
+                return False
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:  # pragma: no cover - 释放失败只记日志
+                logger.warning("释放沙箱名占位失败：%s（%s）", name, exc)
+                return False
+            return True
+        finally:
+            os.close(fd)
 
     # ---------------------------------------------------------------- 查询
     def find(self, name: str) -> SandboxMetadata | None:
@@ -334,9 +467,15 @@ class SandboxService:
         if len(system_user_name) > MAX_SYSTEM_USER_LENGTH:
             raise ValidationError(f"沙箱名过长，系统用户名会超过 {MAX_SYSTEM_USER_LENGTH} 字符：{name}")
         validate_system_user_name(system_user_name)
-        if self.store.exists(name):
-            raise AlreadyExistsError(f"沙箱已存在：{name}")
+        # 同名串行化 + 原子占用名字：并发创建同名沙箱不会并行建同一套宿主资源
+        with self._name_lock(name):
+            with self._name_claim(name):
+                return self._create_locked(request, name, system_user_name)
 
+    def _create_locked(
+        self, request: CreateRequest, name: str, system_user_name: str
+    ) -> CreateResult:
+        """创建流程本体（调用方必须已持有名字锁与名字占位）。"""
         # 前置校验：输入不合法时不得在宿主上留下任何副作用
         self._precheck(request)
 
@@ -417,7 +556,7 @@ class SandboxService:
             # ⑤ 启动沙箱容器并挂载套接字与用户声明挂载
             current_step = CREATE_STEP_NAMES[4]
             image = validate_image_name(request.image or self.config.default_image)
-            self._prepare_image(image, daemon, request.image_source)
+            self.images.ensure_image_from_source(image, daemon, request.image_source)
             network_name = request.network_name or self._network_name(name)
             network_owned = request.network_name is None
             if not daemon.network_exists(network_name):
@@ -487,16 +626,6 @@ class SandboxService:
         except Exception as exc:  # pragma: no cover - 兜底：非预期异常也要回滚
             self._rollback(completed)
             raise LifecycleError(current_step, str(exc), cause=exc) from exc
-
-    def _prepare_image(self, image: str, daemon: UserDaemon, image_source: str) -> str:
-        """按镜像来源准备镜像，返回来源标记。
-
-        ``auto``（一期行为，默认）：沙箱守护进程已有 → 平台自建镜像由宿主导出注入
-        → 其余交由沙箱守护进程经统一镜像代理拉取。
-
-        ``host``（强制从宿主注入）：宿主没有该镜像直接报错，**不经镜像代理拉取**。
-        """
-        return self.images.ensure_image_from_source(image, daemon, image_source)
 
     def _run_sandbox_container(
         self,
@@ -657,6 +786,11 @@ class SandboxService:
     def start(self, name: str) -> SandboxMetadata:
         """启动沙箱（复用同一用户、同一子 ID 段、同一守护进程单元）。"""
         name = validate_sandbox_name(name)
+        with self._name_lock(name):
+            return self._start_locked(name)
+
+    def _start_locked(self, name: str) -> SandboxMetadata:
+        """启动流程本体（调用方必须已持有名字锁）。"""
         metadata = self.get(name)
         user = self._resolve_user(metadata)
         if user is None:
@@ -684,7 +818,11 @@ class SandboxService:
         if not daemon.wait_for_socket(timeout=120):
             raise LifecycleError("启动沙箱", f"守护进程套接字未出现：{daemon.context.socket_path}")
 
-        self._prepare_image(metadata.image, daemon, metadata.image_source)
+        # 启动路径不强制要求宿主镜像：守护进程里已有就直接用（宿主镜像已删也能启动），
+        # 宿主镜像只在守护进程缺失时作为注入源
+        self.images.ensure_image_from_source(
+            metadata.image, daemon, metadata.image_source, require_host_image=False
+        )
 
         if not daemon.network_exists(metadata.network_name):
             created = daemon.create_network(metadata.network_name)
@@ -718,6 +856,11 @@ class SandboxService:
     def stop(self, name: str, stop_dependencies: bool = True) -> SandboxMetadata:
         """关闭沙箱：停止沙箱容器（依赖容器是否一并停止由显式参数控制，默认停）。"""
         name = validate_sandbox_name(name)
+        with self._name_lock(name):
+            return self._stop_locked(name, stop_dependencies)
+
+    def _stop_locked(self, name: str, stop_dependencies: bool) -> SandboxMetadata:
+        """停止流程本体（调用方必须已持有名字锁）。"""
         metadata = self.get(name)
         daemon = self._daemon_for(metadata)
 
@@ -795,8 +938,15 @@ class SandboxService:
     def delete(self, name: str) -> DeleteResult:
         """删除沙箱：按固定回收清单回收平台资源，用户声明挂载的宿主机目录一律不触碰。"""
         name = validate_sandbox_name(name)
+        with self._name_lock(name):
+            return self._delete_locked(name)
+
+    def _delete_locked(self, name: str) -> DeleteResult:
+        """删除流程本体（调用方必须已持有名字锁）。"""
         metadata = self.find(name)
         if metadata is None:
+            # 名字没被任何沙箱占用：残留的占位文件一并清掉
+            self._release_name_claim(name)
             return DeleteResult(
                 name=name,
                 existed=False,
@@ -906,6 +1056,8 @@ class SandboxService:
         else:
             if deleted_metadata:
                 removed.append(f"平台元数据 {self.store.path_for(name)}")
+                # 沙箱确实没了，名字重新变为可用
+                self._release_name_claim(name)
             else:
                 failed.append(f"平台元数据 {self.store.path_for(name)} 删除失败")
 

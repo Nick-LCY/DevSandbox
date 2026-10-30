@@ -13,6 +13,7 @@ from .errors import (
     CommandError,
     ConfigError,
     ImageError,
+    ImageNotFoundError,
     LifecycleError,
     NotFoundError,
     ProxyError,
@@ -27,6 +28,7 @@ from .images import (
     SOURCE_PRESENT,
     SOURCE_REMOTE,
     ImageManager,
+    image_digest,
 )
 from .lifecycle import (
     CREATE_STEP_NAMES,
@@ -102,6 +104,7 @@ __all__ = [
     "DeleteResult",
     "ImageError",
     "ImageManager",
+    "ImageNotFoundError",
     "LifecycleError",
     "MetadataStore",
     "MountSpec",
@@ -123,6 +126,7 @@ __all__ = [
     "ValidationError",
     "ca_bundle_path",
     "describe_mounts",
+    "image_digest",
     "mounts_to_docker_args",
     "parse_mount_declaration",
     "parse_mounts",

@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from sandbox_platform import PlatformConfig
+from sandbox_platform import ConfigError, PlatformConfig
 
 logger = logging.getLogger(__name__)
 
@@ -26,21 +26,28 @@ def sessions_dir(config: PlatformConfig) -> Path:
 def prepare_sessions_dir(config: PlatformConfig) -> Path:
     """准备终端会话表目录（幂等）。"""
     path = sessions_dir(config)
-    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ConfigError(f"终端会话表目录不可写：{path}（{exc}）") from exc
     return path
 
 
 def purge_leftover_sessions(config: PlatformConfig) -> list[str]:
     """清理上次遗留的终端会话记录，返回被清理的会话标识。
 
-    服务重启后终端会话全部失效：遗留记录一律作废并删除。删除失败只记日志，
-    不影响服务启动。
+    服务重启后终端会话全部失效：遗留记录一律作废并删除。单个记录删除失败只记日志，
+    不影响服务启动；目录本身读不出来则抛 :class:`ConfigError`。
     """
     path = sessions_dir(config)
     if not path.is_dir():
         return []
     removed: list[str] = []
-    for record in sorted(path.glob("*.json")):
+    try:
+        records = sorted(path.glob("*.json"))
+    except OSError as exc:
+        raise ConfigError(f"终端会话表目录不可读：{path}（{exc}）") from exc
+    for record in records:
         try:
             record.unlink()
         except OSError as exc:

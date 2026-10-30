@@ -154,10 +154,20 @@
 | 函数 | 签名 | 说明 |
 |---|---|---|
 | 保证可用 | `ImageManager.ensure_image(image: str, daemon: UserDaemon) -> str` | 顺序：沙箱守护进程已有 → 平台自建镜像（`local_image_prefixes` 前缀匹配）由宿主导出注入 → 其余交给沙箱守护进程经镜像代理拉取；返回来源标记（`present` / `injected` / `remote`） |
-| 按来源准备 | `ImageManager.ensure_image_from_source(image: str, daemon: UserDaemon, source: str = "auto") -> str` | `auto` 同上；`host` 强制从宿主导出注入，宿主无此镜像直接抛 `ImageError`，**不经镜像代理拉取** |
+| 按来源准备 | `ImageManager.ensure_image_from_source(image: str, daemon: UserDaemon, source: str = "auto", *, require_host_image: bool = True) -> str` | `auto` 同上；`host` 强制从宿主注入（见下方「镜像来源的判定语义」）；非法来源抛 `ValidationError`，**不静默降级成 auto** |
+| 镜像引用摘要 | `image_digest(image: str) -> str` | 镜像引用的 sha256 前 16 位；注入中转归档的文件名用它（按字符替换分隔符会让 `a/b:1` 与 `a_b:1` 撞名） |
 | 平台自建判定 | `ImageManager.is_platform_local(image: str) -> bool` | 镜像是否属平台自建命名空间（只在宿主构建、不存在于任何仓库） |
 | 宿主镜像 | `ImageManager.host_image_exists(image: str) -> bool` | 宿主 root 守护进程里是否已有该镜像 |
 | 导出注入 | `ImageManager.inject_from_host(image: str, daemon: UserDaemon) -> str` | `docker save` → `docker load` 注入沙箱守护进程，失败抛 `ImageError` |
+
+#### 镜像来源的判定语义
+
+`host` 模式的「宿主必须有该镜像」要求分两条路径：
+
+| 路径 | 调用 | 判定 |
+|---|---|---|
+| 创建 | `ensure_image_from_source(..., "host")`（`require_host_image=True`） | 宿主必须有该镜像，否则抛 `ImageNotFoundError`；**不经镜像代理拉取** |
+| 启动 | `ensure_image_from_source(..., "host", require_host_image=False)` | 沙箱守护进程里已有该镜像就直接用（宿主镜像已删、守护进程还在时仍能启动）；守护进程里没有时才把宿主副本作为注入源；两边都没有则报 `ImageNotFoundError` |
 
 ---
 
@@ -205,11 +215,22 @@
 | 查询 | `find(name) -> SandboxMetadata \| None` | 不存在返回 `None`；先过沙箱名校验 |
 | 查询 | `get(name) -> SandboxMetadata` | 不存在抛 `NotFoundError`；先过沙箱名校验 |
 | 列表 | `list() -> list[SandboxMetadata]` | 尽力刷新运行状态（用户已删 → `deleted`） |
-| 创建 | `create(request: CreateRequest) -> CreateResult` | 固定 7 步，任一步失败回滚已完成步骤 |
+| 创建 | `create(request: CreateRequest) -> CreateResult` | 固定 7 步，任一步失败回滚已完成步骤；同名创建串行化并原子占用名字 |
 | 启动 | `start(name: str) -> SandboxMetadata` | 复用同一用户、同一子 ID 段、同一守护进程单元；只恢复沙箱容器，依赖容器由使用方自行拉起 |
 | 关闭 | `stop(name: str, stop_dependencies: bool = True) -> SandboxMetadata` | 依赖容器是否一并停止由显式参数控制，默认停 |
 | 回收清单 | `reclaim_plan(name: str) -> ReclaimPlan` | 删除前展示用 |
 | 删除 | `delete(name: str) -> DeleteResult` | 按固定回收清单回收，幂等 |
+
+### 同名沙箱的互斥与名字占用
+
+同名沙箱的 `create` / `start` / `stop` / `delete` 在进程内**按名串行化**：
+并发创建同名沙箱会并行建同一套用户、子 ID 段与容器，后到者的回滚会删掉先到者
+已跑起来的沙箱。串行化在核心包内完成（进程内互斥锁字典），命令行与服务端共用。
+
+「占用沙箱名」是原子操作：占位文件 ``<平台数据根>/locks/<沙箱名>.lock`` 用
+`O_EXCL` 落（并发时只有一个能占住，另一个直接拿到「沙箱已存在」）。
+占位文件在创建失败时回收，创建成功后保留（名字随沙箱一起被占用），
+删除沙箱时释放；创建中断留下的残留占位会被下一次创建接管。
 
 ### 创建的 7 步与回滚
 
@@ -245,11 +266,12 @@
 | 取值 | 语义 | 准备镜像的路径 |
 |---|---|---|
 | `auto`（默认） | 一期行为 | 沙箱守护进程已有 → 平台自建镜像（`sandbox-platform/` 前缀）由宿主导出注入 → 其余交给沙箱守护进程经统一镜像代理拉取 |
-| `host` | 强制从宿主导出注入 | 宿主没有该镜像直接报错（`ImageError`），**不经镜像代理拉取**；宿主有则 `docker save` → `docker load` 注入沙箱守护进程（守护进程里已有时跳过重复注入） |
+| `host` | 强制从宿主导出注入 | 创建路径：宿主没有该镜像直接报错（`ImageNotFoundError`），**不经镜像代理拉取**；宿主有则 `docker save` → `docker load` 注入沙箱守护进程（守护进程里已有时跳过重复注入）。启动路径：守护进程里已有就直接用，宿主副本只在守护进程缺失时作为注入源（见 `images.py` 章节） |
 
 `host` 模式在创建第 ⑤ 步准备镜像时执行，沙箱启动镜像因此不经镜像代理。
 该来源随沙箱元数据一起落盘（`SandboxMetadata.image_source`），
-`start` 时按同一来源准备镜像，旧的元数据文件没有该字段时按 `auto` 处理。
+`start` 时按同一来源准备镜像（启动路径不强制要求宿主镜像），
+旧的元数据文件没有该字段时按 `auto` 处理。非法取值直接报错，不静默降级。
 
 ### 入参校验
 
@@ -285,6 +307,7 @@
 | `AlreadyExistsError` | `SandboxError` | 沙箱已存在 |
 | `CommandError` | `SandboxError` | 宿主命令失败（带 `argv`、`returncode`、`stdout`、`stderr`） |
 | `ImageError` | `SandboxError` | 镜像不可用（导出注入失败等） |
+| `ImageNotFoundError` | `ImageError` | 宿主与沙箱守护进程都没有该镜像（用户侧错误：服务层映射成 400） |
 | `ProxyError` | `SandboxError` | 统一镜像代理不可用（CA 不可读、合并 CA 束装不上等） |
 | `LifecycleError` | `SandboxError` | 生命周期步骤失败（带 `step`、`cause`） |
 
@@ -314,22 +337,23 @@
 |---|---|
 | 前缀 | `/api` |
 | 启动入口 | `uv run python -m sandbox_platform.server` |
-| 监听地址 | 默认 `127.0.0.1:8000`，用 `SANDBOX_CONSOLE_HOST` / `SANDBOX_CONSOLE_PORT` 覆盖 |
-| 前端目录 | 默认 `<项目目录>/console/dist`，用 `SANDBOX_CONSOLE_DIST` 覆盖；目录不存在时跳过静态托管并记日志 |
-| 错误响应体 | 统一 `{"detail": "中文消息"}`，消息取平台异常原文 |
+| 监听地址 | 默认 `127.0.0.1:8000`，用 `SANDBOX_CONSOLE_HOST` / `SANDBOX_CONSOLE_PORT` 覆盖；非回环地址启动时打醒目告警 |
+| 前端目录 | 默认 `<项目目录>/console/dist`，用 `SANDBOX_CONSOLE_DIST` 覆盖；目录不存在时跳过静态托管并告警（`/api/health` 的 `console_mounted` 为 false） |
+| 接口文档 | `/docs` 与 `/openapi.json` **默认关闭**；用 `SANDBOX_CONSOLE_DOCS=1` 显式开启（无认证环境不公开接口清单） |
+| 错误响应体 | 统一 `{"detail": "中文消息"}`；400 / 404 / 409 保留平台异常原文，500 只给固定文案（原文只进日志） |
 | 鉴权 | 无（只监听回环或内网地址，不得暴露公网） |
 
 ### 11.1 路由表
 
 | 方法 | 路径 | 请求体 | 响应体 | 对应的核心接口 |
 |---|---|---|---|---|
-| GET | `/api/health` | — | 服务自检（版本、平台数据根） | — |
-| POST | `/api/sandboxes` | `CreateSandboxRequest` | `CreateSandboxResponse` | `SandboxService.create` |
+| GET | `/api/health` | — | 服务自检（版本、数据根是否就绪、前端是否挂载） | — |
+| POST | `/api/sandboxes` | `CreateSandboxRequest` | 201 + `CreateSandboxResponse` | `SandboxService.create` |
 | GET | `/api/sandboxes` | — | `SandboxSummary[]` | `SandboxService.list` |
 | GET | `/api/sandboxes/{name}` | — | `SandboxDetail` | `SandboxService.get` |
 | POST | `/api/sandboxes/{name}/start` | — | `SandboxDetail` | `SandboxService.start` |
 | POST | `/api/sandboxes/{name}/stop` | `StopSandboxRequest`（可省略） | `SandboxDetail` | `SandboxService.stop` |
-| GET | `/api/sandboxes/{name}/reclaim` | — | `ReclaimPlanModel` | `SandboxService.reclaim_plan` |
+| GET | `/api/sandboxes/{name}/reclaim` | — | `ReclaimPlanModel`（沙箱不存在 → 404） | `SandboxService.reclaim_plan` |
 | DELETE | `/api/sandboxes/{name}` | — | `DeleteSandboxResponse` | `SandboxService.delete` |
 
 ### 11.2 请求字段
@@ -340,12 +364,14 @@
 |---|---|---|---|
 | `name` | `str` | 必填 | 沙箱名，走一期白名单校验 |
 | `image` | `str \| null` | `null` | 沙箱镜像，缺省取平台默认镜像 |
-| `image_source` | `str` | `auto` | `auto`（一期行为）/ `host`（强制从宿主注入，不经镜像代理） |
+| `image_source` | `"auto" \| "host"` | `auto` | `auto`（一期行为）/ `host`（强制从宿主注入，不经镜像代理）；只允许这两个取值 |
 | `mounts` | `list[str]` | `[]` | 用户声明挂载，格式 `宿主路径:容器路径[:ro]`；平台不创建也不删除宿主目录 |
-| `command` | `str \| list[str] \| null` | `null` | 容器启动命令；给字符串时按 shell 引号规则切分，与命令行一致 |
+| `command` | `str \| list[str] \| null` | `null` | 容器启动命令；给字符串时按 shell 引号规则切分，与命令行一致（引号不配对 → 400） |
 | `env` | `dict[str, str]` | `{}` | 容器环境变量，键名走白名单校验 |
 | `workdir` | `str \| null` | `null` | 容器工作目录 |
 | `network` | `str \| null` | `null` | 网桥网络名，缺省 `<沙箱名>-net`；用户指定的网络平台只接入不回收 |
+
+两个请求模型都开了 `extra="forbid"`：拼错的字段名直接 400，不静默忽略。
 
 `StopSandboxRequest`：
 
@@ -358,21 +384,24 @@
 | 模型 | 字段 | 说明 |
 |---|---|---|
 | `SandboxSummary` | `name`、`state`、`state_label`、`image`、`created_at` | 列表项：名字 / 状态 / 镜像 / 创建时间 |
-| `SandboxDetail` | `name`、`state`、`state_label`、`image`、`image_source`、`created_at`、`updated_at`、`system_user`、`uid`、`gid`、`home`、`subid_start`、`subid_length`、`socket_path`、`socket_mount_path`、`container_name`、`container_id`、`network_name`、`network_owned`、`unit_path`、`mounts`、`dependency_containers`、`command`、`env`、`workdir` | 单个沙箱的完整信息（取自 `SandboxMetadata`） |
+| `SandboxDetail` | `name`、`state`、`state_label`、`image`、`image_source`、`created_at`、`updated_at`、`system_user`、`uid`、`gid`、`home`、`subid_start`、`subid_length`、`socket_path`、`socket_mount_path`、`container_name`、`container_id`、`network_name`、`network_owned`、`unit_path`、`mounts`、`dependency_containers`、`command`、`env`、`workdir` | 单个沙箱的完整信息（取自 `SandboxMetadata`）；**`env` 只回键名，值固定 `***`**（环境变量里常有凭据） |
 | `CreateSandboxResponse` | `metadata`、`connection`、`steps` | 创建结果：`steps` 是固定 7 步名称，`connection` 含套接字路径与进入沙箱的命令提示 |
 | `ReclaimPlanModel` | `sandbox_name`、`items`、`untouched_note`、`user_mounts`、`incomplete` | 删除前的回收清单；`untouched_note` 固定为「用户挂载的宿主机目录不受影响」；`incomplete` 表示依赖容器清单可能不完整 |
 | `DeleteSandboxResponse` | `name`、`existed`、`removed`、`failed`、`plan` | 删除结果；`removed` 是确实回收掉的资源，`failed` 是尝试过但没成功的条目 |
+| `HealthResponse` | `status`、`version`、`data_root_configured`、`console_mounted` | 服务自检；**不回显宿主平台数据根的绝对路径**，只给「数据根是否就绪」与「前端是否挂载」 |
 
 ### 11.4 错误码映射
 
 | 场景 | 状态码 | 响应体 |
 |---|---|---|
 | 入参非法（沙箱名、镜像名、挂载声明、镜像来源等） | 400 | `{"detail": "平台异常原文"}` |
-| 请求体不合法（缺字段、类型不对） | 400 | `{"detail": "请求参数不合法：字段（原因）"}` |
+| 请求体不合法（缺字段、类型不对、多余字段） | 400 | `{"detail": "请求参数不合法：字段（原因）"}` |
+| 宿主与沙箱守护进程都没有该镜像（`image_source=host`） | 400 | `{"detail": "平台异常原文"}` |
 | 沙箱不存在 | 404 | `{"detail": "平台异常原文"}` |
 | 接口不存在 | 404 | `{"detail": "接口不存在：METHOD /path"}` |
 | 沙箱已存在 | 409 | `{"detail": "平台异常原文"}` |
-| 其余平台异常（代理不可达、生命周期步骤失败、镜像不可用等） | 500 | `{"detail": "平台异常原文"}` |
+| 其余平台异常（代理不可达、生命周期步骤失败、宿主命令失败、镜像注入失败等） | 500 | `{"detail": "平台内部错误，请查看服务日志"}` |
 
-映射在服务层统一完成：平台异常不吞，消息直接取异常原文。
+映射在服务层统一完成：平台异常不吞。
+500 分支**不回显异常原文**（原文可能带宿主绝对路径与特权命令行），只进日志。
 

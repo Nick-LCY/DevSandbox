@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import re
 import sys
 from pathlib import Path
 
@@ -12,6 +13,19 @@ CORE_DIR = Path(sandbox_platform.__file__).resolve().parent
 PROJECT_DIR = CORE_DIR.parents[1]
 CLI_DIR = PROJECT_DIR / "cli"
 SERVER_DIR = CORE_DIR / "server"
+
+# 服务层不得出现的写法：服务层只做编排与转译，宿主交互一律经核心包
+FORBIDDEN_SERVER_PATTERNS = (
+    r"\bcommand\.run\b",
+    r"\bsandbox_platform\.command\b",
+    r"\bfrom\s+\.{1,2}command\b",
+    r"\bsubprocess\b",
+    r"\bos\.system\b",
+    r"\bos\.popen\b",
+    r"\bshell\s*=\s*True\b",
+    r"\bsudo\b",
+    r"\bdocker\b",
+)
 
 
 def _core_sources() -> list[Path]:
@@ -59,12 +73,20 @@ def test_server_layer_has_no_print_call() -> None:
 
 
 def test_server_layer_does_not_call_host_commands() -> None:
-    """服务层不直接拼宿主命令：宿主交互一律经核心包。"""
-    offenders = []
-    for path in _server_sources():
+    """服务层不直接拼宿主命令：宿主交互一律经核心包。
+
+    禁令覆盖：核心命令封装（``command.run``）、进程与 shell 逃逸
+    （``subprocess`` / ``os.system`` / ``os.popen`` / ``shell=True``）、
+    以及特权命令与容器客户端（``sudo`` / ``docker``）。
+    """
+    sources = _server_sources()
+    assert sources, "服务层目录为空"
+    offenders: list[str] = []
+    for path in sources:
         text = path.read_text(encoding="utf-8")
-        if "command.run" in text or "sandbox_platform.command" in text:
-            offenders.append(str(path))
+        for pattern in FORBIDDEN_SERVER_PATTERNS:
+            if re.search(pattern, text):
+                offenders.append(f"{path.name}: {pattern}")
     assert offenders == []
 
 

@@ -60,11 +60,12 @@ uv run python -m sandbox_platform.server   # 启动服务
 | 项 | 说明 |
 |---|---|
 | 监听地址 | 默认 `127.0.0.1:8000`；用环境变量 `SANDBOX_CONSOLE_HOST` / `SANDBOX_CONSOLE_PORT` 覆盖 |
-| **只绑回环地址** | 服务不做认证与多用户，允许改成内网地址，**不得暴露公网** |
+| **只绑回环地址** | 服务不做认证与多用户，允许改成内网地址，**不得暴露公网**；绑非回环地址时启动会打醒目告警 |
 | 平台数据根 | 仍走 `SANDBOX_PLATFORM_HOME`（默认 `/var/lib/sandbox-platform`），与命令行一致 |
 | 权限要求 | 与一期命令行一致：进程本身是 root 时直接执行，否则走免密 `sudo` |
-| 前端托管 | `console/dist` 由同一进程在 `/` 路径托管；目录不存在时跳过静态托管并记日志，不影响服务启动；部署路径不同时用 `SANDBOX_CONSOLE_DIST` 覆盖 |
-| 接口文档 | `src/sandbox_platform/API.md` 的「二期 HTTP 接口」章节；运行时的交互式文档在 `/docs` |
+| 前端托管 | `console/dist` 由同一进程在 `/` 路径托管；目录不存在时跳过静态托管并告警（`/api/health` 的 `console_mounted` 为 false），不影响服务启动；部署路径不同时用 `SANDBOX_CONSOLE_DIST` 覆盖 |
+| 接口文档 | `src/sandbox_platform/API.md` 的「二期 HTTP 接口」章节；运行时的交互式文档在 `/docs`，**默认关闭**，需要时用 `SANDBOX_CONSOLE_DOCS=1` 开启 |
+| 错误响应 | 统一 `{"detail": "中文消息"}`；400 / 404 / 409 保留平台异常原文，500 只回「平台内部错误，请查看服务日志」（原文只进日志，不回显宿主路径） |
 | 常驻方式 | `server/sandbox-console.service` 是 systemd 单元模板，只提供模板，不自动安装、不自动启用 |
 
 ```bash

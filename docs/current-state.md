@@ -17,7 +17,7 @@
 | [[tasks/sandbox-platform/05-e2e-harness.md\|05 端到端基建]] | done | Playwright 脚本与探索双模式、健康检查门禁、用例库克隆、data-testid 规范落地，脚本模式用例全绿；记录见 `platform/e2e/RESULTS.md` |
 | [[tasks/sandbox-platform/06-sample-app-acceptance.md\|06 示例项目与验收演练]] | done | 两步全完成：全栈示例项目落地（FastAPI + React + Postgres + MinIO + Logto）+ 闭环验收演练（agent 在全新沙箱内独立从红到绿，2 轮循环，6 条用例全绿）；证据见 `platform/examples/fullstack-sample/LOOP-LOG.md` 与仓库根目录 `RESULTS.md` |
 | 二期任务集 | doing | 5 个任务，依赖顺序 01 → 02/03（可并行）→ 04 → 05；需求见 [[prds/phase2-console.md\|二期 PRD]] |
-| [[tasks/phase2-console/01-service-core-api.md\|01 控制面服务骨架与沙箱管理接口]] | done | 服务层子包 sandbox_platform.server 落地（应用工厂 / 依赖注入 / 请求与响应模型 / 沙箱管理路由 / 错误映射 / 启动入口），核心包加 image_source 开关（命令行零变化），188 项 pytest 全通过 |
+| [[tasks/phase2-console/01-service-core-api.md\|01 控制面服务骨架与沙箱管理接口]] | done | 服务层子包 sandbox_platform.server 落地（应用工厂 / 依赖注入 / 请求与响应模型 / 沙箱管理路由 / 错误映射 / 启动入口），核心包加 image_source 开关（命令行零变化）；审查修复轮完成（同名并发互斥 / 500 脱敏 / 接口文档默认关闭），209 项 pytest 全通过 |
 | [[tasks/phase2-console/02-image-proxy-api.md\|02 宿主镜像枚举与代理状态管理接口]] | todo | list_host_images + 代理状态/重启/CA 指纹比对；依赖 01 |
 | [[tasks/phase2-console/03-web-terminal.md\|03 网页终端]] | todo | 伪终端会话 + WebSocket 桥接 + 会话表持久化；依赖 01 |
 | [[tasks/phase2-console/04-console-frontend.md\|04 网页控制台前端]] | todo | React+Vite 四页面（列表/新建/详情+终端/设置）；依赖 01/02/03 |
@@ -29,6 +29,7 @@
 - 阻塞项：无。
 
 ## 最近变更
+- 2026-10-30：二期任务 01 审查修复轮——修复 1 项严重问题与 8 项中等问题，另落地 12 项采纳的建议。严重问题：**同名沙箱并发创建互相拆台**（`store.exists` 非原子「查-用」），核心包 `SandboxService` 加按名互斥（进程内锁字典）+ 原子占用名字（`<平台数据根>/locks/<名>.lock` 用 `O_EXCL` 落占位文件，创建失败回收、删除时释放），命令行与服务端同受益。中等问题：命令引号不配对改 400（原落 500）、回收清单对不存在沙箱改 404、500 分支改固定文案「平台内部错误，请查看服务日志」（原文只进日志，不回显宿主路径与特权命令行）、宿主无此镜像改 400、新增的两处测试用例挂临时目录夹具（原先直接操作真实 `/var/lib/sandbox-platform`）、分层契约检测补 `subprocess` / `os.system` / `os.popen` / `docker` / `sudo` 禁令并合并重复用例、镜像注入中转文件改用镜像引用摘要命名（原先 `a/b:1` 与 `a_b:1` 同名）。采纳建议：删无信息量包装层、镜像来源显式三分支、host 模式判定按创建/启动两条路径分开、请求模型 `extra="forbid"`、创建返回 201、前端未挂载时告警且健康接口暴露 `console_mounted`、健康接口不再回显平台数据根路径（只给 `data_root_configured`）、详情接口环境变量值脱敏、端口非法退出码 2、非回环监听打醒目告警、接口文档默认关闭（`SANDBOX_CONSOLE_DOCS` 显式开启）。命令行 `platform/cli/sandboxctl.py` 源码仍一行未改，一期行为零变化。测试 209 项 pytest 全通过（一期既有 158 项无回归）。
 - 2026-10-29：二期任务 01 完成——控制面服务骨架与沙箱管理接口。服务层子包 `platform/src/sandbox_platform/server/` 落地：`create_app()` 应用工厂（`/api` 前缀、`console/dist` 静态托管、lifespan 准备数据目录并清理遗留终端会话记录）、`deps.py` 依赖注入、`schemas.py` 请求与响应模型、`routes/sandboxes.py` 七条沙箱路由（创建 / 列表 / 详情 / 启动 / 停止 / 回收清单 / 删除）、固定错误映射（入参非法 400 / 不存在 404 / 已存在 409 / 其余平台异常 500，响应体统一 `{"detail": "中文消息"}`）。核心包新增可选字段 `CreateRequest.image_source`（`auto` 默认保持一期行为，`host` 强制从宿主导出注入、不经镜像代理），命令行 `sandboxctl.py` 源码一行未改。启动入口 `uv run python -m sandbox_platform.server`（默认 `127.0.0.1:8000`，可用 `SANDBOX_CONSOLE_HOST` / `SANDBOX_CONSOLE_PORT` 覆盖），随附 systemd 单元模板 `platform/server/sandbox-console.service`（不自动安装）。测试 188 项 pytest 全通过（一期既有 158 项无回归）。
 - 2026-10-29：二期 PRD 定稿并完成任务拆分——控制面服务化与网页控制台（FastAPI 服务 + 网页控制台 + 网页终端 + 代理设置页），范围相对原二期概要做了两处裁剪：不做认证（内部部署、个人使用）、命令行不改造成服务客户端；拆分 5 个任务，依赖顺序 01 → 02/03 → 04 → 05。见 [[prds/phase2-console.md|二期 PRD]] 与 [[tasks/phase2-console/README.md|二期任务集]]。
 - 2026-10-29：镜像供给改为统一镜像代理（ADR 0008），废弃离线包——基础镜像不再内置 postgres / minio / logto 离线 tar，三件套及一切外部镜像统一经镜像代理拉取（缓存命中走本地，未命中由代理拉一次外网）；宿主导出注入收窄为本地构建镜像专用；代理不可达即拉取失败、不降级直连。详见 [[architecture/decisions/0008-统一镜像代理与离线包废弃.md|ADR 0008 统一镜像代理与离线包废弃]]。

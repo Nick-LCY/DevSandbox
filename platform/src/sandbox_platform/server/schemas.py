@@ -7,8 +7,9 @@
 from __future__ import annotations
 
 import shlex
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sandbox_platform import (
     IMAGE_SOURCE_AUTO,
     ConnectionInfo,
@@ -18,14 +19,20 @@ from sandbox_platform import (
     ReclaimPlan,
     SandboxMetadata,
 )
+from sandbox_platform import ValidationError as PlatformValidationError
+
+# 环境变量值的脱敏占位：详情接口只回键名
+ENV_VALUE_MASK = "***"
 
 
 class CreateSandboxRequest(BaseModel):
     """创建沙箱的请求体。"""
 
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(description="沙箱名（小写字母、数字、连字符、下划线）")
     image: str | None = Field(default=None, description="沙箱镜像（缺省取平台默认镜像）")
-    image_source: str = Field(
+    image_source: Literal["auto", "host"] = Field(
         default=IMAGE_SOURCE_AUTO,
         description="镜像来源：auto（默认，走代理拉取）/ host（强制从宿主注入，不经代理）",
     )
@@ -56,16 +63,27 @@ class CreateSandboxRequest(BaseModel):
         )
 
     def _command_tuple(self) -> tuple[str, ...] | None:
-        """命令统一成参数元组（字符串按 shell 引号规则切分，与命令行一致）。"""
+        """命令统一成参数元组（字符串按 shell 引号规则切分，与命令行一致）。
+
+        引号不配对时抛平台 :class:`ValidationError`（映射为 400），
+        不让 ``shlex`` 的原始异常穿透成 500。
+        """
         if self.command is None:
             return None
         if isinstance(self.command, str):
-            return tuple(shlex.split(self.command))
+            try:
+                return tuple(shlex.split(self.command))
+            except ValueError as exc:
+                raise PlatformValidationError(
+                    f"容器启动命令的引号不配对：{self.command}"
+                ) from exc
         return tuple(self.command)
 
 
 class StopSandboxRequest(BaseModel):
     """停止沙箱的请求体（可省略）。"""
+
+    model_config = ConfigDict(extra="forbid")
 
     stop_dependencies: bool = Field(default=True, description="是否一并停止依赖容器")
 
@@ -101,7 +119,10 @@ class SandboxSummary(BaseModel):
 
 
 class SandboxDetail(BaseModel):
-    """单个沙箱的详情。"""
+    """单个沙箱的详情。
+
+    ``env`` 只回键名，值固定为 ``***``：环境变量里常有凭据，不进 HTTP 响应。
+    """
 
     name: str
     state: str
@@ -164,7 +185,7 @@ class SandboxDetail(BaseModel):
             ],
             dependency_containers=list(metadata.dependency_containers),
             command=list(metadata.command),
-            env=dict(metadata.env),
+            env={key: ENV_VALUE_MASK for key in metadata.env},
             workdir=metadata.workdir,
         )
 
@@ -250,8 +271,12 @@ class DeleteSandboxResponse(BaseModel):
 
 
 class HealthResponse(BaseModel):
-    """服务自检。"""
+    """服务自检。
+
+    不回显宿主平台数据根的绝对路径（属敏感信息），只给「数据根是否就绪」。
+    """
 
     status: str
     version: str
-    platform_home: str
+    data_root_configured: bool
+    console_mounted: bool

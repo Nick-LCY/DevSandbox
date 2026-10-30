@@ -1,7 +1,13 @@
 """HTTP 错误映射：平台异常 → 状态码 + ``{"detail": "中文消息"}``。
 
-映射固定：入参非法 400、沙箱不存在 404、沙箱已存在 409、其余平台异常 500。
-消息取平台异常原文，不吞异常（未预期的异常会记完整调用栈）。
+映射固定：入参非法 400、沙箱不存在 404、沙箱已存在 409、镜像不存在 400、
+其余平台异常 500。
+
+消息策略：
+
+- 400 / 404 / 409：保留平台异常原文（都是用户侧信息，不含宿主敏感路径）。
+- 500：只回固定文案「平台内部错误，请查看服务日志」。平台异常原文可能带宿主
+  绝对路径与特权命令行，**只进日志**，不进 HTTP 响应。
 """
 
 from __future__ import annotations
@@ -11,7 +17,12 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from sandbox_platform import AlreadyExistsError, NotFoundError, SandboxError
+from sandbox_platform import (
+    AlreadyExistsError,
+    ImageNotFoundError,
+    NotFoundError,
+    SandboxError,
+)
 from sandbox_platform import ValidationError as PlatformValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -21,6 +32,9 @@ STATUS_BAD_REQUEST = 400
 STATUS_NOT_FOUND = 404
 STATUS_CONFLICT = 409
 STATUS_SERVER_ERROR = 500
+
+# 500 分支的固定文案：平台异常原文只进日志，不回显宿主路径与特权命令行
+INTERNAL_ERROR_MESSAGE = "平台内部错误，请查看服务日志"
 
 # 请求体校验失败的常见类型 → 中文提示
 _VALIDATION_MESSAGES = {
@@ -89,10 +103,24 @@ def install_exception_handlers(app: FastAPI) -> None:
     ) -> JSONResponse:
         return error_response(STATUS_CONFLICT, str(exc))
 
+    @app.exception_handler(ImageNotFoundError)
+    async def _handle_image_not_found(
+        request: Request, exc: ImageNotFoundError
+    ) -> JSONResponse:
+        """宿主与沙箱守护进程都没有该镜像：用户侧错误（400），不是服务端故障。"""
+        return error_response(STATUS_BAD_REQUEST, str(exc))
+
     @app.exception_handler(SandboxError)
     async def _handle_platform_error(request: Request, exc: SandboxError) -> JSONResponse:
-        logger.error("平台异常：%s", exc)
-        return error_response(STATUS_SERVER_ERROR, str(exc))
+        """其余平台异常一律 500：原文只进日志，响应只给固定文案。"""
+        logger.error(
+            "平台异常：%s %s（%s）",
+            request.method,
+            request.url.path,
+            exc,
+            exc_info=exc,
+        )
+        return error_response(STATUS_SERVER_ERROR, INTERNAL_ERROR_MESSAGE)
 
     @app.exception_handler(RequestValidationError)
     async def _handle_request_validation(
@@ -108,5 +136,12 @@ def install_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def _handle_unexpected(request: Request, exc: Exception) -> JSONResponse:
-        logger.exception("服务内部错误：%s %s", request.method, request.url.path)
-        return error_response(STATUS_SERVER_ERROR, f"服务内部错误：{exc}")
+        """兜底分支：未预期异常一律 500，原文只进日志。"""
+        logger.error(
+            "服务内部错误：%s %s（%s）",
+            request.method,
+            request.url.path,
+            exc,
+            exc_info=exc,
+        )
+        return error_response(STATUS_SERVER_ERROR, INTERNAL_ERROR_MESSAGE)

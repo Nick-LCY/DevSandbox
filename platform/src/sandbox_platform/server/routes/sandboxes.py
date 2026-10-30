@@ -23,7 +23,12 @@ from ..schemas import (
 router = APIRouter(prefix="/sandboxes", tags=["沙箱"])
 
 
-@router.post("", response_model=CreateSandboxResponse, summary="创建沙箱")
+@router.post(
+    "",
+    response_model=CreateSandboxResponse,
+    status_code=201,
+    summary="创建沙箱",
+)
 def create_sandbox(
     payload: CreateSandboxRequest,
     service: SandboxService = Depends(get_service),
@@ -67,7 +72,11 @@ def stop_sandbox(
 
 @router.get("/{name}/reclaim", response_model=ReclaimPlanModel, summary="删除前的回收清单")
 def reclaim_plan(name: str, service: SandboxService = Depends(get_service)) -> ReclaimPlanModel:
-    """列出删除沙箱时平台会回收的资源（用户声明挂载的宿主目录不受影响）。"""
+    """列出删除沙箱时平台会回收的资源（用户声明挂载的宿主目录不受影响）。
+
+    沙箱不存在直接 404：回收清单只对真实存在的沙箱有意义。
+    """
+    service.get(name)
     return ReclaimPlanModel.from_plan(service.reclaim_plan(name))
 
 

@@ -12,12 +12,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 
 from .command import run
 from .config import PlatformConfig
 from .daemon import UserDaemon
-from .errors import ImageError
+from .errors import ImageError, ImageNotFoundError, ValidationError
 from .userspace import Privilege
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,15 @@ SOURCE_REMOTE = "remote"
 IMAGE_SOURCE_AUTO = "auto"
 IMAGE_SOURCE_HOST = "host"
 IMAGE_SOURCE_CHOICES = (IMAGE_SOURCE_AUTO, IMAGE_SOURCE_HOST)
+
+
+def image_digest(image: str) -> str:
+    """镜像引用的摘要（sha256 前 16 位）。
+
+    注入中转归档的文件名用它：按字符替换分隔符会让 ``a/b:1`` 与 ``a_b:1``
+    落到同一个文件名上，互相覆盖。
+    """
+    return hashlib.sha256(image.encode("utf-8")).hexdigest()[:16]
 
 
 class ImageManager:
@@ -70,19 +80,35 @@ class ImageManager:
         image: str,
         daemon: UserDaemon,
         source: str = IMAGE_SOURCE_AUTO,
+        *,
+        require_host_image: bool = True,
     ) -> str:
         """按镜像来源准备镜像，返回来源标记。
 
         ``auto``（默认，一期行为）：链条同 :meth:`ensure_image`。
 
-        ``host``（强制从宿主注入）：宿主没有该镜像直接报错，**不经镜像代理拉取**；
-        宿主有则导出注入沙箱守护进程（守护进程里已有时跳过重复注入）。
-        """
-        if source != IMAGE_SOURCE_HOST:
-            return self.ensure_image(image, daemon)
+        ``host``（强制从宿主注入），判定分两种路径：
 
+        - ``require_host_image=True``（创建路径）：宿主必须有该镜像，否则直接报错，
+          **不经镜像代理拉取**；
+        - ``require_host_image=False``（启动路径）：沙箱守护进程里已有该镜像就直接用
+          （宿主镜像已删、守护进程还在时仍能启动），宿主镜像只在守护进程缺失时
+          作为注入源。
+
+        非法来源直接抛 :class:`ValidationError`，不静默降级成 ``auto``。
+        """
+        if source == IMAGE_SOURCE_AUTO:
+            return self.ensure_image(image, daemon)
+        if source != IMAGE_SOURCE_HOST:
+            raise ValidationError(
+                f"镜像来源非法：{source!r}，只允许 {' / '.join(IMAGE_SOURCE_CHOICES)}"
+            )
+
+        if not require_host_image and daemon.image_exists(image):
+            logger.info("沙箱守护进程已有镜像 %s，直接使用", image)
+            return SOURCE_PRESENT
         if not self.host_image_exists(image):
-            raise ImageError(
+            raise ImageNotFoundError(
                 f"宿主上没有镜像 {image}：强制从宿主注入模式要求该镜像存在于宿主，"
                 "平台不经镜像代理拉取（改用 auto 模式可让沙箱守护进程经代理拉取）"
             )
@@ -103,7 +129,7 @@ class ImageManager:
     def inject_from_host(self, image: str, daemon: UserDaemon) -> str:
         """把宿主守护进程里的镜像导出后注入沙箱守护进程。"""
         self.config.temp_root.mkdir(parents=True, exist_ok=True)
-        tar_path = self.config.temp_root / f"inject-{image.replace('/', '_').replace(':', '_')}.tar"
+        tar_path = self.config.temp_root / f"inject-{image_digest(image)}.tar"
         try:
             save = run(
                 self.privilege.wrap(["docker", "save", "-o", str(tar_path), image]),

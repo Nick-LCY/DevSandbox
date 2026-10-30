@@ -58,6 +58,14 @@ class ImageError(SandboxError):
     """镜像不可用（本地无镜像且拉取失败）。"""
 
 
+class ImageNotFoundError(ImageError):
+    """宿主与沙箱守护进程都没有该镜像。
+
+    属于用户侧错误（选错了镜像或镜像来源），与服务端故障区分开：
+    服务层把它映射成 400 而不是 500。
+    """
+
+
 class ProxyError(SandboxError):
     """统一镜像代理不可用（拉起失败、健康检查不通过、CA 不可读等）。
 

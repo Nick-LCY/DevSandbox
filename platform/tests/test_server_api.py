@@ -3,6 +3,9 @@
 生命周期服务在这里被整体桩掉：测试不触碰宿主（不建用户、不起容器、
 不跑任何宿主命令），只验证「HTTP 载荷 → 核心包入参」与「核心包结果 → HTTP 响应」
 两头的转译是否正确，以及错误映射是否固定。
+
+分层契约（服务层不直接碰宿主）由 ``test_source_contract.py`` 统一检测，
+本文件不再重复。
 """
 
 from __future__ import annotations
@@ -27,10 +30,6 @@ from sandbox_platform import (
 )
 from sandbox_platform.server import create_app
 from sandbox_platform.server.deps import get_service
-
-import sandbox_platform.server as server_package
-
-SERVER_DIR = Path(server_package.__file__).resolve().parent
 
 
 # ---------------------------------------------------------------- 桩件
@@ -60,13 +59,11 @@ def make_metadata(name: str = "demo", state: str = "running") -> SandboxMetadata
 class FakeSandboxService:
     """假的生命周期服务：只记录调用，不触碰宿主。"""
 
-    def __init__(self, error: Exception | None = None) -> None:
-        self.error = error
+    def __init__(self) -> None:
+        self.error: Exception | None = None
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
         self.metadata = make_metadata()
-        self.config = PlatformConfig.from_env(
-            {"SANDBOX_PLATFORM_HOME": "/tmp/sandbox-platform-test"}
-        )
+        self.config = PlatformConfig.from_env()
 
     def _record(self, action: str, *args: Any) -> None:
         self.calls.append((action, args))
@@ -125,14 +122,21 @@ class FakeSandboxService:
 
 
 @pytest.fixture
-def fake_service() -> FakeSandboxService:
-    """假的生命周期服务实例。"""
+def fake_service(platform_home: Path) -> FakeSandboxService:
+    """假的生命周期服务实例（平台数据根指向临时目录）。"""
     return FakeSandboxService()
 
 
 @pytest.fixture
-def client(fake_service: FakeSandboxService) -> TestClient:
+def client(
+    fake_service: FakeSandboxService,
+    platform_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> TestClient:
     """测试客户端（生命周期服务已整体桩掉）。"""
+    # 前端目录指向不存在的路径：静态托管是否挂载的断言才稳定
+    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     app = create_app()
     app.dependency_overrides[get_service] = lambda: fake_service
     return TestClient(app)
@@ -142,9 +146,9 @@ def client(fake_service: FakeSandboxService) -> TestClient:
 def test_create_sandbox_returns_steps_and_connection(
     client: TestClient, fake_service: FakeSandboxService
 ) -> None:
-    """创建沙箱：返回步骤、连接方式与沙箱详情。"""
+    """创建沙箱：返回 201，响应含步骤、连接方式与沙箱详情。"""
     response = client.post("/api/sandboxes", json={"name": "demo", "image": "busybox:1.37"})
-    assert response.status_code == 200
+    assert response.status_code == 201
     body = response.json()
     assert body["steps"] == ["创建专属用户", "登记子 UID/GID 段"]
     assert body["connection"]["container_name"] == "sandbox-demo"
@@ -173,6 +177,20 @@ def test_create_sandbox_forwards_host_image_source(
     assert request.image_source == "host"
 
 
+def test_create_sandbox_rejects_unknown_image_source(client: TestClient) -> None:
+    """image_source 只允许 auto / host，拼错的值直接 400。"""
+    response = client.post("/api/sandboxes", json={"name": "demo", "image_source": "proxy"})
+    assert response.status_code == 400
+    assert "取值不在允许范围内" in response.json()["detail"]
+
+
+def test_create_sandbox_rejects_unknown_field(client: TestClient) -> None:
+    """拼错的字段名不静默忽略，直接 400。"""
+    response = client.post("/api/sandboxes", json={"name": "demo", "images": "busybox:1.37"})
+    assert response.status_code == 400
+    assert "不允许的字段" in response.json()["detail"]
+
+
 def test_create_sandbox_translates_mounts_and_command(
     client: TestClient, fake_service: FakeSandboxService
 ) -> None:
@@ -196,6 +214,13 @@ def test_create_sandbox_translates_mounts_and_command(
     assert request.network_name == "demo-net"
 
 
+def test_create_sandbox_with_unbalanced_quotes_returns_400(client: TestClient) -> None:
+    """命令里的引号不配对：400，不落成 500。"""
+    response = client.post("/api/sandboxes", json={"name": "demo", "command": "echo '未闭合"})
+    assert response.status_code == 400
+    assert "引号" in response.json()["detail"]
+
+
 def test_list_sandboxes_returns_name_state_image_and_created_at(
     client: TestClient,
 ) -> None:
@@ -217,6 +242,16 @@ def test_get_sandbox_detail(client: TestClient) -> None:
     assert body["name"] == "demo"
     assert body["container_name"] == "sandbox-demo"
     assert body["state_label"] == "运行中"
+
+
+def test_sandbox_detail_masks_environment_values(
+    client: TestClient, fake_service: FakeSandboxService
+) -> None:
+    """详情里的环境变量只回键名，值固定脱敏。"""
+    fake_service.metadata.env = {"TOKEN": "super-secret", "MODE": "debug"}
+    response = client.get("/api/sandboxes/demo")
+    assert response.status_code == 200
+    assert response.json()["env"] == {"TOKEN": "***", "MODE": "***"}
 
 
 def test_start_sandbox(client: TestClient, fake_service: FakeSandboxService) -> None:
@@ -257,6 +292,16 @@ def test_reclaim_plan_lists_items_and_untouched_note(client: TestClient) -> None
     assert body["incomplete"] is False
 
 
+def test_reclaim_plan_of_missing_sandbox_returns_404(
+    client: TestClient, fake_service: FakeSandboxService
+) -> None:
+    """回收清单只对真实存在的沙箱有意义：不存在直接 404。"""
+    fake_service.error = NotFoundError("沙箱不存在：ghost")
+    response = client.get("/api/sandboxes/ghost/reclaim")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "沙箱不存在：ghost"
+
+
 def test_delete_sandbox_returns_removed_and_failed(client: TestClient) -> None:
     """删除：如实返回已回收与未回收的条目。"""
     response = client.delete("/api/sandboxes/demo")
@@ -269,28 +314,35 @@ def test_delete_sandbox_returns_removed_and_failed(client: TestClient) -> None:
 
 
 def test_health_endpoint(client: TestClient) -> None:
-    """服务自检：版本与平台数据根。"""
+    """服务自检：版本、数据根是否就绪、前端是否挂载；不回显宿主路径。"""
     response = client.get("/api/health")
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
-    assert body["platform_home"]
+    assert body["data_root_configured"] is True
+    assert body["console_mounted"] is False
+    assert "platform_home" not in body
+    assert "/var/lib" not in response.text
 
 
 # ---------------------------------------------------------------- 错误映射
 @pytest.mark.parametrize(
-    ("error", "status_code"),
+    ("error", "status_code", "detail"),
     [
-        (ValidationError("沙箱名非法：'Bad Name'"), 400),
-        (NotFoundError("沙箱不存在：demo"), 404),
-        (AlreadyExistsError("沙箱已存在：demo"), 409),
-        (LifecycleError("启动沙箱容器", "启动沙箱容器失败"), 500),
+        (ValidationError("沙箱名非法：'Bad Name'"), 400, "沙箱名非法：'Bad Name'"),
+        (NotFoundError("沙箱不存在：demo"), 404, "沙箱不存在：demo"),
+        (AlreadyExistsError("沙箱已存在：demo"), 409, "沙箱已存在：demo"),
+        (LifecycleError("启动沙箱容器", "启动沙箱容器失败"), 500, "平台内部错误，请查看服务日志"),
     ],
 )
 def test_platform_errors_map_to_fixed_status_codes(
-    fake_service: FakeSandboxService, error: Exception, status_code: int
+    fake_service: FakeSandboxService,
+    platform_home: Path,
+    error: Exception,
+    status_code: int,
+    detail: str,
 ) -> None:
-    """错误映射固定：400 / 404 / 409 / 500，消息取平台异常原文。"""
+    """错误映射固定：400 / 404 / 409 / 500；500 分支只回固定文案。"""
     fake_service.error = error
     app = create_app()
     app.dependency_overrides[get_service] = lambda: fake_service
@@ -299,7 +351,23 @@ def test_platform_errors_map_to_fixed_status_codes(
     assert response.status_code == status_code
     body = response.json()
     assert set(body) == {"detail"}
-    assert body["detail"] == str(error)
+    assert body["detail"] == detail
+
+
+def test_internal_error_detail_does_not_leak_host_paths(
+    fake_service: FakeSandboxService, platform_home: Path
+) -> None:
+    """500 分支不回显异常原文：宿主路径与特权命令行只进日志。"""
+    fake_service.error = RuntimeError("炸了 /var/lib/sandbox-platform sudo docker ps")
+    app = create_app()
+    app.dependency_overrides[get_service] = lambda: fake_service
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.get("/api/sandboxes/demo")
+    assert response.status_code == 500
+    body = response.json()
+    assert body["detail"] == "平台内部错误，请查看服务日志"
+    assert "/var/lib/sandbox-platform" not in response.text
+    assert "sudo" not in response.text
 
 
 def test_invalid_request_body_maps_to_400_with_chinese_detail(client: TestClient) -> None:
@@ -318,33 +386,104 @@ def test_unknown_api_route_returns_chinese_detail(client: TestClient) -> None:
     assert response.json()["detail"].startswith("接口不存在")
 
 
-# ---------------------------------------------------------------- 分层契约
-def test_server_sources_do_not_call_host_commands() -> None:
-    """服务层不直接拼宿主命令：宿主交互一律经核心包。"""
-    offenders = []
-    for path in sorted(SERVER_DIR.rglob("*.py")):
-        text = path.read_text(encoding="utf-8")
-        if "command.run" in text or "from sandbox_platform.command" in text:
-            offenders.append(path.name)
-        if "from ..command" in text or "from .command" in text:
-            offenders.append(path.name)
-    assert offenders == []
+# ---------------------------------------------------------------- 接口文档开关
+def test_openapi_docs_are_disabled_by_default(client: TestClient) -> None:
+    """无认证环境默认不公开接口清单。"""
+    assert client.get("/docs").status_code == 404
+    assert client.get("/openapi.json").status_code == 404
 
 
+def test_openapi_docs_can_be_enabled_by_env(
+    fake_service: FakeSandboxService,
+    platform_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """显式设置环境变量才开放 /docs 与 /openapi.json。"""
+    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
+    monkeypatch.setenv("SANDBOX_CONSOLE_DOCS", "1")
+    app = create_app()
+    app.dependency_overrides[get_service] = lambda: fake_service
+    client = TestClient(app)
+    assert client.get("/openapi.json").status_code == 200
+    assert client.get("/docs").status_code == 200
+
+
+# ---------------------------------------------------------------- 生命周期钩子
 def test_lifespan_prepares_data_dir_and_purges_leftover_sessions(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    platform_home: Path, fake_service: FakeSandboxService
 ) -> None:
     """启动钩子：准备平台数据目录，清理上次遗留的终端会话记录。"""
-    home = tmp_path / "platform-home"
-    monkeypatch.setenv("SANDBOX_PLATFORM_HOME", str(home))
-    sessions = home / "terminal-sessions"
+    sessions = platform_home / "terminal-sessions"
     sessions.mkdir(parents=True)
     (sessions / "stale-session.json").write_text("{}", encoding="utf-8")
 
     app = create_app()
+    app.dependency_overrides[get_service] = lambda: fake_service
     with TestClient(app) as client:
         assert client.get("/api/health").status_code == 200
 
-    assert (home / "sandboxes").is_dir()
-    assert (home / "terminal-sessions").is_dir()
+    assert (platform_home / "sandboxes").is_dir()
+    assert (platform_home / "terminal-sessions").is_dir()
     assert not (sessions / "stale-session.json").exists()
+
+
+# ---------------------------------------------------------------- 启动入口
+def test_invalid_port_exits_with_code_2(monkeypatch: pytest.MonkeyPatch) -> None:
+    """端口非法：打一行中文错误，退出码 2。"""
+    from sandbox_platform.server import __main__ as entry
+
+    monkeypatch.setenv("SANDBOX_CONSOLE_PORT", "not-a-port")
+    assert entry.main() == 2
+
+
+def test_out_of_range_port_exits_with_code_2(monkeypatch: pytest.MonkeyPatch) -> None:
+    """端口超出范围：退出码 2。"""
+    from sandbox_platform.server import __main__ as entry
+
+    monkeypatch.setenv("SANDBOX_CONSOLE_PORT", "70000")
+    assert entry.main() == 2
+
+
+def test_non_loopback_host_warns(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """监听非回环地址时打醒目告警（服务不做认证）。"""
+    from sandbox_platform.server import __main__ as entry
+
+    with caplog.at_level("WARNING"):
+        entry.warn_if_not_loopback("0.0.0.0")
+    assert any("不是回环地址" in record.message for record in caplog.records)
+
+
+def test_loopback_host_does_not_warn(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """回环地址不告警。"""
+    from sandbox_platform.server import __main__ as entry
+
+    with caplog.at_level("WARNING"):
+        entry.warn_if_not_loopback("127.0.0.1")
+    assert caplog.records == []
+
+
+def test_command_error_detail_does_not_leak_privileged_command_line(
+    fake_service: FakeSandboxService, platform_home: Path
+) -> None:
+    """宿主命令失败（带特权命令行）：500 且不回显命令行原文。"""
+    from sandbox_platform import CommandError
+
+    fake_service.error = CommandError(
+        ["sudo", "-u", "sandbox-demo", "docker", "ps"],
+        1,
+        "",
+        "permission denied",
+    )
+    app = create_app()
+    app.dependency_overrides[get_service] = lambda: fake_service
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.get("/api/sandboxes/demo")
+    assert response.status_code == 500
+    assert response.json()["detail"] == "平台内部错误，请查看服务日志"
+    assert "docker" not in response.text
+    assert "permission denied" not in response.text
