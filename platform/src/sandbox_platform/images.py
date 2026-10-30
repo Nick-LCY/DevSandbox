@@ -29,6 +29,9 @@ SOURCE_PRESENT = "present"
 SOURCE_INJECTED = "injected"
 SOURCE_REMOTE = "remote"
 
+# 批量 inspect 镜像详情时的分片大小：镜像多了会撞上命令行的长度上限（ARG_MAX）
+INSPECT_BATCH_SIZE = 50
+
 # 镜像来源（创建入参 ``CreateRequest.image_source`` 的取值）：
 # auto —— 一期行为：守护进程已有 → 平台自建镜像由宿主导出注入 → 其余经镜像代理拉取
 # host —— 强制从宿主导出注入：宿主没有该镜像直接报错，**不经镜像代理拉取**
@@ -44,6 +47,13 @@ def image_digest(image: str) -> str:
     落到同一个文件名上，互相覆盖。
     """
     return hashlib.sha256(image.encode("utf-8")).hexdigest()[:16]
+
+
+def _chunked(items: list[str], size: int) -> list[list[str]]:
+    """把列表切成固定大小的分片（顺序不变）。"""
+    if size <= 0:
+        raise ValueError("分片大小必须大于 0")
+    return [items[index : index + size] for index in range(0, len(items), size)]
 
 
 @dataclass(frozen=True)
@@ -121,37 +131,47 @@ class ImageManager:
             if not repository or not tag or repository == "<none>" or tag == "<none>":
                 # 悬空镜像（中间层、被删标签的残留）不可选
                 continue
-            rows.append((f"{repository}:{tag}", str(data.get("ID") or "").strip()))
+            image_id = str(data.get("ID") or "").strip()
+            if not image_id:
+                # 没有 ID 拿不到体积与创建时间，不可选
+                logger.warning("跳过没有镜像 ID 的行：%s:%s", repository, tag)
+                continue
+            rows.append((f"{repository}:{tag}", image_id))
         return rows
 
     def _inspect_host_images(self, rows: list[tuple[str, str]]) -> dict[str, tuple[int, str]]:
         """取镜像的体积（字节）与创建时间，按镜像 ID 索引。
 
         ``image ls`` 的体积是人读文本（如 ``1.2GB``），字节数只能从
-        ``image inspect`` 的 ``Size`` 字段拿。
+        ``image inspect`` 的 ``Size`` 字段拿。镜像按 50 个一批分片查询：
+        一次性把全部镜像 ID 拼进命令行会撞上长度上限（ARG_MAX）。
         """
         image_ids = list(dict.fromkeys(image_id for _, image_id in rows if image_id))
         if not image_ids:
             return {}
         template = "{{.Id}}\t{{.Size}}\t{{.Created}}"
-        result = run(
-            self.privilege.wrap(["docker", "image", "inspect", "--format", template, *image_ids]),
-            check=False,
-        )
-        if result.ok:
-            return self._parse_inspect_lines(result.stdout)
-        # 批量失败（可能有镜像刚被删）：逐个重试，拿到多少算多少
-        logger.warning("批量读取镜像详情失败，改为逐个读取：%s", result.output.strip())
         details: dict[str, tuple[int, str]] = {}
-        for image_id in image_ids:
-            one = run(
+        for batch in _chunked(image_ids, INSPECT_BATCH_SIZE):
+            result = run(
                 self.privilege.wrap(
-                    ["docker", "image", "inspect", "--format", template, image_id]
+                    ["docker", "image", "inspect", "--format", template, *batch]
                 ),
                 check=False,
             )
-            if one.ok:
-                details.update(self._parse_inspect_lines(one.stdout))
+            if result.ok:
+                details.update(self._parse_inspect_lines(result.stdout))
+                continue
+            # 批量失败（可能有镜像刚被删）：逐个重试，拿到多少算多少
+            logger.warning("批量读取镜像详情失败，改为逐个读取：%s", result.output.strip())
+            for image_id in batch:
+                one = run(
+                    self.privilege.wrap(
+                        ["docker", "image", "inspect", "--format", template, image_id]
+                    ),
+                    check=False,
+                )
+                if one.ok:
+                    details.update(self._parse_inspect_lines(one.stdout))
         return details
 
     @staticmethod

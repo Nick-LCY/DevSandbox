@@ -347,8 +347,10 @@ class ProxyRestartModel(ProxyStatusModel):
 
     restarted: bool
     ca_changed: bool
+    ca_reinstalled: bool
     message: str
     reinstalled_users: list[str]
+    failed_users: list[str]
 
     @classmethod
     def from_core(
@@ -360,8 +362,10 @@ class ProxyRestartModel(ProxyStatusModel):
             **base.model_dump(),
             restarted=result.success,
             ca_changed=result.ca_changed,
+            ca_reinstalled=result.ca_reinstalled,
             message=result.message,
             reinstalled_users=list(result.reinstalled_users),
+            failed_users=list(result.failed_users),
         )
 
 

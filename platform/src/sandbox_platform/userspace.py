@@ -101,6 +101,38 @@ class Privilege:
         """给命令加上特权前缀。"""
         return [*self.prefix(), *[str(item) for item in argv]]
 
+    def user_prefix(self, user: str, uid: int, gid: int) -> list[str]:
+        """切换到指定系统用户的命令前缀。
+
+        两种形态行为等价（都切到目标用户身份、清空环境后执行）：
+
+        - 非 root：``sudo -n -u <用户>``（免密 sudo）；
+        - 进程本身是 root：``setpriv --reuid <uid> --regid <gid> --clear-groups``。
+
+        root 分支必须自带提权前缀：root 环境下 ``sudo`` 未必存在，
+        直接拼 ``-u <用户>`` 会被外层命令当成自己的参数，产出非法命令行。
+        """
+        if self.enabled:
+            return ["sudo", "-n", "-u", user]
+        return [
+            "setpriv",
+            "--reuid",
+            str(uid),
+            "--regid",
+            str(gid),
+            "--clear-groups",
+        ]
+
+    def user_prefix_text(self, user: str, uid: int, gid: int) -> str:
+        """切换身份的提示文本（给用户复制到终端里执行）。
+
+        与 :meth:`user_prefix` 同源，但不带 ``sudo -n`` 的非交互标记：
+        提示文本是给人看的，粘到终端执行时保留 ``sudo`` 的密码提示更合适。
+        """
+        if self.enabled:
+            return f"sudo -u {user}"
+        return f"setpriv --reuid {uid} --regid {gid} --clear-groups"
+
 
 def pick_free_range(
     ranges: list[tuple[int, int]],

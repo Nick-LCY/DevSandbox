@@ -100,14 +100,24 @@ class UserDaemon:
 
     # ---------------------------------------------------------------- 命令执行
     def user_argv(self, argv: list[str] | tuple[str, ...]) -> list[str]:
-        """构造「以沙箱用户身份执行」的完整命令行。"""
+        """构造「以沙箱用户身份执行」的完整命令行。
+
+        身份切换前缀按运行身份分两种，行为等价：
+
+        - 非 root：``sudo -n -u <用户> env -i …``；
+        - 进程本身是 root（控制台服务以 root 跑）：``setpriv --reuid <uid>
+          --regid <gid> --clear-groups env -i …``。
+
+        root 分支不能省掉前缀：``sudo`` 未必存在，省掉后 ``-u <用户>``
+        会被当成外层命令的参数，产出非法命令行。
+        """
         env_args: list[str] = []
         for key, value in self.context.env().items():
             env_args.extend([f"{key}={value}"])
         return [
-            *self.privilege.prefix(),
-            "-u",
-            self.context.user,
+            *self.privilege.user_prefix(
+                self.context.user, self.context.uid, self.context.gid
+            ),
             "env",
             "-i",
             *env_args,

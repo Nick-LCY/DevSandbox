@@ -6,6 +6,9 @@
 
 - 核心模块只返回数据与抛异常，不做参数解析、不直接输出。
 - 所有宿主特权操作通过 `Privilege` 包装：进程本身是 root 时直接执行，否则走免密 `sudo`。
+- 以某个系统用户身份执行命令时，前缀按运行身份分两种（行为等价）：
+  非 root 走 `sudo -n -u <用户>`；进程本身是 root 走 `setpriv --reuid <uid> --regid <gid> --clear-groups`
+  （root 环境下 `sudo` 未必存在，省掉前缀会产出非法命令行）。
 - 数据根目录由环境变量 `SANDBOX_PLATFORM_HOME` 决定，默认 `/var/lib/sandbox-platform`。
 
 ---
@@ -101,6 +104,8 @@
 | 函数 | 签名 | 说明 |
 |---|---|---|
 | 分配空闲段 | `pick_free_range(ranges: list[tuple[int, int]], base: int, length: int) -> int` | 纯函数：挑一段不重叠的区间起点 |
+| 特权前缀 | `Privilege.prefix()` / `Privilege.wrap(argv)` | 宿主特权命令前缀：进程本身是 root 时直接执行，否则走免密 `sudo` |
+| 身份切换前缀 | `Privilege.user_prefix(user: str, uid: int, gid: int) -> list[str]` | 「切到某个系统用户」的前缀：非 root 是 `sudo -n -u <用户>`；进程本身是 root 是 `setpriv --reuid <uid> --regid <gid> --clear-groups`（root 环境下 `sudo` 未必存在，省掉前缀会产出非法命令行） |
 | 用户查询 | `UserSpaceManager.lookup_user(name: str) -> SystemUser \| None` | 读 uid/gid/家目录 |
 | 用户存在 | `UserSpaceManager.user_exists(name: str) -> bool` | — |
 | 建用户 | `UserSpaceManager.ensure_user(name: str) -> SystemUser` | 已存在则沿用（返回值的 `created=False`）；新建带家目录（`created=True`）。**只有 `created=True` 的用户允许进回滚清单** |
@@ -124,7 +129,7 @@
 
 `UserContext`：`user`、`uid`、`gid`、`home`；派生 `runtime_dir`、`socket_path`、`env()`。
 
-`UserDaemon(context: UserContext, privilege: Privilege | None = None)` 全部方法都以沙箱用户身份执行（`sudo -u <用户> env -i …`，带 `XDG_RUNTIME_DIR` 与 `DOCKER_HOST`）。
+`UserDaemon(context: UserContext, privilege: Privilege | None = None)` 全部方法都以沙箱用户身份执行：非 root 走 `sudo -n -u <用户> env -i …`，进程本身是 root 走 `setpriv --reuid <uid> --regid <gid> --clear-groups env -i …`；两种形态都带 `XDG_RUNTIME_DIR` 与 `DOCKER_HOST`。
 
 | 方法 | 签名 | 说明 |
 |---|---|---|
@@ -191,14 +196,14 @@
 | 目录 | `ensure_directories() -> None` | 创建缓存目录与 CA 目录（幂等） |
 | 镜像 | `ensure_image() -> bool` | 宿主上无代理镜像时拉取一次（首启自动拉取） |
 | 拉起 | `ensure_running(timeout: int = 120) -> bool` | 幂等拉起并等到健康；并发调用由文件锁串行化；失败返回 `False`（**调用方必须直接失败，不降级直连**） |
-| 重启 | `restart(timeout: int = 120) -> bool` | 容器存在则重启，不存在则先拉起，随后轮询健康检查直到通过；失败返回 `False` 并把原因写进 `last_error`（**不做降级直连**）；与 `ensure_running` 共用同一把文件锁 |
+| 重启 | `restart(timeout: int = 120) -> bool` | 容器存在则重启（**挂载与当前配置不一致时删除后按首次启动路径重建**），不存在则先拉起，随后轮询健康检查直到通过；失败返回 `False` 并把原因写进 `last_error`（**不做降级直连**）；与 `ensure_running` 共用同一把文件锁 |
 | 容器状态 | `container_status() -> ProxyContainerStatus` | 容器是否存在 / 是否运行中 |
-| 缓存占用 | `cache_size_bytes() -> int` | 缓存目录占用字节数；目录不存在按 0 计，统计失败只记日志并返回 0 |
+| 缓存占用 | `cache_size_bytes() -> int` | 缓存目录占用字节数；目录不存在按 0 计，统计失败只记日志并返回 0（`du` 超时按 30 秒封顶，路径用 `--` 隔开） |
 | 证书就绪 | `certificate_ready() -> bool` | 代理 CA 证书是否存在且可读 |
-| 完整状态 | `status() -> ProxyStatus` | 容器状态 + 健康状态 + 缓存占用 + 证书就绪 + 代理访问地址（设置页展示用） |
-| CA 指纹 | `ca_cert_digest() -> str` | 代理 CA 证书内容的 sha256 前 16 位；取不到证书时返回空串 |
+| 完整状态 | `status() -> ProxyStatus` | 容器状态 + 健康状态 + 缓存占用 + 证书就绪 + 代理访问地址（设置页展示用）；**永不抛异常**：宿主命令失败、命令超时、证书读不出来都降级成「不健康 + 明细」，状态接口不会变成 500 |
+| CA 指纹 | `ca_cert_digest() -> str` | 代理 CA 证书内容的 sha256 前 16 位（**先做空白归一化再哈希**，换行差异不算变更）；取不到证书时返回空串 |
 | 健康 | `probe() -> ProxyProbe` / `health_check() -> bool` | TCP 可连 + 能从 `http://127.0.0.1:<port>/ca.crt` 取到证书才算健康 |
-| CA | `read_ca_certificate() -> str` / `read_system_ca_bundle() -> str` | 读代理 CA / 系统 CA 束，缺失抛 `ProxyError` |
+| CA | `read_ca_certificate() -> str` / `read_system_ca_bundle() -> str` | 读代理 CA / 系统 CA 束，缺失或不是合法 UTF-8 文本时抛 `ProxyError` |
 | 合并 CA 束 | `install_ca_bundle(user: SystemUser) -> Path` | 「系统 CA 束 + 代理 CA」合并成单个文件，装到沙箱用户家目录（属主沙箱用户、权限 0644） |
 | 权限 | `harden_ca_permissions() -> None` | CA 私钥 `0600`、证书 `0644` |
 | 停止/删除 | `stop() -> bool` / `remove() -> bool` | 停止 / 删除代理容器（缓存与 CA 目录保留） |
@@ -219,9 +224,10 @@
 |---|---|---|
 | `CreateRequest` | `name`、`image=None`、`mount_declarations=()`、`command=None`、`env={}`、`workdir=None`、`network_name=None`、`image_source="auto"` | 创建入参 |
 | `CreateResult` | `metadata`、`connection`、`steps` | 创建结果；`steps` 是固定 7 步名称 |
-| `ConnectionInfo` | `socket_path`、`container_name`、`exec_command`、`docker_command`、`notes` | 连接方式与命令提示 |
+| `ConnectionInfo` | `socket_path`、`container_name`、`exec_command`、`docker_command`、`notes` | 连接方式与命令提示（身份切换前缀与实际执行同源：非 root 是 `sudo -u`，root 是 `setpriv`） |
 | `ReclaimPlan` | `sandbox_name`、`items`、`untouched_note`、`user_mounts`、`incomplete` | 删除前的回收清单；`untouched_note` 固定为「用户挂载的宿主机目录不受影响」；依赖容器清单 = 元数据已知列表 ∪ 删除前实时扫描，探测失败时保留旧列表并置 `incomplete=True` |
 | `DeleteResult` | `name`、`existed`、`removed`、`failed`、`plan` | 删除结果；沙箱不存在时 `existed=False` 且不抛异常；`removed` 是确实回收掉的资源，`failed` 是尝试过但没成功的条目（带原因） |
+| `ProxyRestartResult` | `success`、`ca_changed`、`message`、`reinstalled_users`、`failed_users`、`ca_reinstalled` | 重启结果；`ca_changed` 的口径见 11.5；`ca_reinstalled` 表示合并证书链**确实重装过**（CA 变了但新 CA 读不到时为 `False`，不把未修复报成已修复）；`failed_users` 是重装失败的用户（单个用户失败不阻断其余用户） |
 
 ### `SandboxService`
 
@@ -238,7 +244,7 @@
 | 删除 | `delete(name: str) -> DeleteResult` | 按固定回收清单回收，幂等 |
 | 宿主镜像 | `list_host_images() -> list[HostImage]` | 实时枚举宿主本地镜像（创建页下拉用）；悬空镜像不进列表 |
 | 代理状态 | `proxy_status() -> ProxyStatus` | 代理的容器状态、健康状态、缓存占用、证书就绪与访问地址 |
-| 代理重启 | `restart_proxy(timeout: int = 120) -> ProxyRestartResult` | 重启代理并等健康；重启后比对代理 CA 指纹，变了就为已有沙箱用户重装合并 CA 束 |
+| 代理重启 | `restart_proxy(timeout: int = 120) -> ProxyRestartResult` | 重启代理并等健康；重启后比对代理 CA 指纹，变了就为已有沙箱用户重装合并 CA 束；`ca_changed` 的口径与 `ca_reinstalled` / `failed_users` 的含义见 11.5 |
 
 ### 同名沙箱的互斥与名字占用
 
@@ -416,8 +422,8 @@
 | `HealthResponse` | `status`、`version`、`data_root_configured`、`console_mounted` | 服务自检；**不回显宿主平台数据根的绝对路径**，只给「数据根是否就绪」与「前端是否挂载」 |
 | `HostImageModel` | `reference`、`image_id`、`size_bytes`、`created_at` | 宿主本地镜像项：`reference` 是 `仓库:标签` 形式的镜像引用，`size_bytes` 是体积（字节），`created_at` 是创建时间；悬空镜像不进列表 |
 | `ProxyContainerStatusModel` | `exists`、`running` | 代理容器是否存在 / 是否运行中 |
-| `ProxyStatusModel` | `container`、`healthy`、`tcp_ok`、`ca_fetchable`、`detail`、`cache_size_bytes`、`certificate_ready`、`proxy_url` | 代理状态：容器运行状态、健康状态（端口可连 / 能取到证书 / 明细）、缓存目录占用字节数、代理 CA 证书就绪状态、代理访问地址 |
-| `ProxyRestartModel` | `ProxyStatusModel` 的全部字段 + `restarted`、`ca_changed`、`message`、`reinstalled_users` | 重启代理的结果；`restarted` 表示重启后已通过健康检查，`ca_changed` 表示代理 CA 指纹与重启前不一致，`reinstalled_users` 是因此重装了合并 CA 束的沙箱用户 |
+| `ProxyStatusModel` | `container`、`healthy`、`tcp_ok`、`ca_fetchable`、`detail`、`cache_size_bytes`、`certificate_ready`、`proxy_url` | 代理状态：容器运行状态、健康状态（端口可连 / 能取到证书 / 明细）、缓存目录占用字节数、代理 CA 证书就绪状态、代理访问地址；**代理没起来不是错误**：如实回报「不健康」与明细（明细区分「容器不存在」「容器未运行」「端口不通」），不报 4xx / 500 |
+| `ProxyRestartModel` | `ProxyStatusModel` 的全部字段 + `restarted`、`ca_changed`、`ca_reinstalled`、`message`、`reinstalled_users`、`failed_users` | 重启代理的结果；`restarted` 表示重启后已通过健康检查，`ca_changed` 表示代理 CA 指纹与重启前不一致，`ca_reinstalled` 表示合并证书链确实重装过（未重装时为 `false`），`reinstalled_users` 是因此重装了合并 CA 束的沙箱用户，`failed_users` 是重装失败的用户 |
 
 ### 11.4 错误码映射
 
@@ -439,11 +445,16 @@
 | 项 | 口径 |
 |---|---|
 | 代理不可达不降级 | 代理不可达时**一律直接失败，不降级直连**（一期既定原则）：创建 / 启动沙箱时报错，`POST /api/proxy/restart` 报 `restarted=false`。接口层不提供任何绕过代理的开关 |
-| 代理没起来不是接口错误 | `GET /api/proxy/status` 如实回报「不健康」与明细（`healthy=false`、`detail` 给出原因），不报 4xx / 500 |
-| 重启失败的返回方式 | `POST /api/proxy/restart` 仍返回 200，用 `restarted=false` 与 `message` 说明结果；失败原因（宿主命令原文）只进服务日志，不回显到响应 |
+| 代理没起来不是接口错误 | `GET /api/proxy/status` 如实回报「不健康」与明细（`healthy=false`、`detail` 给出原因），不报 4xx / 500；状态查询永不抛异常（宿主命令失败、超时、证书读不出来都降级成不健康 + 明细） |
+| 重启失败的返回方式 | `POST /api/proxy/restart` 仍返回 200，用 `restarted=false` 与 `message` 说明结果；失败原因（宿主命令原文）只进服务日志，不回显到响应。失败分支的 `message` 会追加 CA 状态说明（CA 变了但证书链未重装） |
 | CA 指纹变化 | 重启后比对代理 CA 指纹；指纹与重启前不一致时自动为已有沙箱用户重装合并 CA 束（复用 `install_ca_bundle`），并回传 `ca_changed=true` 与 `reinstalled_users` |
+| CA 指纹的口径 | `ca_changed = bool(变更前) and bool(变更后) and 变更前 != 变更后`：**变更前后都读得到证书**才算「变了」。读不到（空串）不等于变了——CA 首次生成不会被误报成「CA 已变更」。指纹对内容做**空白归一化**后哈希，换行与缩进差异不算变更 |
+| 不把未修复报成已修复 | 另有 `ca_reinstalled` 字段：CA 变了但新 CA 读不到（或合并证书链没装上）时为 `false`，`message` 如实说「CA 指纹已变更，但新 CA 读取失败，未能重装合并证书链」。重装失败的用户进 `failed_users`，单个用户失败不阻断其余用户 |
+| 代理锁语义 | 创建流程与重启共用同一把文件锁（`<平台数据根>/locks/registry-proxy.lock`）：**创建流程会阻塞等待代理锁，重启结束后再判定可达性**（不是看到「代理不可达」就直接失败）。`docker restart` 的超时跟 `restart(timeout)` 参数挂钩（取 `min(timeout, 120)`），不写死 |
 | 缓存只增不减 | **不提供任何清理代理缓存的接口**：缓存目录只增不减，`GET /api/proxy/status` 只展示占用字节数 |
 | 不做远程拉取 | **不提供网页拉取镜像的接口**：`GET /api/images` 只实时枚举宿主本地镜像（含用户本地构建、任何仓库都没有的镜像），创建沙箱时只从这份列表里选 |
+
+> **未认证特权端点（风险说明）**：`POST /api/proxy/restart` 是**未认证的特权端点**。服务只绑回环地址，但本机任意进程都能调用它：反复重启代理会打断正在拉镜像的沙箱（代理不可达时创建 / 启动直接失败）。不要把服务改成监听公网或不受控的内网地址；如需对外提供服务，必须先加认证。
 
 
 ---

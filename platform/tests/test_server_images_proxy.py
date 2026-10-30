@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +26,13 @@ from sandbox_platform import (
 )
 from sandbox_platform.command import CommandResult
 from sandbox_platform.metadata import MetadataStore
-from sandbox_platform.proxy import CA_CERT_FILENAME
+from sandbox_platform.proxy import (
+    CA_CERT_FILENAME,
+    PROXY_CA_MOUNT,
+    PROXY_CACHE_MOUNT,
+    CACHE_SIZE_TIMEOUT,
+    RESTART_COMMAND_TIMEOUT,
+)
 from sandbox_platform.server import create_app
 from sandbox_platform.userspace import ca_bundle_path
 
@@ -35,6 +42,25 @@ TEST_PROXY_PORT = 33128
 SYSTEM_CA = "-----BEGIN CERTIFICATE-----\n系统根证书\n-----END CERTIFICATE-----\n"
 PROXY_CA = "-----BEGIN CERTIFICATE-----\n代理根证书\n-----END CERTIFICATE-----\n"
 PROXY_CA_V2 = "-----BEGIN CERTIFICATE-----\n新的代理根证书\n-----END CERTIFICATE-----\n"
+
+
+class FakeTime:
+    """假的时钟：健康轮询不落真实睡眠。
+
+    只替换 ``sandbox_platform.proxy`` 里的模块引用（不是全局 ``time`` 模块），
+    避免 monkeypatch 污染整个 pytest 进程。
+    """
+
+    def __init__(self, real: Any) -> None:
+        self._real = real
+
+    def monotonic(self) -> float:
+        """真实单调时钟（轮询的截止时间计算需要真实推进）。"""
+        return self._real.monotonic()
+
+    def sleep(self, *_: Any) -> None:
+        """不睡：轮询直接进入下一轮。"""
+        return None
 
 
 # ---------------------------------------------------------------- 假宿主
@@ -47,12 +73,18 @@ class FakeHost:
 
     def __init__(self) -> None:
         self.commands: list[list[str]] = []
+        # 每条命令的超时（与 commands 一一对应）
+        self.command_timeouts: list[int | None] = []
         # 镜像列表（``image ls`` 的每一行）
         self.images: list[dict[str, str]] = []
         # 镜像详情：镜像 ID → (体积字节, 创建时间)
         self.image_details: dict[str, tuple[int, str]] = {}
+        # 批量 inspect 是否成功（失败时逐个重试）
+        self.inspect_batch_ok = True
         self.container_exists = False
         self.container_running = False
+        # 代理容器的绑定挂载（docker inspect --format {{json .Mounts}}）
+        self.container_mounts: list[dict[str, str]] = []
         self.restart_ok = True
         self.run_container_ok = True
         self.pull_ok = True
@@ -69,6 +101,7 @@ class FakeHost:
         while args[:1] == ["sudo"]:
             args = args[2:]
         self.commands.append(args)
+        self.command_timeouts.append(timeout)
         if args[:3] == ["docker", "image", "ls"]:
             return self._image_ls(args)
         if args[:3] == ["docker", "image", "inspect"]:
@@ -79,6 +112,8 @@ class FakeHost:
             return self._restart(args)
         if args[:2] == ["docker", "run"]:
             return self._run_container(args)
+        if args[:2] == ["docker", "rm"]:
+            return self._remove_container(args)
         if args[:2] == ["docker", "pull"]:
             return self._pull(args)
         if args[:1] == ["du"]:
@@ -105,6 +140,9 @@ class FakeHost:
 
     def _image_inspect(self, args: list[str]) -> CommandResult:
         image_ids = args[args.index("--format") + 2 :] if "--format" in args else []
+        if len(image_ids) > 1 and not self.inspect_batch_ok:
+            # 批量调用失败：核心包应改为逐个重试
+            return CommandResult(tuple(args), 1, "", "no such image")
         lines: list[str] = []
         missing = False
         for image_id in image_ids:
@@ -125,17 +163,18 @@ class FakeHost:
             value = "true" if self.container_running else "false"
             return CommandResult(tuple(args), 0, value, "")
         if "Mounts" in template:
-            return CommandResult(tuple(args), 0, "[]", "")
+            return CommandResult(tuple(args), 0, json.dumps(self.container_mounts), "")
         return CommandResult(tuple(args), 0, "", "")
 
     def _restart(self, args: list[str]) -> CommandResult:
         if not self.container_exists:
             return CommandResult(tuple(args), 1, "", "no such container")
+        # 真实 docker restart 可能已经换掉了 CA，之后才报错
+        if self.on_restart is not None:
+            self.on_restart()
         if not self.restart_ok:
             return CommandResult(tuple(args), 1, "", "cannot stop container")
         self.container_running = True
-        if self.on_restart is not None:
-            self.on_restart()
         return CommandResult(tuple(args), 0, args[-1], "")
 
     def _run_container(self, args: list[str]) -> CommandResult:
@@ -143,7 +182,14 @@ class FakeHost:
             return CommandResult(tuple(args), 1, "", "port is already allocated")
         self.container_exists = True
         self.container_running = True
+        self.container_mounts = _mounts_from_run_args(args)
         return CommandResult(tuple(args), 0, "container-id", "")
+
+    def _remove_container(self, args: list[str]) -> CommandResult:
+        self.container_exists = False
+        self.container_running = False
+        self.container_mounts = []
+        return CommandResult(tuple(args), 0, args[-1], "")
 
     def _pull(self, args: list[str]) -> CommandResult:
         if not self.pull_ok:
@@ -197,6 +243,26 @@ class FakeHost:
         return CommandResult(tuple(args), 0, f"{name}:x:{uid}:{gid}::{home}:/bin/bash\n", "")
 
 
+def _mounts_from_run_args(args: list[str]) -> list[dict[str, str]]:
+    """从 ``docker run -v 源:目标`` 参数里解析出绑定挂载（与 docker 语义一致）。"""
+    mounts: list[dict[str, str]] = []
+    for index, item in enumerate(args):
+        if item != "-v" or index + 1 >= len(args):
+            continue
+        source, _, destination = args[index + 1].partition(":")
+        if destination:
+            mounts.append({"Source": source, "Destination": destination})
+    return mounts
+
+
+def proxy_mounts(config: PlatformConfig) -> list[dict[str, str]]:
+    """当前配置下代理容器应有的绑定挂载。"""
+    return [
+        {"Source": str(config.proxy_cache_dir), "Destination": PROXY_CACHE_MOUNT},
+        {"Source": str(config.proxy_ca_dir), "Destination": PROXY_CA_MOUNT},
+    ]
+
+
 # ---------------------------------------------------------------- 夹具
 @pytest.fixture
 def proxy_config(tmp_path: Path) -> PlatformConfig:
@@ -221,13 +287,17 @@ def fake_host() -> FakeHost:
 
 
 @pytest.fixture
-def stub_host(monkeypatch: pytest.MonkeyPatch, fake_host: FakeHost) -> FakeHost:
+def stub_host(
+    monkeypatch: pytest.MonkeyPatch, fake_host: FakeHost, proxy_config: PlatformConfig
+) -> FakeHost:
     """把宿主命令执行层整体桩掉（核心包与用户管理的命令都在内）。"""
     monkeypatch.setattr("sandbox_platform.images.run", fake_host)
     monkeypatch.setattr("sandbox_platform.proxy.run", fake_host)
     monkeypatch.setattr("sandbox_platform.userspace.run", fake_host)
-    # 健康轮询不落真实睡眠
-    monkeypatch.setattr("sandbox_platform.proxy.time.sleep", lambda *_: None)
+    # 健康轮询不落真实睡眠：只替换代理模块里的 time 引用，不动全局 time 模块
+    monkeypatch.setattr("sandbox_platform.proxy.time", FakeTime(time))
+    # 默认挂载与当前配置一致（重建路径只在挂载真的不一致时触发）
+    fake_host.container_mounts = proxy_mounts(proxy_config)
     return fake_host
 
 
@@ -328,6 +398,47 @@ def test_list_host_images_reports_command_failure(
         ImageManager(proxy_config).list_host_images()
 
 
+def test_list_host_images_retries_one_by_one_when_batch_inspect_fails(
+    proxy_config: PlatformConfig, stub_host: FakeHost
+) -> None:
+    """批量 inspect 失败：逐个重试，能拿到的详情照样给出来。"""
+    stub_host.images = [
+        {"Repository": "alpine", "Tag": "3.20", "ID": "sha256:aaa"},
+        {"Repository": "busybox", "Tag": "1.37", "ID": "sha256:bbb"},
+    ]
+    stub_host.image_details = {"sha256:aaa": (1024, "2026-10-28T00:00:00Z")}
+    stub_host.inspect_batch_ok = False
+
+    images = ImageManager(proxy_config).list_host_images()
+
+    assert [item.reference for item in images] == ["alpine:3.20", "busybox:1.37"]
+    assert images[0].size_bytes == 1024
+    assert images[1].size_bytes == 0
+    inspect_calls = [
+        command
+        for command in stub_host.commands
+        if command[:3] == ["docker", "image", "inspect"]
+    ]
+    # 批量一次 + 逐个两次
+    assert len(inspect_calls) == 3
+    assert len(inspect_calls[0]) > len(inspect_calls[1])
+
+
+def test_list_host_images_skips_rows_without_image_id(
+    proxy_config: PlatformConfig, stub_host: FakeHost
+) -> None:
+    """没有镜像 ID 的行不进列表（拿不到体积与创建时间）。"""
+    stub_host.images = [
+        {"Repository": "alpine", "Tag": "3.20", "ID": ""},
+        {"Repository": "busybox", "Tag": "1.37", "ID": "sha256:bbb"},
+    ]
+    stub_host.image_details = {"sha256:bbb": (2048, "2026-10-29T00:00:00Z")}
+
+    images = ImageManager(proxy_config).list_host_images()
+
+    assert [item.reference for item in images] == ["busybox:1.37"]
+
+
 # ---------------------------------------------------------------- 代理状态
 def test_proxy_status_reports_container_health_cache_and_certificate(
     proxy_config: PlatformConfig,
@@ -386,6 +497,89 @@ def test_cache_size_bytes_is_zero_when_cache_dir_missing(
     assert proxy_manager.cache_size_bytes() == 0
 
 
+def test_proxy_status_reports_container_exists_but_not_running(
+    proxy_config: PlatformConfig,
+    stub_host: FakeHost,
+    proxy_manager: RegistryProxyManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """容器存在但未运行：状态如实回报「已存在但未运行」（与「容器不存在」区分）。"""
+    stub_host.container_exists = True
+    stub_host.container_running = False
+    stub_host.probe_result = ProxyProbe(tcp=False, http=False, detail="连接被拒绝")
+    monkeypatch.setattr(proxy_manager, "probe", lambda: stub_host.probe_result)
+
+    status = proxy_manager.status()
+
+    assert status.container.exists is True
+    assert status.container.running is False
+    assert status.healthy is False
+    assert "未运行" in status.detail
+    assert "连接被拒绝" in status.detail
+
+
+def test_proxy_status_degrades_when_host_command_fails(
+    proxy_config: PlatformConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """宿主命令失败：状态降级为不健康 + 明细，不抛异常（接口不会 500）。"""
+    from sandbox_platform.command import CommandError
+
+    def failing(argv, **kwargs):
+        raise CommandError(tuple(str(item) for item in argv), 124, "", "命令超时")
+
+    monkeypatch.setattr("sandbox_platform.proxy.run", failing)
+    manager = RegistryProxyManager(proxy_config)
+
+    status = manager.status()
+
+    assert status.healthy is False
+    assert status.tcp_ok is False
+    assert "读取代理状态失败" in status.detail
+    # 明细不回显宿主路径与特权命令行
+    assert str(proxy_config.home) not in status.detail
+
+
+def test_cache_size_command_is_protected_and_time_bounded(
+    proxy_config: PlatformConfig, stub_host: FakeHost, proxy_manager: RegistryProxyManager
+) -> None:
+    """缓存占用统计：路径用 ``--`` 隔开，超时按 30 秒封顶（状态接口不等满默认超时）。"""
+    proxy_config.proxy_cache_dir.mkdir(parents=True, exist_ok=True)
+    stub_host.cache_size = 1024
+
+    assert proxy_manager.cache_size_bytes() == 1024
+
+    index = next(
+        index for index, command in enumerate(stub_host.commands) if command[:1] == ["du"]
+    )
+    assert stub_host.commands[index][:3] == ["du", "-sb", "--"]
+    assert stub_host.command_timeouts[index] == CACHE_SIZE_TIMEOUT
+
+
+def test_http_probe_reports_truncated_response(
+    proxy_config: PlatformConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """代理返回坏状态行：健康探测如实回报失败，不抛异常。"""
+    import http.client
+
+    manager = RegistryProxyManager(proxy_config)
+
+    class _BoomOpener:
+        def open(self, *args, **kwargs):
+            raise http.client.BadStatusLine("")
+
+    monkeypatch.setattr(manager, "_tcp_probe", lambda: (True, "可连接"))
+    monkeypatch.setattr(
+        "sandbox_platform.proxy.urllib.request.build_opener",
+        lambda *args, **kwargs: _BoomOpener(),
+    )
+
+    probe = manager.probe()
+
+    assert probe.healthy is False
+    assert probe.http is False
+    assert probe.detail
+
+
 # ---------------------------------------------------------------- 代理重启
 def test_restart_existing_container_waits_until_healthy(
     proxy_config: PlatformConfig,
@@ -438,6 +632,75 @@ def test_restart_failure_reports_reason_without_fallback(
     assert not any(command[:2] == ["docker", "pull"] for command in stub_host.commands)
 
 
+def test_restart_rebuilds_container_when_bind_mounts_mismatch(
+    proxy_config: PlatformConfig,
+    stub_host: FakeHost,
+    proxy_manager: RegistryProxyManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """挂载与当前配置不一致：删除后按首次启动路径重建容器（不接着用旧挂载）。"""
+    stub_host.container_exists = True
+    stub_host.container_mounts = [
+        {"Source": "/old/path", "Destination": PROXY_CACHE_MOUNT}
+    ]
+    monkeypatch.setattr(proxy_manager, "probe", lambda: stub_host.probe_result)
+
+    assert proxy_manager.restart(timeout=5) is True
+
+    assert any(command[:2] == ["docker", "rm"] for command in stub_host.commands)
+    assert any(command[:2] == ["docker", "run"] for command in stub_host.commands)
+    assert not any(command[:2] == ["docker", "restart"] for command in stub_host.commands)
+
+
+def test_restart_command_timeout_follows_restart_timeout(
+    proxy_config: PlatformConfig,
+    stub_host: FakeHost,
+    proxy_manager: RegistryProxyManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``docker restart`` 的超时跟 ``restart(timeout)`` 参数走（不再写死 120 秒）。"""
+    stub_host.container_exists = True
+    monkeypatch.setattr(proxy_manager, "probe", lambda: stub_host.probe_result)
+
+    proxy_manager.restart(timeout=5)
+
+    index = next(
+        index
+        for index, command in enumerate(stub_host.commands)
+        if command[:2] == ["docker", "restart"]
+    )
+    assert stub_host.command_timeouts[index] == 5
+
+    stub_host.commands.clear()
+    stub_host.command_timeouts.clear()
+    proxy_manager.restart(timeout=300)
+
+    index = next(
+        index
+        for index, command in enumerate(stub_host.commands)
+        if command[:2] == ["docker", "restart"]
+    )
+    assert stub_host.command_timeouts[index] == RESTART_COMMAND_TIMEOUT
+
+
+def test_restart_reports_failure_when_host_command_raises(
+    proxy_config: PlatformConfig,
+    stub_host: FakeHost,
+    proxy_manager: RegistryProxyManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """宿主命令超时（抛异常）：重启返回 False 并记原因，不让异常穿透到接口层。"""
+    from sandbox_platform.command import CommandError
+
+    def failing(argv, **kwargs):
+        raise CommandError(tuple(str(item) for item in argv), 124, "", "命令超时")
+
+    monkeypatch.setattr("sandbox_platform.proxy.run", failing)
+
+    assert proxy_manager.restart(timeout=5) is False
+    assert proxy_manager.last_error
+
+
 # ---------------------------------------------------------------- CA 指纹比对
 def test_restart_proxy_reinstalls_ca_bundle_when_ca_digest_changes(
     proxy_config: PlatformConfig, stub_host: FakeHost, monkeypatch: pytest.MonkeyPatch
@@ -485,6 +748,142 @@ def test_restart_proxy_does_not_reinstall_ca_when_ca_digest_unchanged(
     assert not ca_bundle_path(home).exists()
 
 
+def test_ca_digest_ignores_whitespace_differences(
+    proxy_config: PlatformConfig, stub_host: FakeHost
+) -> None:
+    """CA 内容只有换行差异时指纹不变（不误报「CA 已变更」）。"""
+    write_proxy_ca(proxy_config, PROXY_CA)
+    manager = RegistryProxyManager(proxy_config)
+    first = manager.ca_cert_digest()
+
+    write_proxy_ca(proxy_config, PROXY_CA.replace("\n", "\r\n"))
+    second = manager.ca_cert_digest()
+
+    assert first != ""
+    assert first == second
+
+
+def test_restart_proxy_does_not_report_ca_change_when_ca_appeared(
+    proxy_config: PlatformConfig, stub_host: FakeHost, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """重启前 CA 还没有（首次生成）：读不到不算「CA 已变更」。"""
+    prepare_sandbox(proxy_config, stub_host)
+    stub_host.container_exists = True
+
+    def _create_ca() -> None:
+        write_proxy_ca(proxy_config, PROXY_CA)
+
+    stub_host.on_restart = _create_ca
+
+    service = SandboxService(proxy_config)
+    monkeypatch.setattr(service.proxy, "probe", lambda: stub_host.probe_result)
+
+    result = service.restart_proxy(timeout=5)
+
+    assert result.success is True
+    assert result.ca_changed is False
+    assert result.ca_reinstalled is False
+    assert result.reinstalled_users == ()
+
+
+def test_restart_proxy_reports_not_reinstalled_when_new_ca_unreadable(
+    proxy_config: PlatformConfig, stub_host: FakeHost, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CA 变了但新 CA 读不到：如实回报未重装，不把未修复报成已修复。"""
+    from sandbox_platform import ProxyError
+
+    prepare_sandbox(proxy_config, stub_host)
+    ca_path = write_proxy_ca(proxy_config, PROXY_CA)
+    stub_host.container_exists = True
+
+    def _rotate_ca() -> None:
+        ca_path.write_text(PROXY_CA_V2, encoding="utf-8")
+
+    stub_host.on_restart = _rotate_ca
+
+    service = SandboxService(proxy_config)
+    monkeypatch.setattr(service.proxy, "probe", lambda: stub_host.probe_result)
+
+    original_read = service.proxy.read_ca_certificate
+    calls = {"count": 0}
+
+    def _read_then_fail() -> str:
+        calls["count"] += 1
+        if calls["count"] >= 3:
+            raise ProxyError("读不到代理 CA 证书")
+        return original_read()
+
+    monkeypatch.setattr(service.proxy, "read_ca_certificate", _read_then_fail)
+
+    result = service.restart_proxy(timeout=5)
+
+    assert result.success is True
+    assert result.ca_changed is True
+    assert result.ca_reinstalled is False
+    assert result.reinstalled_users == ()
+    assert "未能重装合并证书链" in result.message
+
+
+def test_restart_proxy_reports_failed_users_and_keeps_going(
+    proxy_config: PlatformConfig, stub_host: FakeHost, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """单个用户重装失败：记入 ``failed_users``，其余用户照常重装。"""
+    prepare_sandbox(proxy_config, stub_host, name="demo")
+    prepare_sandbox(proxy_config, stub_host, name="other")
+    ca_path = write_proxy_ca(proxy_config, PROXY_CA)
+    stub_host.container_exists = True
+
+    def _rotate_ca() -> None:
+        ca_path.write_text(PROXY_CA_V2, encoding="utf-8")
+
+    stub_host.on_restart = _rotate_ca
+
+    service = SandboxService(proxy_config)
+    monkeypatch.setattr(service.proxy, "probe", lambda: stub_host.probe_result)
+
+    original_install = service.proxy.install_ca_bundle
+
+    def _install(user):
+        if user.name == "sandbox-demo":
+            raise RuntimeError("磁盘写不进去")
+        return original_install(user)
+
+    monkeypatch.setattr(service.proxy, "install_ca_bundle", _install)
+
+    result = service.restart_proxy(timeout=5)
+
+    assert result.ca_changed is True
+    assert result.ca_reinstalled is False
+    assert result.failed_users == ("sandbox-demo",)
+    assert result.reinstalled_users == ("sandbox-other",)
+    assert "1 个沙箱用户重装合并 CA 束失败" in result.message
+
+
+def test_restart_proxy_reports_ca_state_when_restart_fails(
+    proxy_config: PlatformConfig, stub_host: FakeHost, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """重启失败但 CA 已变更：失败分支也追加 CA 状态说明。"""
+    prepare_sandbox(proxy_config, stub_host)
+    ca_path = write_proxy_ca(proxy_config, PROXY_CA)
+    stub_host.container_exists = True
+    stub_host.restart_ok = False
+
+    def _rotate_ca() -> None:
+        ca_path.write_text(PROXY_CA_V2, encoding="utf-8")
+
+    stub_host.on_restart = _rotate_ca
+
+    service = SandboxService(proxy_config)
+    monkeypatch.setattr(service.proxy, "probe", lambda: stub_host.probe_result)
+
+    result = service.restart_proxy(timeout=5)
+
+    assert result.success is False
+    assert result.ca_changed is True
+    assert "CA" in result.message
+    assert "代理重启失败" in result.message
+
+
 # ---------------------------------------------------------------- HTTP 接口
 @pytest.fixture
 def api_client(
@@ -503,6 +902,8 @@ def api_client(
     app = create_app()
     service = SandboxService(app.state.platform_config)
     app.state.sandbox_service = service
+    # 代理容器的挂载与当前配置一致（避免走重建路径）
+    stub_host.container_mounts = proxy_mounts(app.state.platform_config)
     # 健康探测不落真实网络
     monkeypatch.setattr(service.proxy, "probe", lambda: stub_host.probe_result)
     return TestClient(app)
@@ -554,6 +955,25 @@ def test_proxy_status_endpoint_returns_status_fields(
     assert body["proxy_url"] == f"http://127.0.0.1:{TEST_PROXY_PORT}"
 
 
+def test_proxy_status_endpoint_reports_unhealthy_without_error(
+    api_client: TestClient, stub_host: FakeHost
+) -> None:
+    """代理没起来：状态接口仍回 200，如实回报不健康与明细（不是 4xx / 500）。"""
+    stub_host.container_exists = False
+    stub_host.probe_result = ProxyProbe(tcp=False, http=False, detail="连接被拒绝")
+
+    response = api_client.get("/api/proxy/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["healthy"] is False
+    assert body["tcp_ok"] is False
+    assert body["ca_fetchable"] is False
+    assert body["container"] == {"exists": False, "running": False}
+    assert "代理容器不存在" in body["detail"]
+    assert "连接被拒绝" in body["detail"]
+
+
 def test_proxy_restart_endpoint_reports_ca_change(
     api_client: TestClient, stub_host: FakeHost, platform_home: Path
 ) -> None:
@@ -574,6 +994,8 @@ def test_proxy_restart_endpoint_reports_ca_change(
     body = response.json()
     assert body["restarted"] is True
     assert body["ca_changed"] is True
+    assert body["ca_reinstalled"] is True
+    assert body["failed_users"] == []
     assert "CA" in body["message"]
     assert body["container"]["running"] is True
     assert body["proxy_url"] == f"http://127.0.0.1:{TEST_PROXY_PORT}"

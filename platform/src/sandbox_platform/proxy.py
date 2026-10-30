@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import http.client
 import json
 import logging
 import socket
@@ -43,7 +44,7 @@ from pathlib import Path
 
 from .command import run
 from .config import DEFAULT_PROXY_PORT, PlatformConfig
-from .errors import ProxyError
+from .errors import CommandError, ProxyError
 from .userspace import Privilege, SystemUser, ca_bundle_path
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,11 @@ CA_KEY_FILENAME = "ca.key"
 # 健康检查参数
 HEALTH_TCP_TIMEOUT = 3
 HEALTH_HTTP_TIMEOUT = 5
+# 状态查询用的短超时：状态接口不能等宿主命令跑满默认超时（300 秒）
+DOCKER_INSPECT_TIMEOUT = 30
+CACHE_SIZE_TIMEOUT = 30
+# 重启命令的超时上限：实际超时取它与 restart(timeout) 的较小值
+RESTART_COMMAND_TIMEOUT = 120
 
 
 def proxy_container_name(port: int) -> str:
@@ -67,6 +73,22 @@ def proxy_container_name(port: int) -> str:
     if port == DEFAULT_PROXY_PORT:
         return PROXY_CONTAINER_NAME
     return f"{PROXY_CONTAINER_NAME}-{port}"
+
+
+def _failure_detail(exc: BaseException) -> str:
+    """把异常整理成一句不泄露宿主路径的状态明细。
+
+    状态明细会进 HTTP 响应：只给可诊断的信息（退出码、异常类别），
+    宿主绝对路径与特权命令行只进日志。
+    """
+    if isinstance(exc, CommandError):
+        return f"读取代理状态失败：宿主命令执行失败（退出码 {exc.returncode}）"
+    if isinstance(exc, UnicodeDecodeError):
+        return "读取代理状态失败：代理 CA 证书不是合法的 UTF-8 文本"
+    if isinstance(exc, OSError):
+        reason = exc.strerror or type(exc).__name__
+        return f"读取代理状态失败：宿主访问失败（{reason}）"
+    return f"读取代理状态失败：{type(exc).__name__}"
 
 
 @dataclass(frozen=True)
@@ -182,6 +204,7 @@ class RegistryProxyManager:
                 ["docker", "inspect", "--type", "container", self.container_name]
             ),
             check=False,
+            timeout=DOCKER_INSPECT_TIMEOUT,
         ).ok
 
     def container_running(self) -> bool:
@@ -191,6 +214,7 @@ class RegistryProxyManager:
                 ["docker", "inspect", "--format", "{{.State.Running}}", self.container_name]
             ),
             check=False,
+            timeout=DOCKER_INSPECT_TIMEOUT,
         )
         return result.ok and result.stdout.strip() == "true"
 
@@ -211,6 +235,7 @@ class RegistryProxyManager:
                 ["docker", "inspect", "--format", "{{json .Mounts}}", self.container_name]
             ),
             check=False,
+            timeout=DOCKER_INSPECT_TIMEOUT,
         )
         if not result.ok:
             return False
@@ -324,12 +349,14 @@ class RegistryProxyManager:
     def restart(self, timeout: int = 120) -> bool:
         """重启代理容器并等到健康。
 
-        容器存在则重启，不存在则先拉起（复用首次启动路径），随后轮询健康检查
-        直到通过或超时。失败返回 ``False`` 并把原因写进 ``last_error``：
-        **不做降级直连**（一期既定原则），调用方必须据此失败。
+        容器存在则重启（挂载与当前配置不一致时删除后按首次启动路径重建），
+        不存在则先拉起（复用首次启动路径），随后轮询健康检查直到通过或超时。
+        失败返回 ``False`` 并把原因写进 ``last_error``：**不做降级直连**
+        （一期既定原则），调用方必须据此失败。
 
         并发调用由文件锁串行化（与 :meth:`ensure_running` 同一把锁）：
-        重启期间另一条创建流程会看到代理不可达并直接失败。
+        重启期间另一条创建流程会**阻塞等待这把锁**，等重启结束后
+        再判定代理可达性（不是看到「代理不可达」就直接失败）。
         """
         self.config.lock_root.mkdir(parents=True, exist_ok=True)
         lock_path = self.config.lock_root / "registry-proxy.lock"
@@ -341,40 +368,54 @@ class RegistryProxyManager:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     def _restart_locked(self, timeout: int) -> bool:
-        """临界区内的重启实现（调用方必须已持有代理锁）。"""
-        self.last_error = ""
-        self.ensure_directories()
-        if self.container_exists():
-            logger.info("重启代理容器：%s", self.container_name)
-            result = run(
-                self.privilege.wrap(["docker", "restart", self.container_name]),
-                check=False,
-                timeout=120,
-            )
-            if not result.ok:
-                self.last_error = result.output.strip() or "代理容器重启失败"
-                logger.error("重启代理容器失败：%s", self.last_error)
-                return False
-        else:
-            logger.info("代理容器不存在，先拉起再探活")
-            if not self.ensure_image():
-                self.last_error = "代理镜像拉取失败"
-                logger.error("重启代理失败：%s", self.last_error)
-                return False
-            if not self._run_container():
-                return False
+        """临界区内的重启实现（调用方必须已持有代理锁）。
 
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            probe = self.probe()
-            if probe.healthy:
-                self.harden_ca_permissions()
-                logger.info("镜像代理已重启并就绪：%s", self.proxy_url)
-                return True
-            time.sleep(2)
-        self.last_error = f"代理重启后未在 {timeout} 秒内通过健康检查"
-        logger.error(self.last_error)
-        return False
+        宿主命令失败（超时、命令不存在等）不让异常穿透到接口层：
+        写 ``last_error`` 并返回 ``False``，重启接口据此稳定返回 200。
+        """
+        self.last_error = ""
+        try:
+            self.ensure_directories()
+            if self.container_exists():
+                if not self._bind_mounts_match():
+                    # 挂载与当前配置不一致（数据根被重定向过）：删除后按首次启动路径重建
+                    logger.warning("代理容器挂载与当前配置不一致，删除后重建")
+                    self.remove()
+                else:
+                    logger.info("重启代理容器：%s", self.container_name)
+                    result = run(
+                        self.privilege.wrap(["docker", "restart", self.container_name]),
+                        check=False,
+                        timeout=min(timeout, RESTART_COMMAND_TIMEOUT),
+                    )
+                    if not result.ok:
+                        self.last_error = result.output.strip() or "代理容器重启失败"
+                        logger.error("重启代理容器失败：%s", self.last_error)
+                        return False
+            if not self.container_exists():
+                logger.info("代理容器不存在，先拉起再探活")
+                if not self.ensure_image():
+                    self.last_error = "代理镜像拉取失败"
+                    logger.error("重启代理失败：%s", self.last_error)
+                    return False
+                if not self._run_container():
+                    return False
+
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                probe = self.probe()
+                if probe.healthy:
+                    self.harden_ca_permissions()
+                    logger.info("镜像代理已重启并就绪：%s", self.proxy_url)
+                    return True
+                time.sleep(2)
+            self.last_error = f"代理重启后未在 {timeout} 秒内通过健康检查"
+            logger.error(self.last_error)
+            return False
+        except CommandError as exc:
+            self.last_error = f"代理重启命令执行失败：{exc}"
+            logger.error("重启代理失败：%s", exc)
+            return False
 
     def remove(self) -> bool:
         """删除代理容器。"""
@@ -390,12 +431,21 @@ class RegistryProxyManager:
         """代理缓存目录的占用字节数。
 
         目录不存在按 0 计；统计失败只记日志并返回 0（展示用的数字，
-        不因统计失败把整个状态查询变成失败）。
+        不因统计失败把整个状态查询变成失败）。``du`` 的超时按 30 秒封顶：
+        状态接口不能等宿主命令跑满默认超时（300 秒）。
+        路径用 ``--`` 隔开：以 ``-`` 开头的目录名不会被当成选项。
         """
-        result = run(
-            self.privilege.wrap(["du", "-sb", str(self.config.proxy_cache_dir)]),
-            check=False,
-        )
+        try:
+            result = run(
+                self.privilege.wrap(
+                    ["du", "-sb", "--", str(self.config.proxy_cache_dir)]
+                ),
+                check=False,
+                timeout=CACHE_SIZE_TIMEOUT,
+            )
+        except CommandError as exc:
+            logger.warning("统计代理缓存占用失败：%s", exc)
+            return 0
         if not result.ok:
             if not self.config.proxy_cache_dir.exists():
                 return 0
@@ -416,26 +466,67 @@ class RegistryProxyManager:
         except FileNotFoundError:
             return False
         except PermissionError:
-            result = run(self.privilege.wrap(["cat", str(path)]), check=False)
+            try:
+                result = run(
+                    self.privilege.wrap(["cat", str(path)]),
+                    check=False,
+                    timeout=CACHE_SIZE_TIMEOUT,
+                )
+            except CommandError as exc:
+                logger.warning("读取代理 CA 证书失败：%s", exc)
+                return False
             return bool(result.ok and result.stdout.strip())
+        except UnicodeDecodeError:
+            logger.warning("代理 CA 证书不是合法的 UTF-8 文本")
+            return False
         except OSError as exc:
             logger.warning("读取代理 CA 证书失败：%s", exc)
             return False
 
     def status(self) -> ProxyStatus:
-        """代理的完整状态（容器 / 健康 / 缓存占用 / 证书就绪 / 访问地址）。"""
-        container = self.container_status()
-        probe = self.probe()
-        return ProxyStatus(
-            container=container,
-            healthy=probe.healthy,
-            tcp_ok=probe.tcp,
-            ca_fetchable=probe.http,
-            detail=probe.detail,
-            cache_size_bytes=self.cache_size_bytes(),
-            certificate_ready=self.certificate_ready(),
-            proxy_url=self.proxy_url,
-        )
+        """代理的完整状态（容器 / 健康 / 缓存占用 / 证书就绪 / 访问地址）。
+
+        状态查询**永不抛异常**：宿主命令失败、命令超时、证书读不出来都降级成
+        「不健康 + 明细」，不让状态接口变成 500。
+        """
+        try:
+            container = self.container_status()
+            probe = self.probe()
+            return ProxyStatus(
+                container=container,
+                healthy=probe.healthy,
+                tcp_ok=probe.tcp,
+                ca_fetchable=probe.http,
+                detail=self._status_detail(container, probe),
+                cache_size_bytes=self.cache_size_bytes(),
+                certificate_ready=self.certificate_ready(),
+                proxy_url=self.proxy_url,
+            )
+        except (CommandError, OSError, UnicodeDecodeError) as exc:
+            logger.warning("读取代理状态失败，降级为不健康：%s", exc)
+            return ProxyStatus(
+                container=ProxyContainerStatus(exists=False, running=False),
+                healthy=False,
+                tcp_ok=False,
+                ca_fetchable=False,
+                detail=_failure_detail(exc),
+                cache_size_bytes=0,
+                certificate_ready=False,
+                proxy_url=self.proxy_url,
+            )
+
+    @staticmethod
+    def _status_detail(container: ProxyContainerStatus, probe: ProxyProbe) -> str:
+        """状态明细：区分「容器不存在」「容器未运行」「端口不通」。"""
+        if not container.exists:
+            return f"代理容器不存在；{probe.detail}"
+        if not container.running:
+            return f"代理容器已存在但未运行；{probe.detail}"
+        if not probe.tcp:
+            return f"代理容器运行中但端口不通；{probe.detail}"
+        if not probe.http:
+            return f"代理端口可连但取不到 CA 证书；{probe.detail}"
+        return probe.detail
 
     # ---------------------------------------------------------------- 健康检查
     def probe(self) -> ProxyProbe:
@@ -468,7 +559,13 @@ class RegistryProxyManager:
         try:
             with opener.open(url, timeout=HEALTH_HTTP_TIMEOUT) as response:
                 payload = response.read()
-        except (urllib.error.URLError, OSError, ValueError) as exc:
+        except (
+            urllib.error.URLError,
+            http.client.HTTPException,
+            OSError,
+            ValueError,
+        ) as exc:
+            # HTTPException 覆盖截断响应 / 坏状态行这类“连接通了但响应不完整”的情形
             return False, f"取 CA 证书失败（{url}）：{exc}"
         if b"BEGIN CERTIFICATE" not in payload:
             return False, f"CA 响应不是证书（{url}）"
@@ -478,14 +575,18 @@ class RegistryProxyManager:
     def ca_cert_digest(self) -> str:
         """代理 CA 证书的指纹（内容 sha256 前 16 位）。
 
+        内容先做空白归一化再哈希：换行与缩进差异不算「CA 变了」。
         取不到证书时返回空串（证书还没生成或读不到）：调用方据此判断
         「指纹是否变化」时，空串不等于「变了」。
         """
         try:
             content = self.read_ca_certificate()
-        except ProxyError:
+        except (ProxyError, CommandError, OSError, UnicodeDecodeError):
             return ""
-        return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+        normalized = "\n".join(
+            line.strip() for line in content.splitlines() if line.strip()
+        )
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
 
     def harden_ca_permissions(self) -> None:
         """收紧 CA 私钥权限（0600），证书保持 0644。"""
@@ -499,7 +600,11 @@ class RegistryProxyManager:
         )
 
     def read_ca_certificate(self) -> str:
-        """读代理 CA 证书文本。"""
+        """读代理 CA 证书文本。
+
+        证书不是合法 UTF-8 文本时抛 :class:`ProxyError`：内容读不出来
+        既算不了指纹，也合并不了证书链。
+        """
         path = self.ca_certificate_path
         try:
             return path.read_text(encoding="utf-8")
@@ -510,6 +615,8 @@ class RegistryProxyManager:
             return result.stdout
         except FileNotFoundError:
             raise ProxyError(f"代理 CA 证书不存在：{path}") from None
+        except UnicodeDecodeError as exc:
+            raise ProxyError(f"代理 CA 证书不是合法的 UTF-8 文本：{path}") from exc
 
     def read_system_ca_bundle(self) -> str:
         """读宿主系统 CA 束文本。"""

@@ -157,14 +157,19 @@ class ProxyRestartResult:
     """重启镜像代理的结果。
 
     ``success`` 表示重启后代理已通过健康检查；``ca_changed`` 表示代理 CA 指纹
-    与重启前不一致；``reinstalled_users`` 是因此重装了合并 CA 束的沙箱用户。
-    ``message`` 是给用户看的中文结论（不含宿主路径与命令行原文）。
+    与重启前不一致（**变更前后都读得到证书**才算变了，读不到不算）；
+    ``ca_reinstalled`` 表示合并证书链确实重装过——CA 变了但新 CA 读不到时为
+    ``False``，不把未修复报成已修复；``reinstalled_users`` 是因此重装了合并
+    CA 束的沙箱用户，``failed_users`` 是重装失败的用户（单个用户失败不阻断
+    其余用户）。``message`` 是给用户看的中文结论（不含宿主路径与命令行原文）。
     """
 
     success: bool
     ca_changed: bool
     message: str
     reinstalled_users: tuple[str, ...] = ()
+    failed_users: tuple[str, ...] = ()
+    ca_reinstalled: bool = False
 
 
 # ---------------------------------------------------------------- 入参校验
@@ -429,54 +434,97 @@ class SandboxService:
 
         重启后比对代理 CA 指纹：指纹变了说明代理重新生成了 CA，
         沙箱里指向旧 CA 的合并证书链会失效，必须重装。
+
+        指纹口径：**变更前后都读得到证书**才算「变了」——读不到（空串）
+        不等于变了，否则 CA 首次生成会被误报成「CA 已变更」。
         """
         before = self.proxy.ca_cert_digest()
         ok = self.proxy.restart(timeout)
         after = self.proxy.ca_cert_digest()
-        ca_changed = before != after
+        ca_changed = bool(before) and bool(after) and before != after
         reinstalled: tuple[str, ...] = ()
-        if ca_changed and after:
-            reinstalled = self._reinstall_ca_bundles()
+        failed: tuple[str, ...] = ()
+        ca_reinstalled = False
+        ca_unreadable = False
+        if ca_changed:
+            try:
+                reinstalled, failed = self._reinstall_ca_bundles()
+                ca_reinstalled = not failed
+            except ProxyError as exc:
+                # 新 CA 读不到：合并证书链装不了，如实回报「未重装」
+                ca_unreadable = True
+                logger.error(
+                    "CA 指纹已变更，但新 CA 读取失败，未能重装合并证书链：%s", exc
+                )
         if not ok:
             logger.error("重启镜像代理失败：%s", self.proxy.last_error)
+            message = "代理重启失败，详见服务日志"
+            if ca_changed:
+                if ca_reinstalled:
+                    message += (
+                        f"；CA 指纹已变更，已为 {len(reinstalled)} 个沙箱用户重装合并 CA 束"
+                    )
+                else:
+                    message += "；CA 指纹已变更，但合并证书链未能重装，请代理恢复后重新执行重启"
             return ProxyRestartResult(
                 success=False,
                 ca_changed=ca_changed,
-                message="代理重启失败，详见服务日志",
+                message=message,
                 reinstalled_users=reinstalled,
+                failed_users=failed,
+                ca_reinstalled=ca_reinstalled,
             )
-        if ca_changed:
+        if not ca_changed:
+            message = "代理已重启并通过健康检查"
+        elif ca_unreadable:
+            message = (
+                "代理已重启并通过健康检查；CA 指纹已变更，"
+                "但新 CA 读取失败，未能重装合并证书链"
+            )
+        elif ca_reinstalled:
             message = (
                 f"代理已重启并通过健康检查；CA 指纹已变更，"
                 f"已为 {len(reinstalled)} 个沙箱用户重装合并 CA 束"
             )
         else:
-            message = "代理已重启并通过健康检查"
+            message = (
+                "代理已重启并通过健康检查；CA 指纹已变更，"
+                f"但 {len(failed)} 个沙箱用户重装合并 CA 束失败，详见服务日志"
+            )
         return ProxyRestartResult(
             success=True,
             ca_changed=ca_changed,
             message=message,
             reinstalled_users=reinstalled,
+            failed_users=failed,
+            ca_reinstalled=ca_reinstalled,
         )
 
-    def _reinstall_ca_bundles(self) -> tuple[str, ...]:
+    def _reinstall_ca_bundles(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """为已有沙箱用户重装合并 CA 束（代理 CA 变更后调用）。
 
+        返回 (重装成功的用户名, 失败的用户名)。
+        新 CA 读不到时抛 :class:`ProxyError`：调用方据此如实回报「未重装」，
+        不把未修复报成已修复。
         用户信息现查 ``getent passwd``：元数据里的家目录不可信。
-        单个用户失败只记日志，不中断其余用户的重装。
+        单个用户失败只记日志并继续其余用户：一个人的异常不能拖垮整批重装。
         """
+        # 先确认新 CA 读得到：读不到就不装（装上去的证书链也是错的）
+        self.proxy.read_ca_certificate()
         reinstalled: list[str] = []
+        failed: list[str] = []
         for metadata in self.store.list_all():
             user = self._resolve_user(metadata)
             if user is None:
                 continue
             try:
                 self.proxy.install_ca_bundle(user)
-            except SandboxError as exc:
+            except Exception as exc:  # noqa: BLE001 - 单用户失败只记日志，继续其余用户
                 logger.error("为沙箱用户 %s 重装合并 CA 束失败：%s", user.name, exc)
+                failed.append(user.name)
                 continue
             reinstalled.append(user.name)
-        return tuple(reinstalled)
+        return tuple(reinstalled), tuple(failed)
 
     # ---------------------------------------------------------------- 内部辅助
     def _daemon_for(self, metadata: SandboxMetadata) -> UserDaemon:
@@ -855,8 +903,12 @@ class SandboxService:
     def _connection_info(self, metadata: SandboxMetadata, daemon: UserDaemon) -> ConnectionInfo:
         """组装连接方式与命令提示。"""
         context = daemon.context
+        # 身份切换前缀与实际执行同源：非 root 是 sudo -u，root 是 setpriv
+        switch = self.privilege.user_prefix_text(
+            context.user, context.uid, context.gid
+        )
         env_prefix = (
-            f"sudo -u {context.user} env "
+            f"{switch} env "
             f"XDG_RUNTIME_DIR={context.runtime_dir} "
             f"DOCKER_HOST=unix://{context.socket_path}"
         )
