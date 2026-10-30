@@ -1,22 +1,37 @@
 /* ============================================================================
  * 控制台新底座样式入口（Tailwind v4 + 双主题令牌）
  *
- * 三条口径（改动本文件前先读）：
+ * 四条口径（改动本文件前先读）：
  *
  * 1. 透明度通道机制
  *    所有 OKLCH 颜色令牌的 alpha 槽位都写成 `oklch(L C H / var(--app-alpha))`，
  *    `--app-alpha` 是全局透明度通道（:root 下恒为 1）。要整体调透明度时只改
- *    `--app-alpha` 一个值即可，不必逐个令牌改。少数令牌（--app-ring）自带固定
- *    alpha，不走通道。
+ *    `--app-alpha` 一个值即可，不必逐个令牌改。
+ *    豁免清单（这四个令牌用字面 alpha 值，不参与全局透明度通道）：
+ *    - `--app-ring`：聚焦环需要固定的低 alpha（亮色 0.22 / 暗色 0.25），
+ *      跟着全局通道缩放会让聚焦环在亮色下几乎看不见。
+ *    - `--app-shadow-sm` / `--app-shadow-md` / `--app-shadow-lg`：三层阴影
+ *      各自需要不同的 alpha（亮色 0.05~0.14 / 暗色 0.35~0.55），统一走通道
+ *      会把三层压成同一个值，阴影的层次就没了。
+ *    这四个令牌的值继承自视觉原型，不随 `--app-alpha` 变化。
  *
  * 2. 扫描范围
  *    `source(none)` 关掉 Tailwind 的自动内容探测，再用显式 `@source` 只扫
- *    index.html 与 src/**。这样一次性视觉原型 `platform/console/prototype/`
- *    与 node_modules 都不会被扫进来，不会污染产物 CSS。
+ *    index.html 与 src/**，并用 `@source not` 排除 src/pages/**（旧四页）。
+ *    这样一次性视觉原型 `platform/console/prototype/` 与 node_modules 都不会被
+ *    扫进来；旧四页里的语义类名（.table / .button / .panel 等）也不会被当成
+ *    工具类混进产物 CSS。任务二删掉旧四页后可去掉这条排除。
  *
  * 3. 暗色变体
  *    `@custom-variant dark (&:where(.dark, .dark *))` 挂 `html.dark`，
  *    由 src/lib/theme.ts 的 applyTheme() 负责挂/摘这个类。
+ *
+ * 4. 新外壳作用域
+ *    会跨页渗漏的规则（选中态 `::selection` 与 `color-scheme` 表单/滚动条配色）
+ *    一律收进 `[data-console-shell]` 作用域，只对新外壳生效，旧四页保持浏览器
+ *    默认外观不变。
+ *    **任务二的外壳根元素必须携带 `data-console-shell` 属性**，否则这两条规则
+ *    不会命中（选中态与 color-scheme 会退回浏览器默认值）。
  *
  * ---------------------------------------------------------------------------
  * 并存期口径（任务二删掉旧 styles.css 之前一直有效）：
@@ -39,17 +54,134 @@
 @import "tailwindcss/utilities.css" layer(utilities) source(none);
 @import "./fonts.css";
 @import "tw-animate-css";
-@import "shadcn/tailwind.css";
 
 @source "../../index.html";
 @source "../../src/**/*.{ts,tsx}";
+/* 旧四页不参与工具类生成：它们的类名是旧 styles.css 的语义类名，被 Tailwind
+   当成工具类会混进产物 CSS（.table / .button / .panel 等）。 */
+@source not "../../src/pages/**/*.{ts,tsx}";
 
 /* 暗色变体：挂 html.dark（见 src/lib/theme.ts）。 */
 @custom-variant dark (&:where(.dark, .dark *));
 
-:root {
-  color-scheme: light;
+/* ---------------------------------------------------------------------------
+ * shadcn/ui 的 data-* 变体与 accordion 关键帧。
+ *
+ * 原先这些内容来自 devDependencies 里的 shadcn/tailwind.css。生产构建不能
+ * 依赖 devDependencies（`pnpm install --prod` 之后那份文件根本不存在，且它随
+ * shadcn CLI 升级会变），所以把实际用到的部分内联到本文件，shadcn 依赖已从
+ * package.json 移除。
+ *
+ * 用到的变体：dialog / select / tooltip 的 data-open、data-closed；checkbox 的
+ * data-checked；select item 的 data-disabled；separator 的 data-horizontal、
+ * data-vertical。下面 data-selected / data-active / data-unchecked 目前没用到，
+ * 一并内联是为了任务二引入新原语时不缺变体。
+ *
+ * 没内联的：shadcn/tailwind.css 里的 scroll-fade-* / shimmer / no-scrollbar
+ * 工具类，本项目未使用；任务二若要用，从 shadcn CLI 的 base-nova 预设补。
+ * -------------------------------------------------------------------------*/
+@custom-variant data-open {
+  &:where([data-state="open"]),
+  &:where([data-open]:not([data-open="false"])) {
+    @slot;
+  }
+}
 
+@custom-variant data-closed {
+  &:where([data-state="closed"]),
+  &:where([data-closed]:not([data-closed="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-checked {
+  &:where([data-state="checked"]),
+  &:where([data-checked]:not([data-checked="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-unchecked {
+  &:where([data-state="unchecked"]),
+  &:where([data-unchecked]:not([data-unchecked="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-selected {
+  &:where([data-selected="true"]) {
+    @slot;
+  }
+}
+
+@custom-variant data-disabled {
+  &:where([data-disabled="true"]),
+  &:where([data-disabled]:not([data-disabled="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-active {
+  &:where([data-state="active"]),
+  &:where([data-active]:not([data-active="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-horizontal {
+  &:where([data-orientation="horizontal"]) {
+    @slot;
+  }
+}
+
+@custom-variant data-vertical {
+  &:where([data-orientation="vertical"]) {
+    @slot;
+  }
+}
+
+/* accordion 展开/收起关键帧：与 shadcn 预设一致，优先读 Base UI 的
+   --accordion-panel-height，再退回 Radix 的 --radix-accordion-content-height。
+   tw-animate-css 里也有一份同名关键帧，这份在文件里位置靠后，会优先生效；
+   两份内容一致，不影响结果。 */
+@theme inline {
+  @keyframes accordion-down {
+    from {
+      height: 0;
+    }
+    to {
+      height: var(
+        --radix-accordion-content-height,
+        var(--accordion-panel-height, auto)
+      );
+    }
+  }
+
+  @keyframes accordion-up {
+    from {
+      height: var(
+        --radix-accordion-content-height,
+        var(--accordion-panel-height, auto)
+      );
+    }
+    to {
+      height: 0;
+    }
+  }
+}
+
+/* 新外壳作用域：选中态与 color-scheme 只对新外壳生效，不渗漏到旧四页。
+   任务二的外壳根元素必须携带 data-console-shell 属性。 */
+[data-console-shell] {
+  color-scheme: light;
+}
+
+.dark [data-console-shell],
+.dark[data-console-shell] {
+  color-scheme: dark;
+}
+
+:root {
   /* 全局透明度通道：所有 OKLCH 颜色令牌的 alpha 槽位引用它。 */
   --app-alpha: 1;
 
@@ -103,8 +235,6 @@
 }
 
 .dark {
-  color-scheme: dark;
-
   /* 逐项映射现有 styles.css 暗色变量；品牌色不用旧蓝 #4c8dff（降级为 --app-info），改常青绿 */
   --app-background: #0f1420;
   --app-card: #161d2c;
@@ -241,7 +371,10 @@
     font-family: var(--app-font-mono);
   }
 
-  ::selection {
+  /* 选中态：收进新外壳作用域，旧四页保留浏览器默认选中色（暗色下默认选中
+     几乎不可见，不能渗漏过去）。任务二外壳根元素须携带 data-console-shell。 */
+  [data-console-shell]::selection,
+  [data-console-shell] ::selection {
     background: var(--app-accent);
   }
 }

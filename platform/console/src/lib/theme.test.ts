@@ -6,7 +6,7 @@
  * 不跟随系统偏好、切换读写闭环。
  */
 import { act, renderHook } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   DEFAULT_THEME,
@@ -32,6 +32,7 @@ describe('主题机制', () => {
   afterEach(() => {
     window.localStorage.clear();
     clearThemeDom();
+    vi.restoreAllMocks();
   });
 
   it('没有存过主题时默认亮色', () => {
@@ -57,6 +58,33 @@ describe('主题机制', () => {
     window.localStorage.setItem(THEME_STORAGE_KEY, 'dark');
     expect(readStoredTheme()).toBe('dark');
     expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe('dark');
+  });
+
+  it('系统偏好伪造成暗色时，读取路径一次都不调用 matchMedia', () => {
+    // 把 matchMedia 伪造成「系统是暗色」：若读取路径真去问过系统偏好，
+    // 下面第一条断言（没存过 → 亮色）就会失败；toHaveBeenCalledTimes(0)
+    // 则把「不跟随系统」这条约定变成真正被执行过的断言，而不是一句注释。
+    const matchMedia = vi.spyOn(window, 'matchMedia').mockImplementation(
+      (query: string) =>
+        ({
+          matches: query.includes('dark'),
+          media: query,
+          onchange: null,
+          addListener: () => {},
+          removeListener: () => {},
+          addEventListener: () => {},
+          removeEventListener: () => {},
+          dispatchEvent: () => false,
+        }) as unknown as MediaQueryList
+    );
+
+    expect(readStoredTheme()).toBe('light');
+
+    window.localStorage.setItem(THEME_STORAGE_KEY, 'dark');
+    expect(readStoredTheme()).toBe('dark');
+    expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe('dark');
+
+    expect(matchMedia).toHaveBeenCalledTimes(0);
   });
 
   it('applyTheme 给根元素挂 dark 类并写 dataset', () => {

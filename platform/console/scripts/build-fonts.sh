@@ -8,14 +8,17 @@
 # 四步：
 #   1. 取源字体。优先 google/fonts 仓库里的可变字体 TTF（一份文件含全部字重）；
 #      拿不到时退到 fonts.gstatic.com 的 CSS API，按我们自己的字符集向 Google
-#      要一份子集（text= 参数）；再拿不到就不生成字体文件，fonts.css 留空，
-#      浏览器回退到系统字体栈，页面照常可用。
+#      要一份子集（text= 参数）；再拿不到就整个字体步骤失败。
+#      **本脚本不改 fonts.css**：字体文件缺失时浏览器自动回退到系统字体栈，
+#      产物已入库，正常构建不依赖外网。
 #   2. 生成字符集 scripts/fonts/charset.txt：从控制台前端、控制台测试、后端
 #      沙箱平台三处源码里抽出实际用到的中文 / 全角 / 常用符号（后端中文错误
 #      文案必须进字符集），再补 ASCII 可打印区与一组界面常用符号。
 #   3. 用 fonttools 实例化各字重（Noto 400/500/600/700，Geist Mono 400/500），
 #      再用 pyftsubset 按字符集子集化并转 woff2。
-#   4. 产物落 public/fonts/，与 src/styles/fonts.css 里的 @font-face 一一对应。
+#   4. 产物先落暂存目录，全部字重都成功后再整体替换 public/fonts/（任一字重
+#      失败则丢弃暂存产物，原有 public/fonts/ 原封不动），与
+#      src/styles/fonts.css 里的 @font-face 一一对应。
 #
 # 依赖：curl、python3、uv（字体工具用 `uv run --with` 临时装，不污染项目依赖）。
 # ============================================================================
@@ -28,6 +31,10 @@ REPO_ROOT="$(cd "$CONSOLE_DIR/../.." && pwd)"
 CHARSET_DIR="$SCRIPT_DIR/fonts"
 CHARSET_FILE="$CHARSET_DIR/charset.txt"
 FONT_OUT_DIR="$CONSOLE_DIR/public/fonts"
+# 暂存目录与备份目录都放在 public/ 下：与目标目录同分区，最后一步是改名
+# 而不是拷贝，不会出现「换了一半」的中间态。
+STAGE_DIR="$CONSOLE_DIR/public/.fonts-staging"
+BACKUP_DIR="$CONSOLE_DIR/public/.fonts-previous"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
@@ -184,7 +191,8 @@ main() {
 
   build_charset
 
-  mkdir -p "$FONT_OUT_DIR"
+  rm -rf "$STAGE_DIR" "$BACKUP_DIR"
+  mkdir -p "$STAGE_DIR"
 
   local ok=1
   local entry family url weights weight src_ttf family_name
@@ -198,7 +206,7 @@ main() {
     fi
 
     for weight in $weights; do
-      local out="$FONT_OUT_DIR/$family-$weight.woff2"
+      local out="$STAGE_DIR/$family-$weight.woff2"
       if [ -n "$src_ttf" ]; then
         if build_weight "$src_ttf" "$weight" "$CHARSET_FILE" "$out"; then
           log "生成 $family-$weight.woff2（$(du -h "$out" | cut -f1)）"
@@ -221,13 +229,23 @@ main() {
   done
 
   if [ "$ok" -ne 1 ]; then
+    # 有字重失败：暂存产物整个丢掉，public/fonts/ 保持原样，不留半成品。
+    rm -rf "$STAGE_DIR"
     cat >&2 <<EOF
-[build-fonts][错误] 有字重没能生成。请检查网络后重试；
-  若离线环境可用，请把 src/styles/fonts.css 里的 @font-face 清空，
-  页面会退回 --app-font-sans 里的系统字体栈。
+[build-fonts][错误] 有字重没能生成，本次产物已丢弃，public/fonts/ 未被改动。
+  请检查网络后重试；若离线环境可用，仓库里已入库的字体产物照常可用——
+  字体文件缺失时浏览器自动回退 --app-font-sans 的系统字体栈。
 EOF
     exit 1
   fi
+
+  # 全部字重都成功：先备份旧目录，再把暂存目录改名上去，最后删备份。
+  # 三步都是同分区的改名操作，不会出现只换了一半的 public/fonts/。
+  if [ -d "$FONT_OUT_DIR" ]; then
+    mv "$FONT_OUT_DIR" "$BACKUP_DIR"
+  fi
+  mv "$STAGE_DIR" "$FONT_OUT_DIR"
+  rm -rf "$BACKUP_DIR"
 
   log "完成，产物目录：$FONT_OUT_DIR"
   ls -l "$FONT_OUT_DIR"
