@@ -124,7 +124,7 @@ export const api = {
   /**
    * 删除一个终端会话。
    *
-   * 运行中的会话后端先完整关闭再删记录；已退出的会话直接删记录。
+   * 运行中的会话后端先完整关闭再删记录；已退出的会话走一遍收尾再删记录。
    * 会话不存在回 404，错误消息取后端 `detail`。
    */
   deleteTerminalSession: (sessionId: string) =>

@@ -411,7 +411,10 @@ class TerminalSessionDeleteResponse(BaseModel):
     session_id: str
     state: str = Field(description="移除前的会话状态（running / exited）")
     closed: bool = Field(
-        description="是否走了一遍完整关闭流程（运行中的会话为真，已退出的为假）"
+        description=(
+            "关闭流程是否走完：true = 完整走完（运行中的会话走完整关闭，"
+            "已退出的会话走完收尾）；false = 记录已删，但关闭流程未走完"
+        )
     )
     removed: bool = Field(description="会话记录文件是否确实删掉了")
 

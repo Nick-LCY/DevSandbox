@@ -51,6 +51,7 @@ from sandbox_platform.server.sessions import (
 )
 from sandbox_platform.server.terminal import (
     FRAME_ERROR,
+    FRAME_EXIT,
     MAX_PENDING_INPUT,
     TerminalFrame,
     TerminalSession,
@@ -1186,11 +1187,46 @@ def test_remove_exited_session_clears_memory_and_file(
     removal = manager.remove_session(session.session_id)
     assert removal is not None
     assert removal.state == SESSION_STATE_EXITED
-    # 已退出的会话不走完整关闭流程：没有现场要收
-    assert removal.closed is False
+    # 已退出的会话不重复终止进程，但收尾（回收文件描述符、清容器内残留）
+    # 照走：收尾走完了就算关闭流程走完
+    assert removal.closed is True
     assert removal.removed is True
     assert manager.get(session.session_id) is None
     assert TerminalSessionTable(config).load(session.session_id) is None
+    manager.close_all()
+
+
+def test_remove_exited_session_reclaims_without_terminating(
+    config: PlatformConfig, loop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """已退出的会话：不重复终止进程，但仍走收尾（回收文件描述符、清容器内残留）。"""
+    service = FakeServiceWithDaemon()
+    manager = TerminalSessionManager(
+        config, service, spawner=pty_spawner(["sh", "-c", "exit 3"])
+    )
+    session = create_session(manager, loop)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and not session.exited:
+        time.sleep(0.05)
+    assert session.exited
+
+    terminate_calls: list[bool] = []
+    real_terminate = session.pty.terminate
+
+    def spy_terminate() -> bool:
+        terminate_calls.append(True)
+        return real_terminate()
+
+    monkeypatch.setattr(session.pty, "terminate", spy_terminate)
+    removal = manager.remove_session(session.session_id)
+    assert removal is not None
+    # 进程早没了：不重复终止
+    assert terminate_calls == []
+    # 收尾照走：容器内可能残留的进程树清一次
+    assert service.daemon.killed == [("sandbox-demo", session.session_id)]
+    # 伪终端文件描述符回收了
+    with pytest.raises(OSError):
+        os.fstat(session.pty.master_fd)
     manager.close_all()
 
 
@@ -1211,10 +1247,12 @@ def test_removed_session_record_is_not_written_back(
     session = create_session(manager, loop)
     assert manager.remove_session(session.session_id) is not None
 
-    # 等落盘线程跑过几轮
-    time.sleep(1.5)
-    assert TerminalSessionTable(config).load(session.session_id) is None
-    assert manager.list_records() == []
+    # 观察窗口内轮询：晚到的落盘一旦把记录写回来就会立刻暴露
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        assert TerminalSessionTable(config).load(session.session_id) is None
+        assert manager.list_records() == []
+        time.sleep(0.05)
     manager.close_all()
 
 
@@ -1242,12 +1280,35 @@ def test_exited_sessions_are_not_idle_reaped(
 
 
 def test_http_delete_unknown_session_returns_404(client: TestClient) -> None:
-    """删除不存在的会话：回 404 与中文提示。"""
-    response = client.delete("/api/terminal/sessions/sess-nope")
+    """删除不存在的会话：回 404 与固定中文提示（不回显用户输入）。"""
+    response = client.delete("/api/terminal/sessions/0123456789abcdef")
     assert response.status_code == 404
     detail = response.json()["detail"]
-    assert "终端会话" in detail
-    assert "sess-nope" in detail
+    assert detail == "终端会话不存在或已失效"
+    assert "0123456789abcdef" not in detail
+
+
+def test_http_delete_invalid_session_id_returns_404(client: TestClient) -> None:
+    """非法会话标识：按不存在处理，错误文案里不出现用户输入。"""
+    response = client.delete("/api/terminal/sessions/not-a-session")
+    assert response.status_code == 404
+    detail = response.json()["detail"]
+    assert detail == "终端会话不存在或已失效"
+    assert "not-a-session" not in detail
+
+
+def test_http_delete_same_session_twice_returns_404(
+    client: TestClient, manager: TerminalSessionManager
+) -> None:
+    """重复删除同一会话：第二次回 404（幂等，不当成服务端故障）。"""
+    created = client.post("/api/terminal/sessions", json={"sandbox": "demo"}).json()
+    session_id = created["session_id"]
+    first = client.delete(f"/api/terminal/sessions/{session_id}")
+    assert first.status_code == 200
+    second = client.delete(f"/api/terminal/sessions/{session_id}")
+    assert second.status_code == 404
+    assert second.json()["detail"] == "终端会话不存在或已失效"
+    manager.close_all()
 
 
 def test_http_delete_exited_session_removes_record(
@@ -1269,7 +1330,8 @@ def test_http_delete_exited_session_removes_record(
     payload = response.json()
     assert payload["session_id"] == session_id
     assert payload["state"] == SESSION_STATE_EXITED
-    assert payload["closed"] is False
+    # 已退出的会话不重复终止进程，但收尾走完了：关闭流程算走完
+    assert payload["closed"] is True
     assert payload["removed"] is True
     assert manager.get(session_id) is None
     assert TerminalSessionTable(config).load(session_id) is None
@@ -1301,3 +1363,151 @@ def test_http_delete_running_session_closes_attached_connection(
     assert manager.get(session_id) is None
     assert TerminalSessionTable(config).load(session_id) is None
     manager.close_all()
+
+
+def test_http_delete_survives_close_failure(
+    client: TestClient,
+    manager: TerminalSessionManager,
+    config: PlatformConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """关闭流程出错：接口仍回 200（记录照删），关闭流程未走完如实回报。
+
+    结束标记在关闭流程**一开始**就发：即使后面的收尾出错，附着中的浏览器
+    也已经收到退出帧，不会一直挂着。
+    """
+    created = client.post("/api/terminal/sessions", json={"sandbox": "demo"}).json()
+    session_id = created["session_id"]
+    session = manager.get(session_id)
+    assert session is not None
+    real_terminate = session.pty.terminate
+
+    def boom() -> bool:
+        raise RuntimeError("伪终端终止失败")
+
+    monkeypatch.setattr(session.pty, "terminate", boom)
+    try:
+        with client.websocket_connect(f"/api/terminal/sessions/{session_id}") as ws:
+            assert ws.receive_json()["type"] == "hello"
+
+            response = client.delete(f"/api/terminal/sessions/{session_id}")
+            # 记录已删：接口不回 500
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["removed"] is True
+            # 关闭流程未走完：如实回报
+            assert payload["closed"] is False
+
+            # 结束标记先发：浏览器已经收到退出帧
+            message = ws.receive_json()
+            assert message["type"] == "exit"
+            with pytest.raises(WebSocketDisconnect):
+                ws.receive_json()
+    finally:
+        # 收尾：把伪终端进程收掉（别在测试里漏进程）
+        real_terminate()
+        session.pty.close()
+
+    assert manager.get(session_id) is None
+    assert TerminalSessionTable(config).load(session_id) is None
+    manager.close_all()
+
+
+def test_exit_frame_is_sent_before_container_cleanup(
+    config: PlatformConfig, loop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """结束标记先发：容器内清理还在跑时，浏览器已经收到退出帧。
+
+    容器内清理可能跑几十秒（要走一次容器内的进程树清理）：发帧排在清理前面，
+    浏览器的等待时间就不被清理耗时绑住。
+    """
+    cleanup_started = threading.Event()
+    release_cleanup = threading.Event()
+
+    class BlockingDaemon(FakeDaemon):
+        """容器内清理会卡住，直到测试放行。"""
+
+        def kill_container_session(self, container: str, session_id: str) -> bool:
+            cleanup_started.set()
+            release_cleanup.wait(timeout=10)
+            return True
+
+    service = FakeServiceWithDaemon()
+    service.daemon = BlockingDaemon()
+    manager = TerminalSessionManager(config, service, spawner=pty_spawner(["cat"]))
+    session = create_session(manager, loop)
+    stream, _ = session.open_stream()
+
+    removals: list[Any] = []
+
+    def remove() -> None:
+        removals.append(manager.remove_session(session.session_id))
+
+    worker = threading.Thread(target=remove, daemon=True)
+    worker.start()
+    try:
+        assert cleanup_started.wait(timeout=10)
+        # 清理还在跑：结束标记已经到了
+        frame = collect_frame(stream, loop, timeout=5.0)
+        assert frame is not None
+        assert frame.kind == FRAME_EXIT
+    finally:
+        release_cleanup.set()
+        worker.join(timeout=10)
+
+    assert removals and removals[0] is not None
+    assert removals[0].closed is True
+    manager.close_all()
+
+
+def test_capacity_error_points_to_cleanup_entry(
+    config: PlatformConfig, fake_service: FakeService, loop
+) -> None:
+    """会话数超限：提示里带上已退出的会话数，并指向清理入口。
+
+    已退出的会话也占名额（它们不做自动清理），只说「已达上限」的话用户
+    不知道去哪儿腾位置。
+    """
+    manager = TerminalSessionManager(
+        config,
+        fake_service,
+        spawner=pty_spawner(["sh", "-c", "exit 0"]),
+        max_sessions=5,
+        max_sessions_per_sandbox=1,
+    )
+    session = create_session(manager, loop)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and not session.exited:
+        time.sleep(0.05)
+    assert session.exited
+
+    with pytest.raises(ValidationError) as excinfo:
+        asyncio.run_coroutine_threadsafe(manager.create("demo"), loop).result(timeout=30)
+    message = str(excinfo.value)
+    assert "沙箱 demo 的终端会话数已达上限" in message
+    assert "1 个已退出待清理" in message
+    assert "后端保留的会话" in message
+    manager.close_all()
+
+
+def test_global_capacity_error_mentions_limit(
+    config: PlatformConfig, fake_service: FakeService, loop
+) -> None:
+    """全局会话数超限：提示里带上上限与清理入口。"""
+    manager = TerminalSessionManager(
+        config,
+        fake_service,
+        spawner=pty_spawner(["cat"]),
+        max_sessions=1,
+        max_sessions_per_sandbox=5,
+    )
+    session = create_session(manager, loop)
+    assert session is not None
+    try:
+        with pytest.raises(ValidationError) as excinfo:
+            asyncio.run_coroutine_threadsafe(manager.create("demo"), loop).result(timeout=30)
+        message = str(excinfo.value)
+        assert "终端会话数已达上限（1 个" in message
+        assert "后端保留的会话" in message
+    finally:
+        manager.close_all()

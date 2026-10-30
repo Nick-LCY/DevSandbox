@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import secrets
 import select
 import threading
@@ -100,6 +101,17 @@ def new_session_id() -> str:
     return secrets.token_hex(8)
 
 
+# 会话标识的格式：16 位十六进制（``secrets.token_hex(8)`` 的输出）。
+# 路由据此挡掉非法标识：非法值一律按「会话不存在」处理，错误消息里也不回显
+# 用户输入，避免把任意文本塞进响应与日志。
+SESSION_ID_PATTERN = re.compile(r"^[0-9a-f]{16}$")
+
+
+def is_valid_session_id(session_id: str) -> bool:
+    """会话标识是否是合法的十六进制串。"""
+    return bool(SESSION_ID_PATTERN.fullmatch(session_id))
+
+
 def _env_int(name: str, default: int) -> int:
     """读一个正整数环境变量；缺省或非法时用默认值。"""
     raw = os.environ.get(name, "").strip()
@@ -147,7 +159,7 @@ class TerminalSessionRemoval:
     session_id: str
     # 移除前的会话状态（running / exited）
     state: str
-    # 是否走了一遍完整关闭流程（运行中的会话为真，已退出的为假）
+    # 关闭流程是否走完（false = 记录已删，但关闭流程未走完）
     closed: bool
     # 会话记录文件是否确实删掉了
     removed: bool
@@ -308,7 +320,19 @@ class TerminalSession:
         self._mark_dirty()
 
     def close(self) -> None:
-        """关闭会话：终止容器内进程并回收伪终端。"""
+        """关闭会话：终止容器内进程并回收伪终端。
+
+        关闭流程分两段：
+
+        - **先发结束标记**：容器内清理可能要跑几十秒，发在前面能让浏览器立刻
+          知道会话没了，不必等清理结束（发帧与清理耗时解耦）。
+        - **再收现场**：终止宿主侧伪终端、按会话标识清掉容器内残留进程、回收
+          伪终端文件描述符。某一步出错不阻断其余步骤，但异常会在最后抛给
+          调用方，由调用方如实回报（记录照删，状态回报「关闭流程未走完」）。
+
+        会话本来就是已退出的：不重复终止进程（进程早没了），仍走一次收尾——
+        回收伪终端文件描述符，并顺带清一次容器内可能残留的进程树。
+        """
         with self._lock:
             if self._closed:
                 return
@@ -321,30 +345,54 @@ class TerminalSession:
                 if self.record.exit_code is None:
                     self.record.exit_code = -1
             streams = list(self._streams)
-        self._stop.set()
-        self._wake()
-        self.pty.terminate()
-        # 宿主侧的 exec 客户端退出**不会**带走容器内的 shell：按会话标识在容器内
-        # 把残留进程收掉，否则服务重启后容器里会堆积无主 shell
-        if self._container_cleanup is not None:
-            try:
-                self._container_cleanup()
-            except Exception as exc:  # pragma: no cover - 清理失败不影响会话收尾
-                logger.warning(
-                    "清理容器 %s 内的终端会话 %s 失败：%s",
-                    self.record.container_name,
-                    self.session_id,
-                    exc,
-                )
-        # 主端文件描述符在 I/O 线程退出之后再关：先关会让线程里的读写打到
-        # 可能已被复用的文件描述符上
-        self._thread.join(timeout=5)
-        self.pty.close()
-        self._mark_dirty()
         if was_running:
             # 还连着的浏览器必须知道会话没了：走既有的退出帧路径，它们据此
             # 收到结束标记并断开，而不是一直挂着等超时
             self._notify_exit(streams)
+        self._stop.set()
+        self._wake()
+        failure: Exception | None = None
+        if was_running:
+            # 会话还在跑才终止宿主侧伪终端（已退出的不重复终止）
+            failure = self._run_close_step("终止伪终端", self._terminate_pty)
+        # 宿主侧的 exec 客户端退出**不会**带走容器内的 shell：按会话标识在容器内
+        # 把残留进程收掉，否则服务重启后容器里会堆积无主 shell
+        if self._container_cleanup is not None:
+            cleanup_failure = self._run_close_step("容器内进程清理", self._container_cleanup)
+            failure = failure or cleanup_failure
+        reclaim_failure = self._run_close_step("伪终端回收", self._reclaim_pty)
+        failure = failure or reclaim_failure
+        dirty_failure = self._run_close_step("终态落盘", self._mark_dirty)
+        failure = failure or dirty_failure
+        if failure is not None:
+            raise failure
+
+    def _run_close_step(self, name: str, step: Callable[[], None]) -> Exception | None:
+        """跑一步收尾动作；失败只记日志并返回异常（不阻断其余步骤）。"""
+        try:
+            step()
+        except Exception as exc:
+            logger.warning(
+                "关闭终端会话 %s 的%s失败：%s",
+                self.session_id,
+                name,
+                exc,
+                exc_info=True,
+            )
+            return exc
+        return None
+
+    def _terminate_pty(self) -> None:
+        """终止宿主侧的伪终端进程。"""
+        self.pty.terminate()
+
+    def _reclaim_pty(self) -> None:
+        """回收伪终端：I/O 线程退出后再关主端文件描述符。
+
+        先关会让线程里的读写打到可能已被复用的文件描述符上。
+        """
+        self._thread.join(timeout=5)
+        self.pty.close()
 
     # ---------------------------------------------------------------- I/O 线程
     def _io_loop(self) -> None:
@@ -631,7 +679,10 @@ class TerminalSessionManager:
         try:
             await run_in_threadpool(self._save_record, record)
         except Exception:
-            session.close()
+            try:
+                session.close()
+            except Exception as exc:  # pragma: no cover - 收尾失败不影响原始错误
+                logger.warning("回滚新建的终端会话 %s 时出错：%s", record.session_id, exc)
             with self._lock:
                 self._sessions.pop(record.session_id, None)
             raise
@@ -669,17 +720,30 @@ class TerminalSessionManager:
             # 并行收尾：每个会话都要跑一次容器内清理，串行会把退出拖得很长
             with ThreadPoolExecutor(max_workers=min(8, len(sessions))) as pool:
                 for session in sessions:
-                    pool.submit(session.close)
+                    pool.submit(self._close_quietly, session)
         for thread in (self._flusher, self._reaper):
             if thread is not None and thread.is_alive():
                 thread.join(timeout=2)
+
+    def _close_quietly(self, session: TerminalSession) -> None:
+        """关掉一个会话并把异常吃掉（退出兜底路径不让异常冒到线程池外）。"""
+        try:
+            session.close()
+        except Exception as exc:  # pragma: no cover - 退出兜底路径
+            logger.warning(
+                "关闭终端会话 %s 时出错：%s", session.session_id, exc, exc_info=True
+            )
 
     def remove_session(self, session_id: str) -> TerminalSessionRemoval | None:
         """移除一个终端会话。
 
         运行中的会话先走完整关闭流程（终止宿主伪终端、按会话标识收掉容器内
-        残留进程、状态落盘），再删掉会话记录；已退出的会话直接删记录。
-        两种情况都会把会话从内存里摘掉。
+        残留进程、状态落盘），再删掉会话记录；已退出的会话不重复终止进程，
+        但仍走一次收尾（回收伪终端文件描述符、顺带清一次容器内可能残留的
+        进程树），再删记录。两种情况都会把会话从内存里摘掉。
+
+        关闭流程中途出错时**照样删记录**：记录留着会让用户以为没删掉。异常
+        记日志，``closed`` 回报 ``False``（记录已删，但关闭流程未走完）。
 
         会话不存在返回 ``None``（路由据此回 404）。
         """
@@ -688,33 +752,59 @@ class TerminalSessionManager:
         if session is None:
             return None
         state = session.state
+        closed = False
         try:
             session.close()
+            closed = True
+        except Exception as exc:
+            logger.warning(
+                "关闭终端会话 %s 时出错（会话记录照删）：%s",
+                session_id,
+                exc,
+                exc_info=True,
+            )
         finally:
             # 记录必须删掉：否则会话还会出现在列表里，用户看着像没删掉
             removed = self._forget_record(session_id)
         return TerminalSessionRemoval(
             session_id=session_id,
             state=state,
-            closed=state == SESSION_STATE_RUNNING,
+            closed=closed,
             removed=removed,
         )
 
     # ---------------------------------------------------------------- 上限与回收
     def _check_capacity(self, sandbox_name: str) -> None:
-        """会话数超限时直接失败。"""
+        """会话数超限时直接失败。
+
+        已退出的会话也占名额（它们不做自动清理），提示必须指向清理入口，
+        否则用户只看到「已达上限」却不知道去哪儿腾位置。
+        """
         with self._lock:
             sessions = list(self._sessions.values())
         if len(sessions) >= self.max_sessions:
+            exited = sum(1 for item in sessions if item.exited)
+            raise ValidationError(self._capacity_message(self.max_sessions, exited))
+        in_sandbox = [item for item in sessions if item.record.sandbox_name == sandbox_name]
+        if len(in_sandbox) >= self.max_sessions_per_sandbox:
+            exited = sum(1 for item in in_sandbox if item.exited)
             raise ValidationError(
-                f"终端会话数已达上限（{self.max_sessions} 个），请先关闭不用的会话"
+                self._capacity_message(self.max_sessions_per_sandbox, exited, sandbox_name)
             )
-        per_sandbox = sum(1 for item in sessions if item.record.sandbox_name == sandbox_name)
-        if per_sandbox >= self.max_sessions_per_sandbox:
-            raise ValidationError(
-                f"沙箱 {sandbox_name} 的终端会话数已达上限"
-                f"（{self.max_sessions_per_sandbox} 个），请先关闭不用的会话"
+
+    @staticmethod
+    def _capacity_message(limit: int, exited: int, sandbox_name: str | None = None) -> str:
+        """会话数超限的中文提示（带已退出的会话数与清理入口）。"""
+        scope = f"沙箱 {sandbox_name} 的" if sandbox_name else ""
+        if exited > 0:
+            return (
+                f"{scope}终端会话数已达上限（{limit} 个，其中 {exited} 个已退出待清理），"
+                f"请先在『后端保留的会话』列表中移除已退出的会话"
             )
+        return (
+            f"{scope}终端会话数已达上限（{limit} 个），"
+            f"请先在『后端保留的会话』列表中移除不用的会话"
+        )
 
     def reap_idle_sessions(self, *, now: datetime | None = None) -> list[str]:
         """回收无附着且空闲超时的会话，返回被回收的会话标识。
@@ -749,7 +839,13 @@ class TerminalSessionManager:
             session = self._sessions.pop(session_id, None)
         if session is None:
             return
-        session.close()
+        try:
+            session.close()
+        except Exception as exc:
+            # 回收路径的异常不往上抛：否则一次失败的回收会连带新建会话失败
+            logger.warning(
+                "关闭空闲终端会话 %s 时出错：%s", session_id, exc, exc_info=True
+            )
 
     # ---------------------------------------------------------------- 后台线程
     def _ensure_background(self) -> None:
@@ -793,6 +889,7 @@ class TerminalSessionManager:
             for record in records:
                 if record.session_id in self._removed:
                     # 已被手动移除：不再落盘（否则删掉的记录会被写回来）
+                    logger.debug("终端会话 %s 已被移除，跳过落盘", record.session_id)
                     continue
                 try:
                     self.table.save(record)
@@ -807,6 +904,7 @@ class TerminalSessionManager:
         with self._store_lock:
             if record.session_id in self._removed:
                 # 已被手动移除：不再落盘
+                logger.debug("终端会话 %s 已被移除，跳过落盘", record.session_id)
                 return
             bucket = self._pending_now if immediate else self._pending_later
             bucket[record.session_id] = record

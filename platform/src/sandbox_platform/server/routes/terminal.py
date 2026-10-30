@@ -31,6 +31,7 @@ from ..terminal import (
     SNAPSHOT_CHUNK,
     TerminalSession,
     TerminalStream,
+    is_valid_session_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,9 @@ router = APIRouter(prefix="/terminal", tags=["终端"])
 
 # 会话不存在时关闭连接的状态码（策略违规：客户端拿着一个失效的会话标识）
 CLOSE_CODE_UNKNOWN_SESSION = 1008
+
+# 会话不存在时的固定文案：不回显用户输入的会话标识（那是任意文本）
+SESSION_NOT_FOUND_DETAIL = "终端会话不存在或已失效"
 
 
 @router.post(
@@ -84,15 +88,19 @@ async def delete_terminal_session(
     """删除一个终端会话。
 
     运行中的会话先走完整关闭流程（终止宿主伪终端、按会话标识收掉容器内残留
-    进程、状态落盘），再删掉记录；已退出的会话直接删记录。两种情况都会把
-    会话从内存里摘掉。
+    进程、状态落盘），再删掉记录；已退出的会话不重复终止进程，但仍走一次收尾
+    （回收伪终端文件描述符、顺带清一次容器内可能残留的进程树），再删记录。
 
     还连着的浏览器会收到退出帧并断开（走的是进程自然退出的同一条路径）。
-    会话不存在回 404。
+    关闭流程中途出错时照样删记录，响应里 ``closed`` 为 ``false``
+    （记录已删，但关闭流程未走完）。会话不存在回 404。
     """
+    if not is_valid_session_id(session_id):
+        # 非法标识按「不存在」处理：错误文案里不回显用户输入
+        raise NotFoundError(SESSION_NOT_FOUND_DETAIL)
     removal = await run_in_threadpool(manager.remove_session, session_id)
     if removal is None:
-        raise NotFoundError(f"终端会话不存在或已失效：{session_id}")
+        raise NotFoundError(SESSION_NOT_FOUND_DETAIL)
     return TerminalSessionDeleteResponse.from_removal(removal)
 
 

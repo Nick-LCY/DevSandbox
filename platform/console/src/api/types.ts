@@ -162,7 +162,7 @@ export interface TerminalSessionDeleteResult {
   session_id: string;
   /** 移除前的会话状态（running / exited）。 */
   state: string;
-  /** 是否走了一遍完整关闭流程（运行中的会话为 true）。 */
+  /** 关闭流程是否走完（false = 记录已删，但关闭流程未走完）。 */
   closed: boolean;
   /** 会话记录文件是否确实删掉了。 */
   removed: boolean;

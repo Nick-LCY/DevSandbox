@@ -52,23 +52,48 @@ function removeActionLabel(state: string): string {
 }
 
 /**
- * 一个会话的状态。
+ * 标签视角的会话是不是还在跑。
  *
- * 后端会话表里的状态为准；标签自己报的「已结束」也算已退出（会话表可能还没
- * 刷新到），「会话失效」说明后端已经没有这个会话了。
+ * 标签报「已结束」或「会话失效」之外的状态（连接中 / 已连接 / 重连中 /
+ * 告警 / 重连失败）都按「还在跑」处理：标签的状态可能滞后于后端。
  */
-function resolveSessionState(
-  sessionId: string,
-  status: TerminalStatus | undefined,
-  known: Map<string, string>,
-): string {
-  if (status === 'closed') {
-    return SESSION_STATE_EXITED;
+function tabSaysRunning(status: TerminalStatus | undefined): boolean {
+  if (status === undefined) {
+    return false;
   }
-  if (status === 'invalid') {
-    return SESSION_STATE_INVALID;
+  return status !== 'closed' && status !== 'invalid';
+}
+
+/**
+ * 会话状态（会话标识 → 状态）。
+ *
+ * 标签状态与后端记录任一为 running 就算还在跑：删除会终止容器内的现场，
+ * 两种口径不一致时按「还在跑」处理（保守），宁可多问一句也不误杀现场。
+ */
+function resolveSessionStates(
+  records: TerminalSessionRecord[],
+  tabs: TerminalTab[],
+): Map<string, string> {
+  const states = new Map<string, string>();
+  for (const record of records) {
+    states.set(
+      record.session_id,
+      record.state === SESSION_STATE_RUNNING ? SESSION_STATE_RUNNING : SESSION_STATE_EXITED,
+    );
   }
-  return known.get(sessionId) ?? SESSION_STATE_RUNNING;
+  for (const tab of tabs) {
+    if (tab.status === 'invalid') {
+      states.set(tab.id, SESSION_STATE_INVALID);
+      continue;
+    }
+    const known = states.get(tab.id);
+    if (tabSaysRunning(tab.status) || known === SESSION_STATE_RUNNING) {
+      states.set(tab.id, SESSION_STATE_RUNNING);
+    } else {
+      states.set(tab.id, SESSION_STATE_EXITED);
+    }
+  }
+  return states;
 }
 
 interface TerminalPanelProps {
@@ -88,25 +113,33 @@ export function TerminalPanel({ sandboxName, sandboxRunning }: TerminalPanelProp
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [existing, setExisting] = useState<TerminalSessionRecord[]>([]);
   const [error, setError] = useState('');
+  /** 提示位：删除成功但有副作用（记录已不存在 / 关闭流程未走完 / 列表刷新失败）。 */
+  const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   /** 正在等确认的会话标识（运行中的会话要先确认再关）。 */
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
-  /** 正在删除的会话标识：删除期间禁用相关按钮。 */
-  const [removingId, setRemovingId] = useState<string | null>(null);
+  /** 正在删除的会话标识集合：删除期间只禁用对应的按钮（多个会话可并行删除）。 */
+  const [removingIds, setRemovingIds] = useState<Set<string>>(new Set());
   /** 每个标签的重试令牌：手动点重试时自增，终端视图据此重建连接。 */
   const [retryTokens, setRetryTokens] = useState<Record<string, number>>({});
 
-  const refreshExisting = useCallback(async () => {
+  /** 刷新会话列表；返回失败原因（成功返回 null）。 */
+  const refreshExisting = useCallback(async (): Promise<string | null> => {
     try {
       const records = await api.listTerminalSessions(sandboxName);
       setExisting(records);
+      return null;
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '读取终端会话列表失败');
+      return exc instanceof Error ? exc.message : '读取终端会话列表失败';
     }
   }, [sandboxName]);
 
   useEffect(() => {
-    void refreshExisting();
+    void refreshExisting().then((failure) => {
+      if (failure) {
+        setError(failure);
+      }
+    });
   }, [refreshExisting]);
 
   const createTerminal = useCallback(async () => {
@@ -122,7 +155,10 @@ export function TerminalPanel({ sandboxName, sandboxRunning }: TerminalPanelProp
       };
       setTabs((previous) => [...previous, tab]);
       setActiveTabId(tab.id);
-      await refreshExisting();
+      const failure = await refreshExisting();
+      if (failure) {
+        setError(failure);
+      }
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '新建终端会话失败');
     } finally {
@@ -157,25 +193,47 @@ export function TerminalPanel({ sandboxName, sandboxRunning }: TerminalPanelProp
   /** 删除一个会话：后端先关掉再删记录，成功后标签与列表项都消失。 */
   const removeSession = useCallback(
     async (sessionId: string) => {
-      setRemovingId(sessionId);
+      setRemovingIds((previous) => {
+        const next = new Set(previous);
+        next.add(sessionId);
+        return next;
+      });
       setError('');
+      setNotice('');
       try {
-        await api.deleteTerminalSession(sessionId);
+        const result = await api.deleteTerminalSession(sessionId);
         setTabs((previous) => previous.filter((tab) => tab.id !== sessionId));
         setConfirmingId(null);
-        await refreshExisting();
+        const notes: string[] = [];
+        if (!result.removed) {
+          notes.push('记录已不存在（可能已被删除）');
+        } else if (!result.closed) {
+          notes.push('会话记录已删除，但关闭流程未走完（容器内可能仍有残留进程）');
+        }
+        // 删除本体已经成功：列表刷新失败单独提示，不覆盖成功语义
+        const failure = await refreshExisting();
+        if (failure) {
+          notes.push(`会话列表刷新失败：${failure}`);
+        }
+        if (notes.length > 0) {
+          setNotice(notes.join('；'));
+        }
       } catch (exc) {
         setError(exc instanceof Error ? exc.message : '删除终端会话失败');
       } finally {
-        setRemovingId(null);
+        setRemovingIds((previous) => {
+          const next = new Set(previous);
+          next.delete(sessionId);
+          return next;
+        });
       }
     },
     [refreshExisting],
   );
 
   /**
-   * 点删除按钮：运行中的会话先轻确认一下（会终止容器内的现场），
-   * 已退出的会话直接执行。
+   * 点删除按钮：会话还在跑就先轻确认一下（会终止容器内的现场），
+   * 已经退出的直接执行。
    */
   const requestRemove = useCallback(
     (sessionId: string, state: string) => {
@@ -211,20 +269,21 @@ export function TerminalPanel({ sandboxName, sandboxRunning }: TerminalPanelProp
       );
       if (status === 'closed') {
         // 会话退出了：刷新会话表，列表状态与按钮文案跟着变
-        void refreshExisting();
+        void refreshExisting().then((failure) => {
+          if (failure) {
+            setError(failure);
+          }
+        });
       }
     },
     [refreshExisting],
   );
 
-  /** 会话表里的状态（会话标识 → 状态）。 */
-  const knownStates = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const record of existing) {
-      map.set(record.session_id, record.state);
-    }
-    return map;
-  }, [existing]);
+  /** 会话状态（会话标识 → 状态）：标签状态与后端记录任一为 running 就算还在跑。 */
+  const sessionStates = useMemo(
+    () => resolveSessionStates(existing, tabs),
+    [existing, tabs],
+  );
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
 
@@ -263,6 +322,11 @@ export function TerminalPanel({ sandboxName, sandboxRunning }: TerminalPanelProp
           {error}
         </div>
       )}
+      {notice && (
+        <div className="banner banner-info" role="status" data-testid="page-sandbox-detail-terminal-notice">
+          {notice}
+        </div>
+      )}
       {!sandboxRunning && (
         <p className="hint" data-testid="page-sandbox-detail-terminal-stopped-hint">
           沙箱当前未运行，无法新建终端会话。请先启动沙箱。
@@ -298,16 +362,16 @@ export function TerminalPanel({ sandboxName, sandboxRunning }: TerminalPanelProp
             type="button"
             className="button button-small button-danger"
             onClick={() => void removeSession(confirmingId)}
-            disabled={removingId === confirmingId}
+            disabled={removingIds.has(confirmingId)}
             data-testid="page-sandbox-detail-terminal-remove-confirm-button"
           >
-            {removingId === confirmingId ? '正在关闭…' : '确认关闭'}
+            {removingIds.has(confirmingId) ? '正在关闭…' : '确认关闭'}
           </button>
           <button
             type="button"
             className="button button-small"
             onClick={() => setConfirmingId(null)}
-            disabled={removingId === confirmingId}
+            disabled={removingIds.has(confirmingId)}
             data-testid="page-sandbox-detail-terminal-remove-cancel-button"
           >
             取消
@@ -319,35 +383,38 @@ export function TerminalPanel({ sandboxName, sandboxRunning }: TerminalPanelProp
         <div className="terminal-existing">
           <p className="dialog-hint">后端保留的会话（可重新附着，也可删除）：</p>
           <ul className="terminal-existing-list" data-testid="page-sandbox-detail-terminal-existing-list">
-            {existing.map((record) => (
-              <li
-                key={record.session_id}
-                className="terminal-existing-item"
-                data-testid="page-sandbox-detail-terminal-existing-item"
-                data-session-id={record.session_id}
-              >
-                <span className="terminal-existing-id">{record.session_id.slice(0, 8)}</span>
-                <span className="terminal-existing-state">{record.state}</span>
-                <button
-                  type="button"
-                  className="button button-small"
-                  onClick={() => attachExisting(record)}
-                  data-testid="page-sandbox-detail-terminal-existing-attach-button"
+            {existing.map((record) => {
+              const state = sessionStates.get(record.session_id) ?? SESSION_STATE_EXITED;
+              return (
+                <li
+                  key={record.session_id}
+                  className="terminal-existing-item"
+                  data-testid="page-sandbox-detail-terminal-existing-item"
+                  data-session-id={record.session_id}
                 >
-                  附着
-                </button>
-                <button
-                  type="button"
-                  className="button button-small"
-                  onClick={() => requestRemove(record.session_id, record.state)}
-                  disabled={removingId === record.session_id}
-                  aria-label={`${removeActionLabel(record.state)}会话 ${record.session_id.slice(0, 8)}`}
-                  data-testid="page-sandbox-detail-terminal-existing-remove-button"
-                >
-                  {removeActionLabel(record.state)}
-                </button>
-              </li>
-            ))}
+                  <span className="terminal-existing-id">{record.session_id.slice(0, 8)}</span>
+                  <span className="terminal-existing-state">{record.state}</span>
+                  <button
+                    type="button"
+                    className="button button-small"
+                    onClick={() => attachExisting(record)}
+                    data-testid="page-sandbox-detail-terminal-existing-attach-button"
+                  >
+                    附着
+                  </button>
+                  <button
+                    type="button"
+                    className="button button-small"
+                    onClick={() => requestRemove(record.session_id, state)}
+                    disabled={removingIds.has(record.session_id)}
+                    aria-label={`${removeActionLabel(state)}会话 ${record.session_id.slice(0, 8)}`}
+                    data-testid="page-sandbox-detail-terminal-existing-remove-button"
+                  >
+                    {removeActionLabel(state)}
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}
@@ -355,7 +422,7 @@ export function TerminalPanel({ sandboxName, sandboxRunning }: TerminalPanelProp
       {tabs.length > 0 && (
         <div className="terminal-tabs" role="tablist" data-testid="page-sandbox-detail-terminal-tabs">
           {tabs.map((tab) => {
-            const state = resolveSessionState(tab.id, tab.status, knownStates);
+            const state = sessionStates.get(tab.id) ?? SESSION_STATE_EXITED;
             const label = removeActionLabel(state);
             return (
               <span
@@ -377,7 +444,7 @@ export function TerminalPanel({ sandboxName, sandboxRunning }: TerminalPanelProp
                     type="button"
                     className="terminal-tab-remove"
                     onClick={() => requestRemove(tab.id, state)}
-                    disabled={removingId === tab.id}
+                    disabled={removingIds.has(tab.id)}
                     aria-label={`${label}会话 ${tab.title}`}
                     data-testid="page-sandbox-detail-terminal-tab-remove-button"
                   >
