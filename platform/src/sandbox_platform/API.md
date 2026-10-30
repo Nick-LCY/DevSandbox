@@ -153,12 +153,15 @@
 
 | 函数 | 签名 | 说明 |
 |---|---|---|
+| 枚举宿主镜像 | `ImageManager.list_host_images() -> list[HostImage]` | 实时枚举宿主 root 守护进程里的本地镜像（含用户自己本地构建、任何仓库都没有的镜像）；悬空镜像（`<none>:<none>`）不进列表；结果按镜像引用排序 |
 | 保证可用 | `ImageManager.ensure_image(image: str, daemon: UserDaemon) -> str` | 顺序：沙箱守护进程已有 → 平台自建镜像（`local_image_prefixes` 前缀匹配）由宿主导出注入 → 其余交给沙箱守护进程经镜像代理拉取；返回来源标记（`present` / `injected` / `remote`） |
 | 按来源准备 | `ImageManager.ensure_image_from_source(image: str, daemon: UserDaemon, source: str = "auto", *, require_host_image: bool = True) -> str` | `auto` 同上；`host` 强制从宿主注入（见下方「镜像来源的判定语义」）；非法来源抛 `ValidationError`，**不静默降级成 auto** |
 | 镜像引用摘要 | `image_digest(image: str) -> str` | 镜像引用的 sha256 前 16 位；注入中转归档的文件名用它（按字符替换分隔符会让 `a/b:1` 与 `a_b:1` 撞名） |
 | 平台自建判定 | `ImageManager.is_platform_local(image: str) -> bool` | 镜像是否属平台自建命名空间（只在宿主构建、不存在于任何仓库） |
 | 宿主镜像 | `ImageManager.host_image_exists(image: str) -> bool` | 宿主 root 守护进程里是否已有该镜像 |
 | 导出注入 | `ImageManager.inject_from_host(image: str, daemon: UserDaemon) -> str` | `docker save` → `docker load` 注入沙箱守护进程，失败抛 `ImageError` |
+
+`HostImage` 字段：`reference`（`仓库:标签` 形式的镜像引用）、`image_id`（镜像 ID）、`size_bytes`（体积，字节）、`created_at`（创建时间，RFC 3339 文本，取不到时为空串）。
 
 #### 镜像来源的判定语义
 
@@ -185,6 +188,12 @@
 | 目录 | `ensure_directories() -> None` | 创建缓存目录与 CA 目录（幂等） |
 | 镜像 | `ensure_image() -> bool` | 宿主上无代理镜像时拉取一次（首启自动拉取） |
 | 拉起 | `ensure_running(timeout: int = 120) -> bool` | 幂等拉起并等到健康；并发调用由文件锁串行化；失败返回 `False`（**调用方必须直接失败，不降级直连**） |
+| 重启 | `restart(timeout: int = 120) -> bool` | 容器存在则重启，不存在则先拉起，随后轮询健康检查直到通过；失败返回 `False` 并把原因写进 `last_error`（**不做降级直连**）；与 `ensure_running` 共用同一把文件锁 |
+| 容器状态 | `container_status() -> ProxyContainerStatus` | 容器是否存在 / 是否运行中 |
+| 缓存占用 | `cache_size_bytes() -> int` | 缓存目录占用字节数；目录不存在按 0 计，统计失败只记日志并返回 0 |
+| 证书就绪 | `certificate_ready() -> bool` | 代理 CA 证书是否存在且可读 |
+| 完整状态 | `status() -> ProxyStatus` | 容器状态 + 健康状态 + 缓存占用 + 证书就绪 + 代理访问地址（设置页展示用） |
+| CA 指纹 | `ca_cert_digest() -> str` | 代理 CA 证书内容的 sha256 前 16 位；取不到证书时返回空串 |
 | 健康 | `probe() -> ProxyProbe` / `health_check() -> bool` | TCP 可连 + 能从 `http://127.0.0.1:<port>/ca.crt` 取到证书才算健康 |
 | CA | `read_ca_certificate() -> str` / `read_system_ca_bundle() -> str` | 读代理 CA / 系统 CA 束，缺失抛 `ProxyError` |
 | 合并 CA 束 | `install_ca_bundle(user: SystemUser) -> Path` | 「系统 CA 束 + 代理 CA」合并成单个文件，装到沙箱用户家目录（属主沙箱用户、权限 0644） |
@@ -192,6 +201,10 @@
 | 停止/删除 | `stop() -> bool` / `remove() -> bool` | 停止 / 删除代理容器（缓存与 CA 目录保留） |
 
 `ProxyProbe` 字段：`tcp`、`http`、`detail`；属性 `healthy`。
+
+`ProxyContainerStatus` 字段：`exists`、`running`。
+
+`ProxyStatus` 字段：`container`（`ProxyContainerStatus`）、`healthy`、`tcp_ok`、`ca_fetchable`、`detail`（健康明细）、`cache_size_bytes`、`certificate_ready`、`proxy_url`。
 
 ---
 
@@ -220,6 +233,9 @@
 | 关闭 | `stop(name: str, stop_dependencies: bool = True) -> SandboxMetadata` | 依赖容器是否一并停止由显式参数控制，默认停 |
 | 回收清单 | `reclaim_plan(name: str) -> ReclaimPlan` | 删除前展示用 |
 | 删除 | `delete(name: str) -> DeleteResult` | 按固定回收清单回收，幂等 |
+| 宿主镜像 | `list_host_images() -> list[HostImage]` | 实时枚举宿主本地镜像（创建页下拉用）；悬空镜像不进列表 |
+| 代理状态 | `proxy_status() -> ProxyStatus` | 代理的容器状态、健康状态、缓存占用、证书就绪与访问地址 |
+| 代理重启 | `restart_proxy(timeout: int = 120) -> ProxyRestartResult` | 重启代理并等健康；重启后比对代理 CA 指纹，变了就为已有沙箱用户重装合并 CA 束 |
 
 ### 同名沙箱的互斥与名字占用
 
@@ -355,6 +371,9 @@
 | POST | `/api/sandboxes/{name}/stop` | `StopSandboxRequest`（可省略） | `SandboxDetail` | `SandboxService.stop` |
 | GET | `/api/sandboxes/{name}/reclaim` | — | `ReclaimPlanModel`（沙箱不存在 → 404） | `SandboxService.reclaim_plan` |
 | DELETE | `/api/sandboxes/{name}` | — | `DeleteSandboxResponse` | `SandboxService.delete` |
+| GET | `/api/images` | — | `HostImageModel[]` | `SandboxService.list_host_images` |
+| GET | `/api/proxy/status` | — | `ProxyStatusModel` | `SandboxService.proxy_status` |
+| POST | `/api/proxy/restart` | — | `ProxyRestartModel` | `SandboxService.restart_proxy` |
 
 ### 11.2 请求字段
 
@@ -389,6 +408,10 @@
 | `ReclaimPlanModel` | `sandbox_name`、`items`、`untouched_note`、`user_mounts`、`incomplete` | 删除前的回收清单；`untouched_note` 固定为「用户挂载的宿主机目录不受影响」；`incomplete` 表示依赖容器清单可能不完整 |
 | `DeleteSandboxResponse` | `name`、`existed`、`removed`、`failed`、`plan` | 删除结果；`removed` 是确实回收掉的资源，`failed` 是尝试过但没成功的条目 |
 | `HealthResponse` | `status`、`version`、`data_root_configured`、`console_mounted` | 服务自检；**不回显宿主平台数据根的绝对路径**，只给「数据根是否就绪」与「前端是否挂载」 |
+| `HostImageModel` | `reference`、`image_id`、`size_bytes`、`created_at` | 宿主本地镜像项：`reference` 是 `仓库:标签` 形式的镜像引用，`size_bytes` 是体积（字节），`created_at` 是创建时间；悬空镜像不进列表 |
+| `ProxyContainerStatusModel` | `exists`、`running` | 代理容器是否存在 / 是否运行中 |
+| `ProxyStatusModel` | `container`、`healthy`、`tcp_ok`、`ca_fetchable`、`detail`、`cache_size_bytes`、`certificate_ready`、`proxy_url` | 代理状态：容器运行状态、健康状态（端口可连 / 能取到证书 / 明细）、缓存目录占用字节数、代理 CA 证书就绪状态、代理访问地址 |
+| `ProxyRestartModel` | `ProxyStatusModel` 的全部字段 + `restarted`、`ca_changed`、`message`、`reinstalled_users` | 重启代理的结果；`restarted` 表示重启后已通过健康检查，`ca_changed` 表示代理 CA 指纹与重启前不一致，`reinstalled_users` 是因此重装了合并 CA 束的沙箱用户 |
 
 ### 11.4 错误码映射
 
@@ -404,4 +427,15 @@
 
 映射在服务层统一完成：平台异常不吞。
 500 分支**不回显异常原文**（原文可能带宿主绝对路径与特权命令行），只进日志。
+
+### 11.5 镜像代理接口的口径
+
+| 项 | 口径 |
+|---|---|
+| 代理不可达不降级 | 代理不可达时**一律直接失败，不降级直连**（一期既定原则）：创建 / 启动沙箱时报错，`POST /api/proxy/restart` 报 `restarted=false`。接口层不提供任何绕过代理的开关 |
+| 代理没起来不是接口错误 | `GET /api/proxy/status` 如实回报「不健康」与明细（`healthy=false`、`detail` 给出原因），不报 4xx / 500 |
+| 重启失败的返回方式 | `POST /api/proxy/restart` 仍返回 200，用 `restarted=false` 与 `message` 说明结果；失败原因（宿主命令原文）只进服务日志，不回显到响应 |
+| CA 指纹变化 | 重启后比对代理 CA 指纹；指纹与重启前不一致时自动为已有沙箱用户重装合并 CA 束（复用 `install_ca_bundle`），并回传 `ca_changed=true` 与 `reinstalled_users` |
+| 缓存只增不减 | **不提供任何清理代理缓存的接口**：缓存目录只增不减，`GET /api/proxy/status` 只展示占用字节数 |
+| 不做远程拉取 | **不提供网页拉取镜像的接口**：`GET /api/images` 只实时枚举宿主本地镜像（含用户本地构建、任何仓库都没有的镜像），创建沙箱时只从这份列表里选 |
 

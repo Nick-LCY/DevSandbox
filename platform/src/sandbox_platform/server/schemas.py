@@ -16,6 +16,10 @@ from sandbox_platform import (
     CreateRequest,
     CreateResult,
     DeleteResult,
+    HostImage,
+    ProxyContainerStatus,
+    ProxyRestartResult,
+    ProxyStatus,
     ReclaimPlan,
     SandboxMetadata,
 )
@@ -280,3 +284,82 @@ class HealthResponse(BaseModel):
     version: str
     data_root_configured: bool
     console_mounted: bool
+
+
+class HostImageModel(BaseModel):
+    """宿主本地镜像的一项。"""
+
+    reference: str
+    image_id: str
+    size_bytes: int
+    created_at: str
+
+    @classmethod
+    def from_core(cls, image: HostImage) -> HostImageModel:
+        """由核心包的镜像项生成。"""
+        return cls(
+            reference=image.reference,
+            image_id=image.image_id,
+            size_bytes=image.size_bytes,
+            created_at=image.created_at,
+        )
+
+
+class ProxyContainerStatusModel(BaseModel):
+    """代理容器的存在与运行状态。"""
+
+    exists: bool
+    running: bool
+
+
+class ProxyStatusModel(BaseModel):
+    """镜像代理的完整状态（设置页展示用）。"""
+
+    container: ProxyContainerStatusModel
+    healthy: bool
+    tcp_ok: bool
+    ca_fetchable: bool
+    detail: str
+    cache_size_bytes: int
+    certificate_ready: bool
+    proxy_url: str
+
+    @classmethod
+    def from_core(cls, status: ProxyStatus) -> ProxyStatusModel:
+        """由核心包的代理状态生成。"""
+        return cls(
+            container=ProxyContainerStatusModel(
+                exists=status.container.exists,
+                running=status.container.running,
+            ),
+            healthy=status.healthy,
+            tcp_ok=status.tcp_ok,
+            ca_fetchable=status.ca_fetchable,
+            detail=status.detail,
+            cache_size_bytes=status.cache_size_bytes,
+            certificate_ready=status.certificate_ready,
+            proxy_url=status.proxy_url,
+        )
+
+
+class ProxyRestartModel(ProxyStatusModel):
+    """重启代理的结果：状态字段 + ``ca_changed`` 与中文结论。"""
+
+    restarted: bool
+    ca_changed: bool
+    message: str
+    reinstalled_users: list[str]
+
+    @classmethod
+    def from_core(
+        cls, status: ProxyStatus, result: ProxyRestartResult
+    ) -> ProxyRestartModel:
+        """由核心包的代理状态与重启结果生成。"""
+        base = ProxyStatusModel.from_core(status)
+        return cls(
+            **base.model_dump(),
+            restarted=result.success,
+            ca_changed=result.ca_changed,
+            message=result.message,
+            reinstalled_users=list(result.reinstalled_users),
+        )

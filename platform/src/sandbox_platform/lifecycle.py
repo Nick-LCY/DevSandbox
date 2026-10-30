@@ -50,6 +50,7 @@ from .errors import (
 from .images import (
     IMAGE_SOURCE_AUTO,
     IMAGE_SOURCE_CHOICES,
+    HostImage,
     ImageManager,
 )
 from .metadata import (
@@ -60,7 +61,7 @@ from .metadata import (
     SandboxMetadata,
 )
 from .mounts import MountSpec, parse_mounts, socket_mount
-from .proxy import RegistryProxyManager
+from .proxy import ProxyStatus, RegistryProxyManager
 from .userspace import Privilege, SystemUser, UserSpaceManager
 
 logger = logging.getLogger(__name__)
@@ -149,6 +150,21 @@ class DeleteResult:
     removed: tuple[str, ...] = ()
     failed: tuple[str, ...] = ()
     plan: ReclaimPlan | None = None
+
+
+@dataclass(frozen=True)
+class ProxyRestartResult:
+    """重启镜像代理的结果。
+
+    ``success`` 表示重启后代理已通过健康检查；``ca_changed`` 表示代理 CA 指纹
+    与重启前不一致；``reinstalled_users`` 是因此重装了合并 CA 束的沙箱用户。
+    ``message`` 是给用户看的中文结论（不含宿主路径与命令行原文）。
+    """
+
+    success: bool
+    ca_changed: bool
+    message: str
+    reinstalled_users: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------- 入参校验
@@ -386,6 +402,72 @@ class SandboxService:
         else:
             metadata.state = STATE_STOPPED
         return metadata
+
+    # ---------------------------------------------------------------- 镜像与代理
+    def list_host_images(self) -> list[HostImage]:
+        """实时枚举宿主本地镜像（创建页下拉用）。
+
+        含用户自己本地构建、任何仓库都没有的镜像；悬空镜像不进列表。
+        """
+        return self.images.list_host_images()
+
+    def proxy_status(self) -> ProxyStatus:
+        """镜像代理的运行与健康状态（设置页展示用）。"""
+        return self.proxy.status()
+
+    def restart_proxy(self, timeout: int = 120) -> ProxyRestartResult:
+        """重启镜像代理；CA 指纹变化时为已有沙箱用户重装合并 CA 束。
+
+        重启后比对代理 CA 指纹：指纹变了说明代理重新生成了 CA，
+        沙箱里指向旧 CA 的合并证书链会失效，必须重装。
+        """
+        before = self.proxy.ca_cert_digest()
+        ok = self.proxy.restart(timeout)
+        after = self.proxy.ca_cert_digest()
+        ca_changed = before != after
+        reinstalled: tuple[str, ...] = ()
+        if ca_changed and after:
+            reinstalled = self._reinstall_ca_bundles()
+        if not ok:
+            logger.error("重启镜像代理失败：%s", self.proxy.last_error)
+            return ProxyRestartResult(
+                success=False,
+                ca_changed=ca_changed,
+                message="代理重启失败，详见服务日志",
+                reinstalled_users=reinstalled,
+            )
+        if ca_changed:
+            message = (
+                f"代理已重启并通过健康检查；CA 指纹已变更，"
+                f"已为 {len(reinstalled)} 个沙箱用户重装合并 CA 束"
+            )
+        else:
+            message = "代理已重启并通过健康检查"
+        return ProxyRestartResult(
+            success=True,
+            ca_changed=ca_changed,
+            message=message,
+            reinstalled_users=reinstalled,
+        )
+
+    def _reinstall_ca_bundles(self) -> tuple[str, ...]:
+        """为已有沙箱用户重装合并 CA 束（代理 CA 变更后调用）。
+
+        用户信息现查 ``getent passwd``：元数据里的家目录不可信。
+        单个用户失败只记日志，不中断其余用户的重装。
+        """
+        reinstalled: list[str] = []
+        for metadata in self.store.list_all():
+            user = self._resolve_user(metadata)
+            if user is None:
+                continue
+            try:
+                self.proxy.install_ca_bundle(user)
+            except SandboxError as exc:
+                logger.error("为沙箱用户 %s 重装合并 CA 束失败：%s", user.name, exc)
+                continue
+            reinstalled.append(user.name)
+        return tuple(reinstalled)
 
     # ---------------------------------------------------------------- 内部辅助
     def _daemon_for(self, metadata: SandboxMetadata) -> UserDaemon:

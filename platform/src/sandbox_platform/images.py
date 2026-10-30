@@ -13,7 +13,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
+from dataclasses import dataclass
 
 from .command import run
 from .config import PlatformConfig
@@ -44,6 +46,20 @@ def image_digest(image: str) -> str:
     return hashlib.sha256(image.encode("utf-8")).hexdigest()[:16]
 
 
+@dataclass(frozen=True)
+class HostImage:
+    """宿主本地镜像的一项（供创建页下拉选择）。
+
+    ``reference`` 是 ``仓库:标签`` 形式的镜像引用；``size_bytes`` 是镜像体积
+    （字节）；``created_at`` 是镜像创建时间（RFC 3339 文本，取不到时为空串）。
+    """
+
+    reference: str
+    image_id: str
+    size_bytes: int = 0
+    created_at: str = ""
+
+
 class ImageManager:
     """镜像查找与宿主镜像注入。"""
 
@@ -54,6 +70,104 @@ class ImageManager:
     ) -> None:
         self.config = config or PlatformConfig.from_env()
         self.privilege = privilege or Privilege()
+
+    # ---------------------------------------------------------------- 宿主镜像枚举
+    def list_host_images(self) -> list[HostImage]:
+        """实时枚举宿主 root 守护进程里的本地镜像。
+
+        含用户自己本地构建、任何仓库都没有的镜像。悬空镜像（``<none>:<none>``）
+        不进可选列表；结果按镜像引用排序。
+        """
+        rows = self._list_host_image_rows()
+        details = self._inspect_host_images(rows)
+        images: list[HostImage] = []
+        for reference, image_id in rows:
+            size_bytes, created_at = details.get(image_id, (0, ""))
+            images.append(
+                HostImage(
+                    reference=reference,
+                    image_id=image_id,
+                    size_bytes=size_bytes,
+                    created_at=created_at,
+                )
+            )
+        images.sort(key=lambda item: item.reference)
+        return images
+
+    def _list_host_image_rows(self) -> list[tuple[str, str]]:
+        """列出宿主镜像的 ``(镜像引用, 镜像 ID)``，悬空镜像已剔除。"""
+        result = run(
+            self.privilege.wrap(
+                ["docker", "image", "ls", "--no-trunc", "--format", "{{json .}}"]
+            ),
+            check=False,
+        )
+        if not result.ok:
+            raise ImageError(f"枚举宿主镜像失败：{result.output.strip()}")
+        rows: list[tuple[str, str]] = []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                logger.warning("跳过无法解析的镜像行：%s", line)
+                continue
+            if not isinstance(data, dict):
+                continue
+            repository = str(data.get("Repository") or "").strip()
+            tag = str(data.get("Tag") or "").strip()
+            if not repository or not tag or repository == "<none>" or tag == "<none>":
+                # 悬空镜像（中间层、被删标签的残留）不可选
+                continue
+            rows.append((f"{repository}:{tag}", str(data.get("ID") or "").strip()))
+        return rows
+
+    def _inspect_host_images(self, rows: list[tuple[str, str]]) -> dict[str, tuple[int, str]]:
+        """取镜像的体积（字节）与创建时间，按镜像 ID 索引。
+
+        ``image ls`` 的体积是人读文本（如 ``1.2GB``），字节数只能从
+        ``image inspect`` 的 ``Size`` 字段拿。
+        """
+        image_ids = list(dict.fromkeys(image_id for _, image_id in rows if image_id))
+        if not image_ids:
+            return {}
+        template = "{{.Id}}\t{{.Size}}\t{{.Created}}"
+        result = run(
+            self.privilege.wrap(["docker", "image", "inspect", "--format", template, *image_ids]),
+            check=False,
+        )
+        if result.ok:
+            return self._parse_inspect_lines(result.stdout)
+        # 批量失败（可能有镜像刚被删）：逐个重试，拿到多少算多少
+        logger.warning("批量读取镜像详情失败，改为逐个读取：%s", result.output.strip())
+        details: dict[str, tuple[int, str]] = {}
+        for image_id in image_ids:
+            one = run(
+                self.privilege.wrap(
+                    ["docker", "image", "inspect", "--format", template, image_id]
+                ),
+                check=False,
+            )
+            if one.ok:
+                details.update(self._parse_inspect_lines(one.stdout))
+        return details
+
+    @staticmethod
+    def _parse_inspect_lines(text: str) -> dict[str, tuple[int, str]]:
+        """解析 ``image inspect`` 的行：``镜像 ID\\t体积\\t创建时间``。"""
+        details: dict[str, tuple[int, str]] = {}
+        for line in text.splitlines():
+            parts = line.split("\t")
+            if len(parts) < 3:
+                continue
+            try:
+                size_bytes = int(parts[1].strip())
+            except ValueError:
+                size_bytes = 0
+            details[parts[0].strip()] = (size_bytes, parts[2].strip())
+        return details
 
     # ---------------------------------------------------------------- 保证可用
     def ensure_image(self, image: str, daemon: UserDaemon) -> str:
