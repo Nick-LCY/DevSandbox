@@ -33,6 +33,15 @@ describe('parseRoute', () => {
   it('无法识别的地址落到沙箱列表', () => {
     expect(parseRoute('#/unknown/path')).toEqual({ name: 'sandbox-list' });
   });
+
+  it('畸形百分号编码不会抛异常，退回沙箱列表', () => {
+    // decodeURIComponent('%') 抛 URIError；解析路由的调用栈直通 React 渲染，
+    // 抛出去就是整站白屏。
+    expect(() => parseRoute('#/sandboxes/%')).not.toThrow();
+    expect(parseRoute('#/sandboxes/%')).toEqual({ name: 'sandbox-list' });
+    expect(parseRoute('#/sandboxes/%E4%B8%AD%E6%96')).toEqual({ name: 'sandbox-list' });
+    expect(parseRoute('#/sandboxes/a%zz')).toEqual({ name: 'sandbox-list' });
+  });
 });
 
 describe('routeToHash', () => {

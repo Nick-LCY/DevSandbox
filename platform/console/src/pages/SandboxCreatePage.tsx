@@ -5,7 +5,12 @@ import type { CreateSandboxResponse, HostImage } from '../api/types';
 import { ErrorBanner } from '../components/ErrorBanner';
 import { parseEnvLines } from '../lib/env';
 import { formatBytes, formatTimestamp } from '../lib/format';
-import { formatMountDeclaration, parseMountDeclaration } from '../lib/mounts';
+import {
+  formatMountDeclaration,
+  parseMountDeclaration,
+  validateMountDeclarations,
+  type MountDeclaration,
+} from '../lib/mounts';
 import { sandboxDetailHash } from '../lib/router';
 import { validateImageSelection, validateSandboxName } from '../lib/validate';
 
@@ -63,6 +68,17 @@ export function SandboxCreatePage() {
     void loadImages();
   }, [loadImages]);
 
+  // 页面重新可见时补拉一次镜像：镜像下拉要跟得上宿主上的真实变化。
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void loadImages();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, [loadImages]);
+
   const updateMount = useCallback((id: string, patch: Partial<MountRow>) => {
     setMounts((previous) =>
       previous.map((row) => (row.id === id ? { ...row, ...patch } : row)),
@@ -85,6 +101,7 @@ export function SandboxCreatePage() {
     }
 
     const declarations: string[] = [];
+    const parsedDeclarations: MountDeclaration[] = [];
     for (const row of mounts) {
       if (row.hostPath.trim() === '' && row.containerPath.trim() === '') {
         continue;
@@ -96,7 +113,15 @@ export function SandboxCreatePage() {
         setError(parsed.error);
         return;
       }
+      parsedDeclarations.push(parsed.declaration);
       declarations.push(formatMountDeclaration(parsed.declaration));
+    }
+
+    // 容器路径重复在前端先拦一道：少一次往返，错误也更直白。
+    const mountError = validateMountDeclarations(parsedDeclarations);
+    if (mountError) {
+      setError(mountError);
+      return;
     }
 
     const envResult = parseEnvLines(envText);

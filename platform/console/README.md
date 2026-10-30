@@ -62,7 +62,7 @@ pnpm run typecheck  # tsc --noEmit，零错误
 pnpm run test       # vitest run，纯数据转换逻辑的单元测试
 ```
 
-单元测试覆盖挂载声明解析、环境变量解析、路由解析、字节与时间格式化、终端帧协议解析、代理状态文案转换。
+单元测试覆盖挂载声明解析、环境变量解析、路由解析（含畸形百分号编码）、字节与时间格式化、终端帧协议解析、代理状态文案转换。
 
 ## 目录结构
 
@@ -87,6 +87,7 @@ platform/console/
     │   ├── env.ts        环境变量声明解析
     │   ├── proxy.ts      代理状态文案转换
     │   ├── terminal.ts   终端帧协议
+    │   ├── action.ts     操作提示条的文案与样式
     │   └── validate.ts   沙箱名 / 镜像选择校验
     ├── components/
     │   ├── Layout.tsx        外壳与导航
@@ -105,6 +106,8 @@ platform/console/
 
 前端用**哈希路由**：后端把构建产物挂在 `/` 上（静态目录托管），深链接没有服务端回退规则会直接 404；哈希路由不依赖服务端回退，刷新与粘贴链接都能落到同一个页面。
 
+地址里的沙箱名会做一次百分号解码；解码失败（畸形编码，如 `#/sandboxes/%`）不会抛异常打断渲染，一律退回沙箱列表页。
+
 | 页面 | 地址 | 说明 |
 |---|---|---|
 | 沙箱列表 | `#/` | 名字 / 状态 / 镜像 / 创建时间 + 行内操作；每 5 秒轮询，也可手动刷新 |
@@ -112,12 +115,25 @@ platform/console/
 | 沙箱详情 | `#/sandboxes/<名字>` | 完整信息 + 启动 / 停止 / 删除 + 网页终端面板 |
 | 代理设置 | `#/settings` | 代理状态与「重启代理」 |
 
+## 后端健康自检
+
+外壳顶部常驻一条健康自检（`GET /api/health`，每 15 秒一次）：后端不可达时直接提示「后端服务不可达」并给出原因；后端可用但前端产物未挂载时提示「前端产物未挂载」。
+
+## 操作提示条
+
+操作结果分两种样式：成功用绿色提示条，失败（启动 / 停止 / 删除失败、回收有残留项）用红色错误提示条，不再全部挂在同一种中性提示条上。
+
+## 删除确认弹窗
+
+弹窗支持 `Esc` 关闭（删除进行中不响应 `Esc`）。
+
 ## 关键行为
 
 ### 新建沙箱
 
 - 镜像下拉来自 `GET /api/images`（后端返回**裸数组**，前端按数组消费）。
-- 挂载按 `宿主路径:容器路径[:ro]` 语法声明，可多条；前端先做一遍格式与敏感路径校验，后端仍会再校验一次。
+- 镜像下拉在**页面重新可见时**（`visibilitychange`）会补拉一次，贴合「实时」要求：切回标签页就能看到宿主上的最新镜像。
+- 挂载按 `宿主路径:容器路径[:ro]` 语法声明，可多条；前端先做一遍格式与敏感路径校验，**容器路径重复也在前端先拦**（少一次往返），后端仍会再校验一次。
 - 提交时固定带 `image_source=host`：平台把镜像从宿主导出注入沙箱守护进程，不经镜像代理拉取。
 
 ### 删除沙箱
@@ -128,13 +144,16 @@ platform/console/
 
 - xterm.js（`@xterm/xterm`）+ fit 插件（`@xterm/addon-fit`），随窗口自适应。
 - 帧协议按 `API.md` 12.3：客户端二进制帧 = 终端输入字节，客户端文本帧 = `{"type":"resize","cols":..,"rows":..}`；服务端二进制帧 = 终端输出字节，服务端文本帧 = `hello` / `exit` / `error`。
-- 同一沙箱可开多个终端标签，每个标签一个独立会话（容器内一个带真实 TTY 的 shell）。
+- 同一沙箱可开多个终端标签，每个标签一个独立会话（容器内一个带真实 TTY 的 shell）；标签标题用单调递增的计数器，关掉中间的标签后不会与剩下的标签重名。
 - 断线后按退避节奏自动重连，**始终携带原 `session_id`**：服务端先回放环形缓冲再接实时流，现场不丢。页面刷新后也可以在「后端保留的会话」列表里点「附着」重新挂回原会话。
+- **退避计数只在连接真的可用时才清零**：收到服务端的 `hello` 帧，或连接稳定存活超过 5 秒。握手成功不等于连上了——服务端握手后立刻关闭时，如果在 `onopen` 就清零计数，会退化成每 500ms 一次的连接风暴。
+- 连续失败 10 次即停掉自动重连，界面显示「重连失败，点击重试」，由用户点「重试连接」手动触发。
 - 后端服务重启会让全部会话失效：此时前端明确提示「终端会话已失效（后端服务已重启），请新建终端」，并停止重连。
+- 服务端发来的 `error` 帧有独立的告警样式（黄色），不会与「已连接」混成一个文案。
 
 ### 代理设置
 
-展示容器运行状态、健康状态、端口连通、CA 是否可取回、缓存目录占用、证书就绪状态与代理访问地址。「重启代理」按钮在重启期间提示「代理正在重启，重启期间依赖镜像拉取会失败，属预期行为」；重启结果按 `restarted` / `ca_changed` / `ca_reinstalled` / `reinstalled_users` / `failed_users` 如实展示，不把未修复报成已修复。
+顶部先给一行状态摘要（容器 / 健康 / 证书），下面展示容器运行状态、健康状态、端口连通、CA 是否可取回、缓存目录占用、证书就绪状态与代理访问地址。「重启代理」按钮在重启期间提示「代理正在重启，重启期间依赖镜像拉取会失败，属预期行为」；重启结果按 `restarted` / `ca_changed` / `ca_reinstalled` / `reinstalled_users` / `failed_users` 如实展示，不把未修复报成已修复。
 
 ## data-testid 规范
 
@@ -144,9 +163,9 @@ platform/console/
 |---|---|---|
 | 沙箱列表 | `sandbox-list` | `page-sandbox-list-title` / `-table` / `-item` / `-item-name` / `-item-state` / `-item-image` / `-item-created-at` / `-item-start-button` / `-item-stop-button` / `-item-detail-button` / `-item-delete-button` / `-refresh-button` / `-create-button` / `-error-message` / `-empty` |
 | 新建沙箱 | `sandbox-create` | `page-sandbox-create-title` / `-name-input` / `-image-select` / `-image-refresh-button` / `-image-detail` / `-mount-add-button` / `-mount-item` / `-mount-host-input` / `-mount-container-input` / `-mount-readonly-checkbox` / `-mount-remove-button` / `-command-input` / `-workdir-input` / `-env-input` / `-submit-button` / `-error-message` / `-success` / `-success-link` |
-| 沙箱详情 | `sandbox-detail` | `page-sandbox-detail-title` / `-state` / `-image` / `-image-source` / `-system-user` / `-container-name` / `-network-name` / `-created-at` / `-updated-at` / `-socket-path` / `-workdir` / `-command` / `-env` / `-mounts` / `-dependencies` / `-start-button` / `-stop-button` / `-delete-button` / `-refresh-button` / `-back-button` / `-terminal-panel` / `-terminal-new-button` / `-terminal-tab` / `-terminal-status` / `-terminal-message` / `-terminal-surface` / `-terminal-existing-list` / `-terminal-existing-item` / `-terminal-existing-attach-button` |
-| 代理设置 | `settings` | `page-settings-title` / `-container-running` / `-healthy` / `-tcp-ok` / `-ca-fetchable` / `-cache-size` / `-certificate-ready` / `-proxy-url` / `-detail` / `-restart-button` / `-restarting-message` / `-restarted` / `-restart-message` / `-ca-changed` / `-ca-reinstalled` / `-ca-conclusion` / `-reinstalled-users` / `-failed-users` / `-error-message` |
-| 外壳 | `layout` | `page-layout-title` / `page-layout-nav-sandboxes` / `page-layout-nav-create` / `page-layout-nav-settings` |
+| 沙箱详情 | `sandbox-detail` | `page-sandbox-detail-title` / `-state` / `-image` / `-image-source` / `-system-user` / `-container-name` / `-network-name` / `-created-at` / `-updated-at` / `-socket-path` / `-workdir` / `-command` / `-env` / `-mounts` / `-dependencies` / `-start-button` / `-stop-button` / `-delete-button` / `-refresh-button` / `-back-button` / `-terminal-panel` / `-terminal-new-button` / `-terminal-tab` / `-terminal-status` / `-terminal-message` / `-terminal-surface` / `-terminal-retry-button` / `-terminal-existing-list` / `-terminal-existing-item` / `-terminal-existing-attach-button` |
+| 代理设置 | `settings` | `page-settings-title` / `-summary` / `-container-running` / `-healthy` / `-tcp-ok` / `-ca-fetchable` / `-cache-size` / `-certificate-ready` / `-proxy-url` / `-detail` / `-restart-button` / `-restarting-message` / `-restarted` / `-restart-message` / `-ca-changed` / `-ca-reinstalled` / `-ca-conclusion` / `-reinstalled-users` / `-failed-users` / `-error-message` |
+| 外壳 | `layout` | `page-layout-title` / `page-layout-health` / `page-layout-nav-sandboxes` / `page-layout-nav-create` / `page-layout-nav-settings` |
 
 删除确认弹窗的标识按所在页面加前缀：`page-sandbox-list-delete-*` 与 `page-sandbox-detail-delete-*`（`-dialog` / `-title` / `-untouched-note` / `-items` / `-item` / `-user-mounts` / `-confirm-button` / `-cancel-button`）。
 
@@ -167,7 +186,7 @@ const tab = page.getByTestId('page-sandbox-detail-terminal-tab').filter({ hasTex
 
 | 方法 | 路径 | 前端用途 |
 |---|---|---|
-| GET | `/api/health` | 预留（服务自检） |
+| GET | `/api/health` | 外壳顶部的健康自检 |
 | GET | `/api/sandboxes` | 列表页（裸数组） |
 | POST | `/api/sandboxes` | 新建沙箱（带 `image_source=host`） |
 | GET | `/api/sandboxes/{name}` | 详情页 |

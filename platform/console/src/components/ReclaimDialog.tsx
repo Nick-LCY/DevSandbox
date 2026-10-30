@@ -1,3 +1,5 @@
+import { useEffect } from 'react';
+
 import type { ReclaimPlan } from '../api/types';
 
 /** 回收清单里固定出现的字样（后端 `untouched_note` 为空时的兜底）。 */
@@ -26,6 +28,21 @@ export function ReclaimDialog({
   onCancel,
 }: ReclaimDialogProps) {
   const note = plan.untouched_note.trim() || UNTOUCHED_NOTE_FALLBACK;
+
+  // Esc 关闭：删除是不可逆操作，弹窗必须给一条不点任何按钮就能退出的路。
+  useEffect(() => {
+    if (busy) {
+      return undefined;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onCancel();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [busy, onCancel]);
 
   return (
     <div className="dialog-backdrop" role="dialog" aria-modal="true" data-testid={`${testIdPrefix}-dialog`}>

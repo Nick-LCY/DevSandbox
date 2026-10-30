@@ -7,6 +7,10 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.162.0",
     "uvicorn>=0.54.0",
+    # 下界 15.0：uvicorn 的 sansio WebSocket 实现（--ws auto 默认选中它）
+    # 直接 import 顶层 websockets.server 模块取 ServerProtocol，
+    # 该模块只在 websockets 14.0 起的新 asyncio 实现里存在；
+    # 版本更低会让服务在启动时直接 ImportError，网页终端根本起不来。
     "websockets>=15.0",
 ]
 

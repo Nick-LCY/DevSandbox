@@ -5,6 +5,7 @@ import type { ReclaimPlan, SandboxDetail } from '../api/types';
 import { ErrorBanner } from '../components/ErrorBanner';
 import { ReclaimDialog } from '../components/ReclaimDialog';
 import { TerminalPanel } from '../components/TerminalPanel';
+import { actionBannerClass, type ActionMessage } from '../lib/action';
 import { formatBoolean, formatTimestamp, orPlaceholder } from '../lib/format';
 
 /** 沙箱详情页：完整信息 + 生命周期操作 + 网页终端面板。 */
@@ -12,7 +13,7 @@ export function SandboxDetailPage({ sandboxName }: { sandboxName: string }) {
   const [detail, setDetail] = useState<SandboxDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [actionMessage, setActionMessage] = useState('');
+  const [actionMessage, setActionMessage] = useState<ActionMessage | null>(null);
   const [plan, setPlan] = useState<ReclaimPlan | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -38,13 +39,16 @@ export function SandboxDetailPage({ sandboxName }: { sandboxName: string }) {
 
   const start = useCallback(async () => {
     setBusy(true);
-    setActionMessage('');
+    setActionMessage(null);
     try {
       const updated = await api.startSandbox(sandboxName);
       setDetail(updated);
-      setActionMessage(`沙箱 ${sandboxName} 已启动`);
+      setActionMessage({ kind: 'success', text: `沙箱 ${sandboxName} 已启动` });
     } catch (exc) {
-      setActionMessage(exc instanceof Error ? exc.message : '启动沙箱失败');
+      setActionMessage({
+        kind: 'error',
+        text: exc instanceof Error ? exc.message : '启动沙箱失败',
+      });
     } finally {
       setBusy(false);
     }
@@ -52,13 +56,16 @@ export function SandboxDetailPage({ sandboxName }: { sandboxName: string }) {
 
   const stop = useCallback(async () => {
     setBusy(true);
-    setActionMessage('');
+    setActionMessage(null);
     try {
       const updated = await api.stopSandbox(sandboxName, stopDependencies);
       setDetail(updated);
-      setActionMessage(`沙箱 ${sandboxName} 已停止`);
+      setActionMessage({ kind: 'success', text: `沙箱 ${sandboxName} 已停止` });
     } catch (exc) {
-      setActionMessage(exc instanceof Error ? exc.message : '停止沙箱失败');
+      setActionMessage({
+        kind: 'error',
+        text: exc instanceof Error ? exc.message : '停止沙箱失败',
+      });
     } finally {
       setBusy(false);
     }
@@ -67,11 +74,14 @@ export function SandboxDetailPage({ sandboxName }: { sandboxName: string }) {
   /** 删除前先取回收清单并弹窗确认。 */
   const openDelete = useCallback(async () => {
     setBusy(true);
-    setActionMessage('');
+    setActionMessage(null);
     try {
       setPlan(await api.reclaimSandbox(sandboxName));
     } catch (exc) {
-      setActionMessage(exc instanceof Error ? exc.message : '读取回收清单失败');
+      setActionMessage({
+        kind: 'error',
+        text: exc instanceof Error ? exc.message : '读取回收清单失败',
+      });
     } finally {
       setBusy(false);
     }
@@ -86,14 +96,19 @@ export function SandboxDetailPage({ sandboxName }: { sandboxName: string }) {
       const result = await api.deleteSandbox(plan.sandbox_name);
       setPlan(null);
       const failed = result.failed.length;
-      setActionMessage(
-        failed > 0
-          ? `沙箱 ${result.name} 已删除：回收 ${result.removed.length} 项，${failed} 项失败`
-          : `沙箱 ${result.name} 已删除：回收 ${result.removed.length} 项`,
-      );
+      setActionMessage({
+        kind: failed > 0 ? 'error' : 'success',
+        text:
+          failed > 0
+            ? `沙箱 ${result.name} 已删除：回收 ${result.removed.length} 项，${failed} 项失败`
+            : `沙箱 ${result.name} 已删除：回收 ${result.removed.length} 项`,
+      });
       window.location.hash = '#/';
     } catch (exc) {
-      setActionMessage(exc instanceof Error ? exc.message : '删除沙箱失败');
+      setActionMessage({
+        kind: 'error',
+        text: exc instanceof Error ? exc.message : '删除沙箱失败',
+      });
     } finally {
       setDeleting(false);
     }
@@ -161,8 +176,12 @@ export function SandboxDetailPage({ sandboxName }: { sandboxName: string }) {
 
       <ErrorBanner message={error} testId="page-sandbox-detail-error-message" />
       {actionMessage && (
-        <div className="banner banner-info" data-testid="page-sandbox-detail-action-message">
-          {actionMessage}
+        <div
+          className={actionBannerClass(actionMessage.kind)}
+          data-testid="page-sandbox-detail-action-message"
+          data-action-kind={actionMessage.kind}
+        >
+          {actionMessage.text}
         </div>
       )}
 

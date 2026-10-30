@@ -12,7 +12,22 @@ const STATUS_LABEL: Record<TerminalStatus, string> = {
   reconnecting: '重连中',
   closed: '已结束',
   invalid: '会话失效',
+  warning: '有告警',
+  failed: '重连失败',
 };
+
+/**
+ * 终端标签序号：单调递增的全局计数器。
+ *
+ * 用「当前标签数 + 1」当标题，关掉中间的标签后会与剩下的标签重名；
+ * 计数器只增不减，重名就不会再发生。
+ */
+let terminalTabSeq = 0;
+
+function nextTerminalTitle(): string {
+  terminalTabSeq += 1;
+  return `终端 ${terminalTabSeq}`;
+}
 
 interface TerminalTab {
   /** 会话标识（服务端生成，重连时原样带回）。 */
@@ -40,6 +55,8 @@ export function TerminalPanel({ sandboxName, sandboxRunning }: TerminalPanelProp
   const [existing, setExisting] = useState<TerminalSessionRecord[]>([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  /** 每个标签的重试令牌：手动点重试时自增，终端视图据此重建连接。 */
+  const [retryTokens, setRetryTokens] = useState<Record<string, number>>({});
 
   const refreshExisting = useCallback(async () => {
     try {
@@ -61,7 +78,7 @@ export function TerminalPanel({ sandboxName, sandboxRunning }: TerminalPanelProp
       const session = await api.createTerminalSession(sandboxName, 80, 24);
       const tab: TerminalTab = {
         id: session.session_id,
-        title: `终端 ${tabs.length + 1}`,
+        title: nextTerminalTitle(),
         status: 'connecting',
         message: '正在连接终端会话…',
       };
@@ -73,9 +90,11 @@ export function TerminalPanel({ sandboxName, sandboxRunning }: TerminalPanelProp
     } finally {
       setBusy(false);
     }
-  }, [sandboxName, refreshExisting, tabs.length]);
+  }, [sandboxName, refreshExisting]);
 
   const attachExisting = useCallback((record: TerminalSessionRecord) => {
+    // 标题在更新函数外算好：更新函数必须是纯的（开发模式下会被重复调用）。
+    const title = nextTerminalTitle();
     setTabs((previous) => {
       if (previous.some((tab) => tab.id === record.session_id)) {
         return previous;
@@ -84,7 +103,7 @@ export function TerminalPanel({ sandboxName, sandboxRunning }: TerminalPanelProp
         ...previous,
         {
           id: record.session_id,
-          title: `终端 ${previous.length + 1}`,
+          title,
           status: 'connecting' as TerminalStatus,
           message: '正在重新附着已有会话…',
         },
@@ -95,6 +114,14 @@ export function TerminalPanel({ sandboxName, sandboxRunning }: TerminalPanelProp
 
   const closeTab = useCallback((tabId: string) => {
     setTabs((previous) => previous.filter((tab) => tab.id !== tabId));
+  }, []);
+
+  /** 手动重试：令牌自增，终端视图重建连接并把失败计数清零。 */
+  const retryTab = useCallback((tabId: string) => {
+    setRetryTokens((previous) => ({
+      ...previous,
+      [tabId]: (previous[tabId] ?? 0) + 1,
+    }));
   }, []);
 
   // 活动标签被关掉后自动落到剩下的第一个。
@@ -112,6 +139,16 @@ export function TerminalPanel({ sandboxName, sandboxRunning }: TerminalPanelProp
   }, []);
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
+
+  /** 提示条的样式：告警与失败各有各的样式，不跟正常状态混用。 */
+  const messageClass =
+    activeTab === null
+      ? 'hint'
+      : activeTab.status === 'warning'
+        ? 'hint hint-warning'
+        : activeTab.status === 'failed' || activeTab.status === 'invalid'
+          ? 'hint hint-error'
+          : 'hint';
 
   return (
     <section className="panel terminal-panel" data-testid="page-sandbox-detail-terminal-panel">
@@ -143,9 +180,21 @@ export function TerminalPanel({ sandboxName, sandboxRunning }: TerminalPanelProp
           沙箱当前未运行，无法新建终端会话。请先启动沙箱。
         </p>
       )}
-      <p className="hint" data-testid="page-sandbox-detail-terminal-message">
+      <p className={messageClass} data-testid="page-sandbox-detail-terminal-message">
         {activeTab?.message ?? '终端会话在浏览器断开后仍保留，重新附着同一会话可恢复现场。'}
       </p>
+      {activeTab?.status === 'failed' && (
+        <div className="form-actions">
+          <button
+            type="button"
+            className="button button-small"
+            onClick={() => retryTab(activeTab.id)}
+            data-testid="page-sandbox-detail-terminal-retry-button"
+          >
+            重试连接
+          </button>
+        </div>
+      )}
 
       {existing.length > 0 && (
         <div className="terminal-existing">
@@ -214,6 +263,7 @@ export function TerminalPanel({ sandboxName, sandboxRunning }: TerminalPanelProp
           <TerminalView
             sessionId={tab.id}
             active={tab.id === activeTabId}
+            retryToken={retryTokens[tab.id] ?? 0}
             onStateChange={(state) => updateTabState(tab.id, state.status, state.message)}
           />
         </div>

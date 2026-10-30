@@ -4,6 +4,7 @@ import { api } from '../api/client';
 import type { ReclaimPlan, SandboxSummary } from '../api/types';
 import { ErrorBanner } from '../components/ErrorBanner';
 import { ReclaimDialog } from '../components/ReclaimDialog';
+import { actionBannerClass, type ActionMessage } from '../lib/action';
 import { formatTimestamp } from '../lib/format';
 import { sandboxDetailHash } from '../lib/router';
 
@@ -15,7 +16,7 @@ export function SandboxListPage() {
   const [sandboxes, setSandboxes] = useState<SandboxSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [actionMessage, setActionMessage] = useState('');
+  const [actionMessage, setActionMessage] = useState<ActionMessage | null>(null);
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const [plan, setPlan] = useState<ReclaimPlan | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -59,13 +60,16 @@ export function SandboxListPage() {
   const start = useCallback(
     async (name: string) => {
       setBusyName(name);
-      setActionMessage('');
+      setActionMessage(null);
       try {
         await api.startSandbox(name);
-        setActionMessage(`沙箱 ${name} 已启动`);
+        setActionMessage({ kind: 'success', text: `沙箱 ${name} 已启动` });
         await load(true);
       } catch (exc) {
-        setActionMessage(exc instanceof Error ? exc.message : `启动沙箱 ${name} 失败`);
+        setActionMessage({
+          kind: 'error',
+          text: exc instanceof Error ? exc.message : `启动沙箱 ${name} 失败`,
+        });
       } finally {
         setBusyName(null);
       }
@@ -76,13 +80,16 @@ export function SandboxListPage() {
   const stop = useCallback(
     async (name: string) => {
       setBusyName(name);
-      setActionMessage('');
+      setActionMessage(null);
       try {
         await api.stopSandbox(name);
-        setActionMessage(`沙箱 ${name} 已停止`);
+        setActionMessage({ kind: 'success', text: `沙箱 ${name} 已停止` });
         await load(true);
       } catch (exc) {
-        setActionMessage(exc instanceof Error ? exc.message : `停止沙箱 ${name} 失败`);
+        setActionMessage({
+          kind: 'error',
+          text: exc instanceof Error ? exc.message : `停止沙箱 ${name} 失败`,
+        });
       } finally {
         setBusyName(null);
       }
@@ -93,12 +100,15 @@ export function SandboxListPage() {
   /** 删除前先取回收清单；清单拿不到就不进确认环节。 */
   const openDelete = useCallback(async (name: string) => {
     setBusyName(name);
-    setActionMessage('');
+    setActionMessage(null);
     try {
       const reclaimPlan = await api.reclaimSandbox(name);
       setPlan(reclaimPlan);
     } catch (exc) {
-      setActionMessage(exc instanceof Error ? exc.message : `读取回收清单失败：${name}`);
+      setActionMessage({
+        kind: 'error',
+        text: exc instanceof Error ? exc.message : `读取回收清单失败：${name}`,
+      });
     } finally {
       setBusyName(null);
     }
@@ -114,14 +124,19 @@ export function SandboxListPage() {
       setPlan(null);
       const removed = result.removed.length;
       const failed = result.failed.length;
-      setActionMessage(
-        failed > 0
-          ? `沙箱 ${result.name} 已删除：回收 ${removed} 项，${failed} 项失败`
-          : `沙箱 ${result.name} 已删除：回收 ${removed} 项`,
-      );
+      setActionMessage({
+        kind: failed > 0 ? 'error' : 'success',
+        text:
+          failed > 0
+            ? `沙箱 ${result.name} 已删除：回收 ${removed} 项，${failed} 项失败`
+            : `沙箱 ${result.name} 已删除：回收 ${removed} 项`,
+      });
       await load(true);
     } catch (exc) {
-      setActionMessage(exc instanceof Error ? exc.message : '删除沙箱失败');
+      setActionMessage({
+        kind: 'error',
+        text: exc instanceof Error ? exc.message : '删除沙箱失败',
+      });
     } finally {
       setDeleting(false);
     }
@@ -154,8 +169,12 @@ export function SandboxListPage() {
 
       <ErrorBanner message={error} testId="page-sandbox-list-error-message" />
       {actionMessage && (
-        <div className="banner banner-info" data-testid="page-sandbox-list-action-message">
-          {actionMessage}
+        <div
+          className={actionBannerClass(actionMessage.kind)}
+          data-testid="page-sandbox-list-action-message"
+          data-action-kind={actionMessage.kind}
+        >
+          {actionMessage.text}
         </div>
       )}
 

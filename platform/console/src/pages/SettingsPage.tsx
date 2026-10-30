@@ -12,6 +12,7 @@ import {
   describeHealth,
   describeRestartOutcome,
   describeTcp,
+  summarizeProxyStatus,
 } from '../lib/proxy';
 
 /** 重启期间的提示文案：代理不可达时依赖镜像拉取失败是预期行为，不做降级。 */
@@ -102,6 +103,9 @@ export function SettingsPage() {
 
       {status && (
         <div className="panel">
+          <p className="panel-summary" data-testid="page-settings-summary">
+            {summarizeProxyStatus(status)}
+          </p>
           <div className="detail-grid">
             <div className="detail-item">
               <span className="detail-label">容器运行状态</span>

@@ -765,14 +765,63 @@ def test_exec_pty_shell_injects_session_marker(monkeypatch: pytest.MonkeyPatch) 
     process = daemon.exec_pty_shell("sandbox-demo", session_id="sess-marker-9")
     try:
         argv = captured["argv"]
-        # 命令行是完整的 ``docker exec …``：只给子命令的话宿主侧会去执行
-        # 一个叫 exec 的程序（不存在），容器内 shell 起不来。
-        assert "docker" in argv
-        assert argv[argv.index("docker") + 1] == "exec"
-        assert "--env" in argv
-        assert "SANDBOX_TERMINAL_SESSION=sess-marker-9" in argv
-        assert "sandbox-demo" in argv
+        # 命令行尾部是完整的 ``docker exec -it --env <会话标识> <容器名> <shell> -i``：
+        # 只给子命令的话宿主侧会去执行一个叫 exec 的程序（不存在），
+        # 容器内 shell 起不来。整体断言尾部形态，次序错一位就会失败。
+        assert argv[-8:] == [
+            "docker",
+            "exec",
+            "-it",
+            "--env",
+            "SANDBOX_TERMINAL_SESSION=sess-marker-9",
+            "sandbox-demo",
+            "bash",
+            "-i",
+        ]
         assert captured["marker"] == "sess-marker-9"
+    finally:
+        process.close()
+
+
+def test_exec_pty_shell_sudo_branch_prefixes_user_switch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """非 root 运行的提权分支：命令行头部带 ``sudo -n -u <用户>``。
+
+    少了这个前缀，``-u <用户>`` 会被当成外层命令的参数，产出非法命令行。
+    """
+    captured: dict[str, Any] = {}
+
+    def fake_spawn_pty(argv, *, cols=80, rows=24, env=None, marker=None):
+        captured["argv"] = list(argv)
+        captured["marker"] = marker
+        return spawn_pty(["cat"], cols=cols, rows=rows)
+
+    monkeypatch.setattr("sandbox_platform.daemon.spawn_pty", fake_spawn_pty)
+    daemon = UserDaemon(
+        UserContext(
+            user="sandbox-demo",
+            uid=1001,
+            gid=1001,
+            home=Path("/home/sandbox-demo"),
+        ),
+        privilege=Privilege(enabled=True),
+    )
+    process = daemon.exec_pty_shell("sandbox-demo", session_id="sess-sudo-1")
+    try:
+        argv = captured["argv"]
+        assert argv[:4] == ["sudo", "-n", "-u", "sandbox-demo"]
+        assert argv[-8:] == [
+            "docker",
+            "exec",
+            "-it",
+            "--env",
+            "SANDBOX_TERMINAL_SESSION=sess-sudo-1",
+            "sandbox-demo",
+            "bash",
+            "-i",
+        ]
+        assert captured["marker"] == "sess-sudo-1"
     finally:
         process.close()
 

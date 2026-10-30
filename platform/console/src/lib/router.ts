@@ -37,7 +37,16 @@ export function parseRoute(hash: string): ConsoleRoute {
     return { name: 'settings' };
   }
   if (segments.length === 2 && segments[0] === 'sandboxes') {
-    return { name: 'sandbox-detail', sandboxName: decodeURIComponent(segments[1]) };
+    let sandboxName: string;
+    try {
+      sandboxName = decodeURIComponent(segments[1]);
+    } catch {
+      // 畸形百分号编码（如 `#/sandboxes/%`）会让 decodeURIComponent 抛 URIError。
+      // 解析路由的调用栈直通 React 渲染，一个坏地址就会把整站打成白屏，
+      // 这里一律退回沙箱列表页。
+      return { name: 'sandbox-list' };
+    }
+    return { name: 'sandbox-detail', sandboxName };
   }
   return { name: 'sandbox-list' };
 }
