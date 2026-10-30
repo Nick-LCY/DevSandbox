@@ -1,0 +1,60 @@
+/* ============================================================================
+ * 自托管字体（由 scripts/build-fonts.sh 生成 /public/fonts 下的 woff2）
+ *
+ * - 思源黑体（Noto Sans SC）：正文与界面文字，400/500/600/700 四档。
+ * - Geist Mono：终端与等宽内容，400/500 两档。
+ * - 全部 font-display: swap：字体没到位时先用系统字体顶上，不闪白。
+ * - 子集字符集见 scripts/fonts/charset.txt：ASCII 可打印区 + 前端与后端
+ *   实际用到的中文字符 + 常用符号。
+ *
+ * 字体文件没生成时（离线环境跑 build-fonts.sh 失败），本文件里的 url 会 404，
+ * 浏览器自动回退到 --app-font-sans 里的系统字体栈，页面照常可用。
+ * ==========================================================================*/
+
+@font-face {
+  font-family: 'Noto Sans SC';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/NotoSansSC-400.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Noto Sans SC';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/NotoSansSC-500.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Noto Sans SC';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/fonts/NotoSansSC-600.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Noto Sans SC';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/NotoSansSC-700.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Geist Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/GeistMono-400.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Geist Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/GeistMono-500.woff2') format('woff2');
+}

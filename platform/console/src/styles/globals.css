@@ -1,0 +1,263 @@
+/* ============================================================================
+ * 控制台新底座样式入口（Tailwind v4 + 双主题令牌）
+ *
+ * 三条口径（改动本文件前先读）：
+ *
+ * 1. 透明度通道机制
+ *    所有 OKLCH 颜色令牌的 alpha 槽位都写成 `oklch(L C H / var(--app-alpha))`，
+ *    `--app-alpha` 是全局透明度通道（:root 下恒为 1）。要整体调透明度时只改
+ *    `--app-alpha` 一个值即可，不必逐个令牌改。少数令牌（--app-ring）自带固定
+ *    alpha，不走通道。
+ *
+ * 2. 扫描范围
+ *    `source(none)` 关掉 Tailwind 的自动内容探测，再用显式 `@source` 只扫
+ *    index.html 与 src/**。这样一次性视觉原型 `platform/console/prototype/`
+ *    与 node_modules 都不会被扫进来，不会污染产物 CSS。
+ *
+ * 3. 暗色变体
+ *    `@custom-variant dark (&:where(.dark, .dark *))` 挂 `html.dark`，
+ *    由 src/lib/theme.ts 的 applyTheme() 负责挂/摘这个类。
+ *
+ * ---------------------------------------------------------------------------
+ * 并存期口径（任务二删掉旧 styles.css 之前一直有效）：
+ *
+ * - 旧 `src/styles.css` 是**无层 CSS**（不在任何 @layer 里），规范里优先级
+ *   高于 Tailwind 的 `@layer base` / `@layer utilities`，所以旧样式永远压得住
+ *   新底座；反过来 Tailwind 的工具类也压不住旧样式。
+ * - 引入顺序：`src/main.tsx` 里 **globals.css 在前、styles.css 在后**。
+ * - 并存期禁止在旧四页（列表/新建/详情/设置）里混用 Tailwind 工具类，
+ *   旧页面的外观必须逐像素不变。
+ * - 旧四页依赖浏览器默认样式（<p> 外边距、标题字重、<ol> 编号、按钮默认字体），
+ *   而 Tailwind 的 Preflight 会把这些默认值抹掉。所以本文件**不引入 Preflight**，
+ *   只引 theme 层与 utilities 层（Tailwind 官方关掉 Preflight 的写法）。
+ *   任务二删掉旧 styles.css 之后，再按新设计补一份自己的 reset。
+ * ==========================================================================*/
+
+@layer theme, base, components, utilities;
+
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
+@import "./fonts.css";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@source "../../index.html";
+@source "../../src/**/*.{ts,tsx}";
+
+/* 暗色变体：挂 html.dark（见 src/lib/theme.ts）。 */
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  color-scheme: light;
+
+  /* 全局透明度通道：所有 OKLCH 颜色令牌的 alpha 槽位引用它。 */
+  --app-alpha: 1;
+
+  --app-background: oklch(0.975 0.008 145 / var(--app-alpha));
+  --app-card: oklch(1 0.002 145 / var(--app-alpha));
+  --app-muted: oklch(0.955 0.007 145 / var(--app-alpha));
+  --app-elevated: oklch(0.95 0.015 145 / var(--app-alpha));
+  --app-accent: oklch(0.93 0.028 148 / var(--app-alpha));
+  --app-foreground: oklch(0.2 0.025 151 / var(--app-alpha));
+  --app-muted-foreground: oklch(0.48 0.02 151 / var(--app-alpha));
+  --app-faint: oklch(0.62 0.015 151 / var(--app-alpha));
+  --app-border: oklch(0.9 0.012 145 / var(--app-alpha));
+  --app-border-strong: oklch(0.845 0.022 148 / var(--app-alpha));
+  --app-input: oklch(0.89 0.015 145 / var(--app-alpha));
+  --app-primary: oklch(0.44 0.11 151 / var(--app-alpha));
+  --app-primary-hover: oklch(0.39 0.105 151 / var(--app-alpha));
+  --app-primary-foreground: oklch(1 0 0 / var(--app-alpha));
+  --app-primary-bright: oklch(0.78 0.15 152 / var(--app-alpha));
+  --app-destructive: oklch(0.58 0.2 27 / var(--app-alpha));
+  --app-destructive-soft: oklch(0.955 0.028 27 / var(--app-alpha));
+  --app-warning: oklch(0.62 0.13 62 / var(--app-alpha));
+  --app-warning-soft: oklch(0.96 0.045 78 / var(--app-alpha));
+  --app-info: oklch(0.55 0.15 250 / var(--app-alpha));
+  --app-info-soft: oklch(0.955 0.028 250 / var(--app-alpha));
+  --app-success: oklch(0.48 0.1 160 / var(--app-alpha));
+  --app-success-soft: oklch(0.945 0.03 160 / var(--app-alpha));
+  --app-sidebar: oklch(0.19 0.025 151 / var(--app-alpha));
+  --app-sidebar-hover: oklch(0.235 0.03 151 / var(--app-alpha));
+  --app-sidebar-active: oklch(0.275 0.045 151 / var(--app-alpha));
+  --app-sidebar-border: oklch(0.27 0.03 151 / var(--app-alpha));
+  --app-sidebar-foreground: oklch(0.95 0.008 150 / var(--app-alpha));
+  --app-sidebar-muted: oklch(0.7 0.022 151 / var(--app-alpha));
+  --app-ring: oklch(0.44 0.11 151 / 0.22);
+  --app-shadow-sm: 0 1px 2px oklch(0.2 0.025 151 / 0.06);
+  --app-shadow-md: 0 1px 2px oklch(0.2 0.025 151 / 0.05), 0 6px 16px oklch(0.2 0.025 151 / 0.07);
+  --app-shadow-lg: 0 2px 6px oklch(0.2 0.025 151 / 0.08), 0 20px 48px oklch(0.2 0.025 151 / 0.14);
+  --app-terminal-bg: #152019;
+  --app-terminal-fg: #e3ebe5;
+  --app-terminal-accent: #a7d8af;
+  --app-font-sans: 'Noto Sans SC', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --app-font-mono: 'Geist Mono', SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Noto Sans Mono CJK SC', monospace;
+  --app-radius: 8px;
+
+  /* shadcn/ui 原语需要的补充令牌（值全部挂在 --app-* 上，不另起一套色板）。 */
+  --app-secondary: oklch(0.94 0.012 148 / var(--app-alpha));
+  --app-secondary-foreground: var(--app-foreground);
+  --app-accent-foreground: var(--app-foreground);
+  --app-popover: var(--app-card);
+  --app-popover-foreground: var(--app-foreground);
+  --app-card-foreground: var(--app-foreground);
+}
+
+.dark {
+  color-scheme: dark;
+
+  /* 逐项映射现有 styles.css 暗色变量；品牌色不用旧蓝 #4c8dff（降级为 --app-info），改常青绿 */
+  --app-background: #0f1420;
+  --app-card: #161d2c;
+  --app-muted: #161d2c;
+  --app-elevated: #1d2637;
+  --app-accent: #1d2637;
+  --app-foreground: #e6ebf5;
+  --app-muted-foreground: #93a0b8;
+  --app-faint: #6f7d95;
+  --app-border: #2a3446;
+  --app-border-strong: #38445a;
+  --app-input: #2a3446;
+  --app-primary: oklch(0.76 0.13 152 / var(--app-alpha));
+  --app-primary-hover: oklch(0.82 0.13 152 / var(--app-alpha));
+  --app-primary-foreground: oklch(0.16 0.03 151 / var(--app-alpha));
+  --app-primary-bright: oklch(0.82 0.14 152 / var(--app-alpha));
+  --app-destructive: #ff6b6b;
+  --app-destructive-soft: oklch(0.31 0.075 27 / var(--app-alpha));
+  --app-warning: #ffb454;
+  --app-warning-soft: oklch(0.32 0.06 62 / var(--app-alpha));
+  --app-info: #4c8dff;
+  --app-info-soft: oklch(0.28 0.08 250 / var(--app-alpha));
+  --app-success: #4ec9a5;
+  --app-success-soft: oklch(0.28 0.055 165 / var(--app-alpha));
+  --app-sidebar: oklch(0.165 0.026 151 / var(--app-alpha));
+  --app-sidebar-hover: oklch(0.215 0.032 151 / var(--app-alpha));
+  --app-sidebar-active: oklch(0.26 0.045 151 / var(--app-alpha));
+  --app-sidebar-border: oklch(0.24 0.03 151 / var(--app-alpha));
+  --app-sidebar-foreground: oklch(0.95 0.008 150 / var(--app-alpha));
+  --app-sidebar-muted: oklch(0.68 0.022 151 / var(--app-alpha));
+  --app-ring: oklch(0.76 0.13 152 / 0.25);
+  --app-shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
+  --app-shadow-md: 0 1px 2px rgb(0 0 0 / 0.35), 0 6px 16px rgb(0 0 0 / 0.35);
+  --app-shadow-lg: 0 2px 6px rgb(0 0 0 / 0.45), 0 22px 52px rgb(0 0 0 / 0.55);
+
+  --app-secondary: oklch(0.215 0.028 151 / var(--app-alpha));
+  --app-secondary-foreground: var(--app-foreground);
+  --app-accent-foreground: var(--app-foreground);
+  --app-popover: var(--app-card);
+  --app-popover-foreground: var(--app-foreground);
+  --app-card-foreground: var(--app-foreground);
+}
+
+/*
+ * 主题层：把 --app-* 令牌映射成 Tailwind 的 --color-* / --font-* / --radius-* 等。
+ *
+ * 这里用标准 `@theme`（不是 `inline`），原因有两个：
+ * - `inline` 不会把 --color-* 变量输出到 :root，产物 CSS 里查不到 --color-primary；
+ * - shadcn/ui 组件里有 `rounded-[min(var(--radius-md),10px)]` 这类任意值，
+ *   依赖 --radius-md 真实存在于 CSS 变量里。
+ *
+ * 暗色切换：.dark 只覆盖 --app-*（未分层），而 --color-* 是 `var(--app-*)` 的引用，
+ * 在同一元素（<html class="dark">）上按计算值解析，自动拿到暗色值，无需重复覆盖。
+ */
+@theme {
+  --color-background: var(--app-background);
+  --color-card: var(--app-card);
+  --color-card-foreground: var(--app-card-foreground);
+  --color-muted: var(--app-muted);
+  --color-elevated: var(--app-elevated);
+  --color-accent: var(--app-accent);
+  --color-accent-foreground: var(--app-accent-foreground);
+  --color-foreground: var(--app-foreground);
+  --color-muted-foreground: var(--app-muted-foreground);
+  --color-faint: var(--app-faint);
+  --color-border: var(--app-border);
+  --color-border-strong: var(--app-border-strong);
+  --color-input: var(--app-input);
+  --color-primary: var(--app-primary);
+  --color-primary-hover: var(--app-primary-hover);
+  --color-primary-foreground: var(--app-primary-foreground);
+  --color-primary-bright: var(--app-primary-bright);
+  --color-secondary: var(--app-secondary);
+  --color-secondary-foreground: var(--app-secondary-foreground);
+  --color-popover: var(--app-popover);
+  --color-popover-foreground: var(--app-popover-foreground);
+  --color-destructive: var(--app-destructive);
+  --color-destructive-soft: var(--app-destructive-soft);
+  --color-warning: var(--app-warning);
+  --color-warning-soft: var(--app-warning-soft);
+  --color-info: var(--app-info);
+  --color-info-soft: var(--app-info-soft);
+  --color-success: var(--app-success);
+  --color-success-soft: var(--app-success-soft);
+  --color-sidebar: var(--app-sidebar);
+  --color-sidebar-hover: var(--app-sidebar-hover);
+  --color-sidebar-active: var(--app-sidebar-active);
+  --color-sidebar-border: var(--app-sidebar-border);
+  --color-sidebar-foreground: var(--app-sidebar-foreground);
+  --color-sidebar-muted: var(--app-sidebar-muted);
+  --color-ring: var(--app-ring);
+  --color-terminal-bg: var(--app-terminal-bg);
+  --color-terminal-fg: var(--app-terminal-fg);
+  --color-terminal-accent: var(--app-terminal-accent);
+  --font-sans: var(--app-font-sans);
+  --font-mono: var(--app-font-mono);
+  --font-heading: var(--app-font-sans);
+  --radius-md: var(--app-radius);
+  --shadow-sm: var(--app-shadow-sm);
+  --shadow-md: var(--app-shadow-md);
+  --shadow-lg: var(--app-shadow-lg);
+}
+
+/* 状态色：运行=品牌绿 / 启动中·停止中=琥珀 / 已停止=灰 / 失败=红 */
+:root {
+  --app-status-running: var(--app-primary);
+  --app-status-busy: var(--app-warning);
+  --app-status-stopped: var(--app-faint);
+  --app-status-failed: var(--app-destructive);
+}
+
+@theme {
+  --color-status-running: var(--app-status-running);
+  --color-status-busy: var(--app-status-busy);
+  --color-status-stopped: var(--app-status-stopped);
+  --color-status-failed: var(--app-status-failed);
+}
+
+@layer base {
+  body {
+    background-color: var(--app-background);
+    color: var(--app-foreground);
+    font-family: var(--app-font-sans);
+    font-size: 14px;
+    line-height: 1.6;
+    /* 并存期**不**在这里设 -webkit-font-smoothing：它是继承属性，一设就会改掉
+       旧四页所有文字的抗锯齿，页面就不再逐像素一致了。任务二起新外壳落地时，
+       跟着新字体栈一起把 antialiased 加回来。 */
+  }
+
+  code,
+  kbd,
+  pre {
+    font-family: var(--app-font-mono);
+  }
+
+  ::selection {
+    background: var(--app-accent);
+  }
+}
+
+@keyframes app-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.82);
+  }
+}
+
+@utility animate-status-pulse {
+  animation: app-pulse 1.6s ease-in-out infinite;
+}

@@ -14,6 +14,9 @@ build/
 console/node_modules/
 console/dist/
 
+# 一次性视觉原型（不进版本库）
+console/prototype/
+
 # 端到端验收产物（截图 / trace / 报告 / 运行期状态）
 console/tests/artifacts/
 console/tests/.runtime/

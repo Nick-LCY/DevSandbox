@@ -4,6 +4,26 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>沙箱平台控制台</title>
+    <script>
+      // 防闪烁主题脚本：首帧渲染前就把主题类挂到 <html> 上，避免先亮一下再切暗色。
+      // 只认用户明确选过的值（'dark' 才挂 dark 类）；读取失败（隐私模式等）一律留亮色。
+      (function () {
+        var theme = 'light';
+        try {
+          var stored = window.localStorage.getItem('sandbox-console-theme');
+          if (stored === 'dark') {
+            theme = 'dark';
+          }
+        } catch (e) {
+          theme = 'light';
+        }
+        var root = document.documentElement;
+        if (theme === 'dark') {
+          root.classList.add('dark');
+        }
+        root.dataset.theme = theme;
+      })();
+    </script>
   </head>
   <body>
     <!--

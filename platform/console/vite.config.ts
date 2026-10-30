@@ -1,12 +1,21 @@
-import { defineConfig } from 'vite';
+import { fileURLToPath, URL } from 'node:url';
+
+import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
+import { defineConfig } from 'vite';
 
 // 开发时前端跑 5173，接口与 WebSocket 一起反向代理到后端 8000。
 // 生产构建产物由后端服务在 `/` 路径直接托管（单端口对外，无跨域）。
 const backend = process.env.BACKEND_URL ?? 'http://127.0.0.1:8000';
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
+  resolve: {
+    // `@/xxx` 一律指向 src/xxx，与 tsconfig 的 paths 保持一致。
+    alias: {
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
+    },
+  },
   server: {
     host: '0.0.0.0',
     port: 5173,
