@@ -27,7 +27,7 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/sandbox_platform"]
 
-[tool.ruff]
+[tool.ruff.lint]
 # 仓库历史基线规则集：只保留 pyflakes 错误（E4 导入、E7 语句、E9 运行时）
 # 与 pyflakes 未定义名（F）这几类致命问题。
 #

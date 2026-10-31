@@ -258,7 +258,7 @@ cd platform/console && pnpm run typecheck && pnpm run test && pnpm run typecheck
 | 前端构建 | `pnpm run build` | **成功**（`dist/` 已刷新，真机服务托管的就是这一份产物） | 2.44 秒 |
 | 真机验收 | `pnpm run test:acceptance`（Playwright chromium 1.64.1） | **22 passed / 0 failed / 0 skipped / 0 flaky**，退出码 **0** | **6.0 分钟**（results.json 实测 362.75 秒） |
 
-**ruff 口径**：`platform/pyproject.toml` 补了 `[tool.ruff]` 配置，把规则集钉在 `select = ["E4", "E7", "E9", "F"]`（仓库历史基线：pyflakes 的导入错误 / 语句错误 / 未定义名）。
+**ruff 口径**：`platform/pyproject.toml` 补了 `[tool.ruff.lint]` 配置，把规则集钉在 `select = ["E4", "E7", "E9", "F"]`（仓库历史基线：pyflakes 的导入错误 / 语句错误 / 未定义名）。
 新版 ruff 默认规则集在本仓命中 **59 处历史风格项**（未排序导入 18 处、函数默认值里的函数调用 19 处、宽泛 except 8 处、`try-except-pass` / 冗余 return / 未用 noqa 等 14 处），
 全部是既有代码的既有写法，**不在本轮清偿范围**——一次性清偿会制造大量无关改动、淹没本轮模板轮的真实差异，因此显式把口径钉死，历史风格清债另开一轮。
 
@@ -321,12 +321,13 @@ cd platform/console && pnpm run typecheck && pnpm run test && pnpm run typecheck
 | 项 | 前 | 后 |
 |---|---|---|
 | 字符集规模（`platform/console/scripts/fonts/charset.txt`） | 1104 字符 | **3634 字符**（并入通用规范汉字表一级字表 3500 字） |
-| 字体产物体积（`public/fonts/` 下 6 个 woff2 合计） | 660,484 字节 | **2,140,148 字节** |
+| 字体产物体积（`public/fonts/` 下 6 个 woff2 合计） | 701,484 字节 | **2,165,148 字节** |
 
 字符集规模已按仓库内 `scripts/fonts/charset.txt` 逐字核对一致（1104 → 3634）。
-字节数取决于构建时下载到的**上游源字体快照**（Noto Sans SC 可变字体上游会发版），因此按不同快照重建会有出入：
-本机复核仓库内入库的 6 个 woff2 合计为 **701,484 → 2,165,148 字节**，用同一脚本重建一遍得到 701,136 → 2,165,212 字节（差异在几百字节量级）。
-两个口径都不影响缺字形判据——字符集覆盖范围才是决定界面会不会出现方框的那一项。
+上表的字体字节数是**仓库实测口径**：直接对入库的 6 个 woff2 逐文件相加，重生成前 701,484 字节、重生成后 2,165,148 字节；
+用同一脚本在本机重建一遍得到 701,136 → 2,165,212 字节（差异在几百字节量级，不改变结论）。
+
+附注：上游工作汇报里记的体积是 660,484 → 2,140,148 字节，比仓库实测口径小几万字节；成因是字节数取决于构建时下载到的**上游源字体快照**（Noto Sans SC 可变字体上游会发版），不同快照重建会有出入。两个口径都不影响缺字形判据——字符集覆盖范围才是决定界面会不会出现方框的那一项。
 
 **缺文件即报错**：`bash scripts/build-fonts.sh` 在 `scripts/fonts/common-hanzi.txt` 缺失时直接失败退出，不静默跳过（静默跳过会产出缺字形的子集）。
 字体文件缺失时浏览器自动回退系统字体栈，不会白屏。
