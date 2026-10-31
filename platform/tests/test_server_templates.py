@@ -9,18 +9,22 @@ from __future__ import annotations
 
 import json
 import stat
+import threading
+import time
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sandbox_platform import PlatformConfig
+from sandbox_platform import ConfigError, PlatformConfig
 from sandbox_platform.server import create_app
+from sandbox_platform.server import templates as templates_module
 from sandbox_platform.server.templates import (
     BUILTIN_DIRNAME,
     BUILTIN_STATE_FILENAME,
     TEMPLATES_DIRNAME,
     TemplateRecord,
     TemplateStore,
+    _valid_template_id,
     ensure_builtin_templates,
     new_template_id,
     prepare_templates_dir,
@@ -152,9 +156,25 @@ def test_delete_missing_template_returns_404(templates_client: TestClient) -> No
 
 
 def test_delete_template_with_illegal_id_returns_404(templates_client: TestClient) -> None:
-    """标识非法（路径穿越形态）：按不存在处理，不碰宿主文件系统。"""
+    """标识非法（路径穿越形态）：按不存在处理，不碰宿主文件系统。
+
+    注意：这类请求会被框架的路由匹配先短路成 404，压根进不到处理器，
+    真正的标识守卫由 ``test_template_id_guard_rejects_path_traversal`` 直接打。
+    """
     response = templates_client.delete("/api/templates/..%2F..%2Fetc")
     assert response.status_code == 404
+
+
+def test_template_id_guard_rejects_path_traversal(store: TemplateStore) -> None:
+    """模板标识守卫：路径穿越与隐藏目录名一律拒绝（直接打守卫函数）。
+
+    守卫有两道：``_valid_template_id`` 判真假，``path_for`` 命中就报错。
+    """
+    assert _valid_template_id("tpl_ok") is True
+    for illegal in ("../../etc/passwd", "..", ".builtin", "", "a/b", "tpl/../x"):
+        assert _valid_template_id(illegal) is False
+        with pytest.raises(ConfigError):
+            store.path_for(illegal)
 
 
 # ---------------------------------------------------------------- 名称零限制
@@ -332,6 +352,89 @@ def test_delete_user_template_does_not_write_tombstone(
     assert not tombstone_path_of(platform_home).exists()
 
 
+def test_concurrent_builtin_deletes_keep_both_tombstone_keys(
+    store: TemplateStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """并发删两个内置模板：墓碑条目不互相覆盖（两个 key 都在）。
+
+    墓碑是「读-改-写」：没有进程内锁时，两个线程各读到旧集合、各写一份，
+    后写的会覆盖先写的条目（漏记墓碑 → 被删的内置模板又被复活）。
+    """
+    original_read = templates_module.TemplateStore.builtin_deleted_keys
+
+    def slow_read(self: TemplateStore) -> set[str]:
+        keys = original_read(self)
+        time.sleep(0.05)  # 拉长「读-改-写」窗口，逼出丢更新
+        return keys
+
+    monkeypatch.setattr(templates_module.TemplateStore, "builtin_deleted_keys", slow_read)
+
+    barrier = threading.Barrier(2)
+
+    def delete_one(template_id: str) -> None:
+        barrier.wait()
+        store.mark_builtin_deleted(template_id)
+
+    threads = [
+        threading.Thread(target=delete_one, args=(template_id,))
+        for template_id in ("tpl_builtin_a", "tpl_builtin_b")
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert store.builtin_deleted_keys() == {"tpl_builtin_a", "tpl_builtin_b"}
+
+
+def test_ensure_builtin_templates_survives_read_only_dir(
+    platform_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """模板目录不可写（只读）：种子注入只记日志，不抛异常。"""
+
+    def raise_permission_error(config: PlatformConfig) -> Path:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(
+        templates_module, "prepare_templates_dir", raise_permission_error
+    )
+    assert ensure_builtin_templates(PlatformConfig.from_env()) == []
+
+
+def test_list_templates_survives_seed_failure(
+    templates_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """种子注入意外失败：列表接口照常返回 200（不因种子失败而 500）。"""
+
+    def raise_runtime_error(config: PlatformConfig) -> list[str]:
+        raise RuntimeError("种子注入炸了")
+
+    monkeypatch.setattr(
+        "sandbox_platform.server.routes.templates.ensure_builtin_templates",
+        raise_runtime_error,
+    )
+    response = templates_client.get("/api/templates")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_lifespan_survives_seed_failure(
+    platform_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """启动钩子里的种子注入意外失败：服务照常启动（不阻断）。"""
+
+    def raise_runtime_error(config: PlatformConfig) -> list[str]:
+        raise RuntimeError("种子注入炸了")
+
+    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
+    monkeypatch.setattr("sandbox_platform.server.app.ensure_builtin_templates", raise_runtime_error)
+    app = create_app()
+    with TestClient(app) as client:
+        assert client.get("/api/health").status_code == 200
+
+
 # ---------------------------------------------------------------- 模板库落盘
 def test_store_writes_file_with_0600(store: TemplateStore) -> None:
     """模板记录文件权限 0600（与平台其他元数据一致）。"""
@@ -367,6 +470,51 @@ def test_store_load_returns_none_for_corrupt_file(
     path = templates_dir_of(platform_home) / "tpl_broken.json"
     path.write_text("{ 这不是合法 JSON", encoding="utf-8")
     assert store.load("tpl_broken") is None
+
+
+def test_store_skips_non_utf8_record_file(store: TemplateStore, platform_home: Path) -> None:
+    """记录文件不是 UTF-8：按不存在处理（跳过），不抛解码错误。"""
+    prepare_templates_dir(PlatformConfig.from_env())
+    path = templates_dir_of(platform_home) / "tpl_binary.json"
+    path.write_bytes(b"\xff\xfe\x00 not utf-8")
+    assert store.load("tpl_binary") is None
+    assert store.list_all() == []
+
+
+def test_store_load_uses_file_name_as_template_id(store: TemplateStore, platform_home: Path) -> None:
+    """记录内容里的 id 与文件名不一致：以文件名为准（标识只认路径）。"""
+    prepare_templates_dir(PlatformConfig.from_env())
+    path = templates_dir_of(platform_home) / "tpl_real.json"
+    path.write_text(
+        json.dumps({"id": "tpl_other", "name": "拷来的", "config": {}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    record = store.load("tpl_real")
+    assert record is not None
+    assert record.id == "tpl_real"
+    assert record.name == "拷来的"
+
+
+def test_store_treats_corrupt_tombstone_as_empty_set(
+    store: TemplateStore, platform_home: Path
+) -> None:
+    """墓碑文件损坏：按空集处理，不外抛（坏墓碑不得让接口 500）。"""
+    prepare_templates_dir(PlatformConfig.from_env())
+    tombstone = tombstone_path_of(platform_home)
+    tombstone.parent.mkdir(parents=True, exist_ok=True)
+    tombstone.write_text("{ 这不是合法 JSON", encoding="utf-8")
+    assert store.builtin_deleted_keys() == set()
+
+
+def test_store_treats_non_utf8_tombstone_as_empty_set(
+    store: TemplateStore, platform_home: Path
+) -> None:
+    """墓碑文件不是 UTF-8：按空集处理，不抛解码错误。"""
+    prepare_templates_dir(PlatformConfig.from_env())
+    tombstone = tombstone_path_of(platform_home)
+    tombstone.parent.mkdir(parents=True, exist_ok=True)
+    tombstone.write_bytes(b"\xff\xfe\x00 not utf-8")
+    assert store.builtin_deleted_keys() == set()
 
 
 def test_store_load_returns_none_for_unknown_id(store: TemplateStore) -> None:

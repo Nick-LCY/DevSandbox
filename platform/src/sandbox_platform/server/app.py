@@ -70,8 +70,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         prepare_templates_dir(config)
         injected = ensure_builtin_templates(config)
-    except (ConfigError, OSError) as exc:
-        logger.error("模板库准备失败（不阻断服务启动）：%s", exc)
+    except Exception as exc:
+        # 兜底放宽到 Exception：种子注入的任何意外都不该把服务拖挂
+        logger.warning("模板库准备失败（不阻断服务启动）：%s", exc)
         injected = []
     if injected:
         logger.info("已注入内置模板：%s", "、".join(injected))

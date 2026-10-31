@@ -54,16 +54,21 @@ def expand_mounts_home_prefix(mounts: list[str]) -> list[str]:
 
 
 def _expand_home_segment(host: str) -> str:
-    """展开单个宿主路径段的前导 ``~``（只处理 ``~`` 与 ``~/`` 两种形态）。"""
-    if host != "~" and not host.startswith("~/"):
+    """展开单个宿主路径段的前导 ``~``（只处理 ``~`` 与 ``~/`` 两种形态）。
+
+    先去首尾空白再判断前缀：核心包解析挂载声明时也先 strip 宿主路径段，
+    两边口径必须一致（``" ~/data "`` 同样要展开）。
+    """
+    stripped = host.strip()
+    if stripped != "~" and not stripped.startswith("~/"):
         return host
     home = os.path.expanduser("~")
     if not home.startswith("/"):
         # 取不到家目录（HOME 为空或不是绝对路径）：保持原样
         return host
-    if host == "~":
+    if stripped == "~":
         return home
-    return home + host[1:]
+    return home + stripped[1:]
 
 
 class CreateSandboxRequest(BaseModel):

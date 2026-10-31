@@ -23,6 +23,7 @@ import logging
 import os
 import secrets
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,10 @@ BUILTIN_STATE_FILENAME = "state.json"
 
 # 模板标识前缀（标识由服务端生成，不接受客户端指定）
 TEMPLATE_ID_PREFIX = "tpl_"
+
+# 内置模板墓碑的进程内锁：墓碑是「读-改-写」，两个请求并发删两个内置模板时
+# 必须串行，否则后写的会覆盖先写的条目（漏记墓碑 → 被删的内置模板又被复活）
+_BUILTIN_STATE_LOCK = threading.Lock()
 
 # 内置模板种子：常量元组，**本期为空**（只落地机制，不预置真实模板内容）。
 # 每条的形状：``{"id": ..., "name": ..., "config": {...}}``。
@@ -156,15 +161,15 @@ class TemplateStore:
             return None
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, ValueError):
+            # ValueError 覆盖 JSON 语法错误与解码错误（文件不是 UTF-8）：坏数据不外抛
             logger.error("模板记录损坏，按不存在处理：%s", path)
             return None
         if not isinstance(data, dict):
             return None
         record = TemplateRecord.from_dict(data)
-        if not record.id:
-            # 记录内容不完整：以文件名（模板标识）为准
-            record.id = template_id
+        # 模板标识以文件名为准：记录内容里的 id 不可信（改名、拷贝、手改都可能带上旧标识）
+        record.id = template_id
         return record
 
     def list_all(self) -> list[TemplateRecord]:
@@ -198,16 +203,21 @@ class TemplateStore:
         return True
 
     def mark_builtin_deleted(self, template_id: str) -> None:
-        """记下「这个内置模板被用户删了」（写墓碑），后续注入不再复活它。"""
-        keys = self.builtin_deleted_keys()
-        if template_id in keys:
-            return
-        keys.add(template_id)
-        _write_json_atomic(
-            self.builtin_state_path,
-            {"deleted": sorted(keys)},
-            label="内置模板墓碑",
-        )
+        """记下「这个内置模板被用户删了」（写墓碑），后续注入不再复活它。
+
+        墓碑是「读-改-写」：整个过程在进程内锁里串行，避免并发删两个内置
+        模板时互相覆盖对方的墓碑条目。
+        """
+        with _BUILTIN_STATE_LOCK:
+            keys = self.builtin_deleted_keys()
+            if template_id in keys:
+                return
+            keys.add(template_id)
+            _write_json_atomic(
+                self.builtin_state_path,
+                {"deleted": sorted(keys)},
+                label="内置模板墓碑",
+            )
 
     def builtin_deleted_keys(self) -> set[str]:
         """读墓碑：已被删除的内置模板标识集合（坏数据按空集处理）。"""
@@ -216,7 +226,8 @@ class TemplateStore:
             return set()
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, ValueError):
+            # ValueError 覆盖 JSON 语法错误与解码错误（文件不是 UTF-8）：坏墓碑按空集
             logger.error("内置模板墓碑文件损坏，按空集处理：%s", path)
             return set()
         if not isinstance(data, dict):
@@ -232,13 +243,14 @@ def ensure_builtin_templates(config: PlatformConfig) -> list[str]:
 
     三条跳过规则：命中墓碑（用户删过）不复活、同标识文件已存在不覆盖、
     标识非法不注入。目录不可用或单条写入失败时只记日志，不抛异常——
-    种子注入失败不阻断服务启动。
+    种子注入失败不阻断服务启动（调用方是列表接口与启动钩子，两处都不能 500）。
     """
     store = TemplateStore(config)
     try:
         prepare_templates_dir(config)
-    except ConfigError as exc:
-        logger.error("内置模板注入跳过：%s", exc)
+    except (ConfigError, OSError) as exc:
+        # OSError 覆盖 PermissionError：模板目录只读时只记日志，不让接口 500
+        logger.warning("内置模板注入跳过：%s", exc)
         return []
     deleted = store.builtin_deleted_keys()
     injected: list[str] = []
@@ -267,8 +279,9 @@ def ensure_builtin_templates(config: PlatformConfig) -> list[str]:
         )
         try:
             store.save(record)
-        except ConfigError as exc:
-            logger.error("内置模板写入失败（%s）：%s", template_id, exc)
+        except (ConfigError, OSError) as exc:
+            # 写不进去（目录只读、磁盘满）只记日志：其余种子继续注入
+            logger.warning("内置模板写入失败（%s）：%s", template_id, exc)
             continue
         injected.append(template_id)
     return injected

@@ -47,8 +47,12 @@ def list_templates(
     """列出全部模板（裸数组），带完整配置体。
 
     读取时也补一次内置种子：新增内置模板不必等重启。
+    种子注入失败只记日志（降级为 warning），不影响模板列表本身。
     """
-    ensure_builtin_templates(store.config)
+    try:
+        ensure_builtin_templates(store.config)
+    except Exception as exc:
+        logger.warning("内置模板注入失败（不影响模板列表）：%s", exc)
     return [TemplateResponse.from_record(record) for record in store.list_all()]
 
 

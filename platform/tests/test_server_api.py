@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
@@ -224,16 +223,39 @@ def test_create_sandbox_with_unbalanced_quotes_returns_400(client: TestClient) -
 
 # ---------------------------------------------------------------- 挂载宿主路径的 ~ 展开
 def test_create_sandbox_expands_home_prefix_in_mounts(
-    client: TestClient, fake_service: FakeSandboxService
+    client: TestClient,
+    fake_service: FakeSandboxService,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """挂载宿主路径的 ~ 与 ~/ 展开为服务运行用户的家目录。"""
+    """挂载宿主路径的 ~ 与 ~/ 展开为服务运行用户的家目录。
+
+    家目录口径锁死：把 HOME 指向固定假家目录，展开结果必须落在那里
+    （不是当前登录用户的家目录，也不是容器内的家目录）。
+    """
+    fake_home = "/tmp/fake-service-home"
+    monkeypatch.setenv("HOME", fake_home)
     client.post(
         "/api/sandboxes",
         json={"name": "demo", "mounts": ["~/data:/data", "~:/rootish"]},
     )
     request: CreateRequest = fake_service.calls[-1][1][0]
-    home = os.path.expanduser("~")
-    assert request.mount_declarations == (f"{home}/data:/data", f"{home}:/rootish")
+    assert request.mount_declarations == (f"{fake_home}/data:/data", f"{fake_home}:/rootish")
+
+
+def test_create_sandbox_expands_home_prefix_with_surrounding_spaces(
+    client: TestClient,
+    fake_service: FakeSandboxService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """宿主路径段带前后空格：照样展开（与核心包先 strip 的口径一致）。"""
+    fake_home = "/tmp/fake-service-home"
+    monkeypatch.setenv("HOME", fake_home)
+    client.post(
+        "/api/sandboxes",
+        json={"name": "demo", "mounts": ["  ~/data  :/data"]},
+    )
+    request: CreateRequest = fake_service.calls[-1][1][0]
+    assert request.mount_declarations == (f"{fake_home}/data:/data",)
 
 
 def test_create_sandbox_does_not_expand_container_path(
@@ -255,9 +277,12 @@ def test_create_sandbox_does_not_expand_other_user_prefix(
 
 
 def test_create_sandbox_expanded_mount_host_is_absolute(
-    client: TestClient, fake_service: FakeSandboxService
+    client: TestClient,
+    fake_service: FakeSandboxService,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """展开后的宿主路径是绝对路径（进核心请求前已是完整路径）。"""
+    monkeypatch.setenv("HOME", "/tmp/fake-service-home")
     client.post("/api/sandboxes", json={"name": "demo", "mounts": ["~/data:/data:ro"]})
     request: CreateRequest = fake_service.calls[-1][1][0]
     host = request.mount_declarations[0].split(":")[0]
