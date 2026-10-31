@@ -359,6 +359,38 @@
     font-family: var(--app-font-mono);
   }
 
+  /* 可交互元素统一手型光标（Tailwind v4 的 preflight 兜底）。
+   *
+   * Tailwind v4 的 preflight 不再给 button 设 cursor: pointer（v3 时代有），
+   * 可交互元素的默认光标退回箭头（default），和「这里能点」的视觉暗示不一致。
+   * 这里在 base 层统一兜底：新增交互原语不必逐个补 cursor-pointer。
+   *
+   * 只给「可交互且未禁用」的元素加：禁用态保持浏览器默认箭头，
+   * 不发明 not-allowed 新口径（项目里既有的 disabled:cursor-not-allowed
+   * 是组件级局部语义，照旧保留）。
+   *
+   * 选择器口径（按实际用到的元素收敛，不堆砌）：
+   * - button / [role="button"]：按钮类交互（含 Base UI 的 Button 与 Dialog.Close）。
+   * - a[href]：带 href 的链接才算可点，无 href 的锚点不算。
+   * - select / label / summary：原生表单控件与可点文本。
+   * - [role="option"]：Base UI 下拉选项（渲染成 div，不是 button）。
+   * - [role="tab"]：终端标签（渲染成 span，不是 button）。
+   * - input[type="checkbox"]：原生勾选框（自身很小，需要单独给手型）。
+   *
+   * 层级：base 层弱于工具类（utilities），局部的 cursor-default 等
+   * 故意语义不受这条兜底影响。 */
+  button:not(:disabled),
+  [role="button"]:not(:disabled),
+  a[href],
+  select:not(:disabled),
+  label,
+  summary,
+  [role="option"],
+  [role="tab"],
+  input[type="checkbox"]:not(:disabled) {
+    cursor: pointer;
+  }
+
   /* 选中态：收进新外壳作用域（暗色下浏览器默认选中色几乎不可见，不能渗漏
      过去）。外壳根元素须携带 data-console-shell。 */
   [data-console-shell]::selection,
