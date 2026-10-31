@@ -7,11 +7,12 @@ import { expect, test } from '@playwright/test';
 
 import { getSandbox, reclaimPlan, type DeleteResultModel } from '../helpers/api';
 import {
-  confirmDeleteTwice,
+  confirmDelete,
   fillCreateForm,
   gotoWorkbench,
   openCreateDialog,
   openDeleteDialog,
+  selectCreatedSandbox,
   selectSandbox,
 } from '../helpers/console';
 import {
@@ -44,7 +45,7 @@ test.describe('删除回收复验', () => {
         mountContainer: workspace.containerPath,
         command: 'sleep infinity',
       });
-      await page.getByTestId('page-sandbox-create-success-link').click();
+      await selectCreatedSandbox(page, SANDBOX_NAME);
       await expect(page.getByTestId('page-sandbox-detail-title')).toBeVisible();
 
       const detail = await getSandbox(SANDBOX_NAME);
@@ -96,35 +97,25 @@ test.describe('删除回收复验', () => {
       expect(planText).toContain(home);
       expect(planText).toContain('平台元数据');
 
-      // ── ④ 经工作台删除：侧栏选中 → 头部「删除」→ 弹窗里两步确认
+      // ── ④ 经工作台删除：侧栏选中 → 头部「删除」→ 弹窗里点一次确认
       await gotoWorkbench(page);
       await selectSandbox(page, SANDBOX_NAME);
       const dialog = await openDeleteDialog(page);
       await expect(page.getByTestId('page-sandbox-detail-delete-untouched-note')).toHaveText(
         '用户挂载的宿主机目录不受影响',
       );
-      const dialogText = (await dialog.textContent()) ?? '';
-      expect(dialogText).toContain(containerName);
-      expect(dialogText).toContain(dependency);
-      expect(dialogText).toContain(workspace.path);
-
-      // 清单的两类圆点：平台回收项是红点，用户声明的挂载是绿点
-      const redDots = dialog.locator(
-        '[data-testid="page-sandbox-detail-delete-item"] span[aria-hidden="true"]',
-      );
-      await expect(redDots.first()).toHaveClass(/bg-destructive/);
-      const greenDots = dialog.locator(
-        '[data-testid="page-sandbox-detail-delete-user-mount-item"] span[aria-hidden="true"]',
-      );
-      await expect(greenDots.first()).toHaveClass(/bg-success/);
+      // 弹窗只说后果与「不受影响」：不再列回收清单。
+      await expect(dialog).toContainText('此操作不可撤销');
+      await expect(dialog).not.toContainText(containerName);
+      await expect(dialog).not.toContainText(dependency);
 
       const deleted = page.waitForResponse(
         (response) =>
           response.url().includes(`/api/sandboxes/${SANDBOX_NAME}`) &&
           response.request().method() === 'DELETE',
       );
-      // 两步确认：第一次只是武装，第二次才真删
-      await confirmDeleteTwice(page);
+      // 一次点确认即删除
+      await confirmDelete(page);
       const response = await deleted;
       expect(response.status()).toBe(200);
       const result = (await response.json()) as DeleteResultModel;

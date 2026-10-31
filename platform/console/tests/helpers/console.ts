@@ -2,7 +2,7 @@
  * 控制台页面的通用操作。
  *
  * 控制台是**单页工作台**：左侧边栏是沙箱列表，右侧工作区是选中沙箱的摘要与
- * 网页终端；新建沙箱 / 沙箱详情 / 代理设置都是弹窗（不入路由）。
+ * 网页终端；新建沙箱 / 沙箱详情 / 代理设置都是右侧滑出的抽屉（不入路由）。
  *
  * 标识一律按 README 的标识表来，helper 与实现一一对应：
  * - 工作台：`#/`；
@@ -21,7 +21,7 @@ export async function gotoWorkbench(page: Page): Promise<void> {
 }
 
 /**
- * 打开新建沙箱弹窗。
+ * 打开新建沙箱抽屉。
  *
  * 「新建沙箱」按钮在页面上有两个挂载点（侧栏顶部 + 右侧空态引导块），
  * 取第一个即可。
@@ -51,7 +51,9 @@ export async function selectSandbox(page: Page, name: string): Promise<void> {
 }
 
 /**
- * 在新建弹窗里填一份完整的创建表单并提交，返回提交后等待成功提示的耗时（毫秒）。
+ * 在新建抽屉里填一份完整的创建表单并提交，返回提交后等待成功提示的耗时（毫秒）。
+ *
+ * 创建成功后的口径：**抽屉关掉 + 右上角弹一条成功 toast**（不再有成功面板）。
  */
 export async function fillCreateForm(
   page: Page,
@@ -86,15 +88,33 @@ export async function fillCreateForm(
   }
   const started = Date.now();
   await page.getByTestId('page-sandbox-create-submit-button').click();
-  await expect(page.getByTestId('page-sandbox-create-success')).toBeVisible({ timeout: 300_000 });
+  // 成功 toast：来源 sandbox-create 的那条成功提示。
+  await expect(toastItem(page, 'success', 'sandbox-create')).toContainText(
+    `沙箱 ${options.name} 创建成功`,
+    { timeout: 300_000 },
+  );
+  // 抽屉同时关掉（成功面板已退役，不再有 page-sandbox-create-success）。
+  await expect(page.getByTestId('page-sandbox-create-dialog')).toBeHidden();
   return Date.now() - started;
 }
 
 /**
- * 弹窗字段的标识映射。
+ * 创建成功后从左侧边栏选中新沙箱。
  *
- * 与工作区头部重名的四个字段在弹窗里换了标识（避免 Playwright 严格模式
- * 撞车）；其余字段只在弹窗里出现，标识不变。
+ * 创建**不再自动选中**：列表是创建后刷新的，先等新沙箱真的出现在侧栏里再点。
+ */
+export async function selectCreatedSandbox(page: Page, name: string): Promise<void> {
+  const item = page.getByTestId('page-sandbox-list-item').filter({ hasText: name });
+  await expect(item).toHaveCount(1, { timeout: 60_000 });
+  await item.click();
+  await expect(page.getByTestId('page-sandbox-detail-title')).toContainText(name);
+}
+
+/**
+ * 抽屉字段的标识映射。
+ *
+ * 与工作区头部重名的四个字段在抽屉里换了标识（避免 Playwright 严格模式
+ * 撞车）；其余字段只在抽屉里出现，标识不变。
  */
 const DIALOG_FIELD_IDS: Record<string, string> = {
   state: 'page-sandbox-detail-dialog-state',
@@ -103,7 +123,7 @@ const DIALOG_FIELD_IDS: Record<string, string> = {
   'updated-at': 'page-sandbox-detail-dialog-updated-at',
 };
 
-/** 详情弹窗里可读的字段名。 */
+/** 详情抽屉里可读的字段名。 */
 export type DetailFieldName =
   | 'state'
   | 'image'
@@ -123,13 +143,13 @@ export type DetailFieldName =
   | 'mounts'
   | 'dependencies';
 
-/** 字段名 → 弹窗里的定位标识。 */
+/** 字段名 → 抽屉里的定位标识。 */
 function dialogFieldId(field: DetailFieldName): string {
   return DIALOG_FIELD_IDS[field] ?? `page-sandbox-detail-${field}`;
 }
 
 /**
- * 打开沙箱详情弹窗（完整字段在弹窗里）。
+ * 打开沙箱详情抽屉（完整字段在抽屉里）。
  */
 export async function openDetailDialog(page: Page): Promise<void> {
   await page.getByTestId('page-sandbox-detail-detail-button').click();
@@ -137,7 +157,7 @@ export async function openDetailDialog(page: Page): Promise<void> {
 }
 
 /**
- * 关掉沙箱详情弹窗（Esc 关闭）。
+ * 关掉沙箱详情抽屉（Esc 关闭）。
  */
 export async function closeDetailDialog(page: Page): Promise<void> {
   const dialog = page.getByTestId('page-sandbox-detail-dialog');
@@ -145,7 +165,7 @@ export async function closeDetailDialog(page: Page): Promise<void> {
   await expect(dialog).toBeHidden();
 }
 
-/** 详情弹窗里的失败 toast 文案（toast 不在时是空串）。 */
+/** 详情抽屉里的失败 toast 文案（toast 不在时是空串）。 */
 async function toastText(toast: Locator): Promise<string> {
   if ((await toast.count()) === 0) {
     return '';
@@ -175,16 +195,16 @@ export function toastItem(
 }
 
 /**
- * 取沙箱详情弹窗里的某个字段文本。
+ * 取沙箱详情抽屉里的某个字段文本。
  *
- * **完整字段只在详情弹窗里**：工作区头部只有状态 / 镜像 / 时间三项摘要，
- * 镜像来源、系统用户、容器名、挂载、子 ID 段等都得进弹窗读。
+ * **完整字段只在详情抽屉里**：工作区头部只有状态 / 镜像 / 时间三项摘要，
+ * 镜像来源、系统用户、容器名、挂载、子 ID 段等都得进抽屉读。
  *
- * 弹窗没开着就顺手打开，读完再关掉（不让弹窗挡着后面的操作）；
- * 调用方自己开着弹窗时，读完不动它。
+ * 抽屉没开着就顺手打开，读完再关掉（不让抽屉挡着后面的操作）；
+ * 调用方自己开着抽屉时，读完不动它。
  *
  * 字段名传字段本身（`image` / `image-source`），不传完整标识：
- * 与工作区头部重名的四个字段（状态 / 镜像 / 创建时间 / 更新时间）在弹窗里
+ * 与工作区头部重名的四个字段（状态 / 镜像 / 创建时间 / 更新时间）在抽屉里
  * 换了标识（`page-sandbox-detail-dialog-*`），映射关系只在本文件里维护。
  *
  * 等待口径是「**详情到了**」，不是「加载提示没了」：重拉时组件保留旧值、
@@ -252,7 +272,7 @@ export async function detailField(page: Page, field: DetailFieldName): Promise<s
 /**
  * 打开删除沙箱确认弹窗，返回弹窗容器。
  *
- * 回收清单要先读一遍（清单在弹窗里），所以拆成「打开」与「确认」两步。
+ * 删除前不再预取回收清单，弹窗里只说后果与「不受影响」。
  */
 export async function openDeleteDialog(page: Page): Promise<Locator> {
   await page.getByTestId('page-sandbox-detail-delete-button').click();
@@ -262,12 +282,12 @@ export async function openDeleteDialog(page: Page): Promise<Locator> {
 }
 
 /**
- * 两步确认删除：第一次点只武装，第二次才真的发删除请求。
+ * 一次点确认就删：点一次「确认删除」并等删除请求发出去。
  *
- * 这里挂上删除请求的计数：第一次点之后必须一个删除请求都没发出去，第二次点
- * 之后才发得出请求——堵住「第一击既武装又真删」的假绿。
+ * 这里挂上删除请求的计数：点击之前必须一个删除请求都没发出去——堵住
+ * 「还没点就把沙箱删了」的假绿。
  */
-export async function confirmDeleteTwice(page: Page): Promise<void> {
+export async function confirmDelete(page: Page): Promise<void> {
   const confirm = page.getByTestId('page-sandbox-detail-delete-confirm-button');
   let deleteRequests = 0;
   const countDelete = (request: Request): void => {
@@ -277,23 +297,41 @@ export async function confirmDeleteTwice(page: Page): Promise<void> {
   };
   page.on('request', countDelete);
   try {
-    await confirm.click();
-    // 等一小会儿再判零：请求事件比点击晚几十毫秒落地，不留窗口就等于没数。
-    await page.waitForTimeout(300);
-    expect(deleteRequests, '第一次点「确认删除」不应发出任何删除请求').toBe(0);
-
-    // 第一击只是武装：武装提示条得出现。
-    await expect(page.getByTestId('page-sandbox-detail-delete-armed-hint')).toBeVisible();
-
-    // 第二击：真删。删除请求必须发得出去。
+    expect(deleteRequests, '点「确认删除」之前不应发出任何删除请求').toBe(0);
     await confirm.click();
     await expect
       .poll(() => deleteRequests, {
         timeout: 30_000,
-        message: '第二次点「确认删除」没有发出删除请求',
+        message: '点「确认删除」没有发出删除请求',
       })
       .toBeGreaterThanOrEqual(1);
   } finally {
     page.off('request', countDelete);
   }
+}
+
+/**
+ * 打开停止沙箱确认弹窗，返回弹窗容器。
+ *
+ * 停止是可逆操作，但「同时停止依赖容器」会连带影响别的服务，所以要逐次确认。
+ */
+export async function openStopDialog(page: Page): Promise<Locator> {
+  await page.getByTestId('page-sandbox-detail-stop-button').click();
+  const dialog = page.getByTestId('page-sandbox-detail-stop-dialog');
+  await expect(dialog).toBeVisible();
+  return dialog;
+}
+
+/**
+ * 确认停止：点「确认停止」并等 `POST /api/sandboxes/<名>/stop` 真的发出去。
+ */
+export async function confirmStop(page: Page, name: string): Promise<void> {
+  const stopped = page.waitForResponse(
+    (response) =>
+      response.url().includes(`/api/sandboxes/${encodeURIComponent(name)}/stop`) &&
+      response.request().method() === 'POST',
+    { timeout: 60_000 },
+  );
+  await page.getByTestId('page-sandbox-detail-stop-confirm-button').click();
+  await stopped;
 }

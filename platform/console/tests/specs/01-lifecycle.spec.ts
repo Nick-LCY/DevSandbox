@@ -1,20 +1,25 @@
 /**
- * 全流程验收：弹窗建沙箱（选镜像 + 填表）→ 侧栏选中 → 工作区头部启停
- * → 终端执行命令断言回显 → 删除（回收清单弹窗，两步确认）→ 回空态。
+ * 全流程验收：抽屉建沙箱（选镜像 + 填表）→ 侧栏选中 → 工作区头部启停
+ * → 终端执行命令断言回显 → 删除（确认弹窗里点一次即删）→ 回空态。
  *
  * 全程只经网页操作，不碰命令行；每一步都有可判定的断言。
  */
 
 import { expect, test } from '@playwright/test';
 
+import { createSandbox, deleteSandbox } from '../helpers/api';
 import {
-  confirmDeleteTwice,
+  confirmDelete,
+  confirmStop,
   detailField,
   fillCreateForm,
   gotoDetail,
   gotoWorkbench,
   openCreateDialog,
   openDeleteDialog,
+  openStopDialog,
+  selectCreatedSandbox,
+  selectSandbox,
   toastItem,
 } from '../helpers/console';
 import { sandboxContainerState, userUid } from '../helpers/host';
@@ -49,12 +54,9 @@ test.describe('网页控制台全流程', () => {
         command: 'sleep infinity',
       });
       test.info().annotations.push({ type: '创建耗时', description: `${elapsed} 毫秒` });
-      await expect(page.getByTestId('page-sandbox-create-success-message')).toContainText(
-        `沙箱 ${SANDBOX_NAME} 创建成功`,
-      );
 
-      // ── ③ 点成功态里的「打开沙箱详情」：选中该沙箱，右侧工作区显示它的摘要
-      await page.getByTestId('page-sandbox-create-success-link').click();
+      // ── ③ 创建成功不再自动选中：从左侧边栏选中新沙箱
+      await selectCreatedSandbox(page, SANDBOX_NAME);
       await expect(page.getByTestId('page-sandbox-detail-title')).toContainText(SANDBOX_NAME);
       await expect(page.getByTestId('page-sandbox-detail-state')).toHaveText('运行中');
       // 工作区头部摘要：镜像
@@ -77,8 +79,9 @@ test.describe('网页控制台全流程', () => {
       await typeInTerminal(page, sessionId, 'echo ACC_LIFECYCLE_MARKER_42');
       await expectTerminalText(page, sessionId, 'ACC_LIFECYCLE_MARKER_42');
 
-      // ── ⑤ 停止：容器真的停了，用户与家目录保留
-      await page.getByTestId('page-sandbox-detail-stop-button').click();
+      // ── ⑤ 停止：先弹确认框，确认后容器真的停了，用户与家目录保留
+      await openStopDialog(page);
+      await confirmStop(page, SANDBOX_NAME);
       await expect(toastItem(page, 'success')).toContainText('已停止');
       await expect(page.getByTestId('page-sandbox-detail-state')).toHaveText('已停止');
       expect(sandboxContainerState(systemUser, uid, containerName)).toBe('exited');
@@ -91,23 +94,22 @@ test.describe('网页控制台全流程', () => {
       expect(sandboxContainerState(systemUser, uid, containerName)).toBe('running');
       expect(await detailField(page, 'subid')).toBe(subidBefore);
 
-      // ── ⑦ 删除：先看回收清单弹窗，确认后才真删
+      // ── ⑦ 删除：确认弹窗里点一次就真删
       const dialog = await openDeleteDialog(page);
       await expect(page.getByTestId('page-sandbox-detail-delete-untouched-note')).toHaveText(
         '用户挂载的宿主机目录不受影响',
       );
-      const planText = await dialog.textContent();
-      expect(planText).toContain(containerName);
-      expect(planText).toContain(workspace.path);
+      // 后果说明：删了会怎样。
+      await expect(dialog).toContainText('此操作不可撤销');
 
       // 取消一次：一个删除请求都不该发出去
       await page.getByTestId('page-sandbox-detail-delete-cancel-button').click();
       await expect(dialog).toBeHidden();
       await expect(page.getByTestId('page-sandbox-detail-title')).toBeVisible();
 
-      // 再打开并确认删除（两步确认：第一次只是武装，第二次才真删）
+      // 再打开并确认删除（一次点即执行）
       await openDeleteDialog(page);
-      await confirmDeleteTwice(page);
+      await confirmDelete(page);
       await expect(page.getByTestId('page-sandbox-detail-empty')).toBeVisible({
         timeout: 120_000,
       });
@@ -143,7 +145,7 @@ test.describe('网页控制台全流程', () => {
       image: IMAGE,
       command: 'sleep infinity',
     });
-    await page.getByTestId('page-sandbox-create-success-link').click();
+    await selectCreatedSandbox(page, 'acc-refresh');
     await expect(page.getByTestId('page-sandbox-detail-title')).toBeVisible();
     const image = await detailField(page, 'image');
 
@@ -179,5 +181,79 @@ test.describe('网页控制台全流程', () => {
     await expect(page.getByTestId('page-sandbox-detail-empty')).toBeVisible();
     // 空态里的「新建沙箱」按钮与侧栏的是两个挂载点，取第一个即可
     await expect(page.getByTestId('page-sandbox-list-create-button')).toHaveCount(2);
+  });
+
+  test('抽屉宽度可拖拽，刷新后保持，三个抽屉共用一份宽度', async ({ page }) => {
+    await openCreateDialog(page);
+    const drawer = page.getByTestId('page-sandbox-create-dialog');
+    const handle = page.getByTestId('page-drawer-resize-handle');
+    await expect(handle).toBeVisible();
+
+    const before = (await drawer.boundingBox())!;
+    expect(before.width).toBeGreaterThan(0);
+
+    // 向左拖把手：面板变宽。
+    const box = (await handle.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 - 120, box.y + box.height / 2, { steps: 12 });
+    await page.mouse.up();
+
+    const after = (await drawer.boundingBox())!;
+    expect(after.width, '向左拖把手后面板应变宽').toBeGreaterThan(before.width + 50);
+
+    // 宽度写进共用存储键（三个抽屉共用一个）。
+    const stored = await page.evaluate(() =>
+      window.localStorage.getItem('sandbox-console-drawer-width'),
+    );
+    expect(stored, '拖拽后的宽度没有写进存储').not.toBeNull();
+    expect(Number(stored)).toBeGreaterThan(40);
+
+    // 刷新后重新打开抽屉：宽度保持。
+    await page.reload();
+    await openCreateDialog(page);
+    const reopened = (await page.getByTestId('page-sandbox-create-dialog').boundingBox())!;
+    expect(Math.abs(reopened.width - after.width)).toBeLessThan(2);
+
+    // 另一个抽屉（代理设置）也是同一个宽度：共用一个存储键。
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('page-sandbox-create-dialog')).toBeHidden();
+    await page.getByTestId('page-layout-proxy-button').click();
+    await expect(page.getByTestId('page-settings-dialog')).toBeVisible();
+    const proxyWidth = (await page.getByTestId('page-settings-dialog').boundingBox())!.width;
+    expect(Math.abs(proxyWidth - after.width)).toBeLessThan(2);
+  });
+
+  test('停止确认框取消时，后端没收到停止请求', async ({ page }) => {
+    const name = 'acc-stopcancel';
+    await createSandbox({ name, image: IMAGE, command: 'sleep infinity' });
+    try {
+      await gotoWorkbench(page);
+      await selectSandbox(page, name);
+
+      let stopRequests = 0;
+      const countStop = (request: { method(): string; url(): string }): void => {
+        if (request.method() === 'POST' && request.url().includes(`/api/sandboxes/${name}/stop`)) {
+          stopRequests += 1;
+        }
+      };
+      page.on('request', countStop);
+      try {
+        const dialog = await openStopDialog(page);
+        await expect(dialog).toContainText(`停止沙箱 ${name}`);
+        await page.getByTestId('page-sandbox-detail-stop-cancel-button').click();
+        await expect(dialog).toBeHidden();
+        // 等一拍再判零：请求事件比点击晚几十毫秒落地，不留窗口就等于没数。
+        await page.waitForTimeout(1000);
+        expect(stopRequests, '取消后不应发出任何停止请求').toBe(0);
+      } finally {
+        page.off('request', countStop);
+      }
+
+      // 沙箱还在运行：取消没有真的停。
+      await expect(page.getByTestId('page-sandbox-detail-state')).toHaveText('运行中');
+    } finally {
+      await deleteSandbox(name);
+    }
   });
 });

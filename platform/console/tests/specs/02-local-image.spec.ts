@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import { expect, test } from '@playwright/test';
 
 import { getSandbox, listImages } from '../helpers/api';
-import { fillCreateForm, openCreateDialog } from '../helpers/console';
+import { fillCreateForm, openCreateDialog, selectCreatedSandbox } from '../helpers/console';
 import { sandboxExec, userUid } from '../helpers/host';
 import { RUNTIME_DIR } from '../helpers/paths';
 import { readFixtures } from '../helpers/sandbox';
@@ -52,10 +52,8 @@ test.describe('本地构建镜像（不存在于任何仓库）', () => {
       image: reference,
       command: 'sleep infinity',
     });
-    await expect(page.getByTestId('page-sandbox-create-success-message')).toContainText(
-      `沙箱 ${SANDBOX_NAME} 创建成功`,
-    );
-    await page.getByTestId('page-sandbox-create-success-link').click();
+    // 创建成功不再自动选中：从侧栏选中新沙箱。
+    await selectCreatedSandbox(page, SANDBOX_NAME);
     await expect(page.getByTestId('page-sandbox-detail-title')).toBeVisible();
 
     // 工作区头部摘要里就是这个镜像（不是详情弹窗）

@@ -1,6 +1,6 @@
 # 网页控制台前端
 
-沙箱平台的网页控制台：**单页工作台**。左侧边栏是沙箱列表，右侧工作区是选中沙箱的摘要与网页终端；新建沙箱 / 沙箱详情 / 代理设置都是弹窗。
+沙箱平台的网页控制台：**单页工作台**。左侧边栏是沙箱列表，右侧工作区是选中沙箱的摘要与网页终端；新建沙箱 / 沙箱详情 / 代理设置都是**右侧滑出、宽度可拖拽的抽屉**。
 
 - 技术栈：React 19 + Vite 7 + TypeScript 5.9 + Tailwind v4 + shadcn/ui（Base UI 原语），pnpm 管理，Node ≥ 22。
 - 产物由后端服务在 `/` 路径直接托管，单端口对外，**前端不含任何认证逻辑**，全部接口走同源相对路径。
@@ -62,7 +62,7 @@ pnpm run typecheck  # tsc --noEmit，零错误
 pnpm run test       # vitest run，纯数据转换逻辑与组件交互的单元测试
 ```
 
-单元测试覆盖挂载声明解析、环境变量解析、两层路由解析（含畸形百分号编码）、字节与时间格式化、终端帧协议解析、终端状态提示的口径与去重规则（纯函数）、代理状态文案转换、主题存取、轮询失败计数，终端面板的会话标签与关闭会话交互（标签渲染、点标签回调、运行中与已退出的两套确认文案、确认与取消、失败提示、记录已不存在、关闭流程未走完、列表刷新失败、终态提示、同一状态反复上报不重复刷屏、轮询连续失败），工作台的列表读取失败与轮询失败反馈，新建沙箱弹窗的镜像列表失败说明，代理设置的重启失败反馈不被状态刷新失败顶掉，以及全局 toast 组件本身（类型 → 配色类映射、5 秒自动消失、关闭键提前关闭、倒计时圆环的动画类名与时长、悬停 / 点提示区 / 聚焦提示区 / 按下提示条不暂停倒计时、按 F6 不被 Base UI 接管、窗口失焦停表与回前台整体重走 5 秒、新反馈顶掉旧条并重置计时、退场竞态下圆环重建）。组件测试用 jsdom 环境（文件头部 `@vitest-environment jsdom` 注解切换），依赖 `@testing-library/react` 与 `jsdom`。
+单元测试覆盖挂载声明解析、环境变量解析、两层路由解析（含畸形百分号编码）、字节与时间格式化、终端帧协议解析、终端状态提示的口径与去重规则（纯函数）、代理状态文案转换、主题存取、抽屉宽度的存取与换算、轮询失败计数，终端面板的会话标签与关闭会话交互（标签渲染、点标签回调、运行中与已退出的两套确认文案、确认与取消、失败提示、记录已不存在、关闭流程未走完、列表刷新失败、终态提示、同一状态反复上报不重复刷屏、轮询连续失败），工作台的列表读取失败与轮询失败反馈、停止沙箱先弹确认框，新建沙箱抽屉的镜像列表失败说明与创建成功收口，代理设置的重启失败反馈不被状态刷新失败顶掉，删除沙箱确认的一次点即执行，停止沙箱确认弹窗的勾选项与忙碌锁，以及抽屉外壳的焦点管理、关闭途径与宽度拖拽把手，最后是全局 toast 组件本身（类型 → 配色类映射、5 秒自动消失、关闭键提前关闭、倒计时圆环的动画类名与时长、悬停 / 点提示区 / 聚焦提示区 / 按下提示条不暂停倒计时、按 F6 不被 Base UI 接管、窗口失焦停表与回前台整体重走 5 秒、新反馈顶掉旧条并重置计时、退场竞态下圆环重建）。组件测试用 jsdom 环境（文件头部 `@vitest-environment jsdom` 注解切换），依赖 `@testing-library/react` 与 `jsdom`。
 
 toast 挂全局 `ToastProvider`：组件测试渲染带 Provider 的片段，断言看 `page-toast-item` 与 `data-toast-kind`（必要时再加 `data-toast-source`）。
 
@@ -114,6 +114,7 @@ platform/console/
     │   ├── poll.ts       后台轮询的连续失败计数（到阈值弹一条 toast）
     │   ├── toast.ts      操作反馈（toast）的类型与配色口径
     │   ├── theme.ts      亮 / 暗主题切换
+    │   ├── drawer-width.ts 抽屉宽度的存取、钳位与视口换算（三个抽屉共用）
     │   ├── cn.ts         类名合并（clsx + tailwind-merge）
     │   └── validate.ts   沙箱名 / 镜像选择校验
     ├── components/
@@ -129,10 +130,12 @@ platform/console/
     │       ├── WorkspaceHeader.tsx    选中沙箱的摘要与操作
     │       ├── TerminalTabs.tsx       终端会话标签条
     │       ├── EmptyState.tsx         没选中沙箱时的引导块
-    │       ├── CreateSandboxDialog.tsx  新建沙箱弹窗
-    │       ├── SandboxDetailDialog.tsx 沙箱详情弹窗
-    │       ├── ProxySettingsDialog.tsx 代理设置弹窗
-    │       ├── DeleteSandboxDialog.tsx 删除确认弹窗（两步确认）
+    │       ├── CreateSandboxDialog.tsx  新建沙箱抽屉
+    │       ├── SandboxDetailDialog.tsx 沙箱详情抽屉
+    │       ├── ProxySettingsDialog.tsx 代理设置抽屉
+    │       ├── DrawerShell.tsx        抽屉外壳（Base UI Drawer：右侧滑出 / 宽度可拖拽）
+    │       ├── DeleteSandboxDialog.tsx 删除确认弹窗（一次点即执行）
+    │       ├── StopSandboxDialog.tsx   停止沙箱确认弹窗（含依赖容器勾选）
     │       ├── CloseSessionDialog.tsx   关闭终端会话弹窗
     │       └── ModalShell.tsx          弹窗外壳（Base UI Dialog：焦点陷阱 / Esc / 标题栏）
 ```
@@ -158,7 +161,7 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 | 选中沙箱 | `#/sandboxes/<名字>` | 右侧显示该沙箱的摘要与终端会话标签 |
 | 选中沙箱 + 终端会话 | `#/sandboxes/<名字>/<会话标识>` | 右侧工作区直接落在该终端会话上 |
 
-- 新建沙箱 / 沙箱详情 / 代理设置**不是路由**：它们是弹窗，开关状态不入路由，刷新页面自然关闭。
+- 新建沙箱 / 沙箱详情 / 代理设置**不是路由**：它们是抽屉，开关状态不入路由，刷新页面自然关闭。
 - 地址里的沙箱名与会话标识会做一次百分号解码；解码失败（畸形编码，如 `#/sandboxes/%`）不会抛异常打断渲染，一律退回工作台。
 - 旧四页地址（`#/new`、`#/settings` 等）不再有对应路由，解析时也退回工作台。
 
@@ -186,26 +189,47 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 
 不归 toast 管的就地展示（豁免）：
 
-- **本地表单校验红字**：留在弹窗内就地展示（如新建沙箱的沙箱名 / 挂载 / 环境变量校验）；
-- **代理状态摘要绿条**：留在弹窗原位；
-- **删除武装提示**（`page-sandbox-detail-delete-armed-hint`）：一行不改；
-- **镜像列表读取失败的就地说明**（`page-sandbox-create-image-status`，`role="status"`）：一行灰色环境状态说明（「镜像列表读取失败，原因见右上角提示：…」）。它是**环境状态**不是操作结果（操作结果仍走右上角 toast），但 toast 5 秒就消失，只留 toast 会让弹窗里只剩一个没有解释的空下拉；
+- **本地表单校验红字**：留在抽屉内就地展示（如新建沙箱的沙箱名 / 挂载 / 环境变量校验）；
+- **代理状态摘要绿条**：留在抽屉原位；
+- **删除确认弹窗里的绿色提示块**（`page-sandbox-detail-delete-untouched-note`，「用户挂载的宿主机目录不受影响」）：留在弹窗原位，不走 toast；
+- **镜像列表读取失败的就地说明**（`page-sandbox-create-image-status`，`role="status"`）：一行灰色环境状态说明（「镜像列表读取失败，原因见右上角提示：…」）。它是**环境状态**不是操作结果（操作结果仍走右上角 toast），但 toast 5 秒就消失，只留 toast 会让抽屉里只剩一个没有解释的空下拉；
 - 加载态（`正在读取…` / `正在创建…`）、状态点与胶囊、空态、确认弹窗文案：一律不动。
 
 ## 删除确认弹窗
 
 弹窗支持 `Esc` 关闭与点遮罩关闭（删除进行中两者都不响应）。
 
-删除沙箱是**两步确认**：第一次点「确认删除」只进入武装状态（按钮变「再点一次确认删除」，弹窗顶部出现红色提示「此操作不可撤销，再点一次确认删除」），武装窗口 5 秒内第二次点才真的发 `DELETE`；窗口过期自动解除武装。
+删除沙箱是**一次确认**：点「确认删除」就直接发 `DELETE`。删除前不再预取回收清单，
+弹窗只说两件事——删了会怎样（容器、网络、守护进程与系统用户都会被回收，不可撤销）、
+哪些东西不受影响（「用户挂载的宿主机目录不受影响」，绿色提示块）。
+
+## 停止确认弹窗
+
+停止沙箱也要确认：工作区头部的「停止」按钮只开弹窗，不直接发请求。
+弹窗标题是「停止沙箱 {名字}」，内容是后果说明（容器退出、文件与配置保留、可随时再启动）
+加一个「同时停止依赖容器」复选框（**默认勾选**，与命令行默认一致）。
+点「确认停止」才发 `POST /api/sandboxes/{name}/stop`；停止进行中 Esc 与遮罩都不响应。
 
 ## 弹窗与焦点管理
 
-全站只有**一套弹窗实现**：所有弹窗都走 `src/components/workbench/ModalShell.tsx`，而 ModalShell 底层是 Base UI 的 Dialog 原语（`src/components/ui/dialog.tsx`，`@base-ui/react`）。
+确认类弹窗走 `src/components/workbench/ModalShell.tsx`，底层是 Base UI 的 Dialog 原语（`src/components/ui/dialog.tsx`，`@base-ui/react`）。
 
 - **焦点陷阱**：弹窗打开时焦点落进面板，`Tab` / `Shift+Tab` 在面板里循环，不会跑到背后的页面上。
 - **背景不可交互**：弹窗开着时背景内容被标记为 `aria-hidden`（辅助技术读不到），`Tab` 走不到背景上；遮罩盖住整页，背景也点不到。
 - **焦点归位**：弹窗关闭后焦点回到打开它的那个按钮。
 - **关闭途径三条**：Esc、点遮罩、点右上角 `×`（lucide 图标）；三条都走 `onOpenChange(false)`，调用方可以按业务需要拦住（比如删除进行中一律不响应）。
+- **默认宽度 440px**（`max-w-[440px]`），确认类弹窗都按内容大小再单独收窄（删除 400px、停止 400px、关闭会话 360px）。
+
+## 抽屉（右侧滑出）
+
+新建沙箱 / 沙箱详情 / 代理设置走 `src/components/workbench/DrawerShell.tsx`，底层是 Base UI 的 Drawer 原语（`src/components/ui/drawer.tsx`，零新增依赖）。
+
+- **右侧滑出**：抽屉从右侧滑入，`swipeDirection="right"`。
+- **宽度可拖拽**：面板左边缘一条 6 像素竖条（`page-drawer-resize-handle`，`role="separator"`）。拖动时只更新抽屉内部的本地状态，**松手才**把最终宽度上抛并写入存储（避免每像素重渲染整个工作台）。把手上按左右方向键每次调 2 个百分点，`Home` 回默认宽度。
+- **宽度共用一个存储键**：`sandbox-console-drawer-width`（`src/lib/drawer-width.ts`），存的是视口宽度的百分比，默认 40，钳位区间 [20, 80]。三个抽屉共用一份宽度：拖动任意一个，其余两个跟着变；刷新页面后保持。
+- **滑动关闭**：Base UI 的横向滑动关闭**没有开关**，因此拖拽把手挂了 `data-base-ui-swipe-ignore="x"`，正文容器挂了 `data-base-ui-swipe-ignore`（表单里拖选文本不会被吃掉）。验收脚本一律用「点 × / Esc」关闭，不写滑动关闭。
+- **传送 body 后配色不丢**：抽屉传送挂到 `body`，脱离了 `[data-console-shell]` 作用域，因此面板上自己挂 `data-console-shell=""`，选中态与 `color-scheme` 规则照样命中。
+- **关闭途径**：Esc、点遮罩、点右上角 `×`；三条都走 `onOpenChange(false)`。
 
 ## 关键行为
 
@@ -215,11 +239,12 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 - 镜像下拉在**页面重新可见时**（`visibilitychange`）会补拉一次，贴合「实时」要求：切回标签页就能看到宿主上的最新镜像。
 - 挂载按 `宿主路径:容器路径[:ro]` 语法声明，可多条；前端先做一遍格式与敏感路径校验，**容器路径重复也在前端先拦**（少一次往返），后端仍会再校验一次。
 - 提交时固定带 `image_source=host`：平台把镜像从宿主导出注入沙箱守护进程，不经镜像代理拉取。
-- 读镜像列表失败与提交失败都弹**失败 toast**；本地校验（沙箱名 / 镜像 / 挂载 / 环境变量）仍在弹窗里就地展示红字。镜像列表读不到时，弹窗里另留一行就地环境状态说明（`page-sandbox-create-image-status`），免得只剩一个没有解释的空下拉。创建成功后弹窗留在成功态（步骤清单 + 跳转链接），另弹一条**成功 toast**「沙箱 X 创建成功」。
+- 读镜像列表失败与提交失败都弹**失败 toast**；本地校验（沙箱名 / 镜像 / 挂载 / 环境变量）仍在抽屉里就地展示红字。镜像列表读不到时，抽屉里另留一行就地环境状态说明（`page-sandbox-create-image-status`），免得只剩一个没有解释的空下拉。
+- **创建成功后直接关抽屉**并弹一条**成功 toast**「沙箱 X 创建成功」，列表自动刷新；不再有成功面板，也**不自动选中**新建的沙箱（需要时从左侧边栏选）。
 
 ### 删除沙箱
 
-先 `GET /api/sandboxes/{name}/reclaim` 拿到平台回收清单，弹窗列出清单并写明「用户挂载的宿主机目录不受影响」；用户点「确认删除」才发 `DELETE`，点「取消」一个删除请求都不发。
+点「删除」直接开确认弹窗（**不预取回收清单**），点「确认删除」才发 `DELETE`，点「取消」一个删除请求都不发。删除后弹一条 toast 告知回收了多少项，沙箱没了则回到工作台首页。
 
 ### 网页终端
 
@@ -255,7 +280,7 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 
 ### 代理设置
 
-代理设置是弹窗。顶部先给一行状态摘要（容器 / 健康 / 证书，绿条留在原位），下面展示容器运行状态、健康状态、端口连通、CA 是否可取回、缓存目录占用、证书就绪状态与代理访问地址。读状态失败与重启失败都弹**失败 toast**；点「重启代理」后弹一条**提示 toast（蓝色）**「代理正在重启，重启期间依赖镜像拉取会失败，属预期行为」（toast 5 秒后消失，重启还没完时按钮自身的「正在重启…」状态仍在）；重启结果按 `restarted` / `ca_changed` / `ca_reinstalled` / `reinstalled_users` / `failed_users` 如实展示，不把未修复报成已修复。
+代理设置是抽屉。顶部先给一行状态摘要（容器 / 健康 / 证书，绿条留在原位），下面展示容器运行状态、健康状态、端口连通、CA 是否可取回、缓存目录占用、证书就绪状态与代理访问地址。读状态失败与重启失败都弹**失败 toast**；点「重启代理」后弹一条**提示 toast（蓝色）**「代理正在重启，重启期间依赖镜像拉取会失败，属预期行为」（toast 5 秒后消失，重启还没完时按钮自身的「正在重启…」状态仍在）；重启结果按 `restarted` / `ca_changed` / `ca_reinstalled` / `reinstalled_users` / `failed_users` 如实展示，不把未修复报成已修复。
 
 ## data-testid 规范
 
@@ -265,12 +290,14 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 |---|---|---|
 | 外壳 | `layout` | `page-layout-title` / `page-layout-health`（带 `data-health-state`）/ `page-layout-proxy-button` / `page-layout-theme-toggle` |
 | 沙箱列表 | `sandbox-list` | `page-sandbox-list-title` / `page-sandbox-list-item` / `page-sandbox-list-item-name` / `page-sandbox-list-item-state` / `page-sandbox-list-item-image` / `page-sandbox-list-refresh-button` / `page-sandbox-list-create-button` / `page-sandbox-list-empty` / `page-sandbox-list-loading` |
-| 新建沙箱 | `sandbox-create` | `page-sandbox-create-dialog`（弹窗容器）/ `page-sandbox-create-title` / `page-sandbox-create-name-input` / `page-sandbox-create-image-select` / `page-sandbox-create-image-refresh-button` / `page-sandbox-create-image-detail` / `page-sandbox-create-image-empty` / `page-sandbox-create-image-status`（镜像列表读取失败的就地环境状态说明，`role="status"`）/ `page-sandbox-create-mount-add-button` / `page-sandbox-create-mount-empty` / `page-sandbox-create-mount-item` / `page-sandbox-create-mount-host-input` / `page-sandbox-create-mount-container-input` / `page-sandbox-create-mount-readonly-checkbox` / `page-sandbox-create-mount-remove-button` / `page-sandbox-create-command-input` / `page-sandbox-create-workdir-input` / `page-sandbox-create-env-input` / `page-sandbox-create-submit-button` / `page-sandbox-create-validation-error`（本地表单校验红字）/ `page-sandbox-create-success` / `page-sandbox-create-success-message` / `page-sandbox-create-success-link` / `page-sandbox-create-steps` |
-| 沙箱详情（工作区头部） | `sandbox-detail` | `page-sandbox-detail-title` / `page-sandbox-detail-state` / `page-sandbox-detail-image` / `page-sandbox-detail-created-at` / `page-sandbox-detail-updated-at` / `page-sandbox-detail-refresh-button` / `page-sandbox-detail-start-button` / `page-sandbox-detail-stop-button` / `page-sandbox-detail-stop-dependencies-checkbox` / `page-sandbox-detail-detail-button` / `page-sandbox-detail-delete-button` / `page-sandbox-detail-empty` |
-| 沙箱详情弹窗 | `sandbox-detail-dialog` | `page-sandbox-detail-dialog`（弹窗容器）/ `page-sandbox-detail-dialog-state` / `page-sandbox-detail-dialog-image` / `page-sandbox-detail-dialog-created-at` / `page-sandbox-detail-dialog-updated-at` / `page-sandbox-detail-image-source` / `page-sandbox-detail-system-user` / `page-sandbox-detail-container-name` / `page-sandbox-detail-network-name` / `page-sandbox-detail-socket-path` / `page-sandbox-detail-socket-mount-path` / `page-sandbox-detail-workdir` / `page-sandbox-detail-command` / `page-sandbox-detail-subid` / `page-sandbox-detail-network-owned` / `page-sandbox-detail-env` / `page-sandbox-detail-env-item` / `page-sandbox-detail-env-empty` / `page-sandbox-detail-mounts` / `page-sandbox-detail-mount-item` / `page-sandbox-detail-mounts-empty` / `page-sandbox-detail-dependencies` / `page-sandbox-detail-dependency-item` / `page-sandbox-detail-dependencies-empty` / `page-sandbox-detail-loading` / `page-sandbox-detail-unavailable`（读不到详情时的空态说明）|
+| 新建沙箱 | `sandbox-create` | `page-sandbox-create-dialog`（抽屉容器）/ `page-sandbox-create-title` / `page-sandbox-create-name-input` / `page-sandbox-create-image-select` / `page-sandbox-create-image-refresh-button` / `page-sandbox-create-image-detail` / `page-sandbox-create-image-empty` / `page-sandbox-create-image-status`（镜像列表读取失败的就地环境状态说明，`role="status"`）/ `page-sandbox-create-mount-add-button` / `page-sandbox-create-mount-empty` / `page-sandbox-create-mount-item` / `page-sandbox-create-mount-host-input` / `page-sandbox-create-mount-container-input` / `page-sandbox-create-mount-readonly-checkbox` / `page-sandbox-create-mount-remove-button` / `page-sandbox-create-command-input` / `page-sandbox-create-workdir-input` / `page-sandbox-create-env-input` / `page-sandbox-create-submit-button` / `page-sandbox-create-validation-error`（本地表单校验红字）|
+| 沙箱详情（工作区头部） | `sandbox-detail` | `page-sandbox-detail-title` / `page-sandbox-detail-state` / `page-sandbox-detail-image` / `page-sandbox-detail-created-at` / `page-sandbox-detail-updated-at` / `page-sandbox-detail-refresh-button` / `page-sandbox-detail-start-button` / `page-sandbox-detail-stop-button` / `page-sandbox-detail-detail-button` / `page-sandbox-detail-delete-button` / `page-sandbox-detail-empty` |
+| 沙箱详情抽屉 | `sandbox-detail-dialog` | `page-sandbox-detail-dialog`（抽屉容器）/ `page-sandbox-detail-dialog-state` / `page-sandbox-detail-dialog-image` / `page-sandbox-detail-dialog-created-at` / `page-sandbox-detail-dialog-updated-at` / `page-sandbox-detail-image-source` / `page-sandbox-detail-system-user` / `page-sandbox-detail-container-name` / `page-sandbox-detail-network-name` / `page-sandbox-detail-socket-path` / `page-sandbox-detail-socket-mount-path` / `page-sandbox-detail-workdir` / `page-sandbox-detail-command` / `page-sandbox-detail-subid` / `page-sandbox-detail-network-owned` / `page-sandbox-detail-env` / `page-sandbox-detail-env-item` / `page-sandbox-detail-env-empty` / `page-sandbox-detail-mounts` / `page-sandbox-detail-mount-item` / `page-sandbox-detail-mounts-empty` / `page-sandbox-detail-dependencies` / `page-sandbox-detail-dependency-item` / `page-sandbox-detail-dependencies-empty` / `page-sandbox-detail-loading` / `page-sandbox-detail-unavailable`（读不到详情时的空态说明）|
 | 终端 | `sandbox-detail-terminal` | `page-sandbox-detail-terminal-panel` / `page-sandbox-detail-terminal-tabs` / `page-sandbox-detail-terminal-tab` / `page-sandbox-detail-terminal-tab-select` / `page-sandbox-detail-terminal-tab-close` / `page-sandbox-detail-terminal-new-button` / `page-sandbox-detail-terminal-status` / `page-sandbox-detail-terminal-retry-button` / `page-sandbox-detail-terminal-stopped-hint` / `page-sandbox-detail-terminal-surface` / `page-sandbox-detail-terminal-mount`（终端表面内层的测量/挂载盒，xterm 根元素的父节点）/ `page-sandbox-detail-terminal-placeholder` / `page-sandbox-detail-terminal-remove-confirm` / `page-sandbox-detail-terminal-remove-confirm-button` / `page-sandbox-detail-terminal-remove-cancel-button` |
-| 代理设置 | `settings` | `page-settings-dialog`（弹窗容器）/ `page-settings-title` / `page-settings-summary` / `page-settings-container-running` / `page-settings-healthy` / `page-settings-tcp-ok` / `page-settings-ca-fetchable` / `page-settings-cache-size` / `page-settings-certificate-ready` / `page-settings-proxy-url` / `page-settings-detail` / `page-settings-refresh-button` / `page-settings-restart-button` / `page-settings-restart-result` / `page-settings-restarted` / `page-settings-restart-message` / `page-settings-ca-changed` / `page-settings-ca-reinstalled` / `page-settings-ca-conclusion` / `page-settings-reinstalled-users` / `page-settings-failed-users` / `page-settings-loading` |
-| 删除沙箱 | `sandbox-detail-delete` | `page-sandbox-detail-delete-dialog` / `page-sandbox-detail-delete-title` / `page-sandbox-detail-delete-untouched-note` / `page-sandbox-detail-delete-items` / `page-sandbox-detail-delete-item` / `page-sandbox-detail-delete-user-mounts` / `page-sandbox-detail-delete-user-mount-item` / `page-sandbox-detail-delete-incomplete` / `page-sandbox-detail-delete-armed-hint` / `page-sandbox-detail-delete-confirm-button` / `page-sandbox-detail-delete-cancel-button` |
+| 代理设置 | `settings` | `page-settings-dialog`（抽屉容器）/ `page-settings-title` / `page-settings-summary` / `page-settings-container-running` / `page-settings-healthy` / `page-settings-tcp-ok` / `page-settings-ca-fetchable` / `page-settings-cache-size` / `page-settings-certificate-ready` / `page-settings-proxy-url` / `page-settings-detail` / `page-settings-refresh-button` / `page-settings-restart-button` / `page-settings-restart-result` / `page-settings-restarted` / `page-settings-restart-message` / `page-settings-ca-changed` / `page-settings-ca-reinstalled` / `page-settings-ca-conclusion` / `page-settings-reinstalled-users` / `page-settings-failed-users` / `page-settings-loading` |
+| 删除沙箱 | `sandbox-detail-delete` | `page-sandbox-detail-delete-dialog` / `page-sandbox-detail-delete-title` / `page-sandbox-detail-delete-untouched-note` / `page-sandbox-detail-delete-confirm-button` / `page-sandbox-detail-delete-cancel-button` |
+| 停止沙箱 | `sandbox-detail-stop` | `page-sandbox-detail-stop-dialog` / `page-sandbox-detail-stop-title` / `page-sandbox-detail-stop-dependencies-checkbox`（「同时停止依赖容器」，默认勾选）/ `page-sandbox-detail-stop-confirm-button` / `page-sandbox-detail-stop-cancel-button` |
+| 抽屉 | `drawer` | `page-drawer-resize-handle`（宽度拖拽把手，`role="separator"`）|
 | 全局反馈 | `toast` | `page-toast-region`（右上角视口容器）/ `page-toast-item`（每条提示，带 `data-toast-kind="success\|error\|info"`，可选带 `data-toast-source="<来源>"`）/ `page-toast-close`（关闭键）|
 
 **已退役的标识**：
@@ -283,12 +310,20 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 
 操作结果反馈改走右上角 toast 后，内嵌的结果横幅与提示位一并退役：
 `page-sandbox-list-action-message`（工作台操作提示条）/ `page-sandbox-list-error-message`（侧栏列表读取失败）/
-`page-sandbox-detail-error-message`（工作区详情读取失败）/ `page-sandbox-detail-dialog-error`（详情弹窗读取失败）/
+`page-sandbox-detail-error-message`（工作区详情读取失败）/ `page-sandbox-detail-dialog-error`（详情抽屉读取失败）/
 `page-sandbox-detail-terminal-error`（终端面板红色错误横幅）/ `page-sandbox-detail-terminal-notice`（终端面板蓝色提示条）/
 `page-sandbox-create-error-message`（新建沙箱提交失败）/ `page-sandbox-create-image-error`（镜像列表读取失败）/
 `page-settings-error-message`（代理读取 / 重启失败）/ `page-settings-restarting-message`（代理重启进行中）/
 `page-sandbox-detail-terminal-message`（终端状态文案行）/ `page-sandbox-detail-terminal-count`（会话计数）/
 `page-sandbox-list-count`（列表计数）/ `page-sandbox-list-updated-at`（上次刷新时间）。
+
+抽屉改造与确认弹窗精简后下线的标识：
+
+- **新建沙箱成功面板**（创建成功直接关抽屉 + toast，不再留成功面板）：
+  `page-sandbox-create-success` / `page-sandbox-create-success-message` / `page-sandbox-create-steps` / `page-sandbox-create-success-link`；
+- **删除确认的清单与武装提示**（删除改一次点即执行，不再预取回收清单）：
+  `page-sandbox-detail-delete-armed-hint` / `page-sandbox-detail-delete-items` / `page-sandbox-detail-delete-item` /
+  `page-sandbox-detail-delete-user-mounts` / `page-sandbox-detail-delete-user-mount-item` / `page-sandbox-detail-delete-incomplete`。
 
 **重复元素的定位方式**：沙箱列表项与终端标签在同一个页面上会重复出现，标识本身保持一致，另带一个属性用于区分：
 
@@ -321,11 +356,10 @@ const detailFailed = page.locator(
 | `sandbox-list` | 沙箱列表读取失败（首次加载 / 连续 3 次轮询失败） |
 | `sandbox-detail` | 沙箱详情读取失败 |
 | `sandbox-lifecycle` | 启动 / 停止沙箱的结果 |
-| `sandbox-reclaim` | 读取回收清单失败 |
 | `sandbox-delete` | 删除沙箱的结果 |
 | `terminal-sessions` | 终端会话表读取失败、关闭会话的副作用提示 |
 | `terminal-status` | 终端会话状态变化（失效 / 报错 / 退出 / 重连） |
-| `sandbox-create` | 新建沙箱弹窗里的镜像列表读取失败、提交失败 |
+| `sandbox-create` | 新建沙箱抽屉里的镜像列表读取失败、提交失败 |
 | `proxy-settings` | 代理状态读取失败、代理重启结果 |
 
 toast 5 秒后自动消失，断言要放在动作之后立即执行。
@@ -333,7 +367,7 @@ toast 5 秒后自动消失，断言要放在动作之后立即执行。
 **同页双挂载的标识**（页面上同时存在多个，取第一个即可）：
 
 - `page-sandbox-list-create-button`：侧栏顶部的「新建沙箱」按钮与右侧空态引导块里的「新建沙箱」按钮各挂一个。用 `page.getByTestId('page-sandbox-list-create-button').first().click()` 即可。
-- `page-sandbox-detail-dialog-*`（状态 / 镜像 / 创建时间 / 更新时间）：这四个字段在工作区头部也有同名元素（`page-sandbox-detail-state` / `-image` / `-created-at` / `-updated-at`），弹窗里的版本加了 `dialog-` 前缀，两者不会撞名。
+- `page-sandbox-detail-dialog-*`（状态 / 镜像 / 创建时间 / 更新时间）：这四个字段在工作区头部也有同名元素（`page-sandbox-detail-state` / `-image` / `-created-at` / `-updated-at`），抽屉里的版本加了 `dialog-` 前缀，两者不会撞名。
 
 ## 接口一览
 
@@ -342,13 +376,13 @@ toast 5 秒后自动消失，断言要放在动作之后立即执行。
 | GET | `/api/health` | 侧栏底部的健康自检 |
 | GET | `/api/sandboxes` | 侧栏沙箱列表（裸数组） |
 | POST | `/api/sandboxes` | 新建沙箱（带 `image_source=host`） |
-| GET | `/api/sandboxes/{name}` | 工作区摘要与详情弹窗 |
+| GET | `/api/sandboxes/{name}` | 工作区摘要与详情抽屉 |
 | POST | `/api/sandboxes/{name}/start` | 启动 |
 | POST | `/api/sandboxes/{name}/stop` | 停止（带 `stop_dependencies`） |
-| GET | `/api/sandboxes/{name}/reclaim` | 删除前的回收清单 |
+| GET | `/api/sandboxes/{name}/reclaim` | 删除前的回收清单（控制台页面已不再调用，保留给脚本与将来的清单预览）|
 | DELETE | `/api/sandboxes/{name}` | 删除 |
-| GET | `/api/images` | 新建弹窗的镜像下拉（裸数组） |
-| GET | `/api/proxy/status` | 代理设置弹窗 |
+| GET | `/api/images` | 新建抽屉的镜像下拉（裸数组） |
+| GET | `/api/proxy/status` | 代理设置抽屉 |
 | POST | `/api/proxy/restart` | 重启代理 |
 | POST | `/api/terminal/sessions` | 新建终端会话 |
 | GET | `/api/terminal/sessions?sandbox=` | 终端标签条的数据源（裸数组） |

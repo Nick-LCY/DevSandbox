@@ -20,6 +20,9 @@ import {
   gotoDetail,
   gotoWorkbench,
   openCreateDialog,
+  openStopDialog,
+  confirmStop,
+  selectCreatedSandbox,
 } from '../helpers/console';
 import { sandboxContainerState, sandboxExec, userUid } from '../helpers/host';
 import { createWorkspace, removeWorkspace } from '../helpers/workspace';
@@ -84,7 +87,7 @@ test.describe('网页与命令行的等价性', () => {
         mountContainer: workspace.containerPath,
         command: 'sleep infinity',
       });
-      await page.getByTestId('page-sandbox-create-success-link').click();
+      await selectCreatedSandbox(page, name);
       await expect(page.getByTestId('page-sandbox-detail-title')).toBeVisible();
 
       // ① 列表字段：网页（接口）与命令行逐字段一致
@@ -112,7 +115,8 @@ test.describe('网页与命令行的等价性', () => {
 
       // ② 状态流转：网页停 → 命令行看到已停 → 命令行启 → 网页看到运行中
       const uid = userUid(webDetail.system_user);
-      await page.getByTestId('page-sandbox-detail-stop-button').click();
+      await openStopDialog(page);
+      await confirmStop(page, name);
       await expect(page.getByTestId('page-sandbox-detail-state')).toHaveText('已停止');
       const cliAfterWebStop = sandboxctlMetadata(name) as unknown as CliMetadata;
       expect(cliAfterWebStop.state).toBe('stopped');
@@ -162,7 +166,7 @@ test.describe('网页与命令行的等价性', () => {
         mountContainer: workspace.containerPath,
         command: 'sleep infinity',
       });
-      await page.getByTestId('page-sandbox-create-success-link').click();
+      await selectCreatedSandbox(page, webName);
       await expect(page.getByTestId('page-sandbox-detail-title')).toBeVisible();
 
       // 命令行建（同样的镜像、同样的挂载、同样的启动命令）
@@ -232,7 +236,8 @@ test.describe('网页与命令行的等价性', () => {
       });
 
       // 状态流转等价：网页停 → 命令行起 → 两者都回到运行中
-      await page.getByTestId('page-sandbox-detail-stop-button').click();
+      await openStopDialog(page);
+      await confirmStop(page, webName);
       await expect(page.getByTestId('page-sandbox-detail-state')).toHaveText('已停止');
       expect((sandboxctlMetadata(webName) as unknown as CliMetadata).state).toBe('stopped');
 
