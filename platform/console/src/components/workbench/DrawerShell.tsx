@@ -256,9 +256,14 @@ export function DrawerShell({
               'sm:w-[var(--app-drawer-width)]',
               // 不加 duration-*：Tailwind 默认 transition-property 是 all，
               // 带上就会连宽度一起过渡（拖拽时面板会滞后 150ms 跟手）。
-              // 入场 / 退场动画的时长由 animate-in 自带的 0.15s 兜底。
+              // 入场 / 退场动画的时长只写 --tw-duration（只影响 animation 简写）。
+              // 150ms 必须与遮罩一致（ui/drawer.tsx 的 duration-150）：
+              // Base UI 只等**面板**上的动画结束就卸载整棵树，遮罩先播完会闪回全屏。
+              '[--tw-duration:150ms]',
               'data-open:animate-in data-open:slide-in-from-right',
               'data-closed:animate-out data-closed:slide-out-to-right',
+              // 退场停在末帧（滑出屏幕）：动画播完后不回弹。
+              'data-closed:[--tw-animation-fill-mode:forwards]',
             )}
           >
             {/* 宽度拖拽把手：左边缘竖条，中间带竖向抓握图标。 */}

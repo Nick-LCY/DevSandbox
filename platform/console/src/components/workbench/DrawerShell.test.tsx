@@ -10,7 +10,8 @@
  * - 宽度拖拽把手存在，且是 role=separator 的竖向分隔条；
  * - 把手上带竖向抓握图标（纯视觉提示，装饰性元素对辅助技术隐藏）；
  * - 把手上按方向键能改宽度（每次 2 个百分点，Home 回默认值）；
- * - 指针拖拽宽度：拖动过程中不落盘，松手才落盘一次（按下即松手不落盘）。
+ * - 指针拖拽宽度：拖动过程中不落盘，松手才落盘一次（按下即松手不落盘）；
+ * - 遮罩与面板的退场时长一致，且都停在末帧（关闭时不闪回全屏）。
  */
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -203,6 +204,22 @@ describe('DrawerShell 宽度拖拽', () => {
     fireEvent.pointerUp(handle, { clientX: 800, clientY: 300, pointerId: 1 });
 
     expect(onWidthChange).not.toHaveBeenCalled();
+  });
+
+  it('遮罩与面板的退场时长一致（150ms），且都停在末帧', async () => {
+    renderDrawer();
+    const drawer = await screen.findByTestId('page-sandbox-create-dialog');
+
+    // 面板：只写 --tw-duration（duration-* 会连宽度一起过渡，拖拽时不跟手）。
+    expect(drawer.className).toContain('[--tw-duration:150ms]');
+    expect(drawer.className).not.toMatch(/(^|\s)duration-\d/);
+    // 遮罩：与面板同长，否则面板动画一停整棵树被卸载，遮罩淡出后闪回全屏。
+    const backdrop = document.querySelector('[data-slot="drawer-backdrop"]');
+    expect(backdrop).not.toBeNull();
+    expect(backdrop!.className).toContain('duration-150');
+    // 两层都要停在末帧：动画播完后不回弹。
+    expect(drawer.className).toContain('data-closed:[--tw-animation-fill-mode:forwards]');
+    expect(backdrop!.className).toContain('data-closed:[--tw-animation-fill-mode:forwards]');
   });
 
   it('视口宽不可用时不做换算：不落盘', () => {

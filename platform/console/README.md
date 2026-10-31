@@ -234,6 +234,8 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 - **滑动关闭**：Base UI 的横向滑动关闭**没有开关**，因此拖拽把手挂了 `data-base-ui-swipe-ignore="x"`，正文容器挂了 `data-base-ui-swipe-ignore`（表单里拖选文本不会被吃掉）。验收脚本一律用「点 × / Esc」关闭，不写滑动关闭。
 - **传送 body 后配色不丢**：抽屉传送挂到 `body`，脱离了 `[data-console-shell]` 作用域，因此面板上自己挂 `data-console-shell=""`，选中态与 `color-scheme` 规则照样命中。
 - **关闭途径**：Esc、点遮罩、点右上角 `×`；三条都走 `onOpenChange(false)`。
+- **退场动画两层同长（150ms）**：遮罩（`ui/drawer.tsx` 的 `duration-150`）与面板（`DrawerShell.tsx` 的 `[--tw-duration:150ms]`）必须一致——Base UI 只等**面板**上的动画结束就卸载整棵树，遮罩若先播完，淡出结束后会闪回全屏（实测透明度 0.07 → 1.00）。两层都带 `data-closed:[--tw-animation-fill-mode:forwards]`，动画播完停在末帧，不回弹。
+- **面板不挂 `duration-*`**：Tailwind 的 `duration-*` 会同时输出 `transition-duration`，默认 `transition-property: all` 会把宽度一起过渡，拖拽把手时面板滞后 150ms 不跟手。动画时长只写 `[--tw-duration:…]`（只影响 `animation` 简写）。
 
 ## 关键行为
 
