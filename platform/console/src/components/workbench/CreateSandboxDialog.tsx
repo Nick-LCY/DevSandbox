@@ -235,6 +235,9 @@ export function CreateSandboxDialog({
       title="新建沙箱"
       testId="page-sandbox-create-dialog"
       onOpenChange={onOpenChange}
+      // 创建请求在途时不让关抽屉：请求已经发出，不能半途退出
+      // （与删除 / 停止弹窗的口径一致）。
+      closeDisabled={submitting}
       widthVw={widthVw}
       onWidthChange={onWidthChange}
       footer={footer}

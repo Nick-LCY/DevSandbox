@@ -125,13 +125,20 @@ export function DrawerShell({
      */
     event.preventDefault();
     event.stopPropagation();
+    // preventDefault 会吃掉浏览器默认的聚焦：把手自己拿回焦点，
+    // 否则方向键调宽度的入口拿不到键盘焦点。
+    event.currentTarget.focus();
 
     const measured = popupRef.current?.getBoundingClientRect().width ?? 0;
     const startWidthPx =
       measured > 0 ? measured : vwToPx(effectiveWidthRef.current, window.innerWidth);
 
     dragRef.current = { startX: event.clientX, startWidthPx, pointerId: event.pointerId };
-    event.currentTarget.setPointerCapture(event.pointerId);
+    // 指针捕获：拖出把手范围也要继续跟手。jsdom 等环境没有这个方法，
+    // 存在性判断后再调（配合单测里的打桩）。
+    if (typeof event.currentTarget.setPointerCapture === 'function') {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
   }, []);
 
   const handlePointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
@@ -142,10 +149,17 @@ export function DrawerShell({
     event.preventDefault();
     event.stopPropagation();
 
+    // 视口宽不可用（≤ 0）时像素与百分比没法换算：直接不更新宽度，
+    // 沿用当前宽度（拿像素值当百分比写回去就是单位混算）。
+    const viewportWidth = window.innerWidth;
+    if (!Number.isFinite(viewportWidth) || viewportWidth <= 0) {
+      return;
+    }
+
     // 向左拖变宽：把手横坐标往左走，面板左边缘也跟着往左走。
     const deltaPx = event.clientX - drag.startX;
     const nextWidthPx = drag.startWidthPx - deltaPx;
-    const nextWidthVw = clampDrawerWidth(pxToVw(nextWidthPx, window.innerWidth));
+    const nextWidthVw = clampDrawerWidth(pxToVw(nextWidthPx, viewportWidth));
     pendingWidthRef.current = nextWidthVw;
 
     // 每帧最多更新一次本地状态。
@@ -171,6 +185,16 @@ export function DrawerShell({
       event.stopPropagation();
 
       dragRef.current = null;
+      // 释放指针捕获：浏览器在 pointerup 后也会自动释放，这里显式收口，
+      // 避免捕获状态残留（把手被移出文档时尤其明显）。
+      const target = event.currentTarget;
+      if (
+        typeof target.hasPointerCapture === 'function' &&
+        typeof target.releasePointerCapture === 'function' &&
+        target.hasPointerCapture(drag.pointerId)
+      ) {
+        target.releasePointerCapture(drag.pointerId);
+      }
       if (frameRef.current !== null) {
         window.cancelAnimationFrame(frameRef.current);
         frameRef.current = null;
@@ -252,9 +276,14 @@ export function DrawerShell({
               onPointerMove={handlePointerMove}
               onPointerUp={finishDrag}
               onPointerCancel={finishDrag}
+              // 指针捕获丢失（元素被移出文档、浏览器主动释放）也按松手收口：
+              // 否则拖到一半的宽度会悬着不落盘。
+              onLostPointerCapture={finishDrag}
               onKeyDown={handleKeyDown}
               className={cn(
-                'absolute inset-y-0 left-0 z-10 w-1.5 cursor-ew-resize touch-none select-none',
+                // 窄屏（< 640px）抽屉占满整屏：宽度拖不动，把手也不提供入口
+                // （可见但拖不动的把手会往存储里写脏宽度）。
+                'hidden sm:flex absolute inset-y-0 left-0 z-10 w-1.5 cursor-ew-resize touch-none select-none',
                 'bg-border/60 transition-colors hover:bg-primary/40 focus-visible:outline-none',
                 'focus-visible:ring-3 focus-visible:ring-ring/50',
               )}

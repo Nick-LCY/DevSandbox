@@ -210,6 +210,9 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 加一个「同时停止依赖容器」复选框（**默认勾选**，与命令行默认一致）。
 点「确认停止」才发 `POST /api/sandboxes/{name}/stop`；停止进行中 Esc 与遮罩都不响应。
 
+- **每次打开都回到默认勾选**：上一次取消时的勾选状态不粘到下一次（否则会误停别的依赖容器）。
+- **停止失败不关弹窗**：请求失败只弹一条失败 toast，弹窗留在原地可以直接重试（只有成功才关）。
+
 ## 弹窗与焦点管理
 
 确认类弹窗走 `src/components/workbench/ModalShell.tsx`，底层是 Base UI 的 Dialog 原语（`src/components/ui/dialog.tsx`，`@base-ui/react`）。
@@ -226,6 +229,7 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 
 - **右侧滑出**：抽屉从右侧滑入，`swipeDirection="right"`。
 - **宽度可拖拽**：面板左边缘一条 6 像素竖条（`page-drawer-resize-handle`，`role="separator"`）。拖动时只更新抽屉内部的本地状态，**松手才**把最终宽度上抛并写入存储（避免每像素重渲染整个工作台）。把手上按左右方向键每次调 2 个百分点，`Home` 回默认宽度。
+- **已知边界（窄屏）**：视口宽度 < 640px 时抽屉**占满整屏**（宽度百分比不生效），**拖拽把手不提供入口**（`hidden sm:flex`）——可见但拖不动的把手会把脏宽度写进存储，窄屏干脆不给拖拽入口。窄屏下想调宽度得把窗口拉宽。
 - **宽度共用一个存储键**：`sandbox-console-drawer-width`（`src/lib/drawer-width.ts`），存的是视口宽度的百分比，默认 40，钳位区间 [20, 80]。三个抽屉共用一份宽度：拖动任意一个，其余两个跟着变；刷新页面后保持。
 - **滑动关闭**：Base UI 的横向滑动关闭**没有开关**，因此拖拽把手挂了 `data-base-ui-swipe-ignore="x"`，正文容器挂了 `data-base-ui-swipe-ignore`（表单里拖选文本不会被吃掉）。验收脚本一律用「点 × / Esc」关闭，不写滑动关闭。
 - **传送 body 后配色不丢**：抽屉传送挂到 `body`，脱离了 `[data-console-shell]` 作用域，因此面板上自己挂 `data-console-shell=""`，选中态与 `color-scheme` 规则照样命中。
@@ -241,6 +245,7 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 - 提交时固定带 `image_source=host`：平台把镜像从宿主导出注入沙箱守护进程，不经镜像代理拉取。
 - 读镜像列表失败与提交失败都弹**失败 toast**；本地校验（沙箱名 / 镜像 / 挂载 / 环境变量）仍在抽屉里就地展示红字。镜像列表读不到时，抽屉里另留一行就地环境状态说明（`page-sandbox-create-image-status`），免得只剩一个没有解释的空下拉。
 - **创建成功后直接关抽屉**并弹一条**成功 toast**「沙箱 X 创建成功」，列表自动刷新；不再有成功面板，也**不自动选中**新建的沙箱（需要时从左侧边栏选）。
+- **创建请求在途时抽屉不响应关闭**（Esc / 遮罩 / × 一律不关）：请求已经发出，不能半途退出（与删除 / 停止弹窗口径一致）。
 
 ### 删除沙箱
 

@@ -226,6 +226,8 @@ export function Workbench() {
       const updated = await api.stopSandbox(selectedName, stopDependencies);
       setDetail(updated);
       show('success', `沙箱 ${selectedName} 已停止`, { source: 'sandbox-lifecycle' });
+      // 只有成功才关弹窗：失败时留在弹窗里，用户可以直接重试。
+      setStopOpen(false);
       await loadList(true);
     } catch (exc) {
       show('error', exc instanceof Error ? exc.message : '停止沙箱失败', {
@@ -233,9 +235,19 @@ export function Workbench() {
       });
     } finally {
       setBusy(false);
-      setStopOpen(false);
     }
   }, [selectedName, stopDependencies, loadList, show]);
+
+  /**
+   * 点「停止」：开确认弹窗。
+   *
+   * 「同时停止依赖容器」每次都复位成默认勾选：上一次取消时的选择
+   * 不粘到下一次（否则用户会误停别的依赖容器）。
+   */
+  const openStop = useCallback(() => {
+    setStopDependencies(true);
+    setStopOpen(true);
+  }, []);
 
   /** 点「删除」：直接开确认弹窗（不再预取回收清单）。 */
   const openDelete = useCallback(() => {
@@ -325,7 +337,7 @@ export function Workbench() {
             busy={busy}
             onRefresh={() => void loadDetail(selectedName)}
             onStart={() => void start()}
-            onStop={() => setStopOpen(true)}
+            onStop={openStop}
             onOpenDetail={() => setDetailOpen(true)}
             onDelete={openDelete}
           />

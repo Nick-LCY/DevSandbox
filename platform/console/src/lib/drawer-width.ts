@@ -97,7 +97,12 @@ export function vwToPx(vw: number, viewportWidth: number): number {
   return (vw / 100) * viewportWidth;
 }
 
-/** 像素宽转百分比宽。视口宽不可用（≤ 0）时原值返回。 */
+/**
+ * 像素宽转百分比宽。
+ *
+ * 视口宽不可用（≤ 0）时**不做换算**：原值返回的是像素值，调用方不能
+ * 拿它当百分比用（那是单位混算）。视口宽不可用时调用方应沿用当前宽度。
+ */
 export function pxToVw(px: number, viewportWidth: number): number {
   if (!Number.isFinite(viewportWidth) || viewportWidth <= 0) {
     return px;
