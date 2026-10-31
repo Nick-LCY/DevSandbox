@@ -235,3 +235,128 @@ cd platform/console && pnpm run typecheck && pnpm run test && pnpm run typecheck
 3. **新增中文界面文案后必须重跑字体构建**：`bash platform/console/scripts/build-fonts.sh` 重新生成字符集与字体子集，否则新字掉回系统字体；任务二、任务三新增文案后各重跑一次（字符集 998 → 1029 字符，6 个 woff2 全部重建）。
 4. **本节只留档前端改造**：后端 `platform/src/`、命令行 `platform/cli/` 未动，一期与二期的回归结论仍以本文件前六节及仓库根 `RESULTS.md` 为准。
 5. **细节留档位置**：前端工程说明见 `platform/console/README.md`，验收脚本说明见 `platform/console/tests/README.md`，令牌 / 双主题 / 字体 / 弹窗 / 路由 / 定位标识规范见 `docs/conventions/console-frontend.md`。
+
+---
+
+## 八、控制台模板轮 · 真机验收留档
+
+> - 验收日期：2026-10-31
+> - 验收对象：控制台模板轮（后端模板服务端 + 前端模板能力 + 字体子集），判据来自 `docs/prds/console-templates.md` 与 `docs/tasks/console-templates/04-acceptance-and-docs.md`
+> - 验收方式：三套测试全量跑（后端 pytest + ruff、前端 typecheck + typecheck:tests + vitest + build、Playwright 真机 22 条）
+> - **总结论：三套测试全绿；真机 22 条用例全部通过（0 失败 / 0 跳过 / 0 flaky），退出码 0；期间只发现 1 处验收脚本自身的定位器缺陷（不是平台缺陷），已在脚本里修掉**
+> - 留档：本节；任务与看板见 `docs/tasks/console-templates/03-template-console.md`、`docs/tasks/console-templates/04-acceptance-and-docs.md`
+
+### 8.1 三套测试总览
+
+| 套 | 命令 | 结果 | 耗时 |
+|---|---|---|---|
+| 后端单测 | `cd platform && uv run pytest -q` | **354 passed / 0 failed** | 328.00 秒 |
+| 后端静态检查 | `cd platform && uv run ruff check src/ tests/ cli/` | **0 告警**（口径钉死在 E4 / E7 / E9 / F） | < 1 秒 |
+| 前端类型检查 | `cd platform/console && pnpm run typecheck` | **0 错误** | 约 6 秒 |
+| 验收脚本类型检查 | `pnpm run typecheck:tests` | **0 错误** | 约 6 秒 |
+| 前端单测 | `pnpm run test`（vitest） | **23 个文件 / 269 passed / 0 failed** | 3.84 秒 |
+| 前端构建 | `pnpm run build` | **成功**（`dist/` 已刷新，真机服务托管的就是这一份产物） | 2.44 秒 |
+| 真机验收 | `pnpm run test:acceptance`（Playwright chromium 1.64.1） | **22 passed / 0 failed / 0 skipped / 0 flaky**，退出码 **0** | **6.0 分钟**（results.json 实测 362.75 秒） |
+
+**ruff 口径**：`platform/pyproject.toml` 补了 `[tool.ruff]` 配置，把规则集钉在 `select = ["E4", "E7", "E9", "F"]`（仓库历史基线：pyflakes 的导入错误 / 语句错误 / 未定义名）。
+新版 ruff 默认规则集在本仓命中 **59 处历史风格项**（未排序导入 18 处、函数默认值里的函数调用 19 处、宽泛 except 8 处、`try-except-pass` / 冗余 return / 未用 noqa 等 14 处），
+全部是既有代码的既有写法，**不在本轮清偿范围**——一次性清偿会制造大量无关改动、淹没本轮模板轮的真实差异，因此显式把口径钉死，历史风格清债另开一轮。
+
+### 8.2 真机用例明细（22 条全过）
+
+| # | spec | 用例 | 耗时 | 结论 |
+|---|---|---|---|---|
+| 1 | `01-lifecycle` | 下拉选镜像 → 创建（带挂载）→ 终端执行命令 → 停止 → 再启动 → 删除 | 40.8s | 通过 |
+| 2 | `01-lifecycle` | 新建弹窗能刷新宿主本地镜像列表 | 1.8s | 通过 |
+| 3 | `01-lifecycle` | 沙箱详情刷新后字段保持一致 | 13.9s | 通过 |
+| 4 | `01-lifecycle` | 工作台首页：侧栏列表与右侧空态 | 247ms | 通过 |
+| 5 | `01-lifecycle` | 抽屉宽度可拖拽，刷新后保持，三个抽屉共用一份宽度 | 2.9s | 通过 |
+| 6 | `01-lifecycle` | 停止确认框取消时，后端没收到停止请求 | 9.5s | 通过 |
+| 7 | `02-local-image` | 镜像出现在下拉里，选中后创建成功，且沙箱守护进程里确实拿到了它 | 8.8s | 通过 |
+| 8 | `02-local-image` | 宿主上没有的镜像不能被网页选用（报错说人话） | 4.4s | 通过 |
+| 9 | `03-terminal` | 同一沙箱两个终端并行可用，两端互不串扰 | 1.6s | 通过 |
+| 10 | `03-terminal` | 终端聚焦时 Ctrl+C 到达容器内的 shell | 3.8s | 通过 |
+| 11 | `03-terminal` | 断开浏览器后重连，终端现场不丢（输出与仍在运行的进程都还在） | 5.6s | 通过 |
+| 12 | `03-terminal` | 重启服务后旧会话失效，页面给出明确提示 | 1.3s | 通过 |
+| 13 | `03-terminal` | 终端区域只有一根内部滚动条：外层不滚动、字符不出暗色面边缘 | 724ms | 通过 |
+| 14 | `04-equivalence` | 同一沙箱：网页与命令行看到的列表字段、挂载清单、容器状态、回收清单都一致 | 29.2s | 通过 |
+| 15 | `04-equivalence` | 参数相同的两个沙箱（网页建 / 命令行建）挂载与状态流转等价 | 29.0s | 通过 |
+| 16 | `05-reclaim` | 回收清单里的平台资源全部回收，用户挂载目录原样保留 | 15.0s | 通过 |
+| 17 | `05-reclaim` | 重复删除同一沙箱是幂等的（返回不存在，不报错） | 62ms | 通过 |
+| 18 | `06-boundary` | 沙箱内依赖镜像拉取统一经镜像代理 | 8.6s | 通过 |
+| 19 | `06-boundary` | 服务只监听回环地址、不做认证、不暴露接口文档 | 533ms | 通过 |
+| 20 | `07-templates` | 保存模板 → 新建抽屉加载回填（含 `{name}` 替换）→ 重命名 → 删除 → 刷新不复活 | 3.8s | 通过（**首跑红，修脚本后通过**，见 8.4） |
+| 21 | `07-templates` | 模板合并语义：出现的字段整体替换，没出现的保持现状 | 1.5s | 通过 |
+| 22 | `07-templates` | 删除模板走确认弹窗：文案写明只删模板、不影响已创建的沙箱 | 1.9s | 通过 |
+
+**侧栏入口标识同步核对**：第 5、6 条与设置抽屉相关的用例走的是侧栏底部的「设置」入口，标识为 `page-layout-settings-button`（旧标识 `page-layout-proxy-button` 已退役）。
+实现侧（`src/components/workbench/Sidebar.tsx`）、验收脚本侧（`tests/helpers/console.ts` 的 `openSettingsDrawer` 与 `tests/specs/01-lifecycle.spec.ts` 的直接引用）三处口径一致，真机跑通。
+
+### 8.3 07-templates 全流程逐步结论
+
+| 步骤 | 操作 | 断言与实测 | 结论 |
+|---|---|---|---|
+| ① 存模板 | 新建抽屉填「沙箱名 + 镜像 + 一条挂载（宿主 `/data/{name}` → 容器 `/workspace`）+ 命令 `sleep infinity` + 环境变量 `APP={name}`」→「保存为模板」→ 命名弹窗填名 | 服务端落盘的是**带占位符的原文**：`mounts = ["/data/{name}:/workspace"]`、`env = {"APP": "{name}"}`、`command = "sleep infinity"`（服务端不替换占位符）；落盘校验走接口直取 | 通过 |
+| ② 回填 | 重新打开新建抽屉 → 「加载模板」下拉搜到并选中该模板 | 挂载宿主路径 → `/data/acc-tpl-demo`（`{name}` 换成沙箱名）、容器路径 → `/workspace`、命令 → `sleep infinity`、环境变量 → `APP=acc-tpl-demo`、镜像 → 一并回填为测试镜像引用 | 通过 |
+| ③ 重命名 | 设置抽屉 → 行内重命名（回车提交） | 名称改为新名、**模板标识不变**（接口直取核对 `id` 与改名前一致）、配置体不变（`mounts` 仍是 `["/data/{name}:/workspace"]`） | 通过 |
+| ④ 删除 | 设置抽屉 → 删除 → 确认弹窗 → 确认删除 | 模板列表里该行消失、接口直取列表里也没有了；确认弹窗文案写着「只删模板，不影响已创建的沙箱」 | 通过 |
+| ⑤ 刷新不复活 | `page.reload()` 后重新打开设置抽屉 | 模板列表为空（0 行）、接口直取也没有该模板——删掉的内置模板不会被墓碑机制之外的路径复活 | 通过 |
+| ⑥ 合并语义 | 存一份「只有命令」的模板 → 换一份表单（先手填一条挂载）→ 加载该模板 | 命令被替换成模板里的（字段出现 → 整体替换），手填的挂载保持现状（字段缺失 → 保持现状）；模板里的镜像 / 挂载 / 工作目录 / 环境变量都不进配置 | 通过 |
+| ⑦ 删除确认 | 点删除 → 取消 → 再点删除 → 确认 | 取消时模板还在（1 行），确认后模板没了（0 行）；弹窗标题是「删除模板 <名字>」 | 通过 |
+
+**模板占位符的落盘口径**：`{name}` 只在**前端回填时**替换；服务端落盘的是原文。这一点在用例里用接口直取逐字核对过，不是「看起来对」。
+
+### 8.4 失败修复归类
+
+首轮全量跑 **21 过 1 红**（`07-templates` 第 ① 条，卡在行内重命名那一步）。定性与处理如下：
+
+| # | 现象 | 归类 | 理由 | 处理 |
+|---|---|---|---|---|
+| 1 | 点「重命名」后找不到 `page-settings-template-rename-input` | **用例问题（定位器过窄）**，不是代码缺陷 | 失败瞬间的可访问性快照显示输入框**就在页面上且可见**（`listitem` 里是 `textbox` + 「保存」+「取消」）。真正原因是验收脚本用「按行内文字筛」定位模板行（`filter({ hasText: 名字 })`）：行内重命名一旦开始，模板名那一段会被输入框替掉——名字变成输入框的**值**，不再是行的文字内容，按文字筛出来的行当场就再也匹配不上，条件失效而非元素缺失 | 改 `tests/helpers/console.ts`：模板行一律按 `data-template-name` **属性**定位（该属性在重命名提交前一直不变），`renameTemplate` 与 `deleteTemplate` 两个 helper 共用一个 `templateRow()` |
+
+**代码侧零改动**：平台核心包、命令行与前端实现都没为这次失败动过一行——失败的是验收脚本的定位器口径，不是产品行为。
+
+### 8.5 字体体积与字符集
+
+| 项 | 前 | 后 |
+|---|---|---|
+| 字符集规模（`platform/console/scripts/fonts/charset.txt`） | 1104 字符 | **3634 字符**（并入通用规范汉字表一级字表 3500 字） |
+| 字体产物体积（`public/fonts/` 下 6 个 woff2 合计） | 660,484 字节 | **2,140,148 字节** |
+
+字符集规模已按仓库内 `scripts/fonts/charset.txt` 逐字核对一致（1104 → 3634）。
+字节数取决于构建时下载到的**上游源字体快照**（Noto Sans SC 可变字体上游会发版），因此按不同快照重建会有出入：
+本机复核仓库内入库的 6 个 woff2 合计为 **701,484 → 2,165,148 字节**，用同一脚本重建一遍得到 701,136 → 2,165,212 字节（差异在几百字节量级）。
+两个口径都不影响缺字形判据——字符集覆盖范围才是决定界面会不会出现方框的那一项。
+
+**缺文件即报错**：`bash scripts/build-fonts.sh` 在 `scripts/fonts/common-hanzi.txt` 缺失时直接失败退出，不静默跳过（静默跳过会产出缺字形的子集）。
+字体文件缺失时浏览器自动回退系统字体栈，不会白屏。
+
+### 8.6 已知边界（本轮不改，仅登记）
+
+1. **`~` 展开在服务以 root 身份运行时会命中敏感目录拒绝**。挂载声明里的 `~` / `~/data` 由服务端按**服务运行用户的家目录**展开（`platform/src/sandbox_platform/server/schemas.py` 的 `os.path.expanduser("~")`）。
+   服务以 root 运行时展开成 `/root` 这样的宿主路径，命中核心包的宿主敏感目录拒绝清单（`/root` 在清单里），创建请求返回 400。
+   这是既有契约的自然结果、不是缺陷：网页创建允许家目录写法，命令行仍要求宿主路径写绝对路径，不受影响。
+2. **镜像列表读取失败时，模板里的镜像引用保留到提交校验兜底**。模板回填时只有**镜像列表已经拿到过**才判「模板镜像在不在宿主上」——
+   列表读失败或还没到时，模板镜像原样保留（不能拿空列表当全集，否则模板镜像会被静默清空）；
+   列表到齐后由既有的清理逻辑兜底（镜像真不在就清空，前端报「请选择沙箱镜像」）；列表始终读不到时，镜像引用一路带到提交，由提交校验与后端 400（宿主上没有该镜像）兜底。
+
+### 8.7 收尾清理实测
+
+验收跑完后：平台数据根 `templates/` 目录**为空**（无残留模板）；无 `acc-` 前缀的残留沙箱（0 条）；验收用的本地测试镜像已删；
+`tests/.runtime/` 已清空；宿主上仅存一个与本轮无关的既有沙箱（`123`，创建于本轮开始之前）。
+
+### 8.8 复现方式
+
+```bash
+# ① 后端
+cd platform && uv run pytest -q && uv run ruff check src/ tests/ cli/
+
+# ② 前端
+cd platform/console && pnpm run typecheck && pnpm run typecheck:tests && pnpm run test && pnpm run build
+
+# ③ 真机
+cd platform/console && pnpm run test:acceptance
+```
+
+环境前提：Node ≥ 22 + pnpm、Playwright chromium 1.64.1、免密 sudo、宿主 Docker、镜像代理在跑（默认容器 `sandbox-platform-registry-proxy`，端口 3128）。
+宿主 8000 端口被无关进程占用时用 `CONSOLE_TEST_PORT=8200 pnpm run test:acceptance` 换端口。
