@@ -51,19 +51,21 @@
 
 #### `verify.sh`（镜像级，宿主 root 守护进程）：42 项全通过
 
-| 判定组 | 结果 |
-|--------|------|
-| 镜像存在；bash / docker 客户端存在；`docker --version` 有版本输出 | 通过 |
-| 业务运行时缺席：node、npm、pnpm、python3、python、psql、pg_config、mc、minio、postgres、jq | 通过（11 项均未安装；git 与 curl 的否定断言已删除） |
-| **通用工具层在场**：git / openssh-client / vim / curl / unzip / xz-utils / procps / less / ca-certificates | 通过（9 项，逐包断言 `dpkg-query` 查得到版本 + 命令在 PATH；ca-certificates 断言证书文件存在） |
-| 无 `VOLUME` 指令，`inspect .Config.Volumes` 为 `null`；容器内只有 `/proc` `/sys` `/dev` `/etc` 标准挂载 | 通过 |
-| `/workspace` 是空目录、可写、非挂载点、权限 1777 | 通过 |
-| `/entrypoint.sh` 存在，静态检查无业务运行时调用 | 通过 |
-| **镜像内无离线包痕迹**：无 `/opt/deps`、无 `load-deps.sh` / `fetch-deps.sh` / `images.list`、全盘无 `.tar` 类文件、入口脚本无加载逻辑 | 通过（5 项） |
-| docker 缺失 → 输出含 `docker client missing` 且退出码 127 | 通过 |
-| docker 存在 → 进入交互式 bash，退出码 0 | 通过 |
+| 判定组 | 项数 | 结果 |
+|--------|------|------|
+| 0. 镜像存在 | 1 | 通过 |
+| 1. 基础命令存在：bash、docker 客户端、`docker --version` 有版本输出 | 3 | 通过 |
+| 2. 业务运行时缺席：node、npm、pnpm、python3、python、psql、pg_config、mc、minio、postgres、jq | 11 | 通过（11 项均未安装；git 与 curl 的否定断言已删除，改由第 9 段正向断言） |
+| 3. 不内置 volume 挂载点：`inspect .Config.Volumes` 为 `null`、容器内只有 `/proc` `/sys` `/dev` `/etc` 标准挂载 | 2 | 通过 |
+| 4. `/workspace` 便捷空目录：是目录、是空目录、可写、不是挂载点、权限位 1777 | 5 | 通过 |
+| 5. 入口脚本静态检查：`/entrypoint.sh` 存在、只依赖 bash 与 docker | 2 | 通过 |
+| 6. 镜像内无离线包痕迹：无 `/opt/deps`、无 `load-deps.sh` / `fetch-deps.sh` / `images.list`、全盘无 `.tar` 类文件、入口脚本无加载逻辑、镜像根目录清单 | 7 | 通过 |
+| 7. 入口行为：docker 缺失 → 输出含 `docker client missing` 且退出码 127 | 1 | 通过 |
+| 8. 入口行为：docker 存在 → 进入交互式 bash，退出码 0 | 1 | 通过 |
+| 9. **通用工具层在场**：git / openssh-client / vim / curl / unzip / xz-utils / procps / less / ca-certificates | 9 | 通过（逐包断言 `dpkg-query` 查得到版本 + 命令在 PATH；ca-certificates 断言证书文件存在） |
+| **合计** | **42** | **不通过 0 项** |
 
-判定总数口径：35 项原有判定 − 2 条被删的否定断言（git / curl） + 9 条新增判定 = **42 项**，实测 **不通过 0 项**。
+判定总数口径：35 项原有判定 − 2 条被删的否定断言（git / curl） + 9 条新增判定 = **42 项**，与上表逐段相加一致，实测 **不通过 0 项**。
 
 #### `verify-rootless.sh`（真实免 root 守护进程）：5 项全通过（+ 6 项回收校验）
 
