@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 #
-# 基础镜像静态判定：镜像内业务运行时缺席 + 镜像结构约定 + 入口行为 + 无离线包痕迹
+# 基础镜像静态判定：镜像内业务运行时缺席 + 通用工具层在场 + 镜像结构约定 + 入口行为 + 无离线包痕迹
 # 依赖命令：bash + docker（宿主守护进程）。
 #
 # 用法：
-#   ./verify.sh                      # 默认校验 sandbox-platform/base:0.2.0
+#   ./verify.sh                      # 默认校验 sandbox-platform/base:0.3.0
 #   BASE_IMAGE=sandbox-platform/base:0.1.0 ./verify.sh
 
 set -uo pipefail
 
-BASE_IMAGE="${BASE_IMAGE:-sandbox-platform/base:0.2.0}"
+BASE_IMAGE="${BASE_IMAGE:-sandbox-platform/base:0.3.0}"
 
 CHECK_TOTAL=0
 CHECK_FAILED=0
@@ -59,7 +59,7 @@ else
 fi
 
 # ---------------------------------------------------------------- 2. 业务运行时缺席
-for cmd in node npm pnpm python3 python psql pg_config mc minio postgres git curl jq; do
+for cmd in node npm pnpm python3 python psql pg_config mc minio postgres jq; do
   out="$(in_image "command -v $cmd")"
   if [ -z "$out" ]; then
     check "镜像内无 $cmd" 0 "未安装"
@@ -157,6 +157,45 @@ else
   check "docker 存在时进入交互式 bash" 1 "退出码 $rc，输出：$(tr '\n' ' ' <"$tmp_out")"
 fi
 rm -f "$tmp_out"
+
+# ---------------------------------------------------------------- 9. 通用工具层在场（0.3.0 新增）
+# 9 个通用工具包：dpkg-query 查得到版本 + 对应命令在 PATH
+probe_tool() {
+  # probe_tool <包名> <命令名>：输出 "<版本>|<命令路径>"
+  in_image "pkg=$1; cmd=$2; ver=\$(dpkg-query -W -f='\${Version}' \"\$pkg\" 2>/dev/null); path=\$(command -v \"\$cmd\" 2>/dev/null); printf '%s|%s' \"\$ver\" \"\$path\""
+}
+
+check_tool() {
+  # check_tool <包名> <命令名>
+  local pkg="$1" cmd="$2" out ver path
+  out="$(probe_tool "$pkg" "$cmd")"
+  ver="${out%%|*}"
+  path="${out#*|}"
+  if [ -n "$ver" ] && [ -n "$path" ]; then
+    check "通用工具层：$pkg 已安装且 $cmd 在 PATH" 0 "$pkg $ver，$path"
+  else
+    check "通用工具层：$pkg 已安装且 $cmd 在 PATH" 1 "版本=${ver:-<无>}，路径=${path:-<无>}"
+  fi
+}
+
+check_tool git git
+check_tool openssh-client ssh
+check_tool vim vim
+check_tool curl curl
+check_tool unzip unzip
+check_tool xz-utils xz
+check_tool procps ps
+check_tool less less
+
+# ca-certificates 不提供命令，断言包版本与证书文件同时在位
+out="$(in_image "ver=\$(dpkg-query -W -f='\${Version}' ca-certificates 2>/dev/null); test -f /etc/ssl/certs/ca-certificates.crt && printf '%s|cert-ok' \"\$ver\" || printf '%s|cert-missing' \"\$ver\"")"
+ver="${out%%|*}"
+cert="${out#*|}"
+if [ -n "$ver" ] && [ "$cert" = "cert-ok" ]; then
+  check "通用工具层：ca-certificates 已安装且证书文件存在" 0 "$ver，/etc/ssl/certs/ca-certificates.crt"
+else
+  check "通用工具层：ca-certificates 已安装且证书文件存在" 1 "版本=${ver:-<无>}，证书=${cert}"
+fi
 
 # ---------------------------------------------------------------- 汇总
 echo
