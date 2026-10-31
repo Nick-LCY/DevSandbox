@@ -65,6 +65,14 @@ function stateDotOf(item: HTMLElement): HTMLElement {
 }
 
 describe('Sidebar', () => {
+  it('品牌块渲染 Box 图标（lucide）', () => {
+    const { container } = renderSidebar();
+
+    const icon = container.querySelector('svg.lucide-box');
+    expect(icon, '品牌块里应当有 lucide Box 图标').not.toBeNull();
+    expect(icon?.getAttribute('aria-hidden')).toBe('true');
+  });
+
   it('列表项渲染沙箱名、状态文案与镜像', () => {
     renderSidebar({ sandboxes: [makeSummary({ name: 'acc-demo', state_label: '运行中' })] });
 

@@ -1,3 +1,5 @@
+import { Loader2 } from 'lucide-react';
+
 import { ModalShell } from './ModalShell';
 
 /** 回收清单里固定出现的字样：用户声明的挂载目录平台不碰。 */
@@ -56,9 +58,16 @@ export function DeleteSandboxDialog({
             onClick={onConfirm}
             disabled={busy}
             data-testid="page-sandbox-detail-delete-confirm-button"
-            className="inline-flex h-8 items-center justify-center rounded-lg border border-transparent bg-destructive px-3 text-[13px] font-medium text-white transition-colors hover:bg-destructive/90 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-transparent bg-destructive px-3 text-[13px] font-medium text-white transition-colors hover:bg-destructive/90 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
           >
-            {busy ? '正在删除…' : '确认删除'}
+            {busy ? (
+              <>
+                <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                正在删除
+              </>
+            ) : (
+              '确认删除'
+            )}
           </button>
         </>
       }

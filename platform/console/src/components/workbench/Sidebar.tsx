@@ -1,4 +1,4 @@
-import { Moon, Plus, RefreshCw, Server, Sun } from 'lucide-react';
+import { Box, Moon, Plus, RefreshCw, Server, Sun } from 'lucide-react';
 
 import type { SandboxSummary } from '../../api/types';
 import { cn } from '../../lib/cn';
@@ -43,9 +43,7 @@ export function Sidebar({
       {/* 品牌 */}
       <div className="flex items-center gap-2.5 px-4 pt-4 pb-3">
         <div className="grid size-8 shrink-0 place-items-center rounded-[9px] bg-primary text-primary-foreground">
-          <span aria-hidden="true" className="text-[15px] leading-none">
-            ▣
-          </span>
+          <Box className="size-4" aria-hidden="true" />
         </div>
         <div className="min-w-0 flex-1">
           <div

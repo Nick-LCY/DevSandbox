@@ -1,3 +1,4 @@
+import { Loader2 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 
 import { api } from '../../api/client';
@@ -86,7 +87,7 @@ export function ProxySettingsDialog({
     setRestarting(true);
     setRestart(null);
     // 重启进行中：弹 info toast（抽屉里不再挂蓝条）。
-    // toast 5 秒后消失，重启还没完时按钮自身的「正在重启…」状态仍在。
+    // toast 5 秒后消失，重启还没完时按钮自身的「正在重启」加载态仍在。
     show('info', RESTARTING_NOTICE, { source: 'proxy-settings' });
     // 本轮是否已经报过失败：报过就不让后续的状态刷新失败再顶一条。
     let reportedFailure = false;
@@ -137,9 +138,16 @@ export function ProxySettingsDialog({
             onClick={() => void restartProxy()}
             disabled={restarting}
             data-testid="page-settings-restart-button"
-            className="inline-flex h-8 items-center justify-center rounded-lg border border-transparent bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/80 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-transparent bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/80 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
           >
-            {restarting ? '正在重启…' : '重启代理'}
+            {restarting ? (
+              <>
+                <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                正在重启
+              </>
+            ) : (
+              '重启代理'
+            )}
           </button>
         </>
       }

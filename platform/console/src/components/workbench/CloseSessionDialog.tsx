@@ -1,3 +1,4 @@
+import { Loader2 } from 'lucide-react';
 import { useCallback } from 'react';
 
 import { cn } from '../../lib/cn';
@@ -79,7 +80,7 @@ export function CloseSessionDialog({
             disabled={busy}
             data-testid="page-sandbox-detail-terminal-remove-confirm-button"
             className={cn(
-              'inline-flex h-8 items-center justify-center rounded-lg border border-transparent px-3',
+              'inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-transparent px-3',
               'text-[13px] font-medium transition-colors',
               'focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none',
               'disabled:pointer-events-none disabled:opacity-50',
@@ -88,7 +89,14 @@ export function CloseSessionDialog({
                 : 'bg-primary text-primary-foreground hover:bg-primary/80',
             )}
           >
-            {busy ? '正在处理…' : confirmLabel}
+            {busy ? (
+              <>
+                <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                正在处理
+              </>
+            ) : (
+              confirmLabel
+            )}
           </button>
         </>
       }

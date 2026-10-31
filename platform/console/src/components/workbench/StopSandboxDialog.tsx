@@ -1,3 +1,5 @@
+import { Loader2 } from 'lucide-react';
+
 import { ModalShell } from './ModalShell';
 
 interface StopSandboxDialogProps {
@@ -59,9 +61,16 @@ export function StopSandboxDialog({
             onClick={onConfirm}
             disabled={busy}
             data-testid="page-sandbox-detail-stop-confirm-button"
-            className="inline-flex h-8 items-center justify-center rounded-lg border border-transparent bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/80 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-transparent bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/80 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
           >
-            {busy ? '正在停止…' : '确认停止'}
+            {busy ? (
+              <>
+                <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                正在停止
+              </>
+            ) : (
+              '确认停止'
+            )}
           </button>
         </>
       }

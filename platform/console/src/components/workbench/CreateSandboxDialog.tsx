@@ -1,3 +1,4 @@
+import { Loader2 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 
 import { api } from '../../api/client';
@@ -222,9 +223,16 @@ export function CreateSandboxDialog({
         onClick={() => void submit()}
         disabled={submitting}
         data-testid="page-sandbox-create-submit-button"
-        className="inline-flex h-8 items-center justify-center rounded-lg border border-transparent bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/80 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+        className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-transparent bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/80 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
       >
-        {submitting ? '正在创建…' : '创建沙箱'}
+        {submitting ? (
+          <>
+            <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+            正在创建
+          </>
+        ) : (
+          '创建沙箱'
+        )}
       </button>
     </>
   );
@@ -296,9 +304,16 @@ export function CreateSandboxDialog({
               onClick={() => void loadImages()}
               disabled={loadingImages}
               data-testid="page-sandbox-create-image-refresh-button"
-              className="inline-flex h-8 shrink-0 items-center justify-center rounded-lg border border-border bg-card px-2.5 text-[13px] text-foreground transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+              className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-[13px] text-foreground transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
             >
-              {loadingImages ? '正在刷新…' : '刷新镜像'}
+              {loadingImages ? (
+                <>
+                  <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                  正在刷新
+                </>
+              ) : (
+                '刷新镜像'
+              )}
             </button>
           </div>
           {!loadingImages && images.length === 0 && !imagesError && (
