@@ -56,7 +56,7 @@ export function CloseSessionDialog({
       testId="page-sandbox-detail-terminal-remove-confirm"
       onOpenChange={handleOpenChange}
       closeDisabled={busy}
-      maxWidthClassName="max-w-[360px]"
+      maxWidthPx={360}
       footer={
         <>
           <button

@@ -14,8 +14,15 @@ interface ModalShellProps {
   onOpenChange: (open: boolean) => void;
   /** 关闭被禁用（删除进行中：不可逆操作中途不能退出）。 */
   closeDisabled?: boolean;
-  /** 面板最大宽度。 */
-  maxWidthClassName?: string;
+  /**
+   * 面板最大宽度（像素）。
+   *
+   * 取值必须落在 `WIDTH_CLASS` 表里，不在表内一律回落默认 440。
+   * 这里只收像素数字，不收类名字符串：Tailwind 只为源码里的字面量生成 CSS，
+   * 运行期拼出来的类名（如 `sm:max-w-[${px}px]`）根本没有对应的规则，
+   * 面板会一路撑到视口宽度。
+   */
+  maxWidthPx?: number;
   /** 面板主体。 */
   children: ReactNode;
   /** 面板底部（按钮区）。 */
@@ -23,14 +30,21 @@ interface ModalShellProps {
 }
 
 /**
- * 面板最大宽度补上断点变体：`max-w-[440px]` → `sm:max-w-[440px]`。
+ * 面板最大宽度 → Tailwind 类名（字面量表）。
  *
- * Base UI 原语自带 `sm:max-w-sm`（384px）的默认窄宽，不覆盖的话
- * 宽弹窗在桌面端会被压成一条窄框。
+ * 每个类名都以字面量形式写在这里，Tailwind 扫源码时能直接捡到，
+ * 生成的 CSS 里一定有对应规则；调用方只给像素数字。
+ *
+ * 窄屏（< 640px）不套断点变体，由 `max-w-[calc(100%-3rem)]` 兜底。
  */
-function withBreakpoint(maxWidthClassName: string): string {
-  return maxWidthClassName.replace(/^max-w-/, 'sm:max-w-');
-}
+const WIDTH_CLASS: Record<number, string> = {
+  360: 'sm:max-w-[360px]',
+  400: 'sm:max-w-[400px]',
+  440: 'sm:max-w-[440px]',
+};
+
+/** 面板默认最大宽度（像素）。 */
+const DEFAULT_MAX_WIDTH_PX = 440;
 
 /**
  * 弹窗外壳：基于 Base UI Dialog 原语的遮罩 + 面板 + 顶部标题栏。
@@ -48,7 +62,7 @@ export function ModalShell({
   testId,
   onOpenChange,
   closeDisabled = false,
-  maxWidthClassName = 'max-w-[440px]',
+  maxWidthPx = DEFAULT_MAX_WIDTH_PX,
   children,
   footer,
 }: ModalShellProps) {
@@ -70,8 +84,10 @@ export function ModalShell({
         data-testid={testId}
         className={cn(
           'flex max-h-[calc(100vh-3rem)] w-full flex-col gap-0 overflow-hidden p-0',
+          // 窄屏兜底：视口窄于 640px 时不套断点变体，按视口留边。
           'max-w-[calc(100%-3rem)]',
-          withBreakpoint(maxWidthClassName),
+          // 宽度类名取字面量表里的值（未知宽度回落默认 440）。
+          WIDTH_CLASS[maxWidthPx] ?? WIDTH_CLASS[DEFAULT_MAX_WIDTH_PX],
           'rounded-xl border border-border bg-popover text-popover-foreground shadow-lg',
           'ring-0',
         )}

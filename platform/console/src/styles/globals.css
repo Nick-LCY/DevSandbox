@@ -50,6 +50,15 @@
 @source "../../index.html";
 @source "../../src/**/*.{ts,tsx}";
 
+/* 确认类弹窗的面板宽度类名（见 workbench/ModalShell.tsx 的 WIDTH_CLASS 表）。
+ *
+ * Tailwind v4 只为源码里的字面量生成规则；这三类以字面量形式补进扫描范围，
+ * 防止将来有人改成运行期拼类名时静默落空（面板会一路撑到视口宽度）。
+ */
+@source inline("sm:max-w-[360px]");
+@source inline("sm:max-w-[400px]");
+@source inline("sm:max-w-[440px]");
+
 /* 暗色变体：挂 html.dark（见 src/lib/theme.ts）。 */
 @custom-variant dark (&:where(.dark, .dark *));
 

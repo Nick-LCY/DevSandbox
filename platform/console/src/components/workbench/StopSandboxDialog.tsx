@@ -42,7 +42,7 @@ export function StopSandboxDialog({
       testId="page-sandbox-detail-stop-dialog"
       onOpenChange={onOpenChange}
       closeDisabled={busy}
-      maxWidthClassName="max-w-[400px]"
+      maxWidthPx={400}
       footer={
         <>
           <button

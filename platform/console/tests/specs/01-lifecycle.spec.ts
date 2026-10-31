@@ -22,6 +22,7 @@ import {
   selectCreatedSandbox,
   selectSandbox,
   toastItem,
+  waitDialogSettled,
   waitDrawerSettled,
 } from '../helpers/console';
 import { sandboxContainerState, userUid } from '../helpers/host';
@@ -103,6 +104,27 @@ test.describe('网页控制台全流程', () => {
       );
       // 后果说明：删了会怎样。
       await expect(dialog).toContainText('此操作不可撤销');
+
+      // 弹窗宽度口径：1920 视口下删除确认弹窗宽 400px（曾经一路撑到视口宽度）。
+      const originViewport = page.viewportSize();
+      await page.setViewportSize({ width: 1920, height: 1080 });
+      await waitDialogSettled(page, 'page-sandbox-detail-delete-dialog');
+      const wideBox = (await dialog.boundingBox())!;
+      expect(
+        Math.abs(wideBox.width - 400),
+        `删除确认弹窗宽度应为 400px，实测 ${wideBox.width}px`,
+      ).toBeLessThanOrEqual(2);
+      // 窄屏（< 640px）不套断点变体：按视口留边（calc(100% - 3rem)）。
+      await page.setViewportSize({ width: 600, height: 900 });
+      await waitDialogSettled(page, 'page-sandbox-detail-delete-dialog');
+      const narrowBox = (await dialog.boundingBox())!;
+      expect(
+        Math.abs(narrowBox.width - (600 - 48)),
+        `窄屏下删除确认弹窗应为视口留边 552px，实测 ${narrowBox.width}px`,
+      ).toBeLessThanOrEqual(2);
+      if (originViewport) {
+        await page.setViewportSize(originViewport);
+      }
 
       // 取消一次：一个删除请求都不该发出去
       await page.getByTestId('page-sandbox-detail-delete-cancel-button').click();
@@ -202,6 +224,22 @@ test.describe('网页控制台全流程', () => {
     const before = (await drawer.boundingBox())!;
     expect(before.width).toBeGreaterThan(0);
 
+    // 默认宽度是 40 视口百分比：1920 视口下应是 768px。
+    const originViewport = page.viewportSize();
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    await waitDrawerSettled(page, 'page-sandbox-create-dialog');
+    const defaultBox = (await drawer.boundingBox())!;
+    expect(
+      Math.abs(defaultBox.width - 1920 * 0.4),
+      `抽屉默认宽度应为 40 视口百分比（768px），实测 ${defaultBox.width}px`,
+    ).toBeLessThanOrEqual(2);
+    if (originViewport) {
+      await page.setViewportSize(originViewport);
+      await waitDrawerSettled(page, 'page-sandbox-create-dialog');
+    }
+    const before2 = (await drawer.boundingBox())!;
+    expect(before2.width).toBeGreaterThan(0);
+
     // 向左拖把手：面板变宽。
     const box = (await handle.boundingBox())!;
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -215,7 +253,7 @@ test.describe('网页控制台全流程', () => {
         timeout: 10_000,
         message: '向左拖把手后面板没有变宽',
       })
-      .toBeGreaterThan(before.width + 50);
+      .toBeGreaterThan(before2.width + 50);
     const after = (await drawer.boundingBox())!;
 
     // 宽度写进共用存储键（三个抽屉共用一个）。
@@ -259,6 +297,13 @@ test.describe('网页控制台全流程', () => {
       try {
         const dialog = await openStopDialog(page);
         await expect(dialog).toContainText(`停止沙箱 ${name}`);
+        // 停止确认弹窗宽度口径：1280 视口下宽 400px。
+        await waitDialogSettled(page, 'page-sandbox-detail-stop-dialog');
+        const stopBox = (await dialog.boundingBox())!;
+        expect(
+          Math.abs(stopBox.width - 400),
+          `停止确认弹窗宽度应为 400px，实测 ${stopBox.width}px`,
+        ).toBeLessThanOrEqual(2);
         await page.getByTestId('page-sandbox-detail-stop-cancel-button').click();
         await expect(dialog).toBeHidden();
         // 等一拍再判零：请求事件比点击晚几十毫秒落地，不留窗口就等于没数。

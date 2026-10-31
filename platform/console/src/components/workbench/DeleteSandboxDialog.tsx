@@ -39,7 +39,7 @@ export function DeleteSandboxDialog({
       testId="page-sandbox-detail-delete-dialog"
       onOpenChange={onOpenChange}
       closeDisabled={busy}
-      maxWidthClassName="max-w-[400px]"
+      maxWidthPx={400}
       footer={
         <>
           <button

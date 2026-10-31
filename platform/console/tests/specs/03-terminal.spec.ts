@@ -10,7 +10,7 @@ import { expect, test, type Page } from '@playwright/test';
 import path from 'node:path';
 
 import { createSandbox, listSandboxes } from '../helpers/api';
-import { gotoDetail, toastItem } from '../helpers/console';
+import { gotoDetail, toastItem, waitDialogSettled } from '../helpers/console';
 import { sandboxContainerState, userUid } from '../helpers/host';
 import { readFixtures } from '../helpers/sandbox';
 import {
@@ -124,6 +124,29 @@ test.describe('网页终端', () => {
       type: '终端会话',
       description: `${records.length} 个会话，宿主侧 exec 进程号互不相同：${records.map((item) => item.pid).join('、')}`,
     });
+
+    // ── 关闭会话确认弹窗的宽度口径：360px（1920 视口下量）。
+    // 复用已有会话（不新建）：每个沙箱的终端会话数有上限（5 个）。
+    const originViewport = page.viewportSize();
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    const firstTab = page.locator(
+      `[data-testid="page-sandbox-detail-terminal-tab"][data-session-id="${first}"]`,
+    );
+    await firstTab.getByTestId('page-sandbox-detail-terminal-tab-close').click();
+    const removeDialog = page.getByTestId('page-sandbox-detail-terminal-remove-confirm');
+    await expect(removeDialog).toBeVisible();
+    await waitDialogSettled(page, 'page-sandbox-detail-terminal-remove-confirm');
+    const removeBox = (await removeDialog.boundingBox())!;
+    expect(
+      Math.abs(removeBox.width - 360),
+      `关闭会话确认弹窗宽度应为 360px，实测 ${removeBox.width}px`,
+    ).toBeLessThanOrEqual(2);
+    // 收尾：取消，别真把会话关了（后面的用例还要用终端）。
+    await page.getByTestId('page-sandbox-detail-terminal-remove-cancel-button').click();
+    await expect(removeDialog).toBeHidden();
+    if (originViewport) {
+      await page.setViewportSize(originViewport);
+    }
   });
 
   test('终端聚焦时 Ctrl+C 到达容器内的 shell', async ({ page }) => {

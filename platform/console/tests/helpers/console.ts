@@ -41,6 +41,29 @@ export async function gotoDetail(page: Page, name: string): Promise<void> {
 }
 
 /**
+ * 等弹窗的进场动画结束（面板尺寸稳定下来）。
+ *
+ * 弹窗进场是 zoom-in 动画（缩放 0.95 → 1）：动画中间帧量到的是缩放后的尺寸
+ * （400px 的面板在中间帧只有 380px），要量宽度必须先等动画结束。
+ */
+export async function waitDialogSettled(page: Page, testId: string): Promise<void> {
+  const dialog = page.getByTestId(testId);
+  let last = Number.NaN;
+  await expect
+    .poll(
+      async () => {
+        const box = await dialog.boundingBox();
+        const width = box === null ? Number.NaN : Math.round(box.width * 10) / 10;
+        const stable = width === last;
+        last = width;
+        return stable;
+      },
+      { timeout: 10_000, message: `弹窗 ${testId} 的进场动画迟迟不结束` },
+    )
+    .toBe(true);
+}
+
+/**
  * 在左侧边栏里选中一个沙箱（工作区切到它的摘要与终端）。
  */
 export async function selectSandbox(page: Page, name: string): Promise<void> {
