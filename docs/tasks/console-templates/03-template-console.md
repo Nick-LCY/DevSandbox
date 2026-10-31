@@ -1,35 +1,47 @@
 ---
 prd: prds/console-templates.md
-status: todo
+status: done
 ---
 # 任务：模板前端与字体
+
+> 实测结论：全部完成标准通过。前端侧交付「加载模板 / 保存为模板」（新建沙箱抽屉里）、模板管理区（设置抽屉第二区：列表、行内重命名、删除确认弹窗）、侧栏「代理设置」改名「设置」，以及字体字符源并入常用汉字表后的子集重生成。核心包、命令行与后端零改动，零新增依赖。
+>
+> 交互口径：模板是「出现字段整体替换、缺失字段保持现状」（判据用 `hasOwnProperty`，空值与缺失不混同）；`{name}` 在模板配置的任意字符串位置可写，回填时换成沙箱名，**沙箱名为空时保留占位符原样**；命令可以是数组（后端契约收 `str | list[str] | null`），数组命令进隐藏状态原样透传、命令输入框留空、提交时隐藏命令优先。保存为模板只写有值的字段（空值字段不进配置，空挂载行不进配置）。模板里的挂载声明走宽松口径：宿主路径不要求已存在、不查宿主敏感目录，解析不了的声明整条跳过并报条数。
+>
+> 字体：字符源由「三处源码抽取 + ASCII 与界面常用符号 + 通用规范汉字表一级字表（3500 字）」组成，字符集 **1104 → 3634**；`build-fonts.sh` 在常用汉字表文件缺失时**报错退出**（静默跳过会产出缺字形的子集，表现为界面上的方框）；新增中文文案后必须重跑脚本。字体文件缺失时浏览器回退系统字体栈。
+>
+> 审查修复轮（2026-10-31）：一轮独立代码审查的 1 项严重 + 5 项应修 + 1 项建议全部落地，无遗留。**严重：加载模板时镜像被静默清空**——模板列表（毫秒级文件读）几乎总比镜像列表（秒级宿主枚举）先到，回填时镜像列表还是空的，模板镜像被误判「宿主上没有」而丢弃；改为只有镜像列表**已经拿到过**才判「不在宿主列表 → 清空」，没拿到时保留模板镜像引用，列表到齐后再由既有清理逻辑兜底。**其余**：空挂载行不再入库（两段路径先 trim）；数组命令不再让抽屉崩（类型改 `string | string[] | null`，数组进隐藏状态透传）；提交前的占位符兜底替换补上网络字段；模板配置类型改为复用接口层的定义、删掉本地重复声明；补一条时序单测（空名应用模板 → 再填沙箱名 → 提交，断言挂载 / 网络 / 命令数组里没有 `{name}` 残留）；删除结果为「记录已不存在」时如实报这句，不一律报已删除。
+>
+> 验收（本轮真机复跑）：前端 vitest **269 项全绿**（审查修复轮基线 253 项，新增 16 项）、`typecheck` / `typecheck:tests` / `build` 全绿；Playwright 真机 **22 条用例全绿**（含本任务新增的 `07-templates` 三条：保存 → 回填（含 `{name}` 替换）→ 重命名 → 删除 → 刷新不复活、合并语义、删除确认弹窗），既有 19 条无回归。后端 pytest **354 项全绿**、ruff 经典默认规则集（E4/E7/E9/F）零告警。实测数据见 `platform/console/RESULTS.md` 第八节。
+>
+> 零改动与唯一例外：核心包（`server/` 目录之外）与命令行 `platform/cli/` 一行未改；本轮唯一允许的平台侧非服务端改动是 `platform/pyproject.toml` 补的 ruff 基线规则集配置。
 
 ## 目标
 把「启动模板」做成网页控制台里可用的能力：新建沙箱抽屉加「加载模板 / 保存为模板」两个动作，侧边栏「代理设置」改名「设置」并在同一抽屉里加模板管理区（重命名、删除）；模板应用语义为「出现字段整体替换、缺失字段保持现状」，支持 `{name}` 占位符；字体字符源并入常用汉字表后重生成子集。
 
 ## 完成标准
-- [ ] 新建 `platform/console/src/lib/templates.ts`，包含三个纯函数并有单元测试。
+- [x] 新建 `platform/console/src/lib/templates.ts`，包含三个纯函数并有单元测试。
   - `applyTemplateConfig`：按「字段是否出现」做合并——出现的字段整体替换（挂载是整组替换，不是逐条合并），缺失的字段保持现状；用 `hasOwnProperty` 判出现与否。
   - `substituteNamePlaceholder`：把配置里的 `{name}` 替换为沙箱名；沙箱名为空时保留占位符原样。
   - `collectTemplateConfig`：从新建沙箱表单收集模板配置，空值字段不进配置对象。
-- [ ] 模板配置的挂载解析采用宽松口径：允许以 `~` 开头的宿主路径。
-- [ ] `platform/console/src/lib/mounts.ts` 的宿主路径校验放行 `~/` 前缀，单测同步补齐。
-- [ ] `platform/console/src/api/types.ts` 与 `client.ts` 增加四条模板调用（列表、创建、重命名、删除）。
-- [ ] 新建沙箱抽屉加「加载模板」：复用 `src/components/ui/combobox.tsx` 的可搜索下拉，本地筛选候选，**选中即回填**表单。
-- [ ] 新建沙箱抽屉加「保存为模板」：走 `ModalShell` 命名弹窗，空名禁止提交，成功后弹成功 toast（来源 `sandbox-template`）。
-- [ ] 新建沙箱抽屉的网络字段不在表单里展示，但随配置透传保存。
-- [ ] `ProxySettingsDialog.tsx` 用 `git mv` 改名为 `SettingsDialog.tsx`，组件名与标题改为「设置」；既有 `page-settings-*` 标识全部不动。
-- [ ] 设置抽屉第一区仍是代理设置，内容原样保留；第二区新增模板管理区。
-- [ ] 模板管理区提供模板列表、行内重命名（回车提交、Esc 取消、空名禁止提交）与删除（走确认弹窗，文案写明删除模板不影响已建沙箱）。
-- [ ] 侧边栏的「代理设置」项文案改为「设置」，图标换成 lucide `Settings`。
-- [ ] 侧边栏该按钮的标识由 `page-layout-proxy-button` 改为 `page-layout-settings-button`；旧标识进 `platform/console/README.md` 的已退役清单；`platform/console/tests/specs/01-lifecycle.spec.ts` 里的一处引用同步改。
-- [ ] 字体脚本的字符源并入常用汉字表：新建 `platform/console/scripts/fonts/common-hanzi.txt` 并入库（通用规范汉字表一级字，约 3500 字）；`build-fonts.sh` 在该文件缺失时报错退出，不静默跳过。
-- [ ] 按新字符源重生成字体子集并入库 `platform/console/public/fonts/`。
-- [ ] vitest 覆盖合并语义、占位符替换与交互；Playwright 新增 `platform/console/tests/specs/07-templates.spec.ts`，覆盖「保存 → 加载回填（含占位符）→ 重命名 → 删除 → 刷新不复活」全流程；`tests/helpers` 同步扩展。
-- [ ] `pnpm typecheck`、`pnpm typecheck:tests`、`pnpm vitest`、`pnpm build` 全绿。
-- [ ] Playwright 真机用例全绿（新旧用例一起跑）。
-- [ ] 零新增依赖：模板能力不引入任何新包。
-- [ ] 操作结果反馈一律走右上角 toast，不新增内嵌结果横幅。
+- [x] 模板配置的挂载解析采用宽松口径：允许以 `~` 开头的宿主路径。
+- [x] `platform/console/src/lib/mounts.ts` 的宿主路径校验放行 `~/` 前缀，单测同步补齐。
+- [x] `platform/console/src/api/types.ts` 与 `client.ts` 增加四条模板调用（列表、创建、重命名、删除）。
+- [x] 新建沙箱抽屉加「加载模板」：复用 `src/components/ui/combobox.tsx` 的可搜索下拉，本地筛选候选，**选中即回填**表单。
+- [x] 新建沙箱抽屉加「保存为模板」：走 `ModalShell` 命名弹窗，空名禁止提交，成功后弹成功 toast（来源 `sandbox-template`）。
+- [x] 新建沙箱抽屉的网络字段不在表单里展示，但随配置透传保存。
+- [x] `ProxySettingsDialog.tsx` 用 `git mv` 改名为 `SettingsDialog.tsx`，组件名与标题改为「设置」；既有 `page-settings-*` 标识全部不动。
+- [x] 设置抽屉第一区仍是代理设置，内容原样保留；第二区新增模板管理区。
+- [x] 模板管理区提供模板列表、行内重命名（回车提交、Esc 取消、空名禁止提交）与删除（走确认弹窗，文案写明删除模板不影响已建沙箱）。
+- [x] 侧边栏的「代理设置」项文案改为「设置」，图标换成 lucide `Settings`。
+- [x] 侧边栏该按钮的标识由 `page-layout-proxy-button` 改为 `page-layout-settings-button`；旧标识进 `platform/console/README.md` 的已退役清单；`platform/console/tests/specs/01-lifecycle.spec.ts` 里的一处引用同步改。
+- [x] 字体脚本的字符源并入常用汉字表：新建 `platform/console/scripts/fonts/common-hanzi.txt` 并入库（通用规范汉字表一级字，约 3500 字）；`build-fonts.sh` 在该文件缺失时报错退出，不静默跳过。
+- [x] 按新字符源重生成字体子集并入库 `platform/console/public/fonts/`。
+- [x] vitest 覆盖合并语义、占位符替换与交互；Playwright 新增 `platform/console/tests/specs/07-templates.spec.ts`，覆盖「保存 → 加载回填（含占位符）→ 重命名 → 删除 → 刷新不复活」全流程；`tests/helpers` 同步扩展。
+- [x] `pnpm typecheck`、`pnpm typecheck:tests`、`pnpm vitest`、`pnpm build` 全绿。
+- [x] Playwright 真机用例全绿（新旧用例一起跑）。
+- [x] 零新增依赖：模板能力不引入任何新包。
+- [x] 操作结果反馈一律走右上角 toast，不新增内嵌结果横幅。
 
 ## 依赖
 - 依赖 [[tasks/console-templates/02-template-server.md|02 模板服务端]]：四条模板接口的契约先定，前端再对接。
