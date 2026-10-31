@@ -1,5 +1,101 @@
 # 平台基础镜像 · 实测记录
 
+## 0.3.0（当前版本）—— 通用工具层
+
+- 执行日期：2026-10-31
+- 宿主：Ubuntu 26.04 LTS / 内核 7.0.0-38-generic / cgroup v2
+- Docker：客户端 + 服务端 **29.6.2**（宿主 root 守护进程），存储驱动 `overlayfs`（containerd 快照器）
+- 免 root 守护进程：复用 `platform/probe/rootless/` 的 00/01/04 脚本
+- 镜像：`sandbox-platform/base:0.3.0`，image id `sha256:d8167c121c69d85a525ce7b66a1665554c9a6c7385967efa1d7a9e6d6ba87102`
+- 统一镜像代理：`rpardini/docker-registry-proxy:0.8.0`（沿用现有实例，本轮未改动代理）
+
+> **0.3.0 的变更原因**：新增通用工具层——9 个通用工具包（git / openssh-client / vim / curl / ca-certificates / unzip / xz-utils / procps / less）随镜像预装。
+> 代价是构建口径从「所有 RUN 不触网 + 构建显式带 `--network=none`」改为「构建期联网 apt 拉包」，镜像体积相应增长。
+
+### 一、构建
+
+| 项 | 实测 |
+|----|------|
+| 构建命令 | `docker build --build-arg DOCKER_CLI_VERSION=29.6.2 -t sandbox-platform/base:0.3.0 platform/base-image` |
+| 构建耗时（墙钟） | **18 秒** |
+| 其中 apt 拉包层 | 12.6 秒（`apt-get update` + `apt-get install --no-install-recommends` + 清索引，同一 `RUN` 层） |
+| 其中导出镜像层 | 4.8 秒 |
+| 构建结果 | 成功（BuildKit，联网构建） |
+
+### 二、体积
+
+| 口径 | 0.2.0 | 0.3.0（当前） | 变化 |
+|------|------|------|------|
+| `docker image inspect .Size`（验收口径） | 47,693,426 B = 47.7 MB | **98,494,563 B = 98.5 MB** | **+50,801,137 B（+106.5%）** |
+| `docker history` 分层合计（未压缩口径） | 134,033,191 B = 134.0 MB | 298,659,623 B = 298.7 MB | +164,626,432 B（+122.9%） |
+
+体积增长全部来自新增的 apt 通用工具层（未压缩 164.6 MB，压缩后净增 50.8 MB）；底座层与 docker 客户端层与 0.2.0 **共用同一层**（层摘要 `sha256:44a87794…` 与 `sha256:8e446bd1…`），未重复占用。
+
+### 三、分层（`docker history`，自顶向下）
+
+| 层 | 0.3.0 | 0.2.0 |
+|----|-------|-------|
+| `ENTRYPOINT ["/entrypoint.sh"]` | 0 B | 0 B |
+| `WORKDIR /workspace` | 4,198 B（4.1 kB） | 4,198 B |
+| `RUN` 入口脚本可执行位 + `/workspace` 目录权限 | 12,595 B（12.3 kB） | 12,595 B |
+| `COPY entrypoint.sh` | 8,386 B（8.19 kB） | 8,386 B |
+| `COPY` docker 客户端二进制（静态 Go） | 44,564,480 B（42.5 MB） | 44,564,480 B |
+| `LABEL` / `ARG` | 0 B | 0 B |
+| **`RUN` apt 通用工具层（9 包）** | **164,626,432 B（157 MB）** | 无此层 |
+| debian:bookworm-slim 底座 | 89,443,532 B（85.3 MB） | 89,443,532 B |
+| 分层合计（未压缩） | 298,659,623 B（298.7 MB） | 134,033,191 B（134.0 MB） |
+
+> `docker history` 报的是各层**未压缩**大小，`docker image inspect .Size` 报的是**压缩后**总量，两者口径不同，不可直接相加对比。
+
+### 四、判定结果
+
+#### `verify.sh`（镜像级，宿主 root 守护进程）：42 项全通过
+
+| 判定组 | 结果 |
+|--------|------|
+| 镜像存在；bash / docker 客户端存在；`docker --version` 有版本输出 | 通过 |
+| 业务运行时缺席：node、npm、pnpm、python3、python、psql、pg_config、mc、minio、postgres、jq | 通过（11 项均未安装；git 与 curl 的否定断言已删除） |
+| **通用工具层在场**：git / openssh-client / vim / curl / unzip / xz-utils / procps / less / ca-certificates | 通过（9 项，逐包断言 `dpkg-query` 查得到版本 + 命令在 PATH；ca-certificates 断言证书文件存在） |
+| 无 `VOLUME` 指令，`inspect .Config.Volumes` 为 `null`；容器内只有 `/proc` `/sys` `/dev` `/etc` 标准挂载 | 通过 |
+| `/workspace` 是空目录、可写、非挂载点、权限 1777 | 通过 |
+| `/entrypoint.sh` 存在，静态检查无业务运行时调用 | 通过 |
+| **镜像内无离线包痕迹**：无 `/opt/deps`、无 `load-deps.sh` / `fetch-deps.sh` / `images.list`、全盘无 `.tar` 类文件、入口脚本无加载逻辑 | 通过（5 项） |
+| docker 缺失 → 输出含 `docker client missing` 且退出码 127 | 通过 |
+| docker 存在 → 进入交互式 bash，退出码 0 | 通过 |
+
+判定总数口径：35 项原有判定 − 2 条被删的否定断言（git / curl） + 9 条新增判定 = **42 项**，实测 **不通过 0 项**。
+
+#### `verify-rootless.sh`（真实免 root 守护进程）：5 项全通过（+ 6 项回收校验）
+
+| 判定 | 结果 |
+|------|------|
+| 入口脚本进入交互式 bash（容器保持运行） | 通过 |
+| 容器内 docker 客户端可访问守护进程 | 通过 |
+| 镜像内无 `/opt/deps` 离线包目录 | 通过 |
+| 容器内 client=29.6.2 == server=29.6.2 | 通过 |
+| 客户端版本 == 宿主 root 守护进程版本 29.6.2 | 通过 |
+| 回收：容器删除、用户与子 ID 段清除、用户级单元删除、运行时目录回收 | 通过（6 项） |
+
+测完确认脚本自建资源已全部回收：探针用户 `sandboxprobe` 已删除、`/tmp/rootless-probe` 已清理、`/run/user/<uid>` 已回收、测试容器已删除。
+
+### 五、踩坑清单
+
+1. **免 root 探针的用户总线存在竞态**：`01-start-dockerd.sh` 开启 linger 后只等 `/run/user/<uid>` 目录出现，
+   不等用户总线套接字就绪，紧接着的 `systemctl --user daemon-reload` 会报
+   `Failed to connect to user scope bus via local transport: Connection refused`。
+   首次跑失败后重跑即通过（此时 `user@<uid>.service` 与 `/run/user/<uid>/bus` 已就绪）。
+   这是探针脚本的时序问题，与基础镜像内容无关。
+2. **`--network=none` 口径作废**：apt 必须联网，构建命令不能带 `--network=none`。
+   离线环境只能继续用 `sandbox-platform/base:0.2.0`。
+3. **包名与命令名不是一一对应**：`openssh-client` 提供 `ssh`、`xz-utils` 提供 `xz`、`procps` 提供 `ps`，
+   `ca-certificates` 不提供命令而提供 `/etc/ssl/certs/ca-certificates.crt`——判定脚本按「包→命令」映射表逐条断言。
+4. **apt 层的位置有讲究**：通用工具层放在 `FROM ${BASE_IMAGE} AS base` 之后、`ARG DOCKER_CLI_VERSION` 重新声明之前，
+   这样客户端版本变化只会让其后的层失效，升级 docker 客户端不必重跑 apt。
+
+---
+
+## 0.2.0 实测记录（历史留档）
+
 - 执行日期：2026-10-29
 - 宿主：Ubuntu 26.04 LTS / 内核 7.0.0-38-generic / cgroup v2
 - Docker：客户端 + 服务端 **29.6.2**（宿主 root 守护进程），存储驱动 `overlayfs`（containerd 快照器）

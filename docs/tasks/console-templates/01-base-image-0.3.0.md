@@ -1,26 +1,34 @@
 ---
 prd: prds/console-templates.md
-status: todo
+status: done
 ---
 # 任务：基础镜像 0.3.0 通用工具层
+
+> 实测结论：全部完成标准通过。`platform/base-image/Dockerfile` 在最终阶段新增一层 apt 安装（`--no-install-recommends`，安装与清索引同一层），装齐 9 个通用工具包；`ARG BASE_VERSION` 改 `0.3.0`，镜像标签同步。构建口径由「所有 RUN 不触网 + 显式 `--network=none`」改为联网 apt 拉包——**0.2.0 是最后一个零网络构建的版本**。
+>
+> 实测数据：构建耗时 18 秒；`docker image inspect .Size` = 98,494,563 B = 98.5 MB（0.2.0 为 47,693,426 B = 47.7 MB，+50.8 MB）；`docker history` 分层合计 298,659,623 B（未压缩），新增 apt 层 164,626,432 B，底座层与 docker 客户端层与 0.2.0 共用。
+>
+> 判定：`verify.sh` 42 项全通过（35 项原有 − 2 条被删的否定断言 + 9 条新增）；`verify-rootless.sh` 5 项全通过 + 6 项回收校验全通过，脚本自建资源已全部回收。
+>
+> 留档：`platform/base-image/README.md`（镜像内容口径与构建命令）、`platform/base-image/RESULTS.md`（0.3.0 实测数据与踩坑）。
 
 ## 目标
 在平台基础镜像上补齐 9 个通用工具包，版本从 0.2.0 升到 0.3.0：git、openssh-client、vim、curl、ca-certificates、unzip、xz-utils、procps、less。构建方式同步从「零网络」改为「联网 apt 拉包」，判定脚本扩到 42 项并把体积、耗时、分层实测留档。
 
 ## 完成标准
-- [ ] `platform/base-image/Dockerfile` 增加 apt 安装层，装齐 9 个工具包，带 `--no-install-recommends`。
-- [ ] 安装与清理（apt 索引清空）在同一层内完成，镜像里不残留 apt 索引。
-- [ ] 镜像版本参数改为 `ARG BASE_VERSION=0.3.0`，镜像标签的版本信息随之更新。
-- [ ] Dockerfile 头注释的构建口径由「所有 RUN 步骤不触网、构建显式带 `--network=none`」改为联网 apt 拉包，并给出新的构建命令。
-- [ ] `docker build --build-arg DOCKER_CLI_VERSION=29.6.2 -t sandbox-platform/base:0.3.0 platform/base-image` 构建成功。
-- [ ] `platform/base-image/verify.sh` 默认校验镜像改为 `sandbox-platform/base:0.3.0`。
-- [ ] 判定脚本删掉「镜像内无 git」「镜像内无 curl」两条否定断言。
-- [ ] 判定脚本新增 9 条「已安装且有版本输出 + 命令在 PATH」判定，命令名与包名的对应关系为：git→git、openssh-client→ssh、vim→vim、curl→curl、ca-certificates→`/etc/ssl/certs/ca-certificates.crt` 存在、unzip→unzip、xz-utils→xz、procps→ps、less→less。
-- [ ] 判定总数为 42 项（35 项原有判定 − 2 条被删的否定断言 + 9 条新增判定），全部通过。
-- [ ] `platform/base-image/README.md` 更新镜像内容口径与构建命令。
-- [ ] `platform/base-image/RESULTS.md` 补 0.3.0 的镜像体积、构建耗时与分层实测数据。
-- [ ] `sandbox-platform/base:0.2.0` 镜像本身、`platform/sandbox-image/` 目录、`platform/src/sandbox_platform/config.py` 的 `DEFAULT_IMAGE` 与 `DEFAULT_LOCAL_IMAGE_PREFIXES` 零改动。
-- [ ] 留档的体积数字与 `docker image inspect` 的实际输出一致。
+- [x] `platform/base-image/Dockerfile` 增加 apt 安装层，装齐 9 个工具包，带 `--no-install-recommends`。
+- [x] 安装与清理（apt 索引清空）在同一层内完成，镜像里不残留 apt 索引。
+- [x] 镜像版本参数改为 `ARG BASE_VERSION=0.3.0`，镜像标签的版本信息随之更新。
+- [x] Dockerfile 头注释的构建口径由「所有 RUN 步骤不触网、构建显式带 `--network=none`」改为联网 apt 拉包，并给出新的构建命令。
+- [x] `docker build --build-arg DOCKER_CLI_VERSION=29.6.2 -t sandbox-platform/base:0.3.0 platform/base-image` 构建成功。
+- [x] `platform/base-image/verify.sh` 默认校验镜像改为 `sandbox-platform/base:0.3.0`。
+- [x] 判定脚本删掉「镜像内无 git」「镜像内无 curl」两条否定断言。
+- [x] 判定脚本新增 9 条「已安装且有版本输出 + 命令在 PATH」判定，命令名与包名的对应关系为：git→git、openssh-client→ssh、vim→vim、curl→curl、ca-certificates→`/etc/ssl/certs/ca-certificates.crt` 存在、unzip→unzip、xz-utils→xz、procps→ps、less→less。
+- [x] 判定总数为 42 项（35 项原有判定 − 2 条被删的否定断言 + 9 条新增判定），全部通过。
+- [x] `platform/base-image/README.md` 更新镜像内容口径与构建命令。
+- [x] `platform/base-image/RESULTS.md` 补 0.3.0 的镜像体积、构建耗时与分层实测数据。
+- [x] `sandbox-platform/base:0.2.0` 镜像本身、`platform/sandbox-image/` 目录、`platform/src/sandbox_platform/config.py` 的 `DEFAULT_IMAGE` 与 `DEFAULT_LOCAL_IMAGE_PREFIXES` 零改动。
+- [x] 留档的体积数字与 `docker image inspect` 的实际输出一致。
 
 ## 依赖
 - 无前置任务依赖。基础镜像在 [[prds/sandbox-platform.md|一期 PRD]] 里定型、在 [[architecture/decisions/0008-统一镜像代理与离线包废弃.md|ADR 0008]] 里改为不含离线包，本任务沿用现状演进。
