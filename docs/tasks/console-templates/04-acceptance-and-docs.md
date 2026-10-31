@@ -1,6 +1,6 @@
 ---
 prd: prds/console-templates.md
-status: todo
+status: done
 ---
 # 任务：真机验收与文档收口
 
@@ -12,7 +12,7 @@ status: todo
 >
 > 留档：`platform/console/RESULTS.md` 第八节（真机实测留档，含逐条用例明细、07-templates 全流程逐步结论、字体体积与字符集前后对比、已知边界、收尾清理实测）。
 >
-> 尚未完成（文档收口，留给后续）：两篇架构决策记录与其索引登记、`docs/current-state.md`、`docs/glossary.md`、`docs/conventions/console-frontend.md`、`platform/console/README.md` 与 `platform/console/tests/README.md` 的同步。
+> 文档收口部分（2026-10-31）已完成：两篇架构决策记录（0010 启动模板收敛为控制台私有功能、0011 基础镜像增加通用工具层并转联网构建）已按仓库模板写全并登记进三张清单表（决策目录索引、架构目录清单、架构总览的关键决策表）；`docs/current-state.md` 看板、TODO 与最近变更已同步；`docs/glossary.md` 补了「启动模板」与「模板墓碑」两条术语；`docs/conventions/console-frontend.md` 补了「启动模板」小节（合并语义、`{name}` 替换时机、`~` 专属口径、toast 来源标识、`data-template-name` 定位口径）；`platform/console/README.md` 与 `platform/console/tests/README.md` 的同步**在任务 03 落地时已完成**（标识表、已退役标识、helper 对照表、模板章节、07-templates 用例说明均已写入），本轮核对后未再改动。
 
 ## 目标
 把控制台模板轮收口：跑齐三套测试确认无回归，把本轮的两个架构决策归档成决策记录，同步看板、词汇表、前端约定与工程说明，并做一遍仓库卫生自查。
@@ -21,12 +21,12 @@ status: todo
 - [x] 后端 pytest 与 ruff 全绿。
 - [x] 前端 vitest、typecheck、typecheck:tests、build 全绿。
 - [x] Playwright 真机验收用例全绿（含二期既有用例，无回归）。
-- [ ] 新增两篇架构决策记录，按仓库模板写（日期、状态、背景、决策、影响、相关决策），文件名为 `0010-启动模板收敛为控制台私有功能.md` 与 `0011-基础镜像增加通用工具层并转联网构建.md`，落在 `docs/architecture/decisions/`。
-- [ ] 两篇决策记录登记进 `docs/architecture/decisions/README.md` 的清单表格。
-- [ ] `docs/current-state.md` 更新：任务看板新增控制台模板轮任务集一行、最近变更追加本轮条目、TODO 段落登记本轮明确不做的六项非目标。
-- [ ] `docs/glossary.md` 补两条术语：启动模板、模板墓碑。
-- [ ] `docs/conventions/console-frontend.md` 补三处约定：模板相关约定、字体回退边界、设置抽屉更名。
-- [ ] `platform/console/README.md` 与 `platform/console/tests/README.md` 同步本轮前端改动（标识表与已退役标识、helper 对照表）。
+- [x] 新增两篇架构决策记录，按仓库模板写（日期、状态、背景、决策、影响、相关决策），文件名为 `0010-启动模板收敛为控制台私有功能.md` 与 `0011-基础镜像增加通用工具层并转联网构建.md`，落在 `docs/architecture/decisions/`。
+- [x] 两篇决策记录登记进 `docs/architecture/decisions/README.md` 的清单表格。
+- [x] `docs/current-state.md` 更新：任务看板新增控制台模板轮任务集一行、最近变更追加本轮条目、TODO 段落登记本轮明确不做的六项非目标。
+- [x] `docs/glossary.md` 补两条术语：启动模板、模板墓碑。
+- [x] `docs/conventions/console-frontend.md` 补三处约定：模板相关约定（本轮补）、字体回退边界（任务 03 已补）、设置抽屉更名（任务 03 已补）。
+- [x] `platform/console/README.md` 与 `platform/console/tests/README.md` 同步本轮前端改动（标识表与已退役标识、helper 对照表）——**任务 03 落地时已同步完毕**，本轮核对后确认无遗漏。
 - [x] `platform/console/RESULTS.md` 补本轮真机实测留档。
 - [x] 仓库卫生自查：本轮新增文件里 grep 不到个人家目录路径，也 grep 不到个人专属内容。
 
@@ -53,6 +53,13 @@ status: todo
 
 ### 仓库卫生自查
 - 用 grep 在本轮新增与改动的文件里查个人家目录路径与个人专属内容，命中即清理；文档里描述该类内容时只写「个人家目录路径」这类泛称，不写真实路径。
+
+## 收口结论
+- 本任务全部完成标准通过，控制台模板轮**四个任务整体交付完毕**：基础镜像 0.3.0 通用工具层、模板服务端、模板前端与字体、真机验收与文档收口。
+- **验收基线**：后端 pytest 354 项全绿、ruff 钉死 `E4/E7/E9/F` 退出码 0；前端 vitest 269 项全绿、typecheck / typecheck:tests / build 全绿；Playwright 真机 22 条全绿（既有 19 条 + `07-templates` 三条）。
+- **零改动承诺兑现**：控制面核心包（`server/` 目录之外）与命令行 `platform/cli/` 全程一行未改；平台侧唯一的非服务端改动是 `platform/pyproject.toml` 补的 ruff 基线规则集配置。
+- **本轮沉淀**：两篇决策记录（0010 模板定位与口径、0011 工具层与联网构建）、两条词汇（启动模板、模板墓碑）、一节前端约定（启动模板）、六项后续待办（见 `docs/current-state.md` 的 TODO 区块）。
+- **已知遗留**：内置模板清单本期留空（机制与墓碑已就绪，补内容即自动生效）；`ba8c6d7` 提交非独立可绿（测试同步在其后一提交，见控制台测试目录的说明文件）。
 
 ## 留档指引
 - 决策记录：`docs/architecture/decisions/` 下新增的两篇文件与该目录索引表。

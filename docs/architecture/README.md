@@ -19,6 +19,8 @@
 | 0007 | [[architecture/decisions/0007-范围边界与云边形态.md\|范围边界与云边形态]] | 已接受 |
 | 0008 | [[architecture/decisions/0008-统一镜像代理与离线包废弃.md\|统一镜像代理与离线包废弃]] | 已接受 |
 | 0009 | [[architecture/decisions/0009-二期控制台服务化与范围裁剪.md\|二期控制台服务化与范围裁剪]] | 已接受 |
+| 0010 | [[architecture/decisions/0010-启动模板收敛为控制台私有功能.md\|启动模板收敛为控制台私有功能]] | 已接受 |
+| 0011 | [[architecture/decisions/0011-基础镜像增加通用工具层并转联网构建.md\|基础镜像增加通用工具层并转联网构建]] | 已接受 |
 
 结论摘要见 [[architecture/overview.md#关键决策]]，决策背景与代价见 [[architecture/decisions/README.md|ADR 清单]]。
 
