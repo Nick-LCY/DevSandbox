@@ -23,7 +23,7 @@ interface ModalShellProps {
 }
 
 /**
- * 面板最大宽度补上断点变体：`max-w-[560px]` → `sm:max-w-[560px]`。
+ * 面板最大宽度补上断点变体：`max-w-[440px]` → `sm:max-w-[440px]`。
  *
  * Base UI 原语自带 `sm:max-w-sm`（384px）的默认窄宽，不覆盖的话
  * 宽弹窗在桌面端会被压成一条窄框。
@@ -48,7 +48,7 @@ export function ModalShell({
   testId,
   onOpenChange,
   closeDisabled = false,
-  maxWidthClassName = 'max-w-[560px]',
+  maxWidthClassName = 'max-w-[440px]',
   children,
   footer,
 }: ModalShellProps) {

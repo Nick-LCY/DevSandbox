@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { api } from '../../api/client';
-import type { ReclaimPlan, SandboxDetail, SandboxSummary } from '../../api/types';
+import type { SandboxDetail, SandboxSummary } from '../../api/types';
 import { useDrawerWidth } from '../../lib/drawer-width';
 import { nextPollFailure } from '../../lib/poll';
 import { TerminalPanel } from '../TerminalPanel';
@@ -13,6 +13,7 @@ import { DeleteSandboxDialog } from './DeleteSandboxDialog';
 import { EmptyState } from './EmptyState';
 import { ProxySettingsDialog } from './ProxySettingsDialog';
 import { SandboxDetailDialog } from './SandboxDetailDialog';
+import { StopSandboxDialog } from './StopSandboxDialog';
 import { WorkspaceHeader } from './WorkspaceHeader';
 
 /** 沙箱列表轮询间隔（毫秒）。 */
@@ -50,8 +51,9 @@ export function Workbench() {
     text: '正在检查后端服务…',
   });
 
-  const [plan, setPlan] = useState<ReclaimPlan | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [stopOpen, setStopOpen] = useState(false);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -214,6 +216,7 @@ export function Workbench() {
     }
   }, [selectedName, loadList, show]);
 
+  /** 停止沙箱：确认弹窗点「确认停止」后才真的发请求。 */
   const stop = useCallback(async () => {
     if (!selectedName) {
       return;
@@ -230,34 +233,26 @@ export function Workbench() {
       });
     } finally {
       setBusy(false);
+      setStopOpen(false);
     }
   }, [selectedName, stopDependencies, loadList, show]);
 
-  /** 删除前先取回收清单；清单拿不到就不进确认环节。 */
-  const openDelete = useCallback(async () => {
+  /** 点「删除」：直接开确认弹窗（不再预取回收清单）。 */
+  const openDelete = useCallback(() => {
     if (!selectedName) {
       return;
     }
-    setBusy(true);
-    try {
-      setPlan(await api.reclaimSandbox(selectedName));
-    } catch (exc) {
-      show('error', exc instanceof Error ? exc.message : '读取回收清单失败', {
-        source: 'sandbox-reclaim',
-      });
-    } finally {
-      setBusy(false);
-    }
-  }, [selectedName, show]);
+    setDeleteTarget(selectedName);
+  }, [selectedName]);
 
   const confirmDelete = useCallback(async () => {
-    if (!plan) {
+    if (!deleteTarget) {
       return;
     }
     setDeleting(true);
     try {
-      const result = await api.deleteSandbox(plan.sandbox_name);
-      setPlan(null);
+      const result = await api.deleteSandbox(deleteTarget);
+      setDeleteTarget(null);
       const removed = result.removed.length;
       const failed = result.failed.length;
       show(
@@ -277,7 +272,7 @@ export function Workbench() {
     } finally {
       setDeleting(false);
     }
-  }, [plan, navigate, loadList, show]);
+  }, [deleteTarget, navigate, loadList, show]);
 
   /* ------------------------------------------------------------------ 导航 */
 
@@ -302,10 +297,10 @@ export function Workbench() {
     [navigate, selectedName],
   );
 
-  /** 关掉删除确认弹窗：回收清单作废。 */
+  /** 关掉删除确认弹窗：删除目标作废。 */
   const closeDeleteDialog = useCallback((open: boolean) => {
     if (!open) {
-      setPlan(null);
+      setDeleteTarget(null);
     }
   }, []);
 
@@ -328,13 +323,11 @@ export function Workbench() {
           <WorkspaceHeader
             detail={detail}
             busy={busy}
-            stopDependencies={stopDependencies}
-            onStopDependenciesChange={setStopDependencies}
             onRefresh={() => void loadDetail(selectedName)}
             onStart={() => void start()}
-            onStop={() => void stop()}
+            onStop={() => setStopOpen(true)}
             onOpenDetail={() => setDetailOpen(true)}
-            onDelete={() => void openDelete()}
+            onDelete={openDelete}
           />
           <TerminalPanel
             sandboxName={selectedName}
@@ -351,6 +344,8 @@ export function Workbench() {
         open={createOpen}
         onOpenChange={setCreateOpen}
         onCreated={(name) => {
+          // 创建成功：关抽屉 → 成功 toast → 刷新列表（不自动选中新建的沙箱）。
+          setCreateOpen(false);
           show('success', `沙箱 ${name} 创建成功`, { source: 'sandbox-create' });
           void loadList(true);
         }}
@@ -375,11 +370,21 @@ export function Workbench() {
       />
 
       <DeleteSandboxDialog
-        open={plan !== null}
+        open={deleteTarget !== null}
         onOpenChange={closeDeleteDialog}
-        plan={plan}
+        sandboxName={deleteTarget ?? ''}
         busy={deleting}
         onConfirm={() => void confirmDelete()}
+      />
+
+      <StopSandboxDialog
+        open={stopOpen}
+        onOpenChange={setStopOpen}
+        sandboxName={selectedName ?? ''}
+        stopDependencies={stopDependencies}
+        onStopDependenciesChange={setStopDependencies}
+        busy={busy}
+        onConfirm={() => void stop()}
       />
     </AppShell>
   );

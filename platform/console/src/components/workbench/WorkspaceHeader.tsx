@@ -8,10 +8,9 @@ interface WorkspaceHeaderProps {
   detail: SandboxDetail | null;
   /** 生命周期操作进行中（禁用按钮）。 */
   busy: boolean;
-  stopDependencies: boolean;
-  onStopDependenciesChange: (value: boolean) => void;
   onRefresh: () => void;
   onStart: () => void;
+  /** 点「停止」：打开停止确认弹窗（不在这里直接停）。 */
   onStop: () => void;
   onOpenDetail: () => void;
   onDelete: () => void;
@@ -41,8 +40,6 @@ function stateClass(state: string): string {
 export function WorkspaceHeader({
   detail,
   busy,
-  stopDependencies,
-  onStopDependenciesChange,
   onRefresh,
   onStart,
   onStop,
@@ -129,16 +126,6 @@ export function WorkspaceHeader({
           <Square className="size-4" aria-hidden="true" />
           停止
         </button>
-        <label className="flex items-center gap-1.5 text-[12.5px] text-muted-foreground">
-          <input
-            type="checkbox"
-            checked={stopDependencies}
-            onChange={(event) => onStopDependenciesChange(event.target.checked)}
-            data-testid="page-sandbox-detail-stop-dependencies-checkbox"
-            className="size-3.5 accent-primary"
-          />
-          同时停止依赖容器
-        </label>
         <button
           type="button"
           onClick={onOpenDetail}

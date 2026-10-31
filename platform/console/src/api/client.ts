@@ -94,7 +94,11 @@ export const api = {
       body: JSON.stringify({ stop_dependencies: stopDependencies }),
     }),
 
-  /** 删除前的回收清单。沙箱不存在回 404。 */
+  /**
+   * 删除前的回收清单。沙箱不存在回 404。
+   *
+   * 控制台页面已不再调用（删除确认不再预取清单），保留给脚本与将来的清单预览。
+   */
   reclaimSandbox: (name: string) => request<ReclaimPlan>(`${pathOf(name)}/reclaim`),
 
   deleteSandbox: (name: string) =>

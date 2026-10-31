@@ -5,8 +5,6 @@ import { ModalShell } from './ModalShell';
 
 interface CloseSessionDialogProps {
   open: boolean;
-  /** 要关闭的会话标识。 */
-  sessionId: string | null;
   /** 会话是不是还在跑（决定文案与后果说明）。 */
   running: boolean;
   /** 删除进行中。 */
@@ -27,7 +25,6 @@ interface CloseSessionDialogProps {
  */
 export function CloseSessionDialog({
   open,
-  sessionId,
   running,
   busy,
   onConfirm,
@@ -59,7 +56,7 @@ export function CloseSessionDialog({
       testId="page-sandbox-detail-terminal-remove-confirm"
       onOpenChange={handleOpenChange}
       closeDisabled={busy}
-      maxWidthClassName="max-w-[420px]"
+      maxWidthClassName="max-w-[360px]"
       footer={
         <>
           <button
@@ -97,9 +94,6 @@ export function CloseSessionDialog({
       }
     >
       <p className="text-[12.5px] leading-relaxed text-muted-foreground">{consequence}</p>
-      {sessionId && (
-        <p className="mt-1 font-mono text-[11.5px] text-faint">会话 {sessionId.slice(0, 8)}</p>
-      )}
     </ModalShell>
   );
 }

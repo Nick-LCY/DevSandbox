@@ -376,7 +376,6 @@ export function TerminalPanel({
 
       <CloseSessionDialog
         open={closing !== null}
-        sessionId={closing?.sessionId ?? null}
         running={closing?.running ?? false}
         busy={closingBusy}
         onConfirm={() => void confirmClose()}
