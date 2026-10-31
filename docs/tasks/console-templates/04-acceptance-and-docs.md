@@ -4,21 +4,31 @@ status: todo
 ---
 # 任务：真机验收与文档收口
 
+> 真机验收部分（2026-10-31）已完成：后端 pytest **354 项全绿**、ruff 经典默认规则集（E4/E7/E9/F）**零告警**；前端 vitest **269 项全绿**、`typecheck` / `typecheck:tests` / `build` 全绿；Playwright 真机 **22 条用例全绿**（既有 19 条 + 本轮新增 `07-templates` 三条，0 失败 / 0 跳过 / 0 flaky，退出码 0，耗时 6.0 分钟）。
+>
+> ruff 口径钉死：`platform/pyproject.toml` 补 `[tool.ruff]` 配置，规则集取 `select = ["E4", "E7", "E9", "F"]`（仓库历史基线）。新版 ruff 默认规则集在本仓命中 **59 处历史风格项**（未排序导入、函数默认值里的函数调用、宽泛 except 等），全是既有代码的既有写法，**不在本轮清偿范围**，因此显式钉死口径而不是一次性清偿（清偿会制造大量无关改动、淹没模板轮的真实差异）。
+>
+> 验收期间发现并修掉 1 处**验收脚本自身**的定位器缺陷（不是平台缺陷）：设置抽屉里的模板行原先用「按行内文字筛」定位，行内重命名一开始，模板名那一段会被输入框替掉（名字变成输入框的值，不再是行的文字内容），按文字筛出来的行当场就再也匹配不上。改为按 `data-template-name` 属性定位（该属性在重命名提交前不变）。平台代码一行未动。
+>
+> 留档：`platform/console/RESULTS.md` 第八节（真机实测留档，含逐条用例明细、07-templates 全流程逐步结论、字体体积与字符集前后对比、已知边界、收尾清理实测）。
+>
+> 尚未完成（文档收口，留给后续）：两篇架构决策记录与其索引登记、`docs/current-state.md`、`docs/glossary.md`、`docs/conventions/console-frontend.md`、`platform/console/README.md` 与 `platform/console/tests/README.md` 的同步。
+
 ## 目标
 把控制台模板轮收口：跑齐三套测试确认无回归，把本轮的两个架构决策归档成决策记录，同步看板、词汇表、前端约定与工程说明，并做一遍仓库卫生自查。
 
 ## 完成标准
-- [ ] 后端 pytest 与 ruff 全绿。
-- [ ] 前端 vitest、typecheck、typecheck:tests、build 全绿。
-- [ ] Playwright 真机验收用例全绿（含二期既有用例，无回归）。
+- [x] 后端 pytest 与 ruff 全绿。
+- [x] 前端 vitest、typecheck、typecheck:tests、build 全绿。
+- [x] Playwright 真机验收用例全绿（含二期既有用例，无回归）。
 - [ ] 新增两篇架构决策记录，按仓库模板写（日期、状态、背景、决策、影响、相关决策），文件名为 `0010-启动模板收敛为控制台私有功能.md` 与 `0011-基础镜像增加通用工具层并转联网构建.md`，落在 `docs/architecture/decisions/`。
 - [ ] 两篇决策记录登记进 `docs/architecture/decisions/README.md` 的清单表格。
 - [ ] `docs/current-state.md` 更新：任务看板新增控制台模板轮任务集一行、最近变更追加本轮条目、TODO 段落登记本轮明确不做的六项非目标。
 - [ ] `docs/glossary.md` 补两条术语：启动模板、模板墓碑。
 - [ ] `docs/conventions/console-frontend.md` 补三处约定：模板相关约定、字体回退边界、设置抽屉更名。
 - [ ] `platform/console/README.md` 与 `platform/console/tests/README.md` 同步本轮前端改动（标识表与已退役标识、helper 对照表）。
-- [ ] `platform/console/RESULTS.md` 补本轮真机实测留档。
-- [ ] 仓库卫生自查：本轮新增文件里 grep 不到个人家目录路径，也 grep 不到个人专属内容。
+- [x] `platform/console/RESULTS.md` 补本轮真机实测留档。
+- [x] 仓库卫生自查：本轮新增文件里 grep 不到个人家目录路径，也 grep 不到个人专属内容。
 
 ## 依赖
 - 依赖 [[tasks/console-templates/01-base-image-0.3.0.md|01 基础镜像 0.3.0]]、[[tasks/console-templates/02-template-server.md|02 模板服务端]]、[[tasks/console-templates/03-template-console.md|03 模板前端与字体]]：三套测试与文档收口都要等这三项就位。
