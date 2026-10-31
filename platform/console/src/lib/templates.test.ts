@@ -14,6 +14,7 @@ function emptyForm(overrides: Partial<TemplateFormState> = {}): TemplateFormStat
     image: '',
     mounts: [],
     command: '',
+    commandArray: null,
     workdir: '',
     env: {},
     network: null,
@@ -177,6 +178,47 @@ describe('applyTemplateConfig', () => {
     );
     expect(withoutNetwork.form.network).toBe('kept-net');
   });
+
+  it('命令是数组：表单输入框留空，数组进隐藏状态（占位符逐个替换）', () => {
+    const result = applyTemplateConfig(
+      emptyForm({ command: '旧命令' }),
+      { command: ['/bin/sh', '-c', 'echo {name}'] },
+      'demo',
+    );
+    // 表单那一行装不下数组：留空。
+    expect(result.form.command).toBe('');
+    // 数组原样透传，每个元素都替换过占位符。
+    expect(result.form.commandArray).toEqual(['/bin/sh', '-c', 'echo demo']);
+  });
+
+  it('命令是数组且沙箱名为空：占位符原样保留', () => {
+    const result = applyTemplateConfig(
+      emptyForm(),
+      { command: ['echo', '{name}'] },
+      '',
+    );
+    expect(result.form.commandArray).toEqual(['echo', '{name}']);
+  });
+
+  it('命令字段缺失：表单命令与隐藏数组都保持现状', () => {
+    const result = applyTemplateConfig(
+      emptyForm({ command: '保留的命令', commandArray: ['保留', '的数组'] }),
+      { image: 'x:1' },
+      'demo',
+    );
+    expect(result.form.command).toBe('保留的命令');
+    expect(result.form.commandArray).toEqual(['保留', '的数组']);
+  });
+
+  it('命令字段出现且是字符串：清掉之前的隐藏数组', () => {
+    const result = applyTemplateConfig(
+      emptyForm({ commandArray: ['旧的数组'] }),
+      { command: '新的命令' },
+      'demo',
+    );
+    expect(result.form.command).toBe('新的命令');
+    expect(result.form.commandArray).toBeNull();
+  });
 });
 
 describe('collectTemplateConfig', () => {
@@ -216,5 +258,49 @@ describe('collectTemplateConfig', () => {
     expect(applied.form.image).toBe('sandbox-platform/base:0.3.0');
     expect(applied.form.command).toBe('sleep infinity');
     expect(applied.form.workdir).toBe('/kept');
+  });
+
+  it('空挂载行不进配置（宿主与容器路径同时为空的行是假声明）', () => {
+    const config = collectTemplateConfig(
+      emptyForm({
+        mounts: [
+          { hostPath: '', containerPath: '', readOnly: false },
+          { hostPath: '   ', containerPath: '', readOnly: false },
+          { hostPath: '', containerPath: '  ', readOnly: true },
+          { hostPath: '/data', containerPath: '/workspace', readOnly: false },
+        ],
+      }),
+    );
+    expect(config.mounts).toEqual(['/data:/workspace']);
+  });
+
+  it('挂载路径先 trim 再入库', () => {
+    const config = collectTemplateConfig(
+      emptyForm({
+        mounts: [{ hostPath: '  /data  ', containerPath: ' /workspace ', readOnly: true }],
+      }),
+    );
+    expect(config.mounts).toEqual(['/data:/workspace:ro']);
+  });
+
+  it('全是空挂载行：挂载字段不进配置', () => {
+    const config = collectTemplateConfig(
+      emptyForm({
+        mounts: [{ hostPath: '', containerPath: '', readOnly: false }],
+      }),
+    );
+    expect(config.mounts).toBeUndefined();
+  });
+
+  it('隐藏的数组命令优先于表单命令（数组原样收集）', () => {
+    const config = collectTemplateConfig(
+      emptyForm({ command: '表单里的命令', commandArray: ['/bin/sh', '-c', 'echo hi'] }),
+    );
+    expect(config.command).toEqual(['/bin/sh', '-c', 'echo hi']);
+  });
+
+  it('没有隐藏数组时收集表单里的字符串命令', () => {
+    const config = collectTemplateConfig(emptyForm({ command: '  sleep infinity  ' }));
+    expect(config.command).toBe('sleep infinity');
   });
 });

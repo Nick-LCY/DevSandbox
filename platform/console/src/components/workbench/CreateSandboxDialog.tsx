@@ -115,8 +115,25 @@ export function CreateSandboxDialog({
   const [images, setImages] = useState<HostImage[]>([]);
   const [imagesError, setImagesError] = useState('');
   const [loadingImages, setLoadingImages] = useState(true);
+  /**
+   * 宿主镜像列表是否**已经拿到过**。
+   *
+   * 模板回填时要用它判断「模板里的镜像在不在宿主上」：镜像列表是秒级的
+   * 宿主枚举，模板列表是毫秒级的文件读——模板几乎总是先到。列表没到手时
+   * 不能判「宿主上没有」（那是拿空列表当全集），先把模板镜像原样留着，
+   * 等列表到了由 `loadImages` 里的 `stillThere` 清理逻辑兜底。
+   */
+  const [imagesLoaded, setImagesLoaded] = useState(false);
   const [mounts, setMounts] = useState<MountRow[]>([]);
   const [command, setCommand] = useState('');
+  /**
+   * 模板带来的数组命令（隐藏状态）。
+   *
+   * 后端契约允许命令是字符串数组，但表单只有一个单行输入框装不下：数组命令
+   * 原样存在这里透传（每个元素都做过 `{name}` 替换），命令输入框留空。
+   * 提交时这里的数组优先于表单里的命令。
+   */
+  const [commandArray, setCommandArray] = useState<string[] | null>(null);
   const [workdir, setWorkdir] = useState('');
   const [envText, setEnvText] = useState('');
   /**
@@ -152,10 +169,13 @@ export function CreateSandboxDialog({
     try {
       const list = await api.listImages();
       setImages(list);
+      // 宿主镜像列表到手了：此后才能判定「某个镜像在不在宿主上」。
+      setImagesLoaded(true);
       // 不自动选中任何镜像：抽屉打开后输入框是空的，选中由用户显式决定。
       // （曾经自动选中默认镜像，原语随即把 label 回填进输入框：
       // 真实用户是在预填文字后面追加，打字永远命中不了。）
       // 刷新后已选的镜像可能已经不在宿主上了：清掉选择，输入框也跟着清。
+      // 模板回填的镜像也走这一道：列表晚到时它先被原样留着，到齐后再判。
       const stillThere = (reference: string): boolean =>
         list.some((item) => item.reference === reference);
       setImage((current) => (current !== '' && !stillThere(current) ? '' : current));
@@ -194,6 +214,7 @@ export function CreateSandboxDialog({
     setName('');
     setMounts([]);
     setCommand('');
+    setCommandArray(null);
     setWorkdir('');
     setEnvText('');
     setError('');
@@ -244,12 +265,13 @@ export function CreateSandboxDialog({
         readOnly: row.readOnly,
       })),
       command,
+      commandArray,
       workdir,
       // 环境变量文本非法时按空处理：模板合并不负责修表单的错。
       env: envResult.ok ? envResult.env : {},
       network,
     };
-  }, [image, mounts, command, workdir, envText, network]);
+  }, [image, mounts, command, commandArray, workdir, envText, network]);
 
   /**
    * 加载模板：按模板配置回填表单。
@@ -263,15 +285,26 @@ export function CreateSandboxDialog({
       const result = applyTemplateConfig(currentFormState(), template.config, name.trim());
       // 模板里的镜像不在宿主本地镜像列表中：镜像选择器留空，
       // 提交时走既有的「请选择沙箱镜像」校验（宿主上没有的镜像不能建）。
+      // **只有镜像列表已经拿到过才判这一条**：列表是秒级的宿主枚举，模板是
+      // 毫秒级的文件读，模板几乎总是先到——列表还没到时不能拿空列表当全集，
+      // 否则模板镜像会被静默清掉。列表到齐后由 `loadImages` 的 `stillThere`
+      // 清理逻辑兜底（镜像真不在就清空，提交时报既有校验）。
       const reference = result.form.image;
-      const selectable =
-        reference !== '' && images.some((item) => item.reference === reference);
-      setImage(selectable ? reference : '');
-      setImageInput(selectable ? reference : '');
+      // 列表已拿到、但模板镜像不在宿主上：清空（提交时报既有校验）。
+      // 列表还没拿到：原样保留，交给列表到齐后的 `stillThere` 清理逻辑兜底。
+      const missingOnHost =
+        reference !== '' &&
+        imagesLoaded &&
+        !images.some((item) => item.reference === reference);
+      const next = missingOnHost ? '' : reference;
+      setImage(next);
+      setImageInput(next);
       setMounts(
         result.form.mounts.map((row) => ({ id: nextMountId(), ...row })),
       );
       setCommand(result.form.command);
+      // 数组命令：表单输入框留空，数组进隐藏状态原样透传。
+      setCommandArray(result.form.commandArray);
       setWorkdir(result.form.workdir);
       setEnvText(formatEnvLines(result.form.env));
       setNetwork(result.form.network);
@@ -283,7 +316,7 @@ export function CreateSandboxDialog({
         );
       }
     },
-    [currentFormState, images, name, show],
+    [currentFormState, images, imagesLoaded, name, show],
   );
 
   /** 保存为模板：把当前表单存成一份模板配置。 */
@@ -370,19 +403,32 @@ export function CreateSandboxDialog({
 
     setSubmitting(true);
     try {
+      // 命令：模板带来的数组命令优先（表单输入框装不下它）；否则用表单里的
+      // 字符串命令。两种形态提交前都再替换一次 `{name}` 占位符。
+      const commandPayload =
+        commandArray !== null
+          ? commandArray.length === 0
+            ? null
+            : commandArray.map((item) =>
+                substituteNamePlaceholder(item, sandboxName),
+              )
+          : command.trim() === ''
+            ? null
+            : substituteNamePlaceholder(command.trim(), sandboxName);
       const created = await api.createSandbox({
         name: sandboxName,
         image,
         // 镜像来自宿主本地镜像列表：一律走宿主导出注入，不经镜像代理拉取
         image_source: 'host',
         mounts: declarations,
-        command:
-          command.trim() === '' ? null : substituteNamePlaceholder(command.trim(), sandboxName),
+        command: commandPayload,
         workdir:
           workdir.trim() === '' ? null : substituteNamePlaceholder(workdir.trim(), sandboxName),
         env,
         // 网络：表单里不渲染输入项，只有模板可能带；没有就是平台默认。
-        network,
+        // 网络名里同样可能带 `{name}` 占位符：提交前替换一次。
+        network:
+          network === null ? null : substituteNamePlaceholder(network, sandboxName),
       });
       // 创建成功：关抽屉 → 通知工作台（弹成功 toast + 刷新列表）→ 清空表单。
       onOpenChange(false);
@@ -390,6 +436,7 @@ export function CreateSandboxDialog({
       setName('');
       setMounts([]);
       setCommand('');
+      setCommandArray(null);
       setWorkdir('');
       setEnvText('');
       setNetwork(null);
@@ -401,7 +448,19 @@ export function CreateSandboxDialog({
     } finally {
       setSubmitting(false);
     }
-  }, [name, image, mounts, command, workdir, envText, network, show, onCreated, onOpenChange]);
+  }, [
+    name,
+    image,
+    mounts,
+    command,
+    commandArray,
+    workdir,
+    envText,
+    network,
+    show,
+    onCreated,
+    onOpenChange,
+  ]);
 
   /**
    * 镜像按 reference 不区分大小写做子串匹配。

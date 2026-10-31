@@ -176,7 +176,12 @@ export interface CreateSandboxRequest {
   image?: string | null;
   image_source?: 'auto' | 'host';
   mounts?: string[];
-  command?: string | null;
+  /**
+   * 容器启动命令。
+   *
+   * 字符串按 shell 引号规则切分；数组原样当参数元组用（后端契约两种都收）。
+   */
+  command?: string | string[] | null;
   env?: Record<string, string>;
   workdir?: string | null;
   network?: string | null;
@@ -192,7 +197,14 @@ export interface CreateSandboxRequest {
 export interface TemplateConfig {
   image?: string | null;
   mounts?: string[];
-  command?: string | null;
+  /**
+   * 容器启动命令。
+   *
+   * **字符串与字符串数组都合法**（后端契约 `str | list[str] | null`）：
+   * 字符串按 shell 引号规则切分，数组原样当参数元组用。数组命令在前端
+   * 没有对应的输入框（表单只有一行命令输入框），加载模板时进隐藏状态透传。
+   */
+  command?: string | string[] | null;
   workdir?: string | null;
   env?: Record<string, string>;
   network?: string | null;

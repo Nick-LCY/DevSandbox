@@ -14,6 +14,11 @@
  * - 弹层顶部没有空白块（第一块可见内容就是列表首行）；
  * - 输入框右侧有下拉箭头；
  * - 没选镜像就提交：抽屉里就地报「请选择沙箱镜像」；
+ * - 模板回填的时序：模板列表（毫秒级）先到、镜像列表（秒级）后到时，
+ *   模板镜像不被静默清空（镜像真不在宿主上时，列表到齐后再清）；
+ * - 模板的命令是数组：应用不崩、命令输入框留空、提交原样透传，
+ *   `{name}` 占位符逐个替换；
+ * - 沙箱名后补：提交时挂载 / 网络 / 命令数组里的占位符全部替换干净；
  * - 创建成功后不再渲染成功面板（成功面板已退役）；
  * - 创建成功后触发回调并关闭抽屉。
  */
@@ -159,6 +164,34 @@ async function pickImage(reference: string): Promise<void> {
 /** 等镜像列表到位（接口回来了，候选项渲染出来了）。 */
 async function waitImageList(): Promise<void> {
   await waitFor(() => expect(mocks.listImages).toHaveBeenCalledTimes(1));
+}
+
+/**
+ * 等镜像列表**加载完**（不是「请求发出去了」）。
+ *
+ * 刷新镜像按钮在加载中是禁用的：按钮恢复可点 = 列表已经到齐，
+ * 模板回填的「镜像在不在宿主上」判定这时才有依据。
+ */
+async function waitImagesSettled(): Promise<void> {
+  const button = screen.getByTestId(
+    'page-sandbox-create-image-refresh-button',
+  ) as HTMLButtonElement;
+  await waitFor(() => expect(button.disabled).toBe(false));
+}
+
+/** 挂载行的宿主路径输入框（第几行）。 */
+function mountHostInput(index = 0): HTMLInputElement {
+  return screen.getAllByTestId('page-sandbox-create-mount-host-input')[index] as HTMLInputElement;
+}
+
+/** 挂载行的容器路径输入框（第几行）。 */
+function mountContainerInput(index = 0): HTMLInputElement {
+  return screen.getAllByTestId('page-sandbox-create-mount-container-input')[index] as HTMLInputElement;
+}
+
+/** 命令输入框。 */
+function commandInput(): HTMLInputElement {
+  return screen.getByTestId('page-sandbox-create-command-input') as HTMLInputElement;
 }
 
 /** 模板选择器的输入框。 */
@@ -614,6 +647,183 @@ describe('新建沙箱抽屉的模板下拉', () => {
   });
 });
 
+describe('新建沙箱抽屉的模板回填时序', () => {
+  it('模板先回填、镜像列表后到：模板镜像不被静默清空', async () => {
+    // 镜像列表是秒级的宿主枚举，模板列表是毫秒级的文件读：模板几乎总是先到。
+    let resolveImages: (value: typeof IMAGES) => void = () => {};
+    mocks.listImages.mockReturnValue(
+      new Promise<typeof IMAGES>((resolve) => {
+        resolveImages = resolve;
+      }),
+    );
+    mocks.listTemplates.mockResolvedValue(TEMPLATES);
+
+    renderDialog();
+    await waitTemplateList();
+
+    // 镜像列表还没到：选中模板，模板镜像必须原样保留（不能拿空列表当全集）。
+    openTemplatePicker();
+    await waitFor(() => expect(templateOptionNames()).toHaveLength(2));
+    await pickTemplate('开发环境');
+    expect(imageInput().value).toBe(IMAGE);
+
+    // 镜像列表后到：模板镜像确实在宿主上 → 仍然保留。
+    resolveImages(IMAGES);
+    await waitImagesSettled();
+    expect(imageInput().value).toBe(IMAGE);
+  });
+
+  it('模板先回填、镜像列表后到：镜像真不在宿主上时，列表到齐后清空', async () => {
+    let resolveImages: (value: typeof IMAGES) => void = () => {};
+    mocks.listImages.mockReturnValue(
+      new Promise<typeof IMAGES>((resolve) => {
+        resolveImages = resolve;
+      }),
+    );
+    mocks.listTemplates.mockResolvedValue(TEMPLATES);
+
+    renderDialog();
+    await waitTemplateList();
+
+    openTemplatePicker();
+    await waitFor(() => expect(templateOptionNames()).toHaveLength(2));
+    await pickTemplate('开发环境');
+    // 列表没到：先留着。
+    expect(imageInput().value).toBe(IMAGE);
+
+    // 列表到齐：模板镜像不在宿主上 → 清空（提交时报既有校验）。
+    resolveImages([
+      { reference: OTHER_IMAGE, size_bytes: 4096, created_at: '2026-10-30T03:00:00+00:00' },
+    ]);
+    await waitImagesSettled();
+    await waitFor(() => expect(imageInput().value).toBe(''));
+  });
+});
+
+describe('新建沙箱抽屉的数组命令模板', () => {
+  /** 一份命令是数组的模板。 */
+  const ARRAY_COMMAND_TEMPLATE = {
+    ...TEMPLATES[0],
+    config: {
+      image: IMAGE,
+      mounts: ['/data/{name}:/workspace'],
+      command: ['/bin/sh', '-c', 'echo {name}'],
+      network: 'net-{name}',
+    },
+  };
+
+  it('命令是数组：应用不崩，命令输入框留空，提交原样透传（占位符逐个替换）', async () => {
+    mocks.listTemplates.mockResolvedValue([ARRAY_COMMAND_TEMPLATE]);
+    mocks.createSandbox.mockResolvedValue({
+      metadata: { name: 'acc-demo' },
+      steps: ['第一步'],
+      connection: { exec_command: 'docker exec -it sandbox-acc-demo bash' },
+    });
+
+    renderDialog();
+    await waitTemplateList();
+    await waitImagesSettled();
+
+    fireEvent.change(screen.getByTestId('page-sandbox-create-name-input'), {
+      target: { value: 'acc-demo' },
+    });
+
+    openTemplatePicker();
+    await waitFor(() => expect(templateOptionNames()).toHaveLength(1));
+    await pickTemplate('开发环境');
+
+    // 数组装不进单行输入框：输入框留空。
+    expect(commandInput().value).toBe('');
+
+    fireEvent.click(screen.getByTestId('page-sandbox-create-submit-button'));
+    await waitFor(() => expect(mocks.createSandbox).toHaveBeenCalledTimes(1));
+
+    const payload = mocks.createSandbox.mock.calls[0][0];
+    // 数组原样透传，每个元素都替换过占位符。
+    expect(payload.command).toEqual(['/bin/sh', '-c', 'echo acc-demo']);
+    // 镜像一并回填（它在宿主列表里）。
+    expect(payload.image).toBe(IMAGE);
+  });
+
+  it('命令是数组：表单里又敲了命令时，隐藏的数组命令优先', async () => {
+    mocks.listTemplates.mockResolvedValue([ARRAY_COMMAND_TEMPLATE]);
+    mocks.createSandbox.mockResolvedValue({
+      metadata: { name: 'acc-demo' },
+      steps: ['第一步'],
+      connection: { exec_command: 'docker exec -it sandbox-acc-demo bash' },
+    });
+
+    renderDialog();
+    await waitTemplateList();
+    await waitImagesSettled();
+
+    fireEvent.change(screen.getByTestId('page-sandbox-create-name-input'), {
+      target: { value: 'acc-demo' },
+    });
+
+    openTemplatePicker();
+    await waitFor(() => expect(templateOptionNames()).toHaveLength(1));
+    await pickTemplate('开发环境');
+
+    fireEvent.change(commandInput(), { target: { value: 'echo 表单里的命令' } });
+
+    fireEvent.click(screen.getByTestId('page-sandbox-create-submit-button'));
+    await waitFor(() => expect(mocks.createSandbox).toHaveBeenCalledTimes(1));
+
+    const payload = mocks.createSandbox.mock.calls[0][0];
+    expect(payload.command).toEqual(['/bin/sh', '-c', 'echo acc-demo']);
+  });
+
+  it('沙箱名后补：提交时占位符全部替换干净（挂载 / 网络 / 命令数组）', async () => {
+    mocks.listTemplates.mockResolvedValue([
+      {
+        ...TEMPLATES[0],
+        config: {
+          image: IMAGE,
+          mounts: ['/data/{name}:/work/{name}:ro'],
+          command: ['/bin/sh', '-c', 'echo {name}'],
+          workdir: '/work/{name}',
+          env: { APP: '{name}' },
+          network: 'net-{name}',
+        },
+      },
+    ]);
+    mocks.createSandbox.mockResolvedValue({
+      metadata: { name: 'acc-demo' },
+      steps: ['第一步'],
+      connection: { exec_command: 'docker exec -it sandbox-acc-demo bash' },
+    });
+
+    renderDialog();
+    await waitTemplateList();
+    await waitImagesSettled();
+
+    // 沙箱名还空着：占位符原样保留。
+    openTemplatePicker();
+    await waitFor(() => expect(templateOptionNames()).toHaveLength(1));
+    await pickTemplate('开发环境');
+
+    expect(mountHostInput().value).toBe('/data/{name}');
+    expect(mountContainerInput().value).toBe('/work/{name}');
+
+    // 再填沙箱名并提交。
+    fireEvent.change(screen.getByTestId('page-sandbox-create-name-input'), {
+      target: { value: 'acc-demo' },
+    });
+    fireEvent.click(screen.getByTestId('page-sandbox-create-submit-button'));
+    await waitFor(() => expect(mocks.createSandbox).toHaveBeenCalledTimes(1));
+
+    const payload = mocks.createSandbox.mock.calls[0][0];
+    expect(payload.mounts).toEqual(['/data/acc-demo:/work/acc-demo:ro']);
+    expect(payload.command).toEqual(['/bin/sh', '-c', 'echo acc-demo']);
+    expect(payload.network).toBe('net-acc-demo');
+    expect(payload.workdir).toBe('/work/acc-demo');
+    expect(payload.env).toEqual({ APP: 'acc-demo' });
+    // 一个占位符都不许残留。
+    expect(JSON.stringify(payload)).not.toContain('{name}');
+  });
+});
+
 describe('新建沙箱抽屉的保存为模板', () => {
   it('空名禁提交：按钮禁用 + 就地红字', async () => {
     renderDialog();
@@ -659,8 +869,7 @@ describe('新建沙箱抽屉的保存为模板', () => {
     );
   });
 
-  it('保存的是当前表单：只有有值的字段进配置', async () => {
-    mocks.createTemplate.mockResolvedValue({ id: 'tpl_x', name: '开发环境', config: {} });
+  it('保存的是当前表单：只有有值的字段进配置', async () => {    mocks.createTemplate.mockResolvedValue({ id: 'tpl_x', name: '开发环境', config: {} });
 
     renderDialog();
     await waitTemplateList();
@@ -688,5 +897,28 @@ describe('新建沙箱抽屉的保存为模板', () => {
     expect(config.mounts).toBeUndefined();
     expect(config.env).toBeUndefined();
     expect(config.network).toBeUndefined();
+  });
+
+  it('空挂载行不进模板配置（两段路径都空的行是假声明）', async () => {
+    mocks.createTemplate.mockResolvedValue({ id: 'tpl_x', name: '开发环境', config: {} });
+
+    renderDialog();
+    await waitTemplateList();
+
+    // 点两次「添加挂载」：第一行填上路径，第二行留着空。
+    fireEvent.click(screen.getByTestId('page-sandbox-create-mount-add-button'));
+    fireEvent.click(screen.getByTestId('page-sandbox-create-mount-add-button'));
+    fireEvent.change(mountHostInput(0), { target: { value: '  /data  ' } });
+    fireEvent.change(mountContainerInput(0), { target: { value: ' /workspace ' } });
+
+    fireEvent.click(screen.getByTestId('page-sandbox-create-template-save-button'));
+    const input = await screen.findByTestId('page-sandbox-create-template-name-input');
+    fireEvent.change(input, { target: { value: '开发环境' } });
+    fireEvent.click(screen.getByTestId('page-sandbox-create-template-confirm-button'));
+
+    await waitFor(() => expect(mocks.createTemplate).toHaveBeenCalledTimes(1));
+    const config = mocks.createTemplate.mock.calls[0][0].config;
+    // 只留填了路径的那一行（路径先 trim），空行不进配置。
+    expect(config.mounts).toEqual(['/data:/workspace']);
   });
 });

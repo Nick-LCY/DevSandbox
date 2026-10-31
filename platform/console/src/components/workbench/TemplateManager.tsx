@@ -100,8 +100,16 @@ export function TemplateManager() {
     }
     setDeleting(true);
     try {
-      await api.deleteTemplate(deleteTarget.id);
-      show('success', `模板 ${deleteTarget.name} 已删除`, { source: 'settings-template' });
+      const result = await api.deleteTemplate(deleteTarget.id);
+      // 服务端回「记录文件是否确实删掉了」：没删掉说明记录本来就不在了
+      // （可能已被别处删过），文案如实说「已不存在」，不谎报「已删除」。
+      if (result.deleted) {
+        show('success', `模板 ${deleteTarget.name} 已删除`, {
+          source: 'settings-template',
+        });
+      } else {
+        show('info', '记录已不存在（可能已被删除）', { source: 'settings-template' });
+      }
       setDeleteTarget(null);
       await load();
     } catch (exc) {

@@ -9,7 +9,8 @@
  *   「读取代理状态失败」把更具体的「重启代理失败」顶掉；
  * - 模板列表渲染（名称 + 更新时间）与空态；
  * - 行内重命名：回车提交、Esc 取消、空名禁提交；
- * - 删除走确认弹窗，文案写明只删模板、不影响已创建的沙箱。
+ * - 删除走确认弹窗，文案写明只删模板、不影响已创建的沙箱；
+ * - 删除结果说「没删掉」时提示「记录已不存在」，不谎报已删除。
  */
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -151,7 +152,8 @@ describe('设置抽屉的模板管理区', () => {
     renderDialog();
 
     const item = await screen.findByTestId('page-settings-template-item');
-    expect(item.getAttribute('data-template-name')).toBe('开发环境');    expect(screen.getByTestId('page-settings-template-name').textContent).toBe('开发环境');
+    expect(item.getAttribute('data-template-name')).toBe('开发环境');
+    expect(screen.getByTestId('page-settings-template-name').textContent).toBe('开发环境');
     expect(screen.getByTestId('page-settings-template-updated-at').textContent).toContain('更新于');
   });
 
@@ -252,5 +254,25 @@ describe('设置抽屉的模板管理区', () => {
     const toast = await screen.findByTestId('page-toast-item');
     expect(toast.getAttribute('data-toast-kind')).toBe('success');
     expect(toast.getAttribute('data-toast-source')).toBe('settings-template');
+  });
+
+  it('删除结果说没删掉：提示「记录已不存在」，不谎报已删除', async () => {
+    mocks.listTemplates.mockResolvedValue([makeTemplate()]);
+    mocks.deleteTemplate.mockResolvedValue({ id: 'tpl_0123456789ab', deleted: false });
+
+    renderDialog();
+
+    await screen.findByTestId('page-settings-template-item');
+    fireEvent.click(screen.getByTestId('page-settings-template-delete-button'));
+    fireEvent.click(
+      await screen.findByTestId('page-settings-template-delete-confirm-button'),
+    );
+
+    await waitFor(() => expect(mocks.deleteTemplate).toHaveBeenCalledTimes(1));
+    const toast = await screen.findByTestId('page-toast-item');
+    expect(toast.getAttribute('data-toast-kind')).toBe('info');
+    expect(toast.getAttribute('data-toast-source')).toBe('settings-template');
+    expect(toast.textContent).toContain('记录已不存在（可能已被删除）');
+    expect(toast.textContent).not.toContain('已删除');
   });
 });

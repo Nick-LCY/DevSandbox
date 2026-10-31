@@ -11,29 +11,23 @@
  * - **`{name}` 占位符**：模板配置的任意字符串位置都可以写 `{name}`，
  *   加载模板时替换成当前沙箱名；**沙箱名为空时保留占位符原样**
  *   （替换成空串会把配置改写成不可用的形态）。
+ * - **命令可以是数组**：后端契约收 `str | list[str] | null`。字符串命令走
+ *   表单回填；数组命令表单装不下（只有一个输入框），进隐藏状态原样透传，
+ *   每个元素同样做 `{name}` 替换。
  *
  * 本文件不碰网络与界面：数据进、结果出，方便单测。
  */
+
+import type { TemplateConfig } from '../api/types';
+
+export type { TemplateConfig };
 
 /** 沙箱名占位符。 */
 export const NAME_PLACEHOLDER = '{name}';
 
 /**
- * 模板配置体（六项全选填）。
- *
- * 字段可以整个不出现（用户没填过），也可以出现且取值为空
- * （用户填了空值）：两种语义在合并时不一样。
+ * 模板里的一条挂载声明解析出来的表格行。
  */
-export interface TemplateConfig {
-  image?: string | null;
-  mounts?: string[];
-  command?: string | null;
-  workdir?: string | null;
-  env?: Record<string, string>;
-  network?: string | null;
-}
-
-/** 模板里的一条挂载声明解析出来的表格行。 */
 export interface TemplateMountRow {
   hostPath: string;
   containerPath: string;
@@ -50,7 +44,16 @@ export interface TemplateMountRow {
 export interface TemplateFormState {
   image: string;
   mounts: TemplateMountRow[];
+  /** 命令输入框里的文字（字符串命令）。 */
   command: string;
+  /**
+   * 模板带来的数组命令（隐藏状态）。
+   *
+   * 后端契约允许命令是字符串数组（`str | list[str] | null`），但表单只有
+   * 一行命令输入框装不下数组：数组命令原样存在这里透传（每个元素都做过
+   * `{name}` 替换），命令输入框留空。提交时这里的数组**优先于**表单命令。
+   */
+  commandArray: string[] | null;
   workdir: string;
   env: Record<string, string>;
   network: string | null;
@@ -177,6 +180,7 @@ export function applyTemplateConfig(
     image: form.image,
     mounts: form.mounts.map((row) => ({ ...row })),
     command: form.command,
+    commandArray: form.commandArray,
     workdir: form.workdir,
     env: { ...form.env },
     network: form.network,
@@ -198,10 +202,20 @@ export function applyTemplateConfig(
   }
 
   if (has(config, 'command')) {
-    next.command =
-      config.command === null || config.command === undefined
-        ? ''
-        : substituteNamePlaceholder(config.command, sandboxName);
+    const raw = config.command;
+    if (Array.isArray(raw)) {
+      // 数组命令：表单输入框装不下，原样进隐藏状态（每个元素都替换占位符）。
+      next.command = '';
+      next.commandArray = raw.map((item) =>
+        substituteNamePlaceholder(item, sandboxName),
+      );
+    } else {
+      next.command =
+        raw === null || raw === undefined
+          ? ''
+          : substituteNamePlaceholder(raw, sandboxName);
+      next.commandArray = null;
+    }
   }
 
   if (has(config, 'workdir')) {
@@ -235,6 +249,12 @@ export function applyTemplateConfig(
  * **只写有值的字段**：镜像 / 命令 / 工作目录 / 网络为空，挂载列表为空，
  * 环境变量为空，一律不进配置对象（空配置会让「出现即替换」的语义
  * 变成「清空用户填的东西」）。
+ *
+ * **空挂载行不进配置**：宿主路径与容器路径同时为空的行是用户点了「添加挂载」
+ * 又没填的行，存进模板就是一条 `":"` 的假声明。两段路径先 trim 再判空。
+ *
+ * **数组命令优先**：隐藏的数组命令（`commandArray`）在场时按数组收集，
+ * 表单里的命令输入框装不下它。
  */
 export function collectTemplateConfig(form: TemplateFormState): TemplateConfig {
   const config: TemplateConfig = {};
@@ -242,10 +262,20 @@ export function collectTemplateConfig(form: TemplateFormState): TemplateConfig {
   if (form.image.trim() !== '') {
     config.image = form.image.trim();
   }
-  if (form.mounts.length > 0) {
-    config.mounts = form.mounts.map(formatTemplateMount);
+  const mounts = form.mounts
+    .map((row) => ({
+      hostPath: row.hostPath.trim(),
+      containerPath: row.containerPath.trim(),
+      readOnly: row.readOnly,
+    }))
+    .filter((row) => row.hostPath !== '' || row.containerPath !== '')
+    .map(formatTemplateMount);
+  if (mounts.length > 0) {
+    config.mounts = mounts;
   }
-  if (form.command.trim() !== '') {
+  if (form.commandArray !== null && form.commandArray.length > 0) {
+    config.command = [...form.commandArray];
+  } else if (form.command.trim() !== '') {
     config.command = form.command.trim();
   }
   if (form.workdir.trim() !== '') {
