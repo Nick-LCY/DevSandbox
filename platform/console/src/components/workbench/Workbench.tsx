@@ -2,9 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { api } from '../../api/client';
 import type { ReclaimPlan, SandboxDetail, SandboxSummary } from '../../api/types';
-import { ErrorBanner } from '../ErrorBanner';
+import { nextPollFailure } from '../../lib/poll';
 import { TerminalPanel } from '../TerminalPanel';
-import { actionBannerClass, type ActionMessage } from '../../lib/action';
+import { useToast } from '../Toast';
 import { useNavigate, useRoute } from '../../lib/router';
 import { AppShell, type HealthView } from './AppShell';
 import { CreateSandboxDialog } from './CreateSandboxDialog';
@@ -32,16 +32,13 @@ const HEALTH_POLL_INTERVAL = 15000;
 export function Workbench() {
   const route = useRoute();
   const navigate = useNavigate();
+  const { show } = useToast();
 
   const [sandboxes, setSandboxes] = useState<SandboxSummary[]>([]);
   const [loading, setLoading] = useState(true);
-  const [listError, setListError] = useState('');
-  const [actionMessage, setActionMessage] = useState<ActionMessage | null>(null);
-  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
 
   const [detail, setDetail] = useState<SandboxDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [detailError, setDetailError] = useState('');
   const [busy, setBusy] = useState(false);
   const [stopDependencies, setStopDependencies] = useState(true);
 
@@ -60,6 +57,8 @@ export function Workbench() {
   const requestIdRef = useRef(0);
   /** 详情请求的序号：旧响应回来时直接丢弃，不许覆盖新沙箱的头部。 */
   const detailRequestIdRef = useRef(0);
+  /** 后台轮询连续失败次数：到阈值弹一条失败 toast，任一次成功即清零。 */
+  const pollFailuresRef = useRef(0);
 
   /** 当前选中的沙箱名（没选中时为 null）。 */
   const selectedName = route.name === 'workbench-sandbox' ? route.sandboxName : null;
@@ -68,31 +67,48 @@ export function Workbench() {
 
   /* ------------------------------------------------------------------ 列表 */
 
-  const loadList = useCallback(async (silent: boolean) => {
-    const requestId = requestIdRef.current + 1;
-    requestIdRef.current = requestId;
-    if (!silent) {
-      setLoading(true);
-    }
-    try {
-      const list = await api.listSandboxes();
-      if (requestId !== requestIdRef.current) {
-        return;
+  const loadList = useCallback(
+    async (silent: boolean) => {
+      const requestId = requestIdRef.current + 1;
+      requestIdRef.current = requestId;
+      if (!silent) {
+        setLoading(true);
       }
-      setSandboxes(list);
-      setListError('');
-      setUpdatedAt(new Date().toISOString());
-    } catch (exc) {
-      if (requestId !== requestIdRef.current) {
-        return;
+      try {
+        const list = await api.listSandboxes();
+        if (requestId !== requestIdRef.current) {
+          return;
+        }
+        setSandboxes(list);
+        // 拉到了就清零：连续失败计数只统计「连续」。
+        pollFailuresRef.current = nextPollFailure(pollFailuresRef.current, true).count;
+      } catch (exc) {
+        if (requestId !== requestIdRef.current) {
+          return;
+        }
+        const message = exc instanceof Error ? exc.message : '读取沙箱列表失败';
+        if (!silent) {
+          // 首次加载失败：立刻弹失败 toast，侧栏回落到空态展示。
+          show('error', message, { source: 'sandbox-list' });
+          return;
+        }
+        // 后台轮询失败：逐次弹会刷屏，连续 3 次才弹一条。
+        // （后端整体不可达时侧栏底部的健康自检已经常驻提示，这里兜的是端点级失败。）
+        const step = nextPollFailure(pollFailuresRef.current, false);
+        pollFailuresRef.current = step.count;
+        if (step.shouldToast) {
+          show('error', `读取沙箱列表失败（连续 3 次轮询）：${message}`, {
+            source: 'sandbox-list',
+          });
+        }
+      } finally {
+        if (requestId === requestIdRef.current) {
+          setLoading(false);
+        }
       }
-      setListError(exc instanceof Error ? exc.message : '读取沙箱列表失败');
-    } finally {
-      if (requestId === requestIdRef.current) {
-        setLoading(false);
-      }
-    }
-  }, []);
+    },
+    [show],
+  );
 
   useEffect(() => {
     void loadList(false);
@@ -147,24 +163,25 @@ export function Workbench() {
         return;
       }
       setDetail(found);
-      setDetailError('');
     } catch (exc) {
       if (requestId !== detailRequestIdRef.current) {
         return;
       }
       setDetail(null);
-      setDetailError(exc instanceof Error ? exc.message : '读取沙箱详情失败');
+      // 详情读取失败：弹失败 toast，工作区回落到空态展示。
+      show('error', exc instanceof Error ? exc.message : '读取沙箱详情失败', {
+        source: 'sandbox-detail',
+      });
     } finally {
       if (requestId === detailRequestIdRef.current) {
         setDetailLoading(false);
       }
     }
-  }, []);
+  }, [show]);
 
   useEffect(() => {
     if (!selectedName) {
       setDetail(null);
-      setDetailError('');
       return;
     }
     // 换沙箱：先把上一个沙箱的详情清掉，别让头部串台；
@@ -180,42 +197,38 @@ export function Workbench() {
       return;
     }
     setBusy(true);
-    setActionMessage(null);
     try {
       const updated = await api.startSandbox(selectedName);
       setDetail(updated);
-      setActionMessage({ kind: 'success', text: `沙箱 ${selectedName} 已启动` });
+      show('success', `沙箱 ${selectedName} 已启动`, { source: 'sandbox-lifecycle' });
       await loadList(true);
     } catch (exc) {
-      setActionMessage({
-        kind: 'error',
-        text: exc instanceof Error ? exc.message : '启动沙箱失败',
+      show('error', exc instanceof Error ? exc.message : '启动沙箱失败', {
+        source: 'sandbox-lifecycle',
       });
     } finally {
       setBusy(false);
     }
-  }, [selectedName, loadList]);
+  }, [selectedName, loadList, show]);
 
   const stop = useCallback(async () => {
     if (!selectedName) {
       return;
     }
     setBusy(true);
-    setActionMessage(null);
     try {
       const updated = await api.stopSandbox(selectedName, stopDependencies);
       setDetail(updated);
-      setActionMessage({ kind: 'success', text: `沙箱 ${selectedName} 已停止` });
+      show('success', `沙箱 ${selectedName} 已停止`, { source: 'sandbox-lifecycle' });
       await loadList(true);
     } catch (exc) {
-      setActionMessage({
-        kind: 'error',
-        text: exc instanceof Error ? exc.message : '停止沙箱失败',
+      show('error', exc instanceof Error ? exc.message : '停止沙箱失败', {
+        source: 'sandbox-lifecycle',
       });
     } finally {
       setBusy(false);
     }
-  }, [selectedName, stopDependencies, loadList]);
+  }, [selectedName, stopDependencies, loadList, show]);
 
   /** 删除前先取回收清单；清单拿不到就不进确认环节。 */
   const openDelete = useCallback(async () => {
@@ -223,18 +236,16 @@ export function Workbench() {
       return;
     }
     setBusy(true);
-    setActionMessage(null);
     try {
       setPlan(await api.reclaimSandbox(selectedName));
     } catch (exc) {
-      setActionMessage({
-        kind: 'error',
-        text: exc instanceof Error ? exc.message : '读取回收清单失败',
+      show('error', exc instanceof Error ? exc.message : '读取回收清单失败', {
+        source: 'sandbox-reclaim',
       });
     } finally {
       setBusy(false);
     }
-  }, [selectedName]);
+  }, [selectedName, show]);
 
   const confirmDelete = useCallback(async () => {
     if (!plan) {
@@ -246,25 +257,24 @@ export function Workbench() {
       setPlan(null);
       const removed = result.removed.length;
       const failed = result.failed.length;
-      setActionMessage({
-        kind: failed > 0 ? 'error' : 'success',
-        text:
-          failed > 0
-            ? `沙箱 ${result.name} 已删除：回收 ${removed} 项，${failed} 项失败`
-            : `沙箱 ${result.name} 已删除：回收 ${removed} 项`,
-      });
+      show(
+        failed > 0 ? 'error' : 'success',
+        failed > 0
+          ? `沙箱 ${result.name} 已删除：回收 ${removed} 项，${failed} 项失败`
+          : `沙箱 ${result.name} 已删除：回收 ${removed} 项`,
+        { source: 'sandbox-delete' },
+      );
       // 沙箱没了：选中态与终端会话一起回到工作台首页。
       navigate({ name: 'workbench' });
       await loadList(true);
     } catch (exc) {
-      setActionMessage({
-        kind: 'error',
-        text: exc instanceof Error ? exc.message : '删除沙箱失败',
+      show('error', exc instanceof Error ? exc.message : '删除沙箱失败', {
+        source: 'sandbox-delete',
       });
     } finally {
       setDeleting(false);
     }
-  }, [plan, navigate, loadList]);
+  }, [plan, navigate, loadList, show]);
 
   /* ------------------------------------------------------------------ 导航 */
 
@@ -303,34 +313,15 @@ export function Workbench() {
       sandboxes={sandboxes}
       selectedName={selectedName}
       health={health}
-      error={listError}
       loading={loading}
-      updatedAt={updatedAt}
       refreshing={loading}
       onSelectSandbox={selectSandbox}
       onCreateClick={() => setCreateOpen(true)}
       onProxyClick={() => setProxyOpen(true)}
       onRefresh={() => void loadList(false)}
     >
-      {actionMessage && (
-        <div className="px-6 pt-4">
-          <div
-            className={actionBannerClass(actionMessage.kind)}
-            data-testid="page-sandbox-list-action-message"
-            data-action-kind={actionMessage.kind}
-          >
-            {actionMessage.text}
-          </div>
-        </div>
-      )}
-
       {selectedName ? (
         <>
-          {detailError && (
-            <div className="px-6 pt-4">
-              <ErrorBanner message={detailError} testId="page-sandbox-detail-error-message" />
-            </div>
-          )}
           <WorkspaceHeader
             detail={detail}
             busy={busy}
@@ -357,10 +348,10 @@ export function Workbench() {
         open={createOpen}
         onOpenChange={setCreateOpen}
         onCreated={(name) => {
-          setActionMessage({ kind: 'success', text: `沙箱 ${name} 已创建` });
+          show('success', `沙箱 ${name} 创建成功`, { source: 'sandbox-create' });
           void loadList(true);
-          selectSandbox(name);
         }}
+        onOpenDetail={(name) => selectSandbox(name)}
       />
 
       <SandboxDetailDialog
@@ -368,7 +359,6 @@ export function Workbench() {
         onOpenChange={setDetailOpen}
         detail={detail}
         loading={detailLoading}
-        error={detailError}
       />
 
       <ProxySettingsDialog open={proxyOpen} onOpenChange={setProxyOpen} />

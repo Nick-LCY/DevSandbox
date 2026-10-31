@@ -20,12 +20,8 @@ interface AppShellProps {
   onSelectSandbox: (name: string) => void;
   onCreateClick: () => void;
   onProxyClick: () => void;
-  /** 列表读取失败的提示（空串表示没有错误）。 */
-  error: string;
   /** 列表正在首次加载。 */
   loading: boolean;
-  /** 列表上次刷新的时间（ISO 串）。 */
-  updatedAt: string | null;
   /** 手动刷新沙箱列表。 */
   onRefresh: () => void;
   /** 列表正在刷新（禁用刷新按钮）。 */
@@ -46,9 +42,7 @@ export function AppShell({
   onSelectSandbox,
   onCreateClick,
   onProxyClick,
-  error,
   loading,
-  updatedAt,
   onRefresh,
   refreshing,
   children,
@@ -65,9 +59,7 @@ export function AppShell({
         onSelectSandbox={onSelectSandbox}
         onCreateClick={onCreateClick}
         onProxyClick={onProxyClick}
-        error={error}
         loading={loading}
-        updatedAt={updatedAt}
         onRefresh={onRefresh}
         refreshing={refreshing}
       />

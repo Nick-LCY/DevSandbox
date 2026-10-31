@@ -9,7 +9,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
 import { createSandbox, listSandboxes } from '../helpers/api';
-import { gotoDetail } from '../helpers/console';
+import { gotoDetail, toastItem } from '../helpers/console';
 import { sandboxContainerState, userUid } from '../helpers/host';
 import { readFixtures } from '../helpers/sandbox';
 import {
@@ -218,8 +218,8 @@ test.describe('网页终端', () => {
     // ── 重启控制台服务
     await restartConsoleServer(port);
 
-    // ── 页面明确提示会话失效，并停止重连
-    await expect(page.getByTestId('page-sandbox-detail-terminal-message')).toContainText(
+    // ── 页面明确提示会话失效（右上角失败 toast），并停止重连
+    await expect(toastItem(page, 'error')).toContainText(
       '终端会话已失效（后端服务已重启），请新建终端',
       { timeout: 120_000 },
     );

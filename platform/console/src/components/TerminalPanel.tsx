@@ -2,8 +2,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { api } from '../api/client';
 import type { TerminalSessionRecord } from '../api/types';
+import { nextPollFailure } from '../lib/poll';
 import { sessionNumbering, sortSessionsByCreation } from '../lib/sessions';
-import { TerminalView, type TerminalStatus } from './TerminalView';
+import {
+  claimFeedback,
+  clearFeedback,
+  createFeedbackLedger,
+  feedbackForState,
+  feedbackKey,
+  type FeedbackLedger,
+} from '../lib/terminal-feedback';
+import { TerminalView, type TerminalState, type TerminalStatus } from './TerminalView';
+import { useToast } from './Toast';
 import { CloseSessionDialog } from './workbench/CloseSessionDialog';
 import { TerminalTabs, type TerminalTabItem } from './workbench/TerminalTabs';
 
@@ -69,6 +79,7 @@ export function TerminalPanel({
   activeSessionId,
   onActiveSessionChange,
 }: TerminalPanelProps) {
+  const { show } = useToast();
   /**
    * 后端会话表（标签条的数据源）。
    *
@@ -86,9 +97,6 @@ export function TerminalPanel({
    * 不能还挂着上一个会话的「已连接」。
    */
   const [sessionStates, setSessionStates] = useState<Record<string, SessionState>>({});
-  const [error, setError] = useState('');
-  /** 提示位：删除成功但有副作用（记录已不存在 / 关闭流程未走完 / 列表刷新失败）。 */
-  const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   /** 正在等确认的会话（关标签时弹确认）。 */
   const [closing, setClosing] = useState<{ sessionId: string; running: boolean } | null>(null);
@@ -100,6 +108,10 @@ export function TerminalPanel({
   const refreshTokenRef = useRef(0);
   /** 本沙箱的标签序号登记表：序号跟会话身份绑定，关掉标签不重排。 */
   const numbering = useMemo(() => sessionNumbering(sandboxName), [sandboxName]);
+  /** 已弹过的状态提示（会话标识 → 提示键集合）：同一句话不重复弹。 */
+  const warnedRef = useRef<FeedbackLedger>(createFeedbackLedger());
+  /** 后台轮询连续失败次数：到阈值弹一条失败 toast，任一次成功即清零。 */
+  const pollFailuresRef = useRef(0);
 
   /** 刷新会话列表；返回失败原因（成功返回 null）。 */
   const refresh = useCallback(async (): Promise<string | null> => {
@@ -116,8 +128,6 @@ export function TerminalPanel({
         numbering.numberOf(record.session_id);
       }
       setSessionTable({ sandboxName, records: list });
-      // 刷新成功：上一轮的失败提示清掉。
-      setError('');
       return null;
     } catch (exc) {
       if (token !== refreshTokenRef.current) {
@@ -132,17 +142,17 @@ export function TerminalPanel({
     setSessionTable({ sandboxName, records: [] });
     setSessionStates({});
     setRetryTokens({});
-    setError('');
-    setNotice('');
+    pollFailuresRef.current = 0;
     void refresh().then((failure) => {
       if (failure) {
-        setError(failure);
+        show('error', failure, { source: 'terminal-sessions' });
       }
     });
-  }, [refresh]);
+  }, [refresh, show]);
 
   // 轻轮询：会话表的变化（别的终端关掉了会话、后端回收了会话）能及时反映到标签条，
   // 关闭确认弹窗的「还在跑」判定也能拿到较新的记录。
+  // 轮询失败逐次不弹（会刷屏）：连续 3 次失败弹一条，任一次成功即清零。
   useEffect(() => {
     const timer = window.setInterval(() => {
       // 页面不可见时不轮询：省一次往返，也不让后台标签页堆积请求。
@@ -150,13 +160,18 @@ export function TerminalPanel({
         return;
       }
       void refresh().then((failure) => {
-        if (failure) {
-          setError(failure);
+        const step = nextPollFailure(pollFailuresRef.current, failure === null);
+        pollFailuresRef.current = step.count;
+        if (!step.shouldToast) {
+          return;
         }
+        show('error', `读取终端会话列表失败（连续 3 次轮询）：${failure}`, {
+          source: 'terminal-sessions',
+        });
       });
     }, SESSION_POLL_INTERVAL);
     return () => window.clearInterval(timer);
-  }, [refresh]);
+  }, [refresh, show]);
 
   /**
    * 标签：会话表按创建时间定序，序号取自会话自己的登记号。
@@ -184,25 +199,51 @@ export function TerminalPanel({
   /** 当前标签的连接状态：没有记录时按「连接中」算。 */
   const activeState = activeId ? sessionStates[activeId] : undefined;
   const activeStatus: TerminalStatus = activeState?.status ?? 'connecting';
-  const activeMessage = activeState?.message ?? '';
+
+  /**
+   * 终端视图上报状态：存进会话状态表，并把需要告知用户的终态弹成 toast。
+   *
+   * 同一会话的同一条提示不重复弹（服务端可能反复推同一个 error 帧）；
+   * 连接恢复后清掉记录，下一轮失败能重新提示。
+   */
+  const handleStateChange = useCallback(
+    (sessionId: string, state: TerminalState) => {
+      setSessionStates((previous) => ({ ...previous, [sessionId]: state }));
+      const feedback = feedbackForState(state);
+      if (!feedback) {
+        // 连接恢复：清掉这个会话的「已提示过」记录，下一轮失败能重新提示。
+        if (state.status === 'connected') {
+          clearFeedback(warnedRef.current, sessionId);
+        }
+        return;
+      }
+      if (!claimFeedback(warnedRef.current, sessionId, feedbackKey(state))) {
+        // 同一会话的同一条提示已经弹过了：不重复弹。
+        return;
+      }
+      show(feedback.kind, feedback.text, { source: 'terminal-status' });
+    },
+    [show],
+  );
 
   const createTerminal = useCallback(async () => {
     setBusy(true);
-    setError('');
     try {
       const session = await api.createTerminalSession(sandboxName, 80, 24);
       const failure = await refresh();
       if (failure) {
-        setError(failure);
+        show('error', failure, { source: 'terminal-sessions' });
       }
       // 新会话直接选中：路由带上会话标识，刷新页面也能回到这个终端。
       onActiveSessionChange(session.session_id);
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '新建终端会话失败');
+      show('error', exc instanceof Error ? exc.message : '新建终端会话失败', {
+        source: 'terminal-sessions',
+      });
     } finally {
       setBusy(false);
     }
-  }, [sandboxName, refresh, onActiveSessionChange]);
+  }, [sandboxName, refresh, onActiveSessionChange, show]);
 
   /**
    * 点标签尾的 ×：先算清楚这个会话是不是还在跑（决定确认弹窗的文案），
@@ -226,8 +267,6 @@ export function TerminalPanel({
     }
     const sessionId = closing.sessionId;
     setClosingBusy(true);
-    setError('');
-    setNotice('');
     try {
       const result = await api.deleteTerminalSession(sessionId);
       setClosing(null);
@@ -253,24 +292,28 @@ export function TerminalPanel({
         notes.push(`会话列表刷新失败：${failure}`);
       }
       if (notes.length > 0) {
-        setNotice(notes.join('；'));
+        show('info', notes.join('；'), { source: 'terminal-sessions' });
       }
       if (activeId === sessionId) {
         const next = tabs.find((tab) => tab.id !== sessionId);
         onActiveSessionChange(next?.id ?? null);
       }
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '删除终端会话失败');
+      show('error', exc instanceof Error ? exc.message : '删除终端会话失败', {
+        source: 'terminal-sessions',
+      });
     } finally {
       setClosingBusy(false);
     }
-  }, [closing, refresh, activeId, tabs, onActiveSessionChange]);
+  }, [closing, refresh, activeId, tabs, onActiveSessionChange, show]);
 
   /** 手动重试：令牌自增，终端视图重建连接并把失败计数清零。 */
   const retryActive = useCallback(() => {
     if (!activeId) {
       return;
     }
+    // 用户主动重试：清掉这个会话的「已提示过」记录，再失败时能重新提示。
+    warnedRef.current.delete(activeId);
     setRetryTokens((previous) => ({
       ...previous,
       [activeId]: (previous[activeId] ?? 0) + 1,
@@ -296,43 +339,6 @@ export function TerminalPanel({
       />
 
       <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
-        {error && (
-          <div
-            role="alert"
-            className="rounded-lg border border-destructive/40 bg-destructive-soft px-3 py-2 text-[12.5px] text-destructive"
-            data-testid="page-sandbox-detail-terminal-error"
-          >
-            {error}
-          </div>
-        )}
-        {notice && (
-          <div
-            role="status"
-            className="rounded-lg border border-info/30 bg-info-soft px-3 py-2 text-[12.5px] text-info"
-            data-testid="page-sandbox-detail-terminal-notice"
-          >
-            {notice}
-          </div>
-        )}
-        {!sandboxRunning && (
-          <p className="text-[12.5px] text-muted-foreground" data-testid="page-sandbox-detail-terminal-stopped-hint">
-            沙箱当前未运行，无法新建终端会话。请先启动沙箱。
-          </p>
-        )}
-        <p
-          className={
-            activeStatus === 'warning'
-              ? 'text-[12.5px] text-warning'
-              : activeStatus === 'failed' || activeStatus === 'invalid'
-                ? 'text-[12.5px] text-destructive'
-                : 'text-[12.5px] text-muted-foreground'
-          }
-          data-testid="page-sandbox-detail-terminal-message"
-        >
-          {activeId
-            ? activeMessage || '正在连接终端会话…'
-            : '终端会话在浏览器断开后仍保留，重新点标签即可恢复现场。'}
-        </p>
         {activeId && activeStatus === 'failed' && (
           <div>
             <button
@@ -352,7 +358,7 @@ export function TerminalPanel({
             sessionId={activeId}
             retryToken={retryTokens[activeId] ?? 0}
             onStateChange={(state) => {
-              setSessionStates((previous) => ({ ...previous, [activeId]: state }));
+              handleStateChange(activeId, state);
             }}
           />
         ) : (
@@ -362,7 +368,7 @@ export function TerminalPanel({
             data-testid="page-sandbox-detail-terminal-placeholder"
           >
             <span className="text-[12.5px] text-terminal-fg/60">
-              {sandboxRunning ? '还没有终端会话，点右侧的 + 新建一个。' : '沙箱未运行，无法新建终端会话。'}
+              {sandboxRunning ? '还没有终端会话，点上方的 + 新建一个。' : '沙箱未运行，无法新建终端会话。'}
             </span>
           </div>
         )}

@@ -65,7 +65,11 @@ export function TerminalTabs({
         data-testid="page-sandbox-detail-terminal-tabs"
       >
         {tabs.length === 0 && (
-          <span className="self-center text-[12.5px] text-faint">暂无终端会话</span>
+          <span               className={cn(
+                'group inline-flex h-8 shrink-0 items-center gap-1.5 rounded-t-lg px-2.5 text-[13px]',
+                'border-b-2 transition-colors',
+                  'border-transparent text-muted-foreground hover:bg-muted hover:text-foreground',
+              )}>暂无终端会话</span>
         )}
         {tabs.map((tab) => {
           const active = tab.id === activeId;
@@ -133,10 +137,6 @@ export function TerminalTabs({
 
       <div className="flex shrink-0 items-center gap-2 text-[11.5px] text-muted-foreground">
         <span data-testid="page-sandbox-detail-terminal-status">{statusLabel}</span>
-        <span aria-hidden="true" className="opacity-30">
-          ·
-        </span>
-        <span data-testid="page-sandbox-detail-terminal-count">会话 {tabs.length}</span>
       </div>
     </div>
   );

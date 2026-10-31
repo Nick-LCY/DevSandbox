@@ -2,9 +2,7 @@ import { Moon, Plus, RefreshCw, Server, Sun } from 'lucide-react';
 
 import type { SandboxSummary } from '../../api/types';
 import { cn } from '../../lib/cn';
-import { formatTimestamp } from '../../lib/format';
 import { useTheme } from '../../lib/theme';
-import { ErrorBanner } from '../ErrorBanner';
 import type { HealthView } from './AppShell';
 import { SandboxList } from './SandboxList';
 
@@ -15,11 +13,8 @@ interface SidebarProps {
   onSelectSandbox: (name: string) => void;
   onCreateClick: () => void;
   onProxyClick: () => void;
-  /** 列表读取失败的提示（空串表示没有错误）。 */
-  error: string;
   /** 列表正在首次加载。 */
   loading: boolean;
-  updatedAt: string | null;
   onRefresh: () => void;
   refreshing: boolean;
 }
@@ -36,9 +31,7 @@ export function Sidebar({
   onSelectSandbox,
   onCreateClick,
   onProxyClick,
-  error,
   loading,
-  updatedAt,
   onRefresh,
   refreshing,
 }: SidebarProps) {
@@ -59,9 +52,8 @@ export function Sidebar({
             className="truncate text-[13px] leading-tight font-semibold"
             data-testid="page-layout-title"
           >
-            沙箱平台控制台
+            沙箱控制台
           </div>
-          <div className="mt-0.5 truncate text-[11px] leading-tight text-sidebar-muted">工作台</div>
         </div>
       </div>
 
@@ -86,9 +78,6 @@ export function Sidebar({
       <div className="flex items-center justify-between gap-2 px-4 py-2 text-[11px] tracking-[0.06em] text-sidebar-muted">
         <span className="flex items-center gap-1.5">
           <span data-testid="page-sandbox-list-title">沙箱列表</span>
-          <span className="opacity-70" data-testid="page-sandbox-list-count">
-            {sandboxes.length}
-          </span>
         </span>
         <button
           type="button"
@@ -107,18 +96,9 @@ export function Sidebar({
           <RefreshCw className={cn('size-3.5', refreshing && 'animate-spin')} aria-hidden="true" />
         </button>
       </div>
-      {updatedAt && (
-        <div
-          className="px-4 pb-1.5 text-[10.5px] leading-tight text-sidebar-muted opacity-70"
-          data-testid="page-sandbox-list-updated-at"
-        >
-          上次刷新 {formatTimestamp(updatedAt)}
-        </div>
-      )}
 
       {/* 沙箱列表 */}
       <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
-        {error && <ErrorBanner message={error} testId="page-sandbox-list-error-message" />}
         {loading && sandboxes.length === 0 && (
           <p className="px-2 py-3 text-[12px] text-sidebar-muted" data-testid="page-sandbox-list-loading">
             正在读取沙箱列表…

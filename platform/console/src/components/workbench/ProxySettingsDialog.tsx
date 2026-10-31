@@ -13,6 +13,7 @@ import {
   describeTcp,
   summarizeProxyStatus,
 } from '../../lib/proxy';
+import { useToast } from '../Toast';
 import { ModalShell } from './ModalShell';
 
 /** 重启期间的提示文案：代理不可达时依赖镜像拉取失败是预期行为，不做降级。 */
@@ -36,49 +37,70 @@ function Field({ label, value, testId }: { label: string; value: string; testId:
  * 字段与旧的「代理设置」页一一对应，定位标识全部保留。
  */
 export function ProxySettingsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+  const { show } = useToast();
   const [status, setStatus] = useState<ProxyStatus | null>(null);
   const [restart, setRestart] = useState<ProxyRestartResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [restarting, setRestarting] = useState(false);
-  const [error, setError] = useState('');
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      setStatus(await api.proxyStatus());
-      setError('');
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '读取代理状态失败');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const load = useCallback(
+    async (options?: { quiet?: boolean }) => {
+      setLoading(true);
+      try {
+        setStatus(await api.proxyStatus());
+      } catch (exc) {
+        // 读取代理状态失败：弹失败 toast（弹窗里不再挂失败横幅）。
+        // quiet 模式不弹：重启已经报过更具体的失败，不能被这条顶掉。
+        if (!options?.quiet) {
+          show('error', exc instanceof Error ? exc.message : '读取代理状态失败', {
+            source: 'proxy-settings',
+          });
+        }
+      } finally {
+        setLoading(false);
+      }
+    },
+    [show],
+  );
 
   useEffect(() => {
     if (!open) {
       return;
     }
     setRestart(null);
-    setError('');
     void load();
   }, [open, load]);
 
   const restartProxy = useCallback(async () => {
     setRestarting(true);
-    setError('');
     setRestart(null);
+    // 重启进行中：弹 info toast（弹窗里不再挂蓝条）。
+    // toast 5 秒后消失，重启还没完时按钮自身的「正在重启…」状态仍在。
+    show('info', RESTARTING_NOTICE, { source: 'proxy-settings' });
+    // 本轮是否已经报过失败：报过就不让后续的状态刷新失败再顶一条。
+    let reportedFailure = false;
     try {
       const result = await api.restartProxy();
       setRestart(result);
       setStatus(result);
+      // 重启结果：成功 / 失败都走 toast（弹窗里的明细面板照旧保留）。
+      show(result.restarted ? 'success' : 'error', describeRestartOutcome(result), {
+        source: 'proxy-settings',
+      });
+      reportedFailure = !result.restarted;
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '重启代理失败');
+      // 重启代理失败：弹失败 toast。
+      reportedFailure = true;
+      show('error', exc instanceof Error ? exc.message : '重启代理失败', {
+        source: 'proxy-settings',
+      });
     } finally {
       setRestarting(false);
-      // 重启后刷新一次状态：即使重启接口失败，状态页也拿到最新快照
-      void load();
+      // 重启后刷新一次状态：即使重启接口失败，状态页也拿到最新快照。
+      // 刷新也失败时不再弹 toast：更具体的「重启代理失败」不能被它顶掉。
+      void load({ quiet: reportedFailure });
     }
-  }, [load]);
+  }, [load, show]);
 
   return (
     <ModalShell
@@ -113,25 +135,6 @@ export function ProxySettingsDialog({ open, onOpenChange }: { open: boolean; onO
       <h2 className="sr-only" data-testid="page-settings-title">
         代理设置
       </h2>
-
-      {error && (
-        <div
-          role="alert"
-          className="mb-4 rounded-lg border border-destructive/40 bg-destructive-soft px-3 py-2 text-[12.5px] text-destructive"
-          data-testid="page-settings-error-message"
-        >
-          {error}
-        </div>
-      )}
-
-      {restarting && (
-        <div
-          className="mb-4 rounded-lg border border-info/30 bg-info-soft px-3 py-2 text-[12.5px] text-info"
-          data-testid="page-settings-restarting-message"
-        >
-          {RESTARTING_NOTICE}
-        </div>
-      )}
 
       {loading && !status && (
         <p className="text-[12.5px] text-muted-foreground" data-testid="page-settings-loading">

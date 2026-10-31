@@ -11,6 +11,7 @@ import {
   type MountDeclaration,
 } from '../../lib/mounts';
 import { validateImageSelection, validateSandboxName } from '../../lib/validate';
+import { useToast } from '../Toast';
 import { ModalShell } from './ModalShell';
 
 interface MountRow {
@@ -31,8 +32,10 @@ function newMountRow(): MountRow {
 interface CreateSandboxDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** 创建成功后回调（工作台据此选中新建的沙箱）。 */
+  /** 创建成功回调（工作台据此弹成功 toast 并刷新列表）。 */
   onCreated: (name: string) => void;
+  /** 点「打开沙箱详情」回调（工作台据此选中新建的沙箱）。 */
+  onOpenDetail: (name: string) => void;
 }
 
 const inputClass =
@@ -50,7 +53,13 @@ const labelClass = 'mb-1.5 block text-[12.5px] font-medium text-foreground';
  * 启动命令、工作目录、环境变量。创建成功后原地切成功态，
  * 「打开沙箱详情」= 选中该沙箱 + 关弹窗。
  */
-export function CreateSandboxDialog({ open, onOpenChange, onCreated }: CreateSandboxDialogProps) {
+export function CreateSandboxDialog({
+  open,
+  onOpenChange,
+  onCreated,
+  onOpenDetail,
+}: CreateSandboxDialogProps) {
+  const { show } = useToast();
   const [name, setName] = useState('');
   const [image, setImage] = useState('');
   const [images, setImages] = useState<HostImage[]>([]);
@@ -60,6 +69,7 @@ export function CreateSandboxDialog({ open, onOpenChange, onCreated }: CreateSan
   const [command, setCommand] = useState('');
   const [workdir, setWorkdir] = useState('');
   const [envText, setEnvText] = useState('');
+  /** 本地表单校验的错误：留在弹窗里就地展示，不走 toast。 */
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<CreateSandboxResponse | null>(null);
@@ -78,11 +88,15 @@ export function CreateSandboxDialog({ open, onOpenChange, onCreated }: CreateSan
         return preferred?.reference ?? list[0]?.reference ?? '';
       });
     } catch (exc) {
-      setImagesError(exc instanceof Error ? exc.message : '读取宿主本地镜像失败');
+      const message = exc instanceof Error ? exc.message : '读取宿主本地镜像失败';
+      setImagesError(message);
+      // 镜像列表读取失败：弹失败 toast；弹窗里另留一行就地环境状态说明
+      // （toast 5 秒就消失，只留 toast 会让空下拉变得没有解释）。
+      show('error', message, { source: 'sandbox-create' });
     } finally {
       setLoadingImages(false);
     }
-  }, []);
+  }, [show]);
 
   // 弹窗打开时拉一次镜像，并清掉上一轮的表单与成功态。
   useEffect(() => {
@@ -179,12 +193,17 @@ export function CreateSandboxDialog({ open, onOpenChange, onCreated }: CreateSan
       setCommand('');
       setWorkdir('');
       setEnvText('');
+      // 创建成功：成功面板保留在弹窗里，另补一条简短的成功 toast（工作台发）。
+      onCreated(created.metadata.name);
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '创建沙箱失败');
+      // 提交后端失败：弹失败 toast（弹窗里不再挂失败横幅）。
+      show('error', exc instanceof Error ? exc.message : '创建沙箱失败', {
+        source: 'sandbox-create',
+      });
     } finally {
       setSubmitting(false);
     }
-  }, [name, image, mounts, command, workdir, envText]);
+  }, [name, image, mounts, command, workdir, envText, show, onCreated]);
 
   const selectedImage = images.find((item) => item.reference === image) ?? null;
 
@@ -200,7 +219,7 @@ export function CreateSandboxDialog({ open, onOpenChange, onCreated }: CreateSan
       <button
         type="button"
         onClick={() => {
-          onCreated(result.metadata.name);
+          onOpenDetail(result.metadata.name);
           onOpenChange(false);
         }}
         data-testid="page-sandbox-create-success-link"
@@ -270,7 +289,7 @@ export function CreateSandboxDialog({ open, onOpenChange, onCreated }: CreateSan
         <div
           role="alert"
           className="mb-4 rounded-lg border border-destructive/40 bg-destructive-soft px-3 py-2 text-[12.5px] text-destructive"
-          data-testid="page-sandbox-create-error-message"
+          data-testid="page-sandbox-create-validation-error"
         >
           {error}
         </div>
@@ -321,14 +340,19 @@ export function CreateSandboxDialog({ open, onOpenChange, onCreated }: CreateSan
               {loadingImages ? '正在刷新…' : '刷新镜像'}
             </button>
           </div>
-          {imagesError && (
-            <p className="mt-1.5 text-[12px] text-destructive" data-testid="page-sandbox-create-image-error">
-              {imagesError}
-            </p>
-          )}
           {!loadingImages && images.length === 0 && !imagesError && (
             <p className="mt-1.5 text-[12px] text-muted-foreground" data-testid="page-sandbox-create-image-empty">
               宿主上还没有本地镜像。请先在宿主构建或拉取镜像，再回来创建沙箱。
+            </p>
+          )}
+          {imagesError && (
+            <p
+              // 环境状态说明（不是操作结果），故走 role=status 而不是行内红字。
+              role="status"
+              className="mt-1.5 text-[12px] text-muted-foreground"
+              data-testid="page-sandbox-create-image-status"
+            >
+              镜像列表读取失败，原因见右上角提示：{imagesError}
             </p>
           )}
           {selectedImage && (

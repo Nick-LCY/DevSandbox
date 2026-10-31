@@ -11,28 +11,15 @@ import {
   parseTerminalFrame,
   terminalSocketUrl,
 } from '../lib/terminal';
+import type { TerminalState, TerminalStatus } from '../lib/terminal-feedback';
 
 /**
- * 终端连接状态。
+ * 终端连接状态与上报状态。
  *
- * - `connected`：会话握手完成（收到服务端的 hello 帧）或连接稳定存活；
- * - `warning`：连接还在，但服务端报了错误帧（会话本身没断）；
- * - `failed`：连续重连失败到上限，自动重连已停，等用户手动重试。
+ * 类型定义在 `src/lib/terminal-feedback.ts`（提示口径与去重规则同住），
+ * 这里转出去给组件用。
  */
-export type TerminalStatus =
-  | 'connecting'
-  | 'connected'
-  | 'reconnecting'
-  | 'closed'
-  | 'invalid'
-  | 'warning'
-  | 'failed';
-
-/** 终端视图向上层汇报的状态。 */
-export interface TerminalState {
-  status: TerminalStatus;
-  message: string;
-}
+export type { TerminalState, TerminalStatus } from '../lib/terminal-feedback';
 
 /** 重连退避上限（毫秒）。 */
 const RECONNECT_MAX_DELAY = 8000;
@@ -157,8 +144,12 @@ export function TerminalView({ sessionId, retryToken = 0, onStateChange }: Termi
       return true;
     });
 
-    const report = (status: TerminalStatus, message: string): void => {
-      stateCallbackRef.current({ status, message });
+    const report = (
+      status: TerminalStatus,
+      message: string,
+      extra?: { exitCode?: number | null; retryDelaySeconds?: number },
+    ): void => {
+      stateCallbackRef.current({ status, message, ...extra });
     };
 
     /** 连接确认可用：连续失败计数清零。 */
@@ -203,7 +194,9 @@ export function TerminalView({ sessionId, retryToken = 0, onStateChange }: Termi
         return;
       }
       const delay = Math.min(RECONNECT_MAX_DELAY, RECONNECT_BASE_DELAY * 2 ** (attempt - 1));
-      report('reconnecting', `连接断开，${Math.round(delay / 1000)} 秒后自动重连…`);
+      report('reconnecting', `连接断开，${Math.round(delay / 1000)} 秒后自动重连…`, {
+        retryDelaySeconds: Math.round(delay / 1000),
+      });
       retryTimer = window.setTimeout(() => {
         connect();
       }, delay);
@@ -257,7 +250,9 @@ export function TerminalView({ sessionId, retryToken = 0, onStateChange }: Termi
           }
           if (frame.type === 'exit') {
             finished = true;
-            report('closed', `终端进程已退出（退出码 ${frame.code ?? '未知'}）`);
+            report('closed', `终端进程已退出（退出码 ${frame.code ?? '未知'}）`, {
+              exitCode: frame.code,
+            });
             return;
           }
           if (frame.type === 'error') {

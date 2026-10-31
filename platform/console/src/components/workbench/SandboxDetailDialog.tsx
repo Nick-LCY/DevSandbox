@@ -7,7 +7,6 @@ interface SandboxDetailDialogProps {
   onOpenChange: (open: boolean) => void;
   detail: SandboxDetail | null;
   loading: boolean;
-  error: string;
 }
 
 /** 详情里的一行：左标签右值。 */
@@ -38,7 +37,6 @@ export function SandboxDetailDialog({
   onOpenChange,
   detail,
   loading,
-  error,
 }: SandboxDetailDialogProps) {
   return (
     <ModalShell
@@ -57,19 +55,15 @@ export function SandboxDetailDialog({
         </button>
       }
     >
-      {error && (
-        <div
-          role="alert"
-          className="mb-4 rounded-lg border border-destructive/40 bg-destructive-soft px-3 py-2 text-[12.5px] text-destructive"
-          data-testid="page-sandbox-detail-dialog-error"
-        >
-          {error}
-        </div>
-      )}
-
       {loading && !detail && (
         <p className="text-[12.5px] text-muted-foreground" data-testid="page-sandbox-detail-loading">
           正在读取沙箱详情…
+        </p>
+      )}
+
+      {!loading && !detail && (
+        <p className="text-[12.5px] text-muted-foreground" data-testid="page-sandbox-detail-unavailable">
+          暂时读不到沙箱详情，失败原因见右上角提示。
         </p>
       )}
 

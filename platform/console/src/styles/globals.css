@@ -382,3 +382,54 @@
 @utility animate-status-pulse {
   animation: app-pulse 1.6s ease-in-out infinite;
 }
+
+/* ---------------------------------------------------------------------------
+ * Toast 反馈（右上角操作结果提示）
+ *
+ * - 关闭键外围的圆环是倒计时：从空到画满，线性走完一整圈，
+ *   画满即 toast 消失。圆环时长由组件写进 --app-toast-duration
+ *   （值来自 src/lib/toast.ts 的 TOAST_DURATION_MS），不在这里另写一份 5s，
+ *   保证「圆环画满」与「自动消失」严格同步。
+ * - tw-animate-css 里没有这个关键帧，只能写在这里。
+ * - 圆环周长 --app-toast-ring-length 由组件按半径算好写进行内样式，
+ *   关键帧里的 dashoffset 与 dasharray 用同一个值。
+ * -------------------------------------------------------------------------*/
+@keyframes app-toast-countdown {
+  from {
+    stroke-dashoffset: var(--app-toast-ring-length, 69.115);
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@utility animate-toast-countdown {
+  /* 时长只有一个来源：组件写进 --app-toast-duration 的 TOAST_DURATION_MS。
+     这里不再另写一份 5s 默认值（两份默认值迟早会走偏）。 */
+  animation: app-toast-countdown var(--app-toast-duration) linear forwards;
+}
+
+/* 提示条本体：进场淡入下移，退场淡出。
+ *
+ * 放在 components 层：Tailwind 工具类在 utilities 层，会盖掉这里的规则。
+ * 颜色过渡（成功绿 → 失败红）也写在这里，不再用 transition-colors 工具类，
+ * 否则工具类会把 transition 简写整个盖掉，变色就变成硬切。 */
+@layer components {
+  [data-console-toast-item] {
+    transition:
+      opacity 150ms ease,
+      transform 150ms ease,
+      color 150ms ease,
+      background-color 150ms ease,
+      border-color 150ms ease;
+  }
+
+  [data-console-toast-item][data-starting-style] {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+
+  [data-console-toast-item][data-ending-style] {
+    opacity: 0;
+  }
+}

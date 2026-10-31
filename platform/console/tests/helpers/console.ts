@@ -145,12 +145,33 @@ export async function closeDetailDialog(page: Page): Promise<void> {
   await expect(dialog).toBeHidden();
 }
 
-/** 详情弹窗里的错误横幅文案（横幅不在时是空串）。 */
-async function detailErrorText(banner: Locator): Promise<string> {
-  if ((await banner.count()) === 0) {
+/** 详情弹窗里的失败 toast 文案（toast 不在时是空串）。 */
+async function toastText(toast: Locator): Promise<string> {
+  if ((await toast.count()) === 0) {
     return '';
   }
-  return ((await banner.textContent()) ?? '').trim();
+  return ((await toast.textContent()) ?? '').trim();
+}
+
+/**
+ * 右上角的 toast（按类型筛，可选再按来源筛）。
+ *
+ * 操作结果一律走 toast：成功绿 / 失败红 / 提示蓝。
+ * toast 5 秒后自动消失，断言要放在动作之后立即执行。
+ *
+ * `source` 用于区分同页上的多条提示：详情读取失败的失败 toast 带
+ * `data-toast-source="sandbox-detail"`，前一步残留的无关失败提示不带这个来源，
+ * 两者不会互相误伤。
+ */
+export function toastItem(
+  page: Page,
+  kind: 'success' | 'error' | 'info',
+  source?: string,
+): Locator {
+  const sourceSelector = source ? `[data-toast-source="${source}"]` : '';
+  return page.locator(
+    `[data-testid="page-toast-item"][data-toast-kind="${kind}"]${sourceSelector}`,
+  );
 }
 
 /**
@@ -168,8 +189,9 @@ async function detailErrorText(banner: Locator): Promise<string> {
  *
  * 等待口径是「**详情到了**」，不是「加载提示没了」：重拉时组件保留旧值、
  * 加载提示根本不渲染，等加载提示消失等于空等。改成等「字段值」或「空占位」
- * 二者之一出现，再按当前可见性选分支读值；详情接口失败时弹窗里有错误横幅，
- * 那种情况立刻判红（错误文案带进失败信息），不干等 30 秒。
+ * 二者之一出现，再按当前可见性选分支读值；详情接口失败时弹窗里没有错误横幅，
+ * 失败信息走右上角的失败 toast，那种情况立刻判红（错误文案带进失败信息），
+ * 不干等 30 秒。
  */
 export async function detailField(page: Page, field: DetailFieldName): Promise<string> {
   const dialog = page.getByTestId('page-sandbox-detail-dialog');
@@ -180,26 +202,42 @@ export async function detailField(page: Page, field: DetailFieldName): Promise<s
   const target = dialog.getByTestId(dialogFieldId(field));
   // 列表型字段（挂载 / 环境变量 / 依赖容器）为空时渲染的是「（无…）」占位元素。
   const empty = dialog.getByTestId(`page-sandbox-detail-${field}-empty`);
-  const errorBanner = dialog.getByTestId('page-sandbox-detail-dialog-error');
+  // 详情读取失败：弹窗里没有错误横幅，只有一行「暂时读不到沙箱详情」。
+  // 失败信息走右上角的失败 toast——而 toast 5 秒就消失，helper 晚一步看
+  // 就只剩这一行。它才是「详情没到」的稳定信号，两个都盯着才不会空等 30 秒。
+  const unavailable = dialog.getByTestId('page-sandbox-detail-unavailable');
+  // 只认「详情读取失败」这一条（带 data-toast-source="sandbox-detail"）：
+  // 前一步残留的无关失败提示不算数，否则会假红。
+  const errorToast = toastItem(page, 'error', 'sandbox-detail');
 
-  // 等「字段值」「空占位」「错误横幅」三者之一出现：详情读到了才有值，没值时
-  // 渲染占位；详情接口失败时弹窗里有错误横幅。
+  // 等「字段值」「空占位」「详情不可用」「失败 toast」四者之一出现：详情读到了才有值，
+  // 没值时渲染占位；详情接口失败时弹失败 toast（或渲染「详情不可用」那一行）。
   await expect
     .poll(
       async () => {
         const valueVisible = await target.isVisible();
         const emptyVisible = await empty.isVisible();
-        const errorVisible = (await errorBanner.count()) > 0;
-        return valueVisible || emptyVisible || errorVisible;
+        const unavailableVisible = await unavailable.isVisible();
+        const failed = (await errorToast.count()) > 0;
+        return valueVisible || emptyVisible || unavailableVisible || failed;
       },
-      { timeout: 30_000, message: '沙箱详情一直不到：字段值、空占位、错误横幅都没出现' },
+      {
+        timeout: 30_000,
+        message: '沙箱详情一直不到：字段值、空占位、详情不可用、失败 toast 都没出现',
+      },
     )
     .toBe(true);
 
-  // 详情接口失败：显式断言错误横幅不在（文案带进失败信息）。
-  // 横幅一出现就判红，不干等 30 秒（给 2 秒重试窗口：横幅晚于字段到的情况也能捕到）。
-  await expect(errorBanner, {
-    message: `读取沙箱详情失败：${await detailErrorText(errorBanner)}`,
+  // 详情接口失败：显式断言那行「详情不可用」不在这儿（文案带进失败信息）。
+  // 不干等 30 秒（给 2 秒重试窗口：toast 晚于字段到的情况也能捕到）。
+  await expect(unavailable, {
+    message: `读取沙箱详情失败：${await toastText(errorToast)}`,
+  }).toHaveCount(0, { timeout: 2_000 });
+
+  // 详情接口失败：显式断言没有失败 toast（文案带进失败信息）。
+  // toast 一出现就判红，不干等 30 秒（给 2 秒重试窗口：toast 晚于字段到的情况也能捕到）。
+  await expect(errorToast, {
+    message: `读取沙箱详情失败：${await toastText(errorToast)}`,
   }).toHaveCount(0, { timeout: 2_000 });
 
   // 按当前可见性选分支读值：字段有值读字段，空的读占位。
