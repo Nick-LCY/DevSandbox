@@ -2,7 +2,6 @@ import { Info, Play, RefreshCw, Square, Trash2 } from 'lucide-react';
 
 import type { SandboxDetail } from '../../api/types';
 import { cn } from '../../lib/cn';
-import { formatTimestamp } from '../../lib/format';
 
 interface WorkspaceHeaderProps {
   detail: SandboxDetail | null;
@@ -35,7 +34,7 @@ function stateClass(state: string): string {
  * 工作区头部：选中的沙箱摘要 + 生命周期操作。
  *
  * 完整字段（容器名 / 网络名 / 挂载 / 依赖容器等）在「详情」弹窗里看，
- * 头部只放一眼能扫到的三项：状态、镜像、时间。
+ * 头部只放一眼能扫到的两项：状态、镜像。
  */
 export function WorkspaceHeader({
   detail,
@@ -79,18 +78,6 @@ export function WorkspaceHeader({
           <code className="font-mono text-[11.5px]" data-testid="page-sandbox-detail-image">
             {detail?.image ?? '—'}
           </code>
-          <span aria-hidden="true" className="opacity-40">
-            ·
-          </span>
-          <span data-testid="page-sandbox-detail-created-at">
-            创建于 {formatTimestamp(detail?.created_at)}
-          </span>
-          <span aria-hidden="true" className="opacity-40">
-            ·
-          </span>
-          <span data-testid="page-sandbox-detail-updated-at">
-            更新于 {formatTimestamp(detail?.updated_at)}
-          </span>
         </div>
       </div>
 

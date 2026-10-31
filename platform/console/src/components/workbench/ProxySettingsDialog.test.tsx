@@ -81,7 +81,7 @@ describe('代理重启反馈', () => {
 
     renderDialog();
 
-    await screen.findByTestId('page-settings-summary');
+    await screen.findByTestId('page-settings-cache-size');
     fireEvent.click(screen.getByTestId('page-settings-restart-button'));
 
     await waitFor(() => {
@@ -98,7 +98,7 @@ describe('代理重启反馈', () => {
 
     renderDialog();
 
-    await screen.findByTestId('page-settings-summary');
+    await screen.findByTestId('page-settings-cache-size');
     fireEvent.click(screen.getByTestId('page-settings-restart-button'));
 
     await waitFor(() => {

@@ -32,7 +32,7 @@ function Field({ label, value, testId }: { label: string; value: string; testId:
  * 套接字路径、容器内挂载点、工作目录、启动命令、子 ID 段、网络归属、
  * 环境变量（只显示键名）、挂载、依赖容器。
  *
- * 标识口径：与工作区头部重名的四个字段（状态 / 镜像 / 创建时间 / 更新时间）
+ * 标识口径：与工作区头部重名的两个字段（状态 / 镜像）
  * 在抽屉里用 `page-sandbox-detail-dialog-*`，头部保持 `page-sandbox-detail-*`。
  * 抽屉开着时两个标识同时挂在页面上，同名会让 Playwright 严格模式直接报错。
  */

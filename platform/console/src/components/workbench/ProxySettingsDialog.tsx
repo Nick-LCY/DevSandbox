@@ -4,14 +4,12 @@ import { api } from '../../api/client';
 import type { ProxyRestartResult, ProxyStatus } from '../../api/types';
 import { formatBytes, formatTimestamp } from '../../lib/format';
 import {
-  describeCaFetchable,
   describeCaOutcome,
   describeCertificate,
   describeContainerState,
   describeHealth,
   describeRestartOutcome,
   describeTcp,
-  summarizeProxyStatus,
 } from '../../lib/proxy';
 import { useToast } from '../Toast';
 import { DrawerShell } from './DrawerShell';
@@ -34,7 +32,8 @@ function Field({ label, value, testId }: { label: string; value: string; testId:
 /**
  * 代理设置抽屉：状态展示 + 重启 + CA 重装结果。
  *
- * 字段与旧的「代理设置」页一一对应，定位标识全部保留。
+ * 字段沿用旧的「代理设置」页口径，CA 可取回与状态明细不再展示；
+ * 定位标识除已退役的三个（顶部摘要、CA 可取回、状态明细）外全部保留。
  */
 export function ProxySettingsDialog({
   open,
@@ -157,12 +156,6 @@ export function ProxySettingsDialog({
 
       {status && (
         <div>
-          <p
-            className="mb-3 rounded-lg border border-success/30 bg-success-soft px-3 py-2 text-[12.5px] text-success"
-            data-testid="page-settings-summary"
-          >
-            {summarizeProxyStatus(status)}
-          </p>
           <div className="grid grid-cols-2 gap-x-6 gap-y-3.5">
             <Field
               label="容器运行状态"
@@ -171,11 +164,6 @@ export function ProxySettingsDialog({
             />
             <Field label="健康状态" value={describeHealth(status.healthy)} testId="page-settings-healthy" />
             <Field label="端口连通" value={describeTcp(status.tcp_ok)} testId="page-settings-tcp-ok" />
-            <Field
-              label="CA 证书可取回"
-              value={describeCaFetchable(status.ca_fetchable)}
-              testId="page-settings-ca-fetchable"
-            />
             <Field
               label="缓存目录占用"
               value={formatBytes(status.cache_size_bytes)}
@@ -187,11 +175,7 @@ export function ProxySettingsDialog({
               testId="page-settings-certificate-ready"
             />
             <Field label="代理访问地址" value={status.proxy_url} testId="page-settings-proxy-url" />
-            <Field label="状态明细" value={status.detail} testId="page-settings-detail" />
           </div>
-          <p className="mt-3 text-[12px] text-muted-foreground">
-            代理缓存只增不减，页面只展示占用大小，不提供清理入口。
-          </p>
         </div>
       )}
 

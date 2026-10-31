@@ -322,9 +322,6 @@ export function CreateSandboxDialog({
               {formatTimestamp(selectedImage.created_at)}
             </p>
           )}
-          <p className="mt-1.5 text-[12px] text-muted-foreground">
-            镜像来源固定为宿主本地（image_source=host）：平台从宿主导出注入，不经镜像代理拉取。
-          </p>
         </div>
 
         <div>
