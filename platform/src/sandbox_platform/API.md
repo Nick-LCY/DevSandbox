@@ -387,6 +387,7 @@
 | GET | `/api/terminal/sessions` | 查询参数 `sandbox`（可选） | `TerminalSessionModel[]` | 终端会话管理器（见第 12 节） |
 | DELETE | `/api/terminal/sessions/{session_id}` | — | `TerminalSessionDeleteResponse` | 终端会话管理器（见第 12 节） |
 | WS | `/api/terminal/sessions/{session_id}` | 帧协议见 12.3 | 二进制帧 + 文本帧 | 终端会话管理器（见第 12 节） |
+| GET / POST / DELETE | `/api/templates`、`/api/templates/{id}/rename` | `TemplateCreateRequest` / `TemplateRenameRequest` | `TemplateResponse[]` / `TemplateResponse` / `TemplateDeleteResponse` | 启动模板（见第 13 节） |
 
 ### 11.2 请求字段
 
@@ -602,3 +603,86 @@ TTY 负责（容器内拿到的是真实 TTY，默认 termios 生效）。
 | `sandbox_platform/server/terminal.py` | 终端会话管理器与会话承载：起会话、伪终端 I/O 线程、输出环形缓冲、实时流投递、会话上限与空闲回收、落盘合并写、会话删除 |
 | `sandbox_platform/server/sessions.py` | 终端会话表：记录读写与原子落盘、遗留记录清理（含跨实例保护） |
 | `sandbox_platform/server/routes/terminal.py` | 四条终端路由与 WebSocket 帧协议 |
+
+---
+
+## 13. 启动模板接口
+
+启动模板是**控制台私有能力**：一套沙箱启动配置存起来，下次新建沙箱时一键回填。
+模板只是一份配置文本，落在平台数据根的 `templates/` 目录——不进数据库、不做多用户
+隔离、不做导入导出。核心包（`server/` 目录之外）与命令行 `platform/cli/` 零改动。
+
+| 项 | 值 |
+|---|---|
+| 路由前缀 | `/api/templates` |
+| 模板标识 | 服务端生成（`tpl_` + 12 位十六进制），与名称解耦：重命名不影响标识 |
+| 名称口径 | 零限制：不 strip、不限长、不校验字符集与保留字（含空串） |
+| 配置体口径 | 六项全选填；只落用户真正填过的字段，「字段缺失」与「字段填了空值」不混同 |
+| 服务层模块 | `sandbox_platform/server/templates.py`（模板库读写、内置种子与墓碑）、`sandbox_platform/server/routes/templates.py`（四条路由） |
+
+### 13.1 路由表
+
+| 方法 | 路径 | 请求体 | 响应体 | 说明 |
+|---|---|---|---|---|
+| GET | `/api/templates` | — | `TemplateResponse[]`（**裸数组**，不包对象） | 列出全部模板，带完整配置体；读取时顺带补一次内置种子 |
+| POST | `/api/templates` | `TemplateCreateRequest` | 201 + `TemplateResponse` | 创建模板，名称零限制；配置体多传字段 → 400 |
+| POST | `/api/templates/{id}/rename` | `TemplateRenameRequest` | `TemplateResponse` | 只改名称，标识与其余字段不动；模板不存在 → 404 |
+| DELETE | `/api/templates/{id}` | — | `TemplateDeleteResponse` | 删除模板；删的是内置模板时写墓碑；模板不存在 → 404 |
+
+### 13.2 请求与响应字段
+
+`TemplateConfig`（模板配置体，六项全选填，`extra="forbid"`）：
+
+| 字段 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `image` | `str \| null` | `null` | 沙箱镜像（缺省取平台默认镜像） |
+| `mounts` | `list[str]` | `[]` | 用户声明挂载，格式 `宿主路径:容器路径[:ro]`；平台不创建也不删除宿主目录 |
+| `command` | `str \| list[str] \| null` | `null` | 容器启动命令（覆盖镜像默认入口） |
+| `workdir` | `str \| null` | `null` | 容器工作目录 |
+| `env` | `dict[str, str]` | `{}` | 容器环境变量 |
+| `network` | `str \| null` | `null` | 网桥网络名（缺省 `<沙箱名>-net`；用户指定的网络平台不回收） |
+
+`TemplateCreateRequest`：
+
+| 字段 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `name` | `str` | 必填 | 模板名称，零限制（不 strip、不限长、不校验字符集） |
+| `config` | `TemplateConfig` | `{}` | 模板配置体；未出现的字段不落盘 |
+
+`TemplateRenameRequest`：`name`（`str`，必填，零限制）。
+
+`TemplateResponse`：
+
+| 字段 | 说明 |
+|---|---|
+| `id` | 模板标识（服务端生成，与名称解耦） |
+| `name` | 模板名称 |
+| `config` | 模板配置体，**原样透传**：用户没填过的字段就是没有，不是空值 |
+| `created_at` / `updated_at` | 创建与最近修改时间 |
+
+`TemplateDeleteResponse`：`id`（被删的模板标识）、`deleted`（模板记录文件是否确实删掉了）。
+
+### 13.3 存储布局、内置种子与墓碑
+
+| 项 | 口径 |
+|---|---|
+| 目录 | `<平台数据根>/templates/`，一个模板一个 JSON 文件 `<模板标识>.json` |
+| 写入 | 写临时文件 → 改权限 0600 → 原子替换：进程中断不留半截文件 |
+| 权限 | 文件权限 0600，与平台其他元数据一致 |
+| 枚举 | 只扫 `templates/` 顶层的 `*.json`，**不递归子目录**；按标识排序 |
+| 字段 | 只落用户真正填过的字段（`exclude_unset`）：「字段缺失」与「字段填了空值」不混同——模板应用语义是「出现字段整体替换、缺失字段保持现状」 |
+| 内置种子 | 常量 `BUILTIN_TEMPLATES`（**本期为空**：只落地机制，不预置真实模板内容）；启动时按标识注入，同标识文件已存在不覆盖；每条的形状是 `{"id": ..., "name": ..., "config": {...}}`，将来加一条即自动生效 |
+| 墓碑 | `templates/.builtin/state.json`，内容 `{"deleted": [...]}`；内置模板被删后写墓碑，后续启动不再注入（**删了不复活**） |
+| 墓碑目录 | 点开头的隐藏目录 `.builtin`，不参与用户模板枚举 |
+| 坏数据 | 记录文件或墓碑文件损坏时按「不存在 / 空集」处理，不炸服务 |
+
+### 13.4 `~` 展开与 `{name}` 占位符口径
+
+| 项 | 口径 |
+|---|---|
+| 展开范围 | 只展开**挂载声明的宿主路径段**：`~` 与 `~/` 前缀展开为**服务运行用户**的家目录 |
+| 不展开 | 容器路径段、环境变量值、命令、工作目录、`~other` 形式一律不展开，原样交给核心包 |
+| 取不到家目录 | 保持原样（不展开） |
+| root 运行的后果 | 服务以 root 身份运行时 `~` 展开为 `/root`，命中核心包的宿主敏感目录拒绝清单 → 400。**这是既有契约的自然结果，不是缺陷** |
+| 适用范围 | `~` 展开是**网页创建专属口径**：命令行创建沙箱仍要求宿主路径写绝对路径（命令行零改动） |
+| `{name}` 占位符 | 由**前端**在应用模板时替换为沙箱名（沙箱名为空时保留占位符）；服务端只原样存取——模板里的 `~` 与 `{name}` 都不改写 |
