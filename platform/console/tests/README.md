@@ -98,6 +98,7 @@ CONSOLE_TEST_PORT=8200 pnpm run test:acceptance
 |---|---|---|
 | `gotoWorkbench` | 回工作台首页 | `#/` → `page-sandbox-list-title` |
 | `openCreateDialog` | 开新建沙箱抽屉 | `page-sandbox-list-create-button`（**双挂载，取第一个**）→ `page-sandbox-create-dialog` |
+| `waitDrawerSettled` | 等抽屉滑入动画结束（面板位置稳定下来） | 拖拽把手前必须先等：动画中间帧量到的坐标是错的 |
 | `gotoDetail` | 进某个沙箱的工作区 | `#/sandboxes/<名>` → `page-sandbox-detail-title` |
 | `selectSandbox` | 在侧栏里选中沙箱 | `page-sandbox-list-item` → `page-sandbox-detail-title` |
 | `selectCreatedSandbox` | 创建成功后选中新沙箱（创建不自动选中） | `page-sandbox-list-item` → `page-sandbox-detail-title` |

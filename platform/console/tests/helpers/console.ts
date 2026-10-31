@@ -293,11 +293,55 @@ export async function detailField(page: Page, field: DetailFieldName): Promise<s
 }
 
 /**
+ * 删除请求的计数（按页面记）。
+ *
+ * **计数必须先于「点删除」挂上**：请求事件只在请求发出时触发，
+ * 挂晚了之前发出的请求一个都数不到（断言恒真）。
+ */
+interface DeleteRequestCounter {
+  /** 累计删除请求数。 */
+  total: number;
+  /** 本次打开删除弹窗时的基线数（只数基线之后的请求）。 */
+  baseline: number;
+}
+
+/** 每个页面的删除请求计数。 */
+const deleteCounters = new WeakMap<Page, DeleteRequestCounter>();
+
+/**
+ * 本次打开删除弹窗之后发出的删除请求数。
+ *
+ * 用于「取消删除后一个请求都不该发出去」这类断言。
+ */
+export function deleteRequestsSinceOpen(page: Page): number {
+  const counter = deleteCounters.get(page);
+  return counter === undefined ? 0 : counter.total - counter.baseline;
+}
+
+/**
  * 打开删除沙箱确认弹窗，返回弹窗容器。
  *
  * 删除前不再预取回收清单，弹窗里只说后果与「不受影响」。
+ *
+ * 删除请求的计数器在这里就挂上（**先挂计数器再点「删除」**）：
+ * 点「删除」到点「确认删除」之间发出的任何删除请求都要能数到。
  */
 export async function openDeleteDialog(page: Page): Promise<Locator> {
+  let counter = deleteCounters.get(page);
+  if (counter === undefined) {
+    const created: DeleteRequestCounter = { total: 0, baseline: 0 };
+    const countDelete = (request: Request): void => {
+      if (request.method() === 'DELETE' && request.url().includes('/api/sandboxes/')) {
+        created.total += 1;
+      }
+    };
+    page.on('request', countDelete);
+    deleteCounters.set(page, created);
+    counter = created;
+  }
+  // 基线取当前累计数：断言只覆盖「本次打开弹窗之后」。
+  counter.baseline = counter.total;
+
   await page.getByTestId('page-sandbox-detail-delete-button').click();
   const dialog = page.getByTestId('page-sandbox-detail-delete-dialog');
   await expect(dialog).toBeVisible();
@@ -307,30 +351,30 @@ export async function openDeleteDialog(page: Page): Promise<Locator> {
 /**
  * 一次点确认就删：点一次「确认删除」并等删除请求发出去。
  *
- * 这里挂上删除请求的计数：点击之前必须一个删除请求都没发出去——堵住
- * 「还没点就把沙箱删了」的假绿。
+ * 计数由 `openDeleteDialog` 提前挂好（请求事件只在发出时触发，
+ * 这里再挂就数不到之前的请求了）。点确认前留 300ms 观察窗口：
+ * 这一段时间里不该冒出删除请求；点完确认则必须至少发出一条。
  */
 export async function confirmDelete(page: Page): Promise<void> {
-  const confirm = page.getByTestId('page-sandbox-detail-delete-confirm-button');
-  let deleteRequests = 0;
-  const countDelete = (request: Request): void => {
-    if (request.method() === 'DELETE' && request.url().includes('/api/sandboxes/')) {
-      deleteRequests += 1;
-    }
-  };
-  page.on('request', countDelete);
-  try {
-    expect(deleteRequests, '点「确认删除」之前不应发出任何删除请求').toBe(0);
-    await confirm.click();
-    await expect
-      .poll(() => deleteRequests, {
-        timeout: 30_000,
-        message: '点「确认删除」没有发出删除请求',
-      })
-      .toBeGreaterThanOrEqual(1);
-  } finally {
-    page.off('request', countDelete);
+  const counter = deleteCounters.get(page);
+  if (counter === undefined) {
+    throw new Error('删除请求计数器没挂上：必须先调 openDeleteDialog 再调 confirmDelete');
   }
+  const confirm = page.getByTestId('page-sandbox-detail-delete-confirm-button');
+  // 点确认前留一个观察窗口：这段时间里不该发出删除请求。
+  await page.waitForTimeout(300);
+  expect(
+    counter.total - counter.baseline,
+    '点「确认删除」之前不应发出任何删除请求',
+  ).toBe(0);
+
+  await confirm.click();
+  await expect
+    .poll(() => counter.total - counter.baseline, {
+      timeout: 30_000,
+      message: '点「确认删除」没有发出删除请求',
+    })
+    .toBeGreaterThanOrEqual(1);
 }
 
 /**

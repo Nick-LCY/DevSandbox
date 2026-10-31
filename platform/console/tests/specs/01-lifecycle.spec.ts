@@ -11,6 +11,7 @@ import { createSandbox, deleteSandbox } from '../helpers/api';
 import {
   confirmDelete,
   confirmStop,
+  deleteRequestsSinceOpen,
   detailField,
   fillCreateForm,
   gotoDetail,
@@ -107,6 +108,12 @@ test.describe('网页控制台全流程', () => {
       await page.getByTestId('page-sandbox-detail-delete-cancel-button').click();
       await expect(dialog).toBeHidden();
       await expect(page.getByTestId('page-sandbox-detail-title')).toBeVisible();
+      // 请求事件比点击晚几十毫秒落地：留一拍再判零。
+      await page.waitForTimeout(300);
+      expect(
+        deleteRequestsSinceOpen(page),
+        '取消删除后不应发出任何删除请求',
+      ).toBe(0);
 
       // 再打开并确认删除（一次点即执行）
       await openDeleteDialog(page);
