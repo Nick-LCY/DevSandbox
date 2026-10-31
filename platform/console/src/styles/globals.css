@@ -466,3 +466,45 @@
     opacity: 0;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * 终端内部滚动条（xterm 的 viewport）
+ *
+ * 终端区域恒定深色，而 xterm 自带的 viewport 滚动条是浏览器默认浅色样式，
+ * 压在最右列文字上。这里换成暗色系：轨道透明（透出终端底色），
+ * 滑块用终端前景色的半透明版本，悬停时加深一点。
+ *
+ * 两套写法各管一个浏览器：
+ * - ::-webkit-scrollbar：Chrome / Safari 走这条（8 像素宽，带悬停加深）；
+ * - scrollbar-width / scrollbar-color：Firefox 不认伪元素，用标准属性兜底。
+ *   这两个标准属性在 Chrome 里一旦声明就会顶掉伪元素写法，所以只给 Firefox。
+ *
+ * 颜色一律复用终端令牌（--app-terminal-fg），不另起色板。
+ * -------------------------------------------------------------------------*/
+@layer components {
+  .xterm-viewport::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .xterm-viewport::-webkit-scrollbar-track {
+    background-color: transparent;
+  }
+
+  .xterm-viewport::-webkit-scrollbar-thumb {
+    background-color: color-mix(in oklab, var(--app-terminal-fg) 38%, transparent);
+    border-radius: 4px;
+  }
+
+  .xterm-viewport:hover::-webkit-scrollbar-thumb {
+    background-color: color-mix(in oklab, var(--app-terminal-fg) 62%, transparent);
+  }
+
+  /* Firefox 兜底：Chrome / Safari 不认 -moz-appearance，这个块只在 Firefox 生效。 */
+  @supports (-moz-appearance: none) {
+    .xterm-viewport {
+      scrollbar-width: thin;
+      scrollbar-color: color-mix(in oklab, var(--app-terminal-fg) 38%, transparent) transparent;
+    }
+  }
+}

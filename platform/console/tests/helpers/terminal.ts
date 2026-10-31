@@ -15,7 +15,7 @@ import { expect, type Page } from '@playwright/test';
 const SURFACE = 'page-sandbox-detail-terminal-surface';
 
 /** 某个会话的终端表面。 */
-function surfaceOf(page: Page, sessionId: string) {
+export function surfaceOf(page: Page, sessionId: string) {
   return page.locator(`[data-testid="${SURFACE}"][data-session-id="${sessionId}"]`);
 }
 
@@ -167,6 +167,120 @@ export async function typeInTerminal(page: Page, sessionId: string, command: str
   }
   await page.keyboard.type(command);
   await page.keyboard.press('Enter');
+}
+
+/**
+ * 终端区域的布局实测：滚动条与出界判定用。
+ *
+ * 「挂载盒」= xterm 根元素（`.xterm`）的直接父元素，也就是 xterm 挂载、
+ * fit 测量用的那个盒子。修复后它是表面内层的测量盒（无内边距、无边框），
+ * fit 量到的就是真实可用空间。
+ */
+export interface TerminalLayout {
+  /** 挂载盒的可视宽高（clientWidth / clientHeight）。 */
+  mountClientWidth: number;
+  mountClientHeight: number;
+  /** 挂载盒的内容尺寸（scrollWidth / scrollHeight）：大于可视尺寸即溢出。 */
+  mountScrollWidth: number;
+  mountScrollHeight: number;
+  /** 终端字符面的宽度（`.xterm-screen`）：超过挂载盒可视宽度即字符越界。 */
+  screenWidth: number;
+  /** 终端表面外层的 overflow 取值（外层一旦是 auto/scroll 就会多一根滚动条）。 */
+  surfaceOverflowX: string;
+  surfaceOverflowY: string;
+  /** 终端区域内内容溢出的元素清单（类名 + 尺寸）。 */
+  overflowing: {
+    className: string;
+    clientWidth: number;
+    scrollWidth: number;
+    clientHeight: number;
+    scrollHeight: number;
+  }[];
+}
+
+/**
+ * 实测终端区域的布局：挂载盒尺寸、字符面宽度、外层 overflow、溢出元素清单。
+ *
+ * 溢出的判定口径：内容尺寸比可视尺寸大 1 像素以上就算溢出。
+ * `.xterm-helpers` 排除在外——xterm 把输入法辅助层故意挪到屏幕外
+ * （left: -9999em），它天然「溢出」，但不是滚动条。
+ */
+export async function terminalLayout(page: Page, sessionId: string): Promise<TerminalLayout> {
+  const surface = surfaceOf(page, sessionId);
+  return surface.evaluate((element) => {
+    const host = element as HTMLElement;
+    const xterm = host.querySelector('.xterm');
+    const mount = (xterm?.parentElement ?? host) as HTMLElement;
+    const screen = host.querySelector('.xterm-screen') as HTMLElement | null;
+    const style = window.getComputedStyle(host);
+    const overflowing: TerminalLayout['overflowing'] = [];
+    const walk = (node: Element): void => {
+      if (node instanceof HTMLElement && !node.classList.contains('xterm-helpers')) {
+        if (
+          node.scrollWidth > node.clientWidth + 1 ||
+          node.scrollHeight > node.clientHeight + 1
+        ) {
+          overflowing.push({
+            className: node.className,
+            clientWidth: node.clientWidth,
+            scrollWidth: node.scrollWidth,
+            clientHeight: node.clientHeight,
+            scrollHeight: node.scrollHeight,
+          });
+        }
+      }
+      for (const child of node.children) {
+        walk(child);
+      }
+    };
+    walk(host);
+    return {
+      mountClientWidth: mount.clientWidth,
+      mountClientHeight: mount.clientHeight,
+      mountScrollWidth: mount.scrollWidth,
+      mountScrollHeight: mount.scrollHeight,
+      screenWidth: screen ? screen.getBoundingClientRect().width : 0,
+      surfaceOverflowX: style.overflowX,
+      surfaceOverflowY: style.overflowY,
+      overflowing,
+    };
+  });
+}
+
+/**
+ * 读出页面里与 `.xterm-viewport` 相关的滚动条规则原文。
+ *
+ * 为什么要查规则而不是看渲染结果：验收跑在无头浏览器里，而无头 Chromium
+ * 用的是**覆盖式滚动条**（宽度 0、不绘制），截图里根本看不到滚动条。
+ * 只能直接查样式表，证明暗色定制样式真的接上了。
+ */
+export async function terminalScrollbarRules(page: Page, sessionId: string): Promise<string[]> {
+  const surface = surfaceOf(page, sessionId);
+  return surface.evaluate(() => {
+    const found: string[] = [];
+    const visit = (rules: CSSRuleList): void => {
+      for (const rule of Array.from(rules)) {
+        if (rule instanceof CSSStyleRule) {
+          if (rule.selectorText.includes('.xterm-viewport')) {
+            found.push(`${rule.selectorText} { ${rule.style.cssText} }`);
+          }
+          continue;
+        }
+        const nested = (rule as CSSGroupingRule).cssRules;
+        if (nested) {
+          visit(nested);
+        }
+      }
+    };
+    for (const sheet of Array.from(document.styleSheets)) {
+      try {
+        visit(sheet.cssRules);
+      } catch {
+        // 跨域样式表读不到规则：跳过（控制台自己的样式表都是同源的）。
+      }
+    }
+    return found;
+  });
 }
 
 /**

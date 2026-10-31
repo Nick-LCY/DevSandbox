@@ -7,6 +7,7 @@
  */
 
 import { expect, test, type Page } from '@playwright/test';
+import path from 'node:path';
 
 import { createSandbox, listSandboxes } from '../helpers/api';
 import { gotoDetail, toastItem } from '../helpers/console';
@@ -20,7 +21,10 @@ import {
   openTerminal,
   reattachTerminal,
   selectTerminal,
+  surfaceOf,
+  terminalLayout,
   terminalRows,
+  terminalScrollbarRules,
   terminalText,
   typeInTerminal,
 } from '../helpers/terminal';
@@ -28,6 +32,13 @@ import { restartConsoleServer } from '../helpers/server';
 
 const SANDBOX_NAME = 'acc-term';
 const IMAGE = 'sandbox-platform/base:0.2.0';
+
+/**
+ * 终端区域的滚动条形态：截图留档文件名。
+ *
+ * 落在 tests/artifacts/ 下（该目录不进版本库），验收跑完直接翻图看。
+ */
+const TERMINAL_SHOT = 'terminal-surface-scrollbars.png';
 
 /** 整行内容就是 TICK 的行数（命令回显那一行里有 TICK 字样，不算）。 */
 function countTickLines(rows: string[]): number {
@@ -237,5 +248,78 @@ test.describe('网页终端', () => {
     const body = (await detail.json()) as { system_user: string; container_name: string };
     const uid = userUid(body.system_user);
     expect(sandboxContainerState(body.system_user, uid, body.container_name)).toBe('running');
+  });
+
+  // 放在最后一条：每个沙箱的终端会话数有上限（5 个），
+  // 前面的用例各留了会话，这条只能排在它们后面。
+  test('终端区域只有一根内部滚动条：外层不滚动、字符不出暗色面边缘', async ({ page }) => {
+    await gotoDetail(page, SANDBOX_NAME);
+    const sessionId = await openTerminal(page);
+    await expectTerminalConnected(page);
+
+    // 造出足够的回滚内容：xterm 内部那根滚动条必须真的能滚（不是摆设）。
+    await typeInTerminal(page, sessionId, 'seq 1 300');
+    await expect
+      .poll(async () => (await terminalRows(page, sessionId)).length, { timeout: 30_000 })
+      .toBeGreaterThan(20);
+
+    // 等内部滚动条出现（viewport 的内容高度超过可视高度）。
+    await expect
+      .poll(
+        async () => {
+          const layout = await terminalLayout(page, sessionId);
+          return layout.overflowing.some((item) => item.className.includes('xterm-viewport'));
+        },
+        { timeout: 30_000, message: 'xterm 内部 viewport 没有出现滚动条' },
+      )
+      .toBe(true);
+
+    const layout = await terminalLayout(page, sessionId);
+
+    // ① 挂载盒自身不溢出：终端正好落在可用空间里。
+    expect(
+      layout.mountScrollWidth,
+      `挂载盒横向溢出：内容宽 ${layout.mountScrollWidth} > 可视宽 ${layout.mountClientWidth}`,
+    ).toBeLessThanOrEqual(layout.mountClientWidth + 1);
+    expect(
+      layout.mountScrollHeight,
+      `挂载盒纵向溢出：内容高 ${layout.mountScrollHeight} > 可视高 ${layout.mountClientHeight}`,
+    ).toBeLessThanOrEqual(layout.mountClientHeight + 1);
+
+    // ② 字符面不越过暗色面边缘。
+    expect(
+      layout.screenWidth,
+      `终端字符面 ${layout.screenWidth} 宽，越过了挂载盒 ${layout.mountClientWidth} 的右边缘`,
+    ).toBeLessThanOrEqual(layout.mountClientWidth);
+
+    // ③ 终端表面外层不产生滚动条（一旦是 auto/scroll 就会多一根原生滚动条）。
+    expect(layout.surfaceOverflowX).toBe('hidden');
+    expect(layout.surfaceOverflowY).toBe('hidden');
+
+    // ④ 终端区域内唯一能滚的就是 xterm 自己的 viewport。
+    const extras = layout.overflowing.filter(
+      (item) => !item.className.includes('xterm-viewport'),
+    );
+    expect(
+      extras,
+      `终端区域内出现了额外的溢出元素：${JSON.stringify(extras)}`,
+    ).toEqual([]);
+
+    // ⑤ 暗色定制滚动条真的接上了（无头浏览器不绘制滚动条，只能查样式表）。
+    const rules = await terminalScrollbarRules(page, sessionId);
+    expect(
+      rules.some((rule) => rule.includes('::-webkit-scrollbar') && rule.includes('width: 8px')),
+      `没有找到 8 像素宽的 .xterm-viewport 滚动条规则：${JSON.stringify(rules)}`,
+    ).toBe(true);
+    expect(
+      rules.some((rule) => rule.includes('::-webkit-scrollbar-thumb')),
+      `没有找到 .xterm-viewport 滚动条滑块规则：${JSON.stringify(rules)}`,
+    ).toBe(true);
+
+    // 留档：终端区域截图（人工确认滚动条形态）。
+    // 路径相对本用例文件：tests/specs → tests/artifacts。
+    await surfaceOf(page, sessionId).screenshot({
+      path: path.resolve(test.info().file, '..', '..', 'artifacts', TERMINAL_SHOT),
+    });
   });
 });

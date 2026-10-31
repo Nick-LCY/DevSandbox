@@ -310,6 +310,28 @@ export function TerminalView({ sessionId, retryToken = 0, onStateChange }: Termi
     });
     observer.observe(container);
 
+    // 自托管字体 swap 晚到会让列数失配：fit 用的是量出来的字符宽度，
+    // 字体没就位时量的是回退字形。字体就绪后补一次 fit（只做一次）。
+    // rAF 是为了让字体 swap 引起的重排先落地，再量尺寸。
+    if (document.fonts) {
+      void document.fonts.ready
+        .then(
+          () =>
+            new Promise<void>((resolve) => {
+              window.requestAnimationFrame(() => resolve());
+            }),
+        )
+        .then(() => {
+          if (disposed) {
+            return;
+          }
+          safeFit();
+        })
+        .catch(() => {
+          // 字体加载失败：保持现状，等下一次 ResizeObserver 回调。
+        });
+    }
+
     connect();
 
     return () => {
@@ -330,11 +352,25 @@ export function TerminalView({ sessionId, retryToken = 0, onStateChange }: Termi
   }, [sessionId, retryToken]);
 
   return (
+    /*
+     * 终端表面分两层：
+     *
+     * - 外层（视觉层）：圆角、边框、内边距、深色底都在这一层，**不滚动**
+     *   （overflow-hidden）——外层一旦能滚，就会多出一根原生滚动条。
+     * - 内层（测量 / 挂载层）：无内边距、无边框的空盒，xterm 挂在这里。
+     *   fit 量的是父容器的**边框盒**且只减终端元素自身的 padding，
+     *   放在这一层才量得到真实可用空间（外层的 padding 与 border 不再被漏算）。
+     */
     <div
-      className="h-full min-h-0 overflow-auto rounded-xl border border-border bg-terminal-bg p-3"
-      ref={containerRef}
+      className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-terminal-bg p-3"
       data-testid="page-sandbox-detail-terminal-surface"
       data-session-id={sessionId}
-    />
+    >
+      <div
+        className="h-full w-full min-h-0 flex-1 overflow-hidden"
+        ref={containerRef}
+        data-testid="page-sandbox-detail-terminal-mount"
+      />
+    </div>
   );
 }
