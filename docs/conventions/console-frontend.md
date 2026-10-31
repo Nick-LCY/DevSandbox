@@ -7,7 +7,7 @@
 - 样式底座：Tailwind CSS v4（`@tailwindcss/vite`）+ shadcn/ui（base-nova 预设），组件层落在 `src/components/ui/`。
 - 交互原语：**只用 Base UI（`@base-ui/react`），不得引入 Radix**（任何 `@radix-ui/*` 包都不加）。shadcn 的 `data-*` 变体与 accordion 关键帧已内联进 `src/styles/globals.css`，不靠 devDependencies 里的 shadcn 样式文件。
 - 图标：**只用 lucide-react**，不引第二套图标库。
-- 新增交互原语时，先在 `src/components/workbench/ModalShell.tsx` 这类统一外壳上扩展，不要在页面里各自造弹窗。
+- 新增交互原语时，先在 `src/components/workbench/ModalShell.tsx`（确认类弹窗）或 `src/components/workbench/DrawerShell.tsx`（大面板抽屉）这类统一外壳上扩展，不要在页面里各自造弹窗或抽屉。
 
 ## 设计令牌
 
@@ -34,16 +34,34 @@
 
 ## 组件与路由
 
-- 全站只有**一套弹窗实现**：所有弹窗走 `src/components/workbench/ModalShell.tsx`，底层是 Base UI Dialog（焦点陷阱、Esc 关闭、点遮罩关闭、焦点归位）。
-- 路由只有两层：`#/` 与 `#/sandboxes/<沙箱名>[/<终端会话标识>]`。**弹窗不入路由**（新建沙箱、沙箱详情、代理设置等开关状态不入 URL）。
+- **弹窗与抽屉各一套实现**：确认类弹窗（删除沙箱 / 停止沙箱 / 关闭终端会话）走 `src/components/workbench/ModalShell.tsx`，底层是 Base UI Dialog（焦点陷阱、Esc 关闭、点遮罩关闭、焦点归位）；三个大面板（新建沙箱 / 沙箱详情 / 代理设置）走 `src/components/workbench/DrawerShell.tsx`，底层是 Base UI Drawer（右侧滑出、宽度可拖拽）。
+- 路由只有两层：`#/` 与 `#/sandboxes/<沙箱名>[/<终端会话标识>]`。**抽屉与弹窗都不入路由**（新建沙箱、沙箱详情、代理设置等开关状态不入 URL）。
 - 地址里的百分号解码失败一律退回工作台，不抛异常打断渲染。
 - 前端只做编排与展示：错误消息直接展示后端 `{"detail": "中文消息"}` 里的 `detail`，**不另造说法**。
-- **操作结果反馈一律走右上角 toast**（`src/components/Toast.tsx`，底座是 Base UI 的 Toast 原语）：成功绿 / 失败红 / 提示蓝，5 秒自然消失，关闭键带与消失同步的倒计时圆环。页面里**不再挂内嵌的结果横幅**；四处豁免：本地表单校验红字（留在弹窗内就地展示）、代理状态摘要绿条（留在弹窗原位）、删除沙箱的武装提示（`page-sandbox-detail-delete-armed-hint`）、新建沙箱弹窗里镜像列表读取失败的**就地环境状态说明**（`page-sandbox-create-image-status`，`role="status"`；它是环境状态不是操作结果，但 toast 5 秒就消失，只留 toast 会让空下拉没有解释）。
+- **操作结果反馈一律走右上角 toast**（`src/components/Toast.tsx`，底座是 Base UI 的 Toast 原语）：成功绿 / 失败红 / 提示蓝，5 秒自然消失，关闭键带与消失同步的倒计时圆环。页面里**不再挂内嵌的结果横幅**；四处豁免：本地表单校验红字（留在抽屉内就地展示）、代理状态摘要绿条（留在抽屉原位）、删除确认弹窗里的**安全提示块**（`page-sandbox-detail-delete-untouched-note`，「用户挂载的宿主机目录不受影响」）、新建沙箱抽屉里镜像列表读取失败的**就地环境状态说明**（`page-sandbox-create-image-status`，`role="status"`；它是环境状态不是操作结果，但 toast 5 秒就消失，只留 toast 会让空下拉没有解释）。
 - 后台轮询失败**逐次不弹**，**连续 3 次失败弹一条**（任一次成功即清零）：后端整体不可达时侧栏底部的健康自检已经常驻提示，但端点级失败（接口 500）它兜不住。用户主动触发的操作失败立刻弹。
 - toast 的倒计时**只有窗口失焦会暂停**：失焦时倒计时停表、圆环停画；回前台时整条**重走 5 秒**（圆环重画 + 计时器重走），不是接着上次剩的时间继续。页面上悬停、点提示区、聚焦提示区、按下提示条都不暂停——Base UI 默认会暂停，必须逐条拦掉。Base UI 还会在 `window` 上接管 F6（把提示区聚焦并按停倒计时），同样要拦掉。倒计时由 `ToastProvider` 层的自有计时器统一管（Base UI 的自动关闭置 0），保证圆环画满与 toast 消失共用同一份时间。
 - toast 条目带 `data-toast-kind`（类型）与可选的 `data-toast-source`（来源）：同一页面上可能先后出现多条失败提示，验收脚本靠来源把本用例关心的那条与前一步残留的无关那条区分开。
-- 纯数据转换逻辑（路由解析、挂载声明、环境变量、格式化、终端帧协议、终端状态提示口径与去重、代理文案、主题存取、会话定序、轮询失败计数）收敛在 `src/lib/`，并有单元测试。
+- 纯数据转换逻辑（路由解析、挂载声明、环境变量、格式化、终端帧协议、终端状态提示口径与去重、代理文案、主题存取、抽屉宽度的存取与换算、会话定序、轮询失败计数）收敛在 `src/lib/`，并有单元测试。
 - **交互组件的 pointer 光标由 `src/styles/globals.css` 的 base 层统一兜底**（Tailwind v4 的 preflight 把 button 等元素的默认光标改成了 `default`，v3 时代是 `pointer`）：新增交互原语不必逐个补 `cursor-pointer`；要别的光标语义就用工具类覆盖（工具类层级高于 base，下拉选项的 `cursor-default` 即是此例）。
+
+## 抽屉外壳
+
+- **三件套**：统一外壳 `src/components/workbench/DrawerShell.tsx` + 原语封装 `src/components/ui/drawer.tsx` + 宽度存取 `src/lib/drawer-width.ts`。原语是 `@base-ui/react` 自带的 Drawer（**零新增依赖**），页面里不自己拼 Drawer。
+- **宽度三抽屉共用**：存储键 `sandbox-console-drawer-width`，存的是视口宽度的百分比，默认 40、钳位区间 [20, 80]；新建沙箱 / 沙箱详情 / 代理设置共用同一份，拖动任意一个其余跟着变，刷新后保持。读写包 try/catch，读不到或值非法一律回落默认宽度。
+- **拖拽松手才落盘**：拖动中只更新外壳本地状态（每帧最多更新一次，避免每像素重渲染整个工作台），**松手才**把最终值上抛并写存储；指针捕获意外丢失也按松手收口，防止宽度悬着不落盘。把手上按左右方向键每次调 2 个百分点，`Home` 回默认宽度。
+- **窄屏边界**：视口 < 640px 时抽屉占满整屏（宽度百分比不生效），**拖拽把手不提供入口**——可见但拖不动的把手会把脏宽度写进存储，窄屏干脆不给入口。
+- **关闭四路锁**：抽屉禁用关闭时，Esc / 点遮罩 / 点右上角 × / 横向滑动关闭四条途径全部不响应（不可逆操作在途不能半途退出），口径与确认类弹窗一致。
+- **滑动双保险**：Base UI 的横向滑动关闭没有开关，只能挡——把手挂 `data-base-ui-swipe-ignore="x"`、正文容器挂 `data-base-ui-swipe-ignore`，表单里拖选文本不会被滑动关闭吃掉。
+- **传送 body 后配色不丢**：抽屉传送到 `body` 会脱离 `[data-console-shell]` 作用域，因此面板自己挂 `data-console-shell=""`，选中态与 `color-scheme` 规则照样命中。
+
+## 确认类弹窗
+
+- **删除沙箱一步确认**：点「删除」直接开弹窗，点「确认删除」即发删除请求；不再有武装窗与倒计时，删除前不预取回收清单（回收清单接口保留给脚本与将来的清单预览，页面不再调用）。弹窗只说两件事：删了会怎样（不可撤销）、哪些东西不受影响（安全提示块 `page-sandbox-detail-delete-untouched-note`，留在弹窗原位不走 toast）。
+- **停止沙箱也要确认**：工作区头部的「停止」按钮只开弹窗，不直接发请求；「同时停止依赖容器」勾选框在弹窗里，**默认勾选**（与命令行默认一致），每次打开都重置为默认勾选（上一次取消时的状态不粘到下一次）。
+- **停止失败不关弹窗**：请求失败弹一条失败 toast，弹窗留在原地可以直接重试；只有成功才关。
+- **关闭会话弹窗**删掉会话标识行，面板宽度 360px；弹窗外壳默认宽度 440px，确认类弹窗按内容再收窄（删除 400px、停止 400px）。
+- **不可逆操作在途时锁死关闭**：删除、停止的请求在途时 Esc / 点遮罩 / × 都不响应。
 
 ## data-testid 规范
 
@@ -51,9 +69,10 @@
 - 同页重复出现的元素**标识本身保持一致**，另挂属性区分：沙箱列表项带 `data-sandbox-name` 与 `data-sandbox-state`，终端标签与终端表面带 `data-session-id`（标签另带 `data-active`）。
 - 同页双挂载的标识（侧栏与空态引导块各有一个「新建沙箱」按钮）按「取第一个」处理，不另造名字。
 - 端到端脚本只使用 `platform/console/README.md` 标识表里的名字，不另造；helper 里的标识必须与实现一致。
-- 旧四页与「后端保留会话」列表下线后，相关标识已退役，不得复用。完整标识表与已退役清单见 `platform/console/README.md`。
+- 旧四页与「后端保留会话」列表下线后，相关标识已退役，不得复用。抽屉改造后下线的标识（新建沙箱成功面板、删除武装提示与回收清单明细）同样不得复用。完整标识表与已退役清单见 `platform/console/README.md`。
 
 ## 相关文档
 
+- [[tasks/phase2-console/08-console-drawer-migration.md|08 控制台弹窗抽屉化]] — 抽屉外壳与确认类弹窗约定的落地任务。
 - [[tasks/phase2-console/07-console-ui-overhaul.md|07 控制台 UI 全面改造]] — 本套约定的由来（单页工作台与新视觉底座的落地任务）。
 - [[tasks/phase2-console/04-console-frontend.md|04 网页控制台前端]] — 前端工程的首个落地任务。
