@@ -13,7 +13,10 @@
 #      产物已入库，正常构建不依赖外网。
 #   2. 生成字符集 scripts/fonts/charset.txt：从控制台前端、控制台测试、后端
 #      沙箱平台三处源码里抽出实际用到的中文 / 全角 / 常用符号（后端中文错误
-#      文案必须进字符集），再补 ASCII 可打印区与一组界面常用符号。
+#      文案必须进字符集），再补 ASCII 可打印区与一组界面常用符号，最后并入
+#      scripts/fonts/common-hanzi.txt（通用规范汉字表一级字表，3500 字）的
+#      全量。**常用汉字表文件缺失时报错退出**，不静默跳过——静默跳过会产出
+#      缺字形子集，表现为界面上的方框。
 #   3. 用 fonttools 实例化各字重（Noto 400/500/600/700，Geist Mono 400/500），
 #      再用 pyftsubset 按字符集子集化并转 woff2。
 #   4. 产物先落暂存目录，全部字重都成功后再整体替换 public/fonts/（任一字重
@@ -30,6 +33,9 @@ REPO_ROOT="$(cd "$CONSOLE_DIR/../.." && pwd)"
 
 CHARSET_DIR="$SCRIPT_DIR/fonts"
 CHARSET_FILE="$CHARSET_DIR/charset.txt"
+# 常用汉字表：通用规范汉字表一级字表（3500 字），全量并入字符集。
+# 文件缺失时报错退出（缺了会产出缺字形的子集）。
+COMMON_HANZI_FILE="$CHARSET_DIR/common-hanzi.txt"
 FONT_OUT_DIR="$CONSOLE_DIR/public/fonts"
 # 暂存目录与备份目录都放在 public/ 下：与目标目录同分区，最后一步是改名
 # 而不是拷贝，不会出现「换了一半」的中间态。
@@ -57,6 +63,9 @@ build_charset() {
   log "生成字符集 $CHARSET_FILE"
   mkdir -p "$CHARSET_DIR"
 
+  # 常用汉字表必须在位：缺了就报错退出，不静默跳过。
+  [ -f "$COMMON_HANZI_FILE" ] || die "缺少常用汉字表文件：$COMMON_HANZI_FILE"
+
   # 三处源码：控制台前端、控制台测试、后端沙箱平台（后端中文错误文案必须覆盖）。
   local sources=(
     "$CONSOLE_DIR/src"
@@ -64,12 +73,13 @@ build_charset() {
     "$REPO_ROOT/platform/src/sandbox_platform"
   )
 
-  python3 - "$CHARSET_FILE" "${sources[@]}" <<'PY'
+  python3 - "$CHARSET_FILE" "$COMMON_HANZI_FILE" "${sources[@]}" <<'PY'
 import os
 import sys
 
 out_path = sys.argv[1]
-sources = sys.argv[2:]
+common_hanzi_path = sys.argv[2]
+sources = sys.argv[3:]
 
 # 保留的非 ASCII 码位区间：通用标点 / 箭头 / 数学 / 几何图形 / 杂项符号 /
 # 装饰符号 / 中日韩符号与标点 / 假名 / CJK 扩展 A / CJK 统一表意文字 /
@@ -115,6 +125,22 @@ for root in sources:
 
 chars.update(EXTRA)
 
+# 常用汉字表（通用规范汉字表一级字表）：全量并入。
+# 文件缺失直接报错退出：缺了会产出缺字形的子集（界面上的方框）。
+if not os.path.isfile(common_hanzi_path):
+    raise SystemExit(f'[build-fonts][错误] 缺少常用汉字表文件：{common_hanzi_path}')
+common_count = 0
+with open(common_hanzi_path, encoding='utf-8') as fh:
+    for line in fh:
+        line = line.strip()
+        # 注释行（文件头三行说明来源与用途）与空行跳过。
+        if not line or line.startswith('#'):
+            continue
+        for ch in line:
+            if keep(ch):
+                chars.add(ch)
+                common_count += 1
+
 ordered = sorted(chars)
 # 每行 40 个字符，纯数据文件：pyftsubset 的 --text-file 直接吃它（换行会被忽略）。
 with open(out_path, 'w', encoding='utf-8') as fh:
@@ -123,6 +149,7 @@ with open(out_path, 'w', encoding='utf-8') as fh:
         fh.write('\n')
 
 print(f'[build-fonts] 字符集共 {len(ordered)} 个字符（其中非 ASCII {sum(1 for c in ordered if ord(c) > 0x7F)} 个）')
+print(f'[build-fonts] 常用汉字表并入 {common_count} 个字符')
 PY
 }
 
