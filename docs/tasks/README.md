@@ -43,6 +43,11 @@ status: todo        # todo | doing | done | blocked
 - [[tasks/phase2-console/05-acceptance-regression.md]] — 二期端到端验收与一期回归复验
 - [[tasks/phase2-console/07-console-ui-overhaul.md]] — 控制台 UI 全面改造（单页工作台 + 新视觉底座）
 - [[tasks/phase2-console/08-console-drawer-migration.md]] — 控制台弹窗抽屉化（大面板改右侧抽屉 + 确认类弹窗精简）
+- [[tasks/console-templates/README.md]] — 控制台模板轮（基础镜像 0.3.0 工具层 + 启动模板）任务集索引，含依赖顺序
+- [[tasks/console-templates/01-base-image-0.3.0.md]] — 平台基础镜像 0.3.0：apt 装 9 个通用工具包、构建转联网、判定扩到 42 项
+- [[tasks/console-templates/02-template-server.md]] — 启动模板服务端：模板库落盘、四条接口、`~` 展开、内置模板种子机制
+- [[tasks/console-templates/03-template-console.md]] — 启动模板前端与字体：新建抽屉加载 / 保存、设置抽屉模板管理区、字体子集重生成
+- [[tasks/console-templates/04-acceptance-and-docs.md]] — 控制台模板轮真机验收与文档收口：三套测试全绿、两篇架构决策记录、看板与约定同步
 
 ## 看板
 任务状态汇总见 [[current-state.md]]，由人维护。
