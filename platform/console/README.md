@@ -1,6 +1,6 @@
 # 网页控制台前端
 
-沙箱平台的网页控制台：**单页工作台**。左侧边栏是沙箱列表，右侧工作区是选中沙箱的摘要与网页终端；新建沙箱 / 沙箱详情 / 代理设置都是**右侧滑出、宽度可拖拽的抽屉**。
+沙箱平台的网页控制台：**单页工作台**。左侧边栏是沙箱列表，右侧工作区是选中沙箱的摘要与网页终端；新建沙箱 / 沙箱详情 / 设置（代理设置 + 启动模板）都是**右侧滑出、宽度可拖拽的抽屉**。
 
 - 技术栈：React 19 + Vite 7 + TypeScript 5.9 + Tailwind v4 + shadcn/ui（Base UI 原语），pnpm 管理，Node ≥ 22。
 - 产物由后端服务在 `/` 路径直接托管，单端口对外，**前端不含任何认证逻辑**，全部接口走同源相对路径。
@@ -62,7 +62,7 @@ pnpm run typecheck  # tsc --noEmit，零错误
 pnpm run test       # vitest run，纯数据转换逻辑与组件交互的单元测试
 ```
 
-单元测试覆盖挂载声明解析、环境变量解析、两层路由解析（含畸形百分号编码）、字节与时间格式化、终端帧协议解析、终端状态提示的口径与去重规则（纯函数，含用户主动关闭、空闲回收与服务退出兜底三种结束原因）、代理状态文案转换、主题存取、抽屉宽度的存取与换算、轮询失败计数，终端面板的会话标签与关闭会话交互（标签渲染、点标签回调、运行中与已退出的两套确认文案、确认与取消、失败提示、记录已不存在、关闭流程未走完、列表刷新失败、终态提示、同一状态反复上报不重复刷屏、轮询连续失败），工作台的列表读取失败与轮询失败反馈、停止沙箱先弹确认框，新建沙箱抽屉的镜像列表失败说明、镜像选择器的本地筛选（输入关键字只剩命中项）、列表到位后输入框不被预填、逐字符打字能命中、没命中时的空态、弹层顶部无空白块、输入框右侧的下拉箭头、键盘选中、选中后的详情行、改字即放弃选择与未选镜像时的校验红字，以及创建成功收口，代理设置的重启失败反馈不被状态刷新失败顶掉，删除沙箱确认的一次点即执行，停止沙箱确认弹窗的勾选项与忙碌锁，以及抽屉外壳的焦点管理、关闭途径、宽度拖拽把手（条子中间带竖向抓握图标）与指针拖拽路径（拖动中不落盘、松手落盘一次、按下即松手不落盘、视口宽不可用时不换算），最后是全局 toast 组件本身（类型 → 配色类映射、5 秒自动消失、关闭键提前关闭、倒计时圆环的动画类名与时长、悬停 / 点提示区 / 聚焦提示区 / 按下提示条不暂停倒计时、按 F6 不被 Base UI 接管、窗口失焦停表与回前台整体重走 5 秒、新反馈顶掉旧条并重置计时、退场竞态下圆环重建）。组件测试用 jsdom 环境（文件头部 `@vitest-environment jsdom` 注解切换），依赖 `@testing-library/react` 与 `jsdom`。
+单元测试覆盖挂载声明解析、环境变量解析、启动模板的纯逻辑（占位符替换、宽松挂载解析、表单合并语义与配置收集）、两层路由解析（含畸形百分号编码）、字节与时间格式化、终端帧协议解析、终端状态提示的口径与去重规则（纯函数，含用户主动关闭、空闲回收与服务退出兜底三种结束原因）、代理状态文案转换、主题存取、抽屉宽度的存取与换算、轮询失败计数，终端面板的会话标签与关闭会话交互（标签渲染、点标签回调、运行中与已退出的两套确认文案、确认与取消、失败提示、记录已不存在、关闭流程未走完、列表刷新失败、终态提示、同一状态反复上报不重复刷屏、轮询连续失败），工作台的列表读取失败与轮询失败反馈、停止沙箱先弹确认框，新建沙箱抽屉的镜像列表失败说明、镜像选择器的本地筛选（输入关键字只剩命中项）、列表到位后输入框不被预填、逐字符打字能命中、没命中时的空态、弹层顶部无空白块、输入框右侧的下拉箭头、键盘选中、选中后的详情行、改字即放弃选择与未选镜像时的校验红字，模板选择器的可搜可选、选中回填（含占位符替换与镜像不在宿主列表时的留空）、保存为模板的空名禁提交与成功提示，以及创建成功收口，设置抽屉的代理重启失败反馈不被状态刷新失败顶掉、模板列表渲染与空态、模板列表读取失败、行内重命名（回车提交 / Esc 取消 / 空名禁提交）与删除确认弹窗，删除沙箱确认的一次点即执行，停止沙箱确认弹窗的勾选项与忙碌锁，以及抽屉外壳的焦点管理、关闭途径、宽度拖拽把手（条子中间带竖向抓握图标）与指针拖拽路径（拖动中不落盘、松手落盘一次、按下即松手不落盘、视口宽不可用时不换算），最后是全局 toast 组件本身（类型 → 配色类映射、5 秒自动消失、关闭键提前关闭、倒计时圆环的动画类名与时长、悬停 / 点提示区 / 聚焦提示区 / 按下提示条不暂停倒计时、按 F6 不被 Base UI 接管、窗口失焦停表与回前台整体重走 5 秒、新反馈顶掉旧条并重置计时、退场竞态下圆环重建）。组件测试用 jsdom 环境（文件头部 `@vitest-environment jsdom` 注解切换），依赖 `@testing-library/react` 与 `jsdom`。
 
 toast 挂全局 `ToastProvider`：组件测试渲染带 Provider 的片段，断言看 `page-toast-item` 与 `data-toast-kind`（必要时再加 `data-toast-source`）。
 
@@ -108,6 +108,7 @@ platform/console/
     │   ├── format.ts     字节数 / 时间戳格式化
     │   ├── mounts.ts     挂载声明解析与校验
     │   ├── env.ts        环境变量声明解析
+    │   ├── templates.ts  启动模板（占位符替换 / 挂载解析 / 表单合并与收集）
     │   ├── proxy.ts      代理状态文案转换
     │   ├── terminal.ts   终端帧协议
     │   ├── sessions.ts   会话定序与标签序号登记
@@ -133,13 +134,16 @@ platform/console/
     │       ├── EmptyState.tsx         没选中沙箱时的引导块
     │       ├── CreateSandboxDialog.tsx  新建沙箱抽屉
     │       ├── SandboxDetailDialog.tsx 沙箱详情抽屉
-    │       ├── ProxySettingsDialog.tsx 代理设置抽屉
+    │       ├── SettingsDialog.tsx      设置抽屉（代理设置 + 启动模板）
+    │       ├── TemplateManager.tsx     启动模板管理区（列表 / 重命名 / 删除）
     │       ├── DrawerShell.tsx        抽屉外壳（Base UI Drawer：右侧滑出 / 宽度可拖拽）
     │       ├── DeleteSandboxDialog.tsx 删除确认弹窗（一次点即执行）
     │       ├── StopSandboxDialog.tsx   停止沙箱确认弹窗（含依赖容器勾选）
     │       ├── CloseSessionDialog.tsx   关闭终端会话弹窗
     │       └── ModalShell.tsx          弹窗外壳（Base UI Dialog：焦点陷阱 / Esc / 标题栏）
 ```
+
+**改名记录**：`ProxySettingsDialog.tsx`（含同名测试文件）已用 `git mv` 改名为 `SettingsDialog.tsx`——侧边栏的「代理设置」入口改成「设置」后，抽屉里多了一区启动模板管理，文件名与组件名跟着改。**既有 `page-settings-*` 定位标识一个都没动**，只改了侧栏那一处 `page-layout-proxy-button` → `page-layout-settings-button`。
 
 ## 样式底座
 
@@ -149,6 +153,15 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 - 颜色语义统一成 `--color-*`（Tailwind 主题层），因此类名是 `bg-primary` / `text-status-running` 这类常规写法。
 - 侧栏与终端的配色固定：侧栏两套主题下都是深常青绿，终端恒为深色（`bg-terminal-bg`），亮暗切换不影响终端可读性。
 - 选中态与 `color-scheme` 收在 `[data-console-shell]` 作用域内，只对外壳生效。
+
+## 字体
+
+字体自托管：Noto Sans SC 400/500/600/700 与 Geist Mono 400/500 的子集化 woff2 已入库 `public/fonts/`，构建不依赖外网；文件缺失时浏览器自动回退系统字体栈。
+
+- **字符集来源共四处**：控制台前端源码、控制台测试源码、后端沙箱平台源码（后端中文错误文案必须覆盖）、ASCII 可打印区与一组界面常用符号，最后并入**常用汉字表**。
+- **常用汉字表**：`scripts/fonts/common-hanzi.txt`（UTF-8，每行一个字，文件头三行注释写明来源与用途），内容是**通用规范汉字表一级字表**（3500 字）。并进去以后，界面上常用的汉字不再缺字形（缺字形会显示为方框）。
+- **文件缺失时报错退出**：`bash scripts/build-fonts.sh` 在 `common-hanzi.txt` 不存在时直接失败，**不静默跳过**（静默跳过会产出缺字形的子集）。
+- **新增中文文案后必须重跑脚本**：`bash platform/console/scripts/build-fonts.sh`（脚本会重建字符集 → 按字重实例化 → 子集化 → 整体替换 `public/fonts/`，任一字重失败则丢弃暂存产物、保留原产物）。产物入库，仓库里的字体比界面实际用到的字符多（常用汉字表全量并入）。
 
 ## 路由（两层）
 
@@ -162,7 +175,7 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 | 选中沙箱 | `#/sandboxes/<名字>` | 右侧显示该沙箱的摘要与终端会话标签 |
 | 选中沙箱 + 终端会话 | `#/sandboxes/<名字>/<会话标识>` | 右侧工作区直接落在该终端会话上 |
 
-- 新建沙箱 / 沙箱详情 / 代理设置**不是路由**：它们是抽屉，开关状态不入路由，刷新页面自然关闭。
+- 新建沙箱 / 沙箱详情 / 设置**不是路由**：它们是抽屉，开关状态不入路由，刷新页面自然关闭。
 - 地址里的沙箱名与会话标识会做一次百分号解码；解码失败（畸形编码，如 `#/sandboxes/%`）不会抛异常打断渲染，一律退回工作台。
 - 旧四页地址（`#/new`、`#/settings` 等）不再有对应路由，解析时也退回工作台。
 
@@ -193,6 +206,7 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 - **本地表单校验红字**：留在抽屉内就地展示（如新建沙箱的沙箱名 / 挂载 / 环境变量校验）；
 - **删除确认弹窗里的绿色提示块**（`page-sandbox-detail-delete-untouched-note`，「用户挂载的宿主机目录不受影响」）：留在弹窗原位，不走 toast；
 - **镜像列表读取失败的就地说明**（`page-sandbox-create-image-status`，`role="status"`）：一行灰色环境状态说明（「镜像列表读取失败，原因见右上角提示：…」）。它是**环境状态**不是操作结果（操作结果仍走右上角 toast），但 toast 5 秒就消失，只留 toast 会让抽屉里只剩一个没有解释的空的选择器；
+- **模板列表读取失败的就地说明**（`page-sandbox-create-template-status` 与 `page-settings-template-status`，`role="status"`）：同上口径，镜像那份的孪生兄弟；
 - 加载态、状态点与胶囊、空态、确认弹窗文案：一律不动。**按钮的加载态**（新建沙箱 / 刷新镜像 / 停止 / 删除 / 关闭会话 / 重启代理）统一是「旋转图标 + 无省略号文字」（图标用 lucide `Loader2`，尺寸 `size-3.5`，旋转用 `animate-spin`，图标在文字前、间距沿用按钮既有的 `gap-1.5`）；**不是按钮的加载文案**（`正在读取沙箱列表…` / `正在读取沙箱详情…` / `正在读取代理状态…` 等段落文字）保持省略号不变。
 
 ## 删除确认弹窗
@@ -227,7 +241,7 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 
 ## 抽屉（右侧滑出）
 
-新建沙箱 / 沙箱详情 / 代理设置走 `src/components/workbench/DrawerShell.tsx`，底层是 Base UI 的 Drawer 原语（`src/components/ui/drawer.tsx`，零新增依赖）。
+新建沙箱 / 沙箱详情 / 设置走 `src/components/workbench/DrawerShell.tsx`，底层是 Base UI 的 Drawer 原语（`src/components/ui/drawer.tsx`，零新增依赖）。
 
 - **右侧滑出**：抽屉从右侧滑入，`swipeDirection="right"`。
 - **宽度可拖拽**：面板左边缘一条 14 像素竖条（`page-drawer-resize-handle`，`role="separator"`），条子中间竖直放一个抓握图标（lucide `GripVertical`）提示这里能拖。拖动时只更新抽屉内部的本地状态，**松手才**把最终宽度上抛并写入存储（避免每像素重渲染整个工作台）。把手上按左右方向键每次调 2 个百分点，`Home` 回默认宽度。
@@ -254,6 +268,31 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 - 读镜像列表失败与提交失败都弹**失败 toast**；本地校验（沙箱名 / 镜像 / 挂载 / 环境变量）仍在抽屉里就地展示红字。镜像列表读不到时，抽屉里另留一行就地环境状态说明（`page-sandbox-create-image-status`），免得只剩一个没有解释的空的选择器。
 - **创建成功后直接关抽屉**并弹一条**成功 toast**「沙箱 X 创建成功」，列表自动刷新；不再有成功面板，也**不自动选中**新建的沙箱（需要时从左侧边栏选）。
 - **创建请求在途时抽屉不响应关闭**（Esc / 遮罩 / × 一律不关）：请求已经发出，不能半途退出（与删除 / 停止弹窗口径一致）。
+
+### 加载模板与保存为模板
+
+新建沙箱抽屉里镜像选择器下面就是「加载模板」块（同一个块里还有「保存为模板」按钮）：
+
+- **加载模板**是可搜索下拉（复用 `src/components/ui/combobox.tsx`，与镜像选择器同一套写法），候选来自 `GET /api/templates`（后端返回裸数组），**前端本地按模板名做子串筛选**，不发请求。
+- **选中即回填**：选中模板后直接按合并口径改写表单（不另设「应用」按钮）。
+- **模板里的镜像不在宿主本地镜像列表里**：镜像选择器留空（不回填一个选不上的镜像），提交时走既有的「请选择沙箱镜像」校验红字。
+- **保存为模板**走 `ModalShell` 命名弹窗（面板宽 400px）：名称输入 + 保存 / 取消，**空名禁提交**（按钮直接禁用 + 就地红字），保存成功弹一条**成功 toast**（来源 `sandbox-template`）并关掉弹窗、刷新模板列表。
+- 抽屉打开时**并行**拉镜像列表与模板列表；两个列表读不到时各自弹失败 toast，并在抽屉里留一行就地环境状态说明。
+- 模板管理区在设置抽屉里（见下）。
+
+### 启动模板
+
+模板是一份「沙箱启动配置」：镜像、挂载声明、启动命令、工作目录、环境变量、网桥网络。口径三条：
+
+| 口径 | 规定 |
+|---|---|
+| **合并语义** | 模板里**出现**的字段**整体替换**表单值（挂载列表整组替换，不是逐条并入；环境变量整组替换），**没出现**的字段保持表单现状。「出现」用 `hasOwnProperty` 判——`{"image": null}`（填了空值）与缺 `image` 字段（没填过）是两回事 |
+| **`{name}` 占位符** | 模板配置的任意字符串位置（挂载路径、环境变量值、启动命令、工作目录）都可以写 `{name}`，加载时替换成当前沙箱名；**沙箱名为空时保留占位符原样**（替换成空串会把配置改写成不可用的形态）。沙箱名后补时，提交前会再替换一次 |
+| **`~` 口径** | 挂载声明的宿主路径允许家目录写法（`~`、`~/data`）；前端解析器放行，后端落库前把 `~` 展开成服务运行用户的家目录。`~other`（别人的家目录）不展开也不放过。**服务以 root 身份运行时 `~` 展开为 `/root`，命中敏感目录拒绝清单返回 400**——这是既有契约的自然结果，不是缺陷 |
+
+- 模板里的**网络**不在新建沙箱抽屉里渲染输入项（表单默认用平台自建网络），但模板携带的网络会**透传**进 `POST /api/sandboxes`。
+- 保存为模板时**只写有值的字段**（镜像 / 命令 / 工作目录 / 网络非空、挂载列表非空、环境变量非空才写入），没值字段不进配置（空配置会让「出现即替换」变成「清空用户填的东西」）。
+- 模板里的挂载声明解析采用**宽松口径**：宿主路径不要求已存在、不查宿主敏感目录；解析不了的声明**整条跳过**并报条数（提示 toast，来源 `sandbox-template`），不让一条畸形声明把整份模板废掉。
 
 ### 删除沙箱
 
@@ -291,9 +330,17 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 - 删除成功后标签消失；删除失败时展示后端 `detail` 原文。
 - 删除**本体成功**与**列表刷新失败**分开提示：两者合进同一条**提示 toast（蓝色）**，不把已成功的删除说成失败；后端回报 `removed=false` 时提示「记录已不存在（可能已被删除）」，回报 `closed=false` 时提示关闭流程未走完。
 
-### 代理设置
+### 设置（代理设置 + 启动模板）
 
-代理设置是抽屉。抽屉里直接展示六个字段：容器运行状态、健康状态、端口连通、缓存目录占用、证书就绪状态与代理访问地址。读状态失败与重启失败都弹**失败 toast**；点「重启代理」后弹一条**提示 toast（蓝色）**「代理正在重启，重启期间依赖镜像拉取会失败，属预期行为」（toast 5 秒后消失；按钮自身的加载态是「旋转图标 + 正在重启」）；重启结果按 `restarted` / `ca_changed` / `ca_reinstalled` / `reinstalled_users` / `failed_users` 如实展示，不把未修复报成已修复。
+设置是抽屉（侧边栏底部的入口文案是「设置」，图标是 lucide `Settings`）。抽屉分两区：
+
+**第一区：代理设置**。直接展示六个字段：容器运行状态、健康状态、端口连通、缓存目录占用、证书就绪状态与代理访问地址。读状态失败与重启失败都弹**失败 toast**；点「重启代理」后弹一条**提示 toast（蓝色）**「代理正在重启，重启期间依赖镜像拉取会失败，属预期行为」（toast 5 秒后消失；按钮自身的加载态是「旋转图标 + 正在重启」）；重启结果按 `restarted` / `ca_changed` / `ca_reinstalled` / `reinstalled_users` / `failed_users` 如实展示，不把未修复报成已修复。底部按钮区（刷新状态 / 重启代理）与原「代理设置」抽屉完全一致。
+
+**第二区：启动模板**（`src/components/workbench/TemplateManager.tsx`）：
+
+- 列表每行给**模板名 + 最近更新时间**，另有「重命名」与「删除」两个行内按钮；列表为空时给一句空态说明，列表读不到时弹失败 toast（来源 `settings-template`）并在抽屉里留一行就地环境状态说明。
+- **行内重命名**：该行变成输入框，**回车提交 / Esc 取消**，**空名禁提交**（按钮禁用 + 就地红字）；成功后弹成功 toast（来源 `settings-template`）。模板**标识不变**（标识由服务端生成，与名称解耦）。
+- **删除**走 `ModalShell` 确认弹窗（面板宽 400px），文案写明**只删模板、不影响已创建的沙箱**（沙箱一旦创建就不再依赖模板）；删除失败弹失败 toast，弹窗留在原地可以重试。
 
 ## data-testid 规范
 
@@ -301,13 +348,14 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 
 | 页面 | 页面段 | 主要标识 |
 |---|---|---|
-| 外壳 | `layout` | `page-layout-title` / `page-layout-health`（带 `data-health-state`）/ `page-layout-proxy-button` / `page-layout-theme-toggle` |
+| 外壳 | `layout` | `page-layout-title` / `page-layout-health`（带 `data-health-state`）/ `page-layout-settings-button` / `page-layout-theme-toggle` |
 | 沙箱列表 | `sandbox-list` | `page-sandbox-list-title` / `page-sandbox-list-item` / `page-sandbox-list-item-name` / `page-sandbox-list-item-state` / `page-sandbox-list-item-image` / `page-sandbox-list-refresh-button` / `page-sandbox-list-create-button` / `page-sandbox-list-empty` / `page-sandbox-list-loading` |
-| 新建沙箱 | `sandbox-create` | `page-sandbox-create-dialog`（抽屉容器）/ `page-sandbox-create-title` / `page-sandbox-create-name-input` / `page-sandbox-create-image-select`（**镜像选择器的输入框**，可搜索；不再是原生 `select`）/ `page-sandbox-create-image-trigger`（输入框右侧的下拉箭头按钮）/ `page-sandbox-create-image-popup`（镜像选择器的弹层）/ `page-sandbox-create-image-option`（弹层里的候选镜像，带 `data-image-reference="<引用>"`）/ `page-sandbox-create-image-no-match`（搜索没命中时的空态）/ `page-sandbox-create-image-refresh-button` / `page-sandbox-create-image-detail` / `page-sandbox-create-image-empty` / `page-sandbox-create-image-status`（镜像列表读取失败的就地环境状态说明，`role="status"`）/ `page-sandbox-create-mount-add-button` / `page-sandbox-create-mount-empty` / `page-sandbox-create-mount-item` / `page-sandbox-create-mount-host-input` / `page-sandbox-create-mount-container-input` / `page-sandbox-create-mount-readonly-checkbox` / `page-sandbox-create-mount-remove-button` / `page-sandbox-create-command-input` / `page-sandbox-create-workdir-input` / `page-sandbox-create-env-input` / `page-sandbox-create-submit-button` / `page-sandbox-create-validation-error`（本地表单校验红字）|
+| 新建沙箱 | `sandbox-create` | `page-sandbox-create-dialog`（抽屉容器）/ `page-sandbox-create-title` / `page-sandbox-create-name-input` / `page-sandbox-create-image-select`（**镜像选择器的输入框**，可搜索；不再是原生 `select`）/ `page-sandbox-create-image-trigger`（输入框右侧的下拉箭头按钮）/ `page-sandbox-create-image-popup`（镜像选择器的弹层）/ `page-sandbox-create-image-option`（弹层里的候选镜像，带 `data-image-reference="<引用>"`）/ `page-sandbox-create-image-no-match`（搜索没命中时的空态）/ `page-sandbox-create-image-refresh-button` / `page-sandbox-create-image-detail` / `page-sandbox-create-image-empty` / `page-sandbox-create-image-status`（镜像列表读取失败的就地环境状态说明，`role="status"`）/ `page-sandbox-create-template-select`（**模板选择器的输入框**，可搜索）/ `page-sandbox-create-template-trigger` / `page-sandbox-create-template-popup` / `page-sandbox-create-template-option`（弹层里的候选模板，带 `data-template-id` 与 `data-template-name`）/ `page-sandbox-create-template-no-match` / `page-sandbox-create-template-save-button`（「保存为模板」）/ `page-sandbox-create-template-empty` / `page-sandbox-create-template-status`（模板列表读取失败的就地环境状态说明，`role="status"`）/ `page-sandbox-create-template-dialog`（命名弹窗）/ `page-sandbox-create-template-name-input` / `page-sandbox-create-template-name-error`（空名红字）/ `page-sandbox-create-template-confirm-button` / `page-sandbox-create-template-cancel-button` / `page-sandbox-create-mount-add-button` / `page-sandbox-create-mount-empty` / `page-sandbox-create-mount-item` / `page-sandbox-create-mount-host-input` / `page-sandbox-create-mount-container-input` / `page-sandbox-create-mount-readonly-checkbox` / `page-sandbox-create-mount-remove-button` / `page-sandbox-create-command-input` / `page-sandbox-create-workdir-input` / `page-sandbox-create-env-input` / `page-sandbox-create-submit-button` / `page-sandbox-create-validation-error`（本地表单校验红字）|
 | 沙箱详情（工作区头部） | `sandbox-detail` | `page-sandbox-detail-title` / `page-sandbox-detail-state` / `page-sandbox-detail-image` / `page-sandbox-detail-refresh-button` / `page-sandbox-detail-start-button` / `page-sandbox-detail-stop-button` / `page-sandbox-detail-detail-button` / `page-sandbox-detail-delete-button` / `page-sandbox-detail-empty` |
 | 沙箱详情抽屉 | `sandbox-detail-dialog` | `page-sandbox-detail-dialog`（抽屉容器）/ `page-sandbox-detail-dialog-state` / `page-sandbox-detail-dialog-image` / `page-sandbox-detail-dialog-created-at` / `page-sandbox-detail-dialog-updated-at` / `page-sandbox-detail-image-source` / `page-sandbox-detail-system-user` / `page-sandbox-detail-container-name` / `page-sandbox-detail-network-name` / `page-sandbox-detail-socket-path` / `page-sandbox-detail-socket-mount-path` / `page-sandbox-detail-workdir` / `page-sandbox-detail-command` / `page-sandbox-detail-subid` / `page-sandbox-detail-network-owned` / `page-sandbox-detail-env` / `page-sandbox-detail-env-item` / `page-sandbox-detail-env-empty` / `page-sandbox-detail-mounts` / `page-sandbox-detail-mount-item` / `page-sandbox-detail-mounts-empty` / `page-sandbox-detail-dependencies` / `page-sandbox-detail-dependency-item` / `page-sandbox-detail-dependencies-empty` / `page-sandbox-detail-loading` / `page-sandbox-detail-unavailable`（读不到详情时的空态说明）|
 | 终端 | `sandbox-detail-terminal` | `page-sandbox-detail-terminal-panel` / `page-sandbox-detail-terminal-tabs` / `page-sandbox-detail-terminal-tab` / `page-sandbox-detail-terminal-tab-select` / `page-sandbox-detail-terminal-tab-close` / `page-sandbox-detail-terminal-new-button` / `page-sandbox-detail-terminal-status` / `page-sandbox-detail-terminal-retry-button` / `page-sandbox-detail-terminal-stopped-hint` / `page-sandbox-detail-terminal-surface` / `page-sandbox-detail-terminal-mount`（终端表面内层的测量/挂载盒，xterm 根元素的父节点）/ `page-sandbox-detail-terminal-placeholder` / `page-sandbox-detail-terminal-remove-confirm` / `page-sandbox-detail-terminal-remove-confirm-button` / `page-sandbox-detail-terminal-remove-cancel-button` |
-| 代理设置 | `settings` | `page-settings-dialog`（抽屉容器）/ `page-settings-title` / `page-settings-container-running` / `page-settings-healthy` / `page-settings-tcp-ok` / `page-settings-cache-size` / `page-settings-certificate-ready` / `page-settings-proxy-url` / `page-settings-refresh-button` / `page-settings-restart-button` / `page-settings-restart-result` / `page-settings-restarted` / `page-settings-restart-message` / `page-settings-ca-changed` / `page-settings-ca-reinstalled` / `page-settings-ca-conclusion` / `page-settings-reinstalled-users` / `page-settings-failed-users` / `page-settings-loading` |
+| 设置 | `settings` | `page-settings-dialog`（抽屉容器）/ `page-settings-title` / `page-settings-container-running` / `page-settings-healthy` / `page-settings-tcp-ok` / `page-settings-cache-size` / `page-settings-certificate-ready` / `page-settings-proxy-url` / `page-settings-refresh-button` / `page-settings-restart-button` / `page-settings-restart-result` / `page-settings-restarted` / `page-settings-restart-message` / `page-settings-ca-changed` / `page-settings-ca-reinstalled` / `page-settings-ca-conclusion` / `page-settings-reinstalled-users` / `page-settings-failed-users` / `page-settings-loading` |
+| 启动模板 | `settings-template` | `page-settings-template-section` / `page-settings-template-list` / `page-settings-template-item`（带 `data-template-id` 与 `data-template-name`）/ `page-settings-template-name` / `page-settings-template-updated-at` / `page-settings-template-rename-button` / `page-settings-template-rename-input` / `page-settings-template-rename-save-button` / `page-settings-template-rename-cancel-button` / `page-settings-template-rename-error` / `page-settings-template-delete-button` / `page-settings-template-delete-dialog` / `page-settings-template-delete-untouched-note`（「只删模板，不影响已创建的沙箱」）/ `page-settings-template-delete-confirm-button` / `page-settings-template-delete-cancel-button` / `page-settings-template-empty` / `page-settings-template-loading` / `page-settings-template-status`（模板列表读取失败的就地环境状态说明，`role="status"`）/ `page-settings-template-refresh-button` |
 | 删除沙箱 | `sandbox-detail-delete` | `page-sandbox-detail-delete-dialog` / `page-sandbox-detail-delete-title` / `page-sandbox-detail-delete-untouched-note` / `page-sandbox-detail-delete-confirm-button` / `page-sandbox-detail-delete-cancel-button` |
 | 停止沙箱 | `sandbox-detail-stop` | `page-sandbox-detail-stop-dialog` / `page-sandbox-detail-stop-title` / `page-sandbox-detail-stop-dependencies-checkbox`（「同时停止依赖容器」，默认勾选）/ `page-sandbox-detail-stop-confirm-button` / `page-sandbox-detail-stop-cancel-button` |
 | 抽屉 | `drawer` | `page-drawer-resize-handle`（宽度拖拽把手，`role="separator"`，条子中间带竖向抓握图标）|
@@ -345,6 +393,11 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 - **代理设置的摘要与两个字段**（抽屉里不再有顶部摘要绿条，也不再展示 CA 可取回与状态明细）：
   `page-settings-summary` / `page-settings-ca-fetchable` / `page-settings-detail`。
 
+侧边栏「代理设置」改名「设置」后下线的标识：
+
+- `page-layout-proxy-button`（侧边栏底部入口：现为 `page-layout-settings-button`）。
+  抽屉本身的标识（`page-settings-*`）**一个都没动**，只改了侧栏那一处。
+
 **重复元素的定位方式**：沙箱列表项与终端标签在同一个页面上会重复出现，标识本身保持一致，另带一个属性用于区分：
 
 ```ts
@@ -380,7 +433,9 @@ const detailFailed = page.locator(
 | `terminal-sessions` | 终端会话表读取失败、关闭会话的副作用提示 |
 | `terminal-status` | 终端会话状态变化（失效 / 报错 / 退出 / 重连） |
 | `sandbox-create` | 新建沙箱抽屉里的镜像列表读取失败、提交失败 |
+| `sandbox-template` | 新建沙箱抽屉里的模板列表读取失败、保存模板的结果、模板里有解析不了的挂载声明 |
 | `proxy-settings` | 代理状态读取失败、代理重启结果 |
+| `settings-template` | 设置抽屉里的模板列表读取失败、重命名与删除模板的结果 |
 
 toast 5 秒后自动消失，断言要放在动作之后立即执行。
 
@@ -404,6 +459,10 @@ toast 5 秒后自动消失，断言要放在动作之后立即执行。
 | GET | `/api/images` | 新建抽屉的镜像选择器（裸数组） |
 | GET | `/api/proxy/status` | 代理设置抽屉 |
 | POST | `/api/proxy/restart` | 重启代理 |
+| GET | `/api/templates` | 启动模板列表（裸数组；新建抽屉的模板选择器与设置抽屉的模板管理区共用） |
+| POST | `/api/templates` | 保存为模板（名称 + 配置体） |
+| POST | `/api/templates/{id}/rename` | 重命名模板（只改名称，标识不变） |
+| DELETE | `/api/templates/{id}` | 删除模板 |
 | POST | `/api/terminal/sessions` | 新建终端会话 |
 | GET | `/api/terminal/sessions?sandbox=` | 终端标签条的数据源（裸数组） |
 | DELETE | `/api/terminal/sessions/{session_id}` | 删除会话（运行中＝先关后删，已退出＝走一遍收尾再删） |

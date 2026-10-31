@@ -26,7 +26,8 @@ platform/console/tests/
 │   ├── 03-terminal.spec.ts      # 网页终端
 │   ├── 04-equivalence.spec.ts   # 网页与命令行等价
 │   ├── 05-reclaim.spec.ts       # 删除回收复验
-│   └── 06-boundary.spec.ts      # 镜像代理取证与安全边界
+│   ├── 06-boundary.spec.ts      # 镜像代理取证与安全边界
+│   └── 07-templates.spec.ts     # 启动模板（保存 / 回填 / 重命名 / 删除）
 └── artifacts/                   # 运行产物：截图 / trace / 报告（不进版本库）
 ```
 
@@ -92,6 +93,9 @@ CONSOLE_TEST_PORT=8200 pnpm run test:acceptance
 | **停止一次确认** | 工作区头部的「停止」只开确认弹窗，确认后才发 `POST …/stop`；弹窗里有「同时停止依赖容器」勾选（默认勾选） | 停止一律走 `openStopDialog` + `confirmStop` |
 | **创建不再自动选中** | 创建成功后抽屉关掉 + 弹成功 toast，不自动选中新建的沙箱 | 选中改走 `selectCreatedSandbox`（从侧栏选中新沙箱） |
 | **标签 = 会话** | 终端标签条的数据源就是后端会话表，一个标签一个会话；点标签即附着到该会话（服务端回放现场缓冲） | 没有第二份「后端保留的会话」列表；重新附着用 `reattachTerminal`（点已有标签） |
+| **侧边栏入口是「设置」** | 侧边栏底部入口从「代理设置」改成「设置」（图标换成 lucide `Settings`），抽屉里多了一区启动模板管理 | 入口标识从 `page-layout-proxy-button` 改成 `page-layout-settings-button`；开抽屉走 `openSettingsDrawer` |
+| **模板选中即回填** | 新建沙箱抽屉里有「加载模板」下拉（选中即按「出现即替换、缺失即保持」回填表单）与「保存为模板」（命名弹窗，空名禁提交） | 回填走 `applyTemplate`，保存走 `saveTemplateFromCreateDialog`；模板里的 `{name}` 在加载时换成沙箱名（沙箱名当时为空则保留占位符，提交前再替换一次） |
+| **模板管理在设置抽屉** | 模板的列表、行内重命名（回车提交 / Esc 取消）与删除（确认弹窗）都在设置抽屉的第二区 | 重命名走 `renameTemplate`，删除走 `deleteTemplate`；删模板不影响已创建的沙箱 |
 
 **helper 与实现标识的对应关系**（helper 里的标识一律照 README 的标识表，不另造名字）：
 
@@ -113,6 +117,11 @@ CONSOLE_TEST_PORT=8200 pnpm run test:acceptance
 | `openStopDialog` / `confirmStop` | 开停止确认弹窗 / 确认停止 | `page-sandbox-detail-stop-button` → `page-sandbox-detail-stop-dialog` → `page-sandbox-detail-stop-confirm-button` |
 | `openTerminal` | 新建一个终端会话 | `page-sandbox-detail-terminal-new-button` → `page-sandbox-detail-terminal-tab` |
 | `reattachTerminal` | 附着到已有会话（点已有标签） | `page-sandbox-detail-terminal-tab[data-session-id=…]` → `page-sandbox-detail-terminal-tab-select` |
+| `openSettingsDrawer` | 开设置抽屉（代理设置 + 启动模板） | `page-layout-settings-button` → `page-settings-dialog` |
+| `applyTemplate` | 在新建抽屉里选中模板（选中即回填表单） | `page-sandbox-create-template-select` → `page-sandbox-create-template-popup` → `[data-template-name="…"]` |
+| `saveTemplateFromCreateDialog` | 把当前表单存成模板（命名弹窗） | `page-sandbox-create-template-save-button` → `page-sandbox-create-template-dialog` → `page-sandbox-create-template-name-input` → `page-sandbox-create-template-confirm-button` |
+| `renameTemplate` | 在设置抽屉里行内重命名模板（回车提交） | `page-settings-template-item` → `page-settings-template-rename-button` → `page-settings-template-rename-input`（Enter） |
+| `deleteTemplate` | 在设置抽屉里删除模板（走确认弹窗） | `page-settings-template-delete-button` → `page-settings-template-delete-dialog` → `page-settings-template-delete-confirm-button` |
 
 **同页双挂载的标识**：`page-sandbox-list-create-button` 在侧栏顶部与右侧空态引导块各挂一个（同页同时存在），取第一个即可：
 
@@ -132,6 +141,7 @@ await page.getByTestId('page-sandbox-list-create-button').first().click();
 | `04-equivalence` | 同一沙箱：网页与命令行的列表字段、挂载清单、容器状态、回收清单逐项一致；参数相同的两个沙箱（网页建 / 命令行建）挂载与状态流转等价（网页停走确认弹窗） |
 | `05-reclaim` | 经工作台删除（侧栏选中 → 头部删除 → 确认弹窗点一次即删），回收清单通过接口直取逐项核对（沙箱容器、依赖容器、守护进程、systemd 单元、用户与家目录、子 UID/GID 段、平台元数据）；用户声明挂载的外部目录原样存在、内容未变；重复删除幂等 |
 | `06-boundary` | 沙箱内依赖镜像拉取统一经镜像代理（代理访问日志 + 守护进程单元环境变量取证）；服务只监听回环、不做认证、不暴露接口文档 |
+| `07-templates` | 保存模板（新建抽屉里的命名弹窗）→ 重新打开抽屉选中模板即回填（`{name}` 替换成沙箱名、镜像一并回填）→ 设置抽屉里行内重命名（标识不变）→ 删除（走确认弹窗，文案写明不影响已建沙箱）→ 刷新不复活；模板合并语义（出现的字段整体替换、没出现的保持现状）；删除确认弹窗的文案与取消不删 |
 
 ---
 
