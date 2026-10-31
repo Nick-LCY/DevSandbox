@@ -1,12 +1,16 @@
 import type { SandboxDetail } from '../../api/types';
 import { formatBoolean, formatTimestamp, orPlaceholder } from '../../lib/format';
-import { ModalShell } from './ModalShell';
+import { DrawerShell } from './DrawerShell';
 
 interface SandboxDetailDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   detail: SandboxDetail | null;
   loading: boolean;
+  /** 抽屉宽度（视口宽度的百分比）。 */
+  widthVw: number;
+  /** 宽度变化回调（工作台负责持久化）。 */
+  onWidthChange: (vw: number) => void;
 }
 
 /** 详情里的一行：左标签右值。 */
@@ -22,29 +26,32 @@ function Field({ label, value, testId }: { label: string; value: string; testId:
 }
 
 /**
- * 沙箱详情弹窗。
+ * 沙箱详情抽屉。
  *
  * 完整字段一览：状态、镜像、镜像来源、系统用户、容器名、网桥网络、时间、
  * 套接字路径、容器内挂载点、工作目录、启动命令、子 ID 段、网络归属、
  * 环境变量（只显示键名）、挂载、依赖容器。
  *
  * 标识口径：与工作区头部重名的四个字段（状态 / 镜像 / 创建时间 / 更新时间）
- * 在弹窗里用 `page-sandbox-detail-dialog-*`，头部保持 `page-sandbox-detail-*`。
- * 弹窗开着时两个标识同时挂在页面上，同名会让 Playwright 严格模式直接报错。
+ * 在抽屉里用 `page-sandbox-detail-dialog-*`，头部保持 `page-sandbox-detail-*`。
+ * 抽屉开着时两个标识同时挂在页面上，同名会让 Playwright 严格模式直接报错。
  */
 export function SandboxDetailDialog({
   open,
   onOpenChange,
   detail,
   loading,
+  widthVw,
+  onWidthChange,
 }: SandboxDetailDialogProps) {
   return (
-    <ModalShell
+    <DrawerShell
       open={open}
       title="沙箱详情"
       testId="page-sandbox-detail-dialog"
       onOpenChange={onOpenChange}
-      maxWidthClassName="max-w-[720px]"
+      widthVw={widthVw}
+      onWidthChange={onWidthChange}
       footer={
         <button
           type="button"
@@ -186,6 +193,6 @@ export function SandboxDetailDialog({
           </div>
         </div>
       )}
-    </ModalShell>
+    </DrawerShell>
   );
 }

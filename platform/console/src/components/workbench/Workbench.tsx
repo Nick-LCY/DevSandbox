@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { api } from '../../api/client';
 import type { ReclaimPlan, SandboxDetail, SandboxSummary } from '../../api/types';
+import { useDrawerWidth } from '../../lib/drawer-width';
 import { nextPollFailure } from '../../lib/poll';
 import { TerminalPanel } from '../TerminalPanel';
 import { useToast } from '../Toast';
@@ -33,6 +34,8 @@ export function Workbench() {
   const route = useRoute();
   const navigate = useNavigate();
   const { show } = useToast();
+  // 三个抽屉共用一份宽度（存 localStorage）。
+  const { widthVw, setWidthVw } = useDrawerWidth();
 
   const [sandboxes, setSandboxes] = useState<SandboxSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -351,7 +354,8 @@ export function Workbench() {
           show('success', `沙箱 ${name} 创建成功`, { source: 'sandbox-create' });
           void loadList(true);
         }}
-        onOpenDetail={(name) => selectSandbox(name)}
+        widthVw={widthVw}
+        onWidthChange={setWidthVw}
       />
 
       <SandboxDetailDialog
@@ -359,9 +363,16 @@ export function Workbench() {
         onOpenChange={setDetailOpen}
         detail={detail}
         loading={detailLoading}
+        widthVw={widthVw}
+        onWidthChange={setWidthVw}
       />
 
-      <ProxySettingsDialog open={proxyOpen} onOpenChange={setProxyOpen} />
+      <ProxySettingsDialog
+        open={proxyOpen}
+        onOpenChange={setProxyOpen}
+        widthVw={widthVw}
+        onWidthChange={setWidthVw}
+      />
 
       <DeleteSandboxDialog
         open={plan !== null}

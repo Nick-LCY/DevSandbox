@@ -14,7 +14,7 @@ import {
   summarizeProxyStatus,
 } from '../../lib/proxy';
 import { useToast } from '../Toast';
-import { ModalShell } from './ModalShell';
+import { DrawerShell } from './DrawerShell';
 
 /** 重启期间的提示文案：代理不可达时依赖镜像拉取失败是预期行为，不做降级。 */
 const RESTARTING_NOTICE = '代理正在重启，重启期间依赖镜像拉取会失败，属预期行为。';
@@ -32,11 +32,23 @@ function Field({ label, value, testId }: { label: string; value: string; testId:
 }
 
 /**
- * 代理设置弹窗：状态展示 + 重启 + CA 重装结果。
+ * 代理设置抽屉：状态展示 + 重启 + CA 重装结果。
  *
  * 字段与旧的「代理设置」页一一对应，定位标识全部保留。
  */
-export function ProxySettingsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+export function ProxySettingsDialog({
+  open,
+  onOpenChange,
+  widthVw,
+  onWidthChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /** 抽屉宽度（视口宽度的百分比）。 */
+  widthVw: number;
+  /** 宽度变化回调（工作台负责持久化）。 */
+  onWidthChange: (vw: number) => void;
+}) {
   const { show } = useToast();
   const [status, setStatus] = useState<ProxyStatus | null>(null);
   const [restart, setRestart] = useState<ProxyRestartResult | null>(null);
@@ -103,12 +115,13 @@ export function ProxySettingsDialog({ open, onOpenChange }: { open: boolean; onO
   }, [load, show]);
 
   return (
-    <ModalShell
+    <DrawerShell
       open={open}
       title="代理设置"
       testId="page-settings-dialog"
       onOpenChange={onOpenChange}
-      maxWidthClassName="max-w-[680px]"
+      widthVw={widthVw}
+      onWidthChange={onWidthChange}
       footer={
         <>
           <button
@@ -218,6 +231,6 @@ export function ProxySettingsDialog({ open, onOpenChange }: { open: boolean; onO
           </p>
         </div>
       )}
-    </ModalShell>
+    </DrawerShell>
   );
 }

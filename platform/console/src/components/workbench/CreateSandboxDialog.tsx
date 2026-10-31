@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { api } from '../../api/client';
-import type { CreateSandboxResponse, HostImage } from '../../api/types';
+import type { HostImage } from '../../api/types';
 import { parseEnvLines } from '../../lib/env';
 import { formatBytes, formatTimestamp } from '../../lib/format';
 import {
@@ -12,7 +12,7 @@ import {
 } from '../../lib/mounts';
 import { validateImageSelection, validateSandboxName } from '../../lib/validate';
 import { useToast } from '../Toast';
-import { ModalShell } from './ModalShell';
+import { DrawerShell } from './DrawerShell';
 
 interface MountRow {
   id: string;
@@ -34,8 +34,10 @@ interface CreateSandboxDialogProps {
   onOpenChange: (open: boolean) => void;
   /** 创建成功回调（工作台据此弹成功 toast 并刷新列表）。 */
   onCreated: (name: string) => void;
-  /** 点「打开沙箱详情」回调（工作台据此选中新建的沙箱）。 */
-  onOpenDetail: (name: string) => void;
+  /** 抽屉宽度（视口宽度的百分比）。 */
+  widthVw: number;
+  /** 宽度变化回调（工作台负责持久化）。 */
+  onWidthChange: (vw: number) => void;
 }
 
 const inputClass =
@@ -47,17 +49,18 @@ const inputClass =
 const labelClass = 'mb-1.5 block text-[12.5px] font-medium text-foreground';
 
 /**
- * 新建沙箱弹窗。
+ * 新建沙箱抽屉。
  *
  * 字段与校验整体搬自旧的「新建沙箱」页：镜像下拉（可刷新）、挂载行增删、
- * 启动命令、工作目录、环境变量。创建成功后原地切成功态，
- * 「打开沙箱详情」= 选中该沙箱 + 关弹窗。
+ * 启动命令、工作目录、环境变量。创建成功后直接关抽屉，工作台弹成功 toast
+ * 并刷新列表（不再有成功面板，也不自动选中新建的沙箱）。
  */
 export function CreateSandboxDialog({
   open,
   onOpenChange,
   onCreated,
-  onOpenDetail,
+  widthVw,
+  onWidthChange,
 }: CreateSandboxDialogProps) {
   const { show } = useToast();
   const [name, setName] = useState('');
@@ -72,7 +75,6 @@ export function CreateSandboxDialog({
   /** 本地表单校验的错误：留在弹窗里就地展示，不走 toast。 */
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [result, setResult] = useState<CreateSandboxResponse | null>(null);
 
   const loadImages = useCallback(async () => {
     setLoadingImages(true);
@@ -98,7 +100,7 @@ export function CreateSandboxDialog({
     }
   }, [show]);
 
-  // 弹窗打开时拉一次镜像，并清掉上一轮的表单与成功态。
+  // 抽屉打开时拉一次镜像，并清掉上一轮的表单。
   useEffect(() => {
     if (!open) {
       return;
@@ -109,7 +111,6 @@ export function CreateSandboxDialog({
     setWorkdir('');
     setEnvText('');
     setError('');
-    setResult(null);
     void loadImages();
   }, [open, loadImages]);
 
@@ -132,7 +133,6 @@ export function CreateSandboxDialog({
 
   const submit = useCallback(async () => {
     setError('');
-    setResult(null);
 
     const nameError = validateSandboxName(name);
     if (nameError) {
@@ -187,14 +187,14 @@ export function CreateSandboxDialog({
         workdir: workdir.trim() === '' ? null : workdir.trim(),
         env: envResult.env,
       });
-      setResult(created);
+      // 创建成功：关抽屉 → 通知工作台（弹成功 toast + 刷新列表）→ 清空表单。
+      onOpenChange(false);
+      onCreated(created.metadata.name);
       setName('');
       setMounts([]);
       setCommand('');
       setWorkdir('');
       setEnvText('');
-      // 创建成功：成功面板保留在弹窗里，另补一条简短的成功 toast（工作台发）。
-      onCreated(created.metadata.name);
     } catch (exc) {
       // 提交后端失败：弹失败 toast（弹窗里不再挂失败横幅）。
       show('error', exc instanceof Error ? exc.message : '创建沙箱失败', {
@@ -203,32 +203,11 @@ export function CreateSandboxDialog({
     } finally {
       setSubmitting(false);
     }
-  }, [name, image, mounts, command, workdir, envText, show, onCreated]);
+  }, [name, image, mounts, command, workdir, envText, show, onCreated, onOpenChange]);
 
   const selectedImage = images.find((item) => item.reference === image) ?? null;
 
-  const footer = result ? (
-    <>
-      <button
-        type="button"
-        onClick={() => onOpenChange(false)}
-        className="inline-flex h-8 items-center justify-center rounded-lg border border-border bg-background px-3 text-[13px] text-foreground transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
-      >
-        关闭
-      </button>
-      <button
-        type="button"
-        onClick={() => {
-          onOpenDetail(result.metadata.name);
-          onOpenChange(false);
-        }}
-        data-testid="page-sandbox-create-success-link"
-        className="inline-flex h-8 items-center justify-center rounded-lg border border-transparent bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/80 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
-      >
-        打开沙箱详情
-      </button>
-    </>
-  ) : (
+  const footer = (
     <>
       <button
         type="button"
@@ -251,39 +230,18 @@ export function CreateSandboxDialog({
   );
 
   return (
-    <ModalShell
+    <DrawerShell
       open={open}
       title="新建沙箱"
       testId="page-sandbox-create-dialog"
       onOpenChange={onOpenChange}
-      maxWidthClassName="max-w-[640px]"
+      widthVw={widthVw}
+      onWidthChange={onWidthChange}
       footer={footer}
     >
       <h2 className="sr-only" data-testid="page-sandbox-create-title">
         新建沙箱
       </h2>
-
-      {result && (
-        <div
-          className="mb-4 rounded-lg border border-success/30 bg-success-soft px-3 py-3"
-          data-testid="page-sandbox-create-success"
-        >
-          <p className="text-[13px] text-success" data-testid="page-sandbox-create-success-message">
-            沙箱 {result.metadata.name} 创建成功。
-          </p>
-          <ol
-            className="mt-2 list-decimal space-y-0.5 pl-5 text-[12.5px] text-muted-foreground"
-            data-testid="page-sandbox-create-steps"
-          >
-            {result.steps.map((step) => (
-              <li key={step}>{step}</li>
-            ))}
-          </ol>
-          <p className="mt-2 font-mono text-[12px] break-all text-muted-foreground">
-            {result.connection.exec_command}
-          </p>
-        </div>
-      )}
 
       {error && (
         <div
@@ -475,6 +433,6 @@ export function CreateSandboxDialog({
           />
         </div>
       </div>
-    </ModalShell>
+    </DrawerShell>
   );
 }

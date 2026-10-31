@@ -33,7 +33,13 @@ vi.mock('../../api/client', async (importOriginal) => {
 function renderDialog(): void {
   render(
     <ToastProvider>
-      <CreateSandboxDialog open onOpenChange={vi.fn()} onCreated={vi.fn()} onOpenDetail={vi.fn()} />
+      <CreateSandboxDialog
+        open
+        onOpenChange={vi.fn()}
+        onCreated={vi.fn()}
+        widthVw={40}
+        onWidthChange={vi.fn()}
+      />
     </ToastProvider>,
   );
 }

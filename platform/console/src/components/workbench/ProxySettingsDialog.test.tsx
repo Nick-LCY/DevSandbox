@@ -62,7 +62,7 @@ function makeRestartResult() {
 function renderDialog(): void {
   render(
     <ToastProvider>
-      <ProxySettingsDialog open onOpenChange={vi.fn()} />
+      <ProxySettingsDialog open onOpenChange={vi.fn()} widthVw={40} onWidthChange={vi.fn()} />
     </ToastProvider>,
   );
 }
