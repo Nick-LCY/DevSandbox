@@ -61,7 +61,7 @@ export function ProxySettingsDialog({
       try {
         setStatus(await api.proxyStatus());
       } catch (exc) {
-        // 读取代理状态失败：弹失败 toast（弹窗里不再挂失败横幅）。
+        // 读取代理状态失败：弹失败 toast（抽屉里不再挂失败横幅）。
         // quiet 模式不弹：重启已经报过更具体的失败，不能被这条顶掉。
         if (!options?.quiet) {
           show('error', exc instanceof Error ? exc.message : '读取代理状态失败', {
@@ -86,7 +86,7 @@ export function ProxySettingsDialog({
   const restartProxy = useCallback(async () => {
     setRestarting(true);
     setRestart(null);
-    // 重启进行中：弹 info toast（弹窗里不再挂蓝条）。
+    // 重启进行中：弹 info toast（抽屉里不再挂蓝条）。
     // toast 5 秒后消失，重启还没完时按钮自身的「正在重启…」状态仍在。
     show('info', RESTARTING_NOTICE, { source: 'proxy-settings' });
     // 本轮是否已经报过失败：报过就不让后续的状态刷新失败再顶一条。
@@ -95,7 +95,7 @@ export function ProxySettingsDialog({
       const result = await api.restartProxy();
       setRestart(result);
       setStatus(result);
-      // 重启结果：成功 / 失败都走 toast（弹窗里的明细面板照旧保留）。
+      // 重启结果：成功 / 失败都走 toast（抽屉里的明细面板照旧保留）。
       show(result.restarted ? 'success' : 'error', describeRestartOutcome(result), {
         source: 'proxy-settings',
       });

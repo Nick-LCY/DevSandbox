@@ -72,7 +72,7 @@ export function CreateSandboxDialog({
   const [command, setCommand] = useState('');
   const [workdir, setWorkdir] = useState('');
   const [envText, setEnvText] = useState('');
-  /** 本地表单校验的错误：留在弹窗里就地展示，不走 toast。 */
+  /** 本地表单校验的错误：留在抽屉里就地展示，不走 toast。 */
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
@@ -92,7 +92,7 @@ export function CreateSandboxDialog({
     } catch (exc) {
       const message = exc instanceof Error ? exc.message : '读取宿主本地镜像失败';
       setImagesError(message);
-      // 镜像列表读取失败：弹失败 toast；弹窗里另留一行就地环境状态说明
+      // 镜像列表读取失败：弹失败 toast；抽屉里另留一行就地环境状态说明
       // （toast 5 秒就消失，只留 toast 会让空下拉变得没有解释）。
       show('error', message, { source: 'sandbox-create' });
     } finally {
@@ -196,7 +196,7 @@ export function CreateSandboxDialog({
       setWorkdir('');
       setEnvText('');
     } catch (exc) {
-      // 提交后端失败：弹失败 toast（弹窗里不再挂失败横幅）。
+      // 提交后端失败：弹失败 toast（抽屉里不再挂失败横幅）。
       show('error', exc instanceof Error ? exc.message : '创建沙箱失败', {
         source: 'sandbox-create',
       });
