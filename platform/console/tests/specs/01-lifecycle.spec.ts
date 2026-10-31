@@ -21,6 +21,7 @@ import {
   selectCreatedSandbox,
   selectSandbox,
   toastItem,
+  waitDrawerSettled,
 } from '../helpers/console';
 import { sandboxContainerState, userUid } from '../helpers/host';
 import { readFixtures } from '../helpers/sandbox';
@@ -188,6 +189,8 @@ test.describe('网页控制台全流程', () => {
     const drawer = page.getByTestId('page-sandbox-create-dialog');
     const handle = page.getByTestId('page-drawer-resize-handle');
     await expect(handle).toBeVisible();
+    // 等滑入动画结束再量位置：动画中间帧的坐标是错的。
+    await waitDrawerSettled(page, 'page-sandbox-create-dialog');
 
     const before = (await drawer.boundingBox())!;
     expect(before.width).toBeGreaterThan(0);
@@ -199,8 +202,14 @@ test.describe('网页控制台全流程', () => {
     await page.mouse.move(box.x + box.width / 2 - 120, box.y + box.height / 2, { steps: 12 });
     await page.mouse.up();
 
+    // 宽度是 React 状态：等它落到 DOM 上再量。
+    await expect
+      .poll(async () => (await drawer.boundingBox())!.width, {
+        timeout: 10_000,
+        message: '向左拖把手后面板没有变宽',
+      })
+      .toBeGreaterThan(before.width + 50);
     const after = (await drawer.boundingBox())!;
-    expect(after.width, '向左拖把手后面板应变宽').toBeGreaterThan(before.width + 50);
 
     // 宽度写进共用存储键（三个抽屉共用一个）。
     const stored = await page.evaluate(() =>
@@ -212,6 +221,7 @@ test.describe('网页控制台全流程', () => {
     // 刷新后重新打开抽屉：宽度保持。
     await page.reload();
     await openCreateDialog(page);
+    await waitDrawerSettled(page, 'page-sandbox-create-dialog');
     const reopened = (await page.getByTestId('page-sandbox-create-dialog').boundingBox())!;
     expect(Math.abs(reopened.width - after.width)).toBeLessThan(2);
 
@@ -220,6 +230,7 @@ test.describe('网页控制台全流程', () => {
     await expect(page.getByTestId('page-sandbox-create-dialog')).toBeHidden();
     await page.getByTestId('page-layout-proxy-button').click();
     await expect(page.getByTestId('page-settings-dialog')).toBeVisible();
+    await waitDrawerSettled(page, 'page-settings-dialog');
     const proxyWidth = (await page.getByTestId('page-settings-dialog').boundingBox())!.width;
     expect(Math.abs(proxyWidth - after.width)).toBeLessThan(2);
   });

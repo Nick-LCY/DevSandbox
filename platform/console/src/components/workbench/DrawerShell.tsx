@@ -230,7 +230,9 @@ export function DrawerShell({
               'pointer-events-auto relative flex h-full w-full flex-col overflow-hidden',
               'border-l border-border bg-popover text-popover-foreground shadow-lg outline-none',
               'sm:w-[var(--app-drawer-width)]',
-              'duration-150',
+              // 不加 duration-*：Tailwind 默认 transition-property 是 all，
+              // 带上就会连宽度一起过渡（拖拽时面板会滞后 150ms 跟手）。
+              // 入场 / 退场动画的时长由 animate-in 自带的 0.15s 兜底。
               'data-open:animate-in data-open:slide-in-from-right',
               'data-closed:animate-out data-closed:slide-out-to-right',
             )}

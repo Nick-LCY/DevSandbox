@@ -51,6 +51,29 @@ export async function selectSandbox(page: Page, name: string): Promise<void> {
 }
 
 /**
+ * 等抽屉的滑入动画结束（面板位置稳定下来）。
+ *
+ * 抽屉是带动画滑入的：动画没结束就量位置，拿到的是动画中间帧，
+ * 后面的拖拽会落在错误的坐标上。
+ */
+export async function waitDrawerSettled(page: Page, testId: string): Promise<void> {
+  const drawer = page.getByTestId(testId);
+  let last = Number.NaN;
+  await expect
+    .poll(
+      async () => {
+        const box = await drawer.boundingBox();
+        const x = box === null ? Number.NaN : Math.round(box.x * 10) / 10;
+        const stable = x === last;
+        last = x;
+        return stable;
+      },
+      { timeout: 10_000, message: `抽屉 ${testId} 的滑入动画迟迟不结束` },
+    )
+    .toBe(true);
+}
+
+/**
  * 在新建抽屉里填一份完整的创建表单并提交，返回提交后等待成功提示的耗时（毫秒）。
  *
  * 创建成功后的口径：**抽屉关掉 + 右上角弹一条成功 toast**（不再有成功面板）。
