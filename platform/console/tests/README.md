@@ -167,3 +167,16 @@ await page.getByTestId('page-sandbox-list-create-button').first().click();
 | `artifacts/html-report/` | HTML 报告 |
 
 `tests/.runtime/` 是运行期状态（服务进程信息、镜像引用、服务日志），验收结束即清空，不进版本库。
+
+---
+
+## 七、提交历史里的一个坑（按提交二分排查时先看这段）
+
+- **提交 `ba8c6d7`（模板前端与设置抽屉改名）不是一棵独立可绿的树**：它把组件文件
+  `ProxySettingsDialog.tsx` 用 `git mv` 改名为 `SettingsDialog.tsx`（保留文件历史），
+  但**同名测试文件的内容重写落在了紧随其后的提交 `6a86a7c`**（测试文件按新增处理，
+  没有保留历史）。
+- 因此在 `ba8c6d7` 这一棵树上跑 `pnpm run typecheck:tests` 与 `pnpm run test`
+  都是**红的**：旧测试文件仍然 import 已改名的组件模块，模块找不到。
+- **按提交二分排查时不要把 `ba8c6d7` 当成回归点**：`ba8c6d7` + `6a86a7c` 两棵合起来
+  才是绿树。历史不改写（不 rebase），此处留一行说明。
