@@ -14,6 +14,7 @@ import {
 } from '../../lib/proxy';
 import { useToast } from '../Toast';
 import { DrawerShell } from './DrawerShell';
+import { TemplateManager } from './TemplateManager';
 
 /** 重启期间的提示文案：代理不可达时依赖镜像拉取失败是预期行为，不做降级。 */
 const RESTARTING_NOTICE = '代理正在重启，重启期间依赖镜像拉取会失败，属预期行为。';
@@ -31,12 +32,14 @@ function Field({ label, value, testId }: { label: string; value: string; testId:
 }
 
 /**
- * 代理设置抽屉：状态展示 + 重启 + CA 重装结果。
+ * 设置抽屉：代理设置 + 启动模板管理。
  *
- * 字段沿用旧的「代理设置」页口径，CA 可取回与状态明细不再展示；
+ * 第一区是代理设置（状态展示 + 重启 + CA 重装结果），内容与原「代理设置」
+ * 抽屉完全一致；第二区是启动模板管理区（列表 / 行内重命名 / 删除）。
+ *
  * 定位标识除已退役的三个（顶部摘要、CA 可取回、状态明细）外全部保留。
  */
-export function ProxySettingsDialog({
+export function SettingsDialog({
   open,
   onOpenChange,
   widthVw,
@@ -117,7 +120,7 @@ export function ProxySettingsDialog({
   return (
     <DrawerShell
       open={open}
-      title="代理设置"
+      title="设置"
       testId="page-settings-dialog"
       onOpenChange={onOpenChange}
       widthVw={widthVw}
@@ -153,76 +156,85 @@ export function ProxySettingsDialog({
       }
     >
       <h2 className="sr-only" data-testid="page-settings-title">
-        代理设置
+        设置
       </h2>
 
-      {loading && !status && (
-        <p className="text-[12.5px] text-muted-foreground" data-testid="page-settings-loading">
-          正在读取代理状态…
-        </p>
-      )}
+      <section aria-label="代理设置">
+        <h3 className="mb-2 text-[13px] font-semibold text-foreground">代理设置</h3>
 
-      {status && (
-        <div>
-          <div className="grid grid-cols-2 gap-x-6 gap-y-3.5">
-            <Field
-              label="容器运行状态"
-              value={describeContainerState(status.container)}
-              testId="page-settings-container-running"
-            />
-            <Field label="健康状态" value={describeHealth(status.healthy)} testId="page-settings-healthy" />
-            <Field label="端口连通" value={describeTcp(status.tcp_ok)} testId="page-settings-tcp-ok" />
-            <Field
-              label="缓存目录占用"
-              value={formatBytes(status.cache_size_bytes)}
-              testId="page-settings-cache-size"
-            />
-            <Field
-              label="证书就绪状态"
-              value={describeCertificate(status.certificate_ready)}
-              testId="page-settings-certificate-ready"
-            />
-            <Field label="代理访问地址" value={status.proxy_url} testId="page-settings-proxy-url" />
-          </div>
-        </div>
-      )}
-
-      {restart && (
-        <div className="mt-5 border-t border-border pt-4" data-testid="page-settings-restart-result">
-          <div className="grid grid-cols-2 gap-x-6 gap-y-3.5">
-            <Field
-              label="重启结果"
-              value={restart.restarted ? '已重启并恢复健康' : '重启未成功'}
-              testId="page-settings-restarted"
-            />
-            <Field label="结论" value={describeRestartOutcome(restart)} testId="page-settings-restart-message" />
-            <Field
-              label="CA 指纹是否变更"
-              value={restart.ca_changed ? '已变更' : '未变更'}
-              testId="page-settings-ca-changed"
-            />
-            <Field
-              label="合并证书链是否重装"
-              value={restart.ca_reinstalled ? '已重装' : '未重装'}
-              testId="page-settings-ca-reinstalled"
-            />
-            <Field label="CA 处理结论" value={describeCaOutcome(restart)} testId="page-settings-ca-conclusion" />
-            <Field
-              label="已重装用户"
-              value={restart.reinstalled_users.length > 0 ? restart.reinstalled_users.join('、') : '（无）'}
-              testId="page-settings-reinstalled-users"
-            />
-            <Field
-              label="重装失败用户"
-              value={restart.failed_users.length > 0 ? restart.failed_users.join('、') : '（无）'}
-              testId="page-settings-failed-users"
-            />
-          </div>
-          <p className="mt-3 text-[12px] text-muted-foreground">
-            代理状态采集时间：{formatTimestamp(new Date().toISOString())}
+        {loading && !status && (
+          <p className="text-[12.5px] text-muted-foreground" data-testid="page-settings-loading">
+            正在读取代理状态…
           </p>
-        </div>
-      )}
+        )}
+
+        {status && (
+          <div>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-3.5">
+              <Field
+                label="容器运行状态"
+                value={describeContainerState(status.container)}
+                testId="page-settings-container-running"
+              />
+              <Field label="健康状态" value={describeHealth(status.healthy)} testId="page-settings-healthy" />
+              <Field label="端口连通" value={describeTcp(status.tcp_ok)} testId="page-settings-tcp-ok" />
+              <Field
+                label="缓存目录占用"
+                value={formatBytes(status.cache_size_bytes)}
+                testId="page-settings-cache-size"
+              />
+              <Field
+                label="证书就绪状态"
+                value={describeCertificate(status.certificate_ready)}
+                testId="page-settings-certificate-ready"
+              />
+              <Field label="代理访问地址" value={status.proxy_url} testId="page-settings-proxy-url" />
+            </div>
+          </div>
+        )}
+
+        {restart && (
+          <div className="mt-5 border-t border-border pt-4" data-testid="page-settings-restart-result">
+            <div className="grid grid-cols-2 gap-x-6 gap-y-3.5">
+              <Field
+                label="重启结果"
+                value={restart.restarted ? '已重启并恢复健康' : '重启未成功'}
+                testId="page-settings-restarted"
+              />
+              <Field label="结论" value={describeRestartOutcome(restart)} testId="page-settings-restart-message" />
+              <Field
+                label="CA 指纹是否变更"
+                value={restart.ca_changed ? '已变更' : '未变更'}
+                testId="page-settings-ca-changed"
+              />
+              <Field
+                label="合并证书链是否重装"
+                value={restart.ca_reinstalled ? '已重装' : '未重装'}
+                testId="page-settings-ca-reinstalled"
+              />
+              <Field label="CA 处理结论" value={describeCaOutcome(restart)} testId="page-settings-ca-conclusion" />
+              <Field
+                label="已重装用户"
+                value={restart.reinstalled_users.length > 0 ? restart.reinstalled_users.join('、') : '（无）'}
+                testId="page-settings-reinstalled-users"
+              />
+              <Field
+                label="重装失败用户"
+                value={restart.failed_users.length > 0 ? restart.failed_users.join('、') : '（无）'}
+                testId="page-settings-failed-users"
+              />
+            </div>
+            <p className="mt-3 text-[12px] text-muted-foreground">
+              代理状态采集时间：{formatTimestamp(new Date().toISOString())}
+            </p>
+          </div>
+        )}
+      </section>
+
+      {/* 第二区：启动模板管理（列表 / 行内重命名 / 删除）。 */}
+      <section className="mt-6 border-t border-border pt-5" aria-label="启动模板">
+        <TemplateManager />
+      </section>
     </DrawerShell>
   );
 }

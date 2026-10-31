@@ -11,8 +11,8 @@ import { AppShell, type HealthView } from './AppShell';
 import { CreateSandboxDialog } from './CreateSandboxDialog';
 import { DeleteSandboxDialog } from './DeleteSandboxDialog';
 import { EmptyState } from './EmptyState';
-import { ProxySettingsDialog } from './ProxySettingsDialog';
 import { SandboxDetailDialog } from './SandboxDetailDialog';
+import { SettingsDialog } from './SettingsDialog';
 import { StopSandboxDialog } from './StopSandboxDialog';
 import { WorkspaceHeader } from './WorkspaceHeader';
 
@@ -26,7 +26,8 @@ const HEALTH_POLL_INTERVAL = 15000;
  * 工作台：单页总装与状态中枢。
  *
  * 左侧边栏是沙箱列表，右侧工作区是选中沙箱的摘要与终端会话标签；
- * 新建沙箱 / 沙箱详情 / 代理设置都是右侧抽屉（开关状态不入路由）。
+ * 新建沙箱 / 沙箱详情 / 设置（代理设置 + 启动模板）都是右侧抽屉
+ * （开关状态不入路由）。
  *
  * 选中的沙箱与当前终端会话都来自路由（`#/sandboxes/<名>[/<会话标识>]`）：
  * 刷新页面或把链接发给别人，能落到同一个位置。
@@ -57,7 +58,7 @@ export function Workbench() {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
-  const [proxyOpen, setProxyOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const requestIdRef = useRef(0);
   /** 详情请求的序号：旧响应回来时直接丢弃，不许覆盖新沙箱的头部。 */
@@ -327,7 +328,7 @@ export function Workbench() {
       refreshing={loading}
       onSelectSandbox={selectSandbox}
       onCreateClick={() => setCreateOpen(true)}
-      onProxyClick={() => setProxyOpen(true)}
+      onSettingsClick={() => setSettingsOpen(true)}
       onRefresh={() => void loadList(false)}
     >
       {selectedName ? (
@@ -374,9 +375,9 @@ export function Workbench() {
         onWidthChange={setWidthVw}
       />
 
-      <ProxySettingsDialog
-        open={proxyOpen}
-        onOpenChange={setProxyOpen}
+      <SettingsDialog
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
         widthVw={widthVw}
         onWidthChange={setWidthVw}
       />

@@ -15,6 +15,9 @@ import type {
   ReclaimPlan,
   SandboxDetail,
   SandboxSummary,
+  Template,
+  TemplateConfig,
+  TemplateDeleteResult,
   TerminalSession,
   TerminalSessionDeleteResult,
   TerminalSessionRecord,
@@ -110,6 +113,29 @@ export const api = {
   proxyStatus: () => request<ProxyStatus>('/api/proxy/status'),
 
   restartProxy: () => request<ProxyRestartResult>('/api/proxy/restart', { method: 'POST' }),
+
+  /** 列出全部启动模板。后端返回裸数组（带完整配置体）。 */
+  listTemplates: () => request<Template[]>('/api/templates'),
+
+  /** 创建启动模板。名称零限制（空名由前端交互拦）。 */
+  createTemplate: (payload: { name: string; config: TemplateConfig }) =>
+    request<Template>('/api/templates', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  /** 重命名模板：只改名称，标识与其余字段不动。 */
+  renameTemplate: (id: string, name: string) =>
+    request<Template>(`/api/templates/${encodeURIComponent(id)}/rename`, {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+
+  /** 删除模板。删的是内置模板时服务端写墓碑（删了不复活）。 */
+  deleteTemplate: (id: string) =>
+    request<TemplateDeleteResult>(`/api/templates/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
 
   createTerminalSession: (sandbox: string, cols: number, rows: number) =>
     request<TerminalSession>('/api/terminal/sessions', {

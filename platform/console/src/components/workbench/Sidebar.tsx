@@ -1,4 +1,4 @@
-import { Box, Moon, Plus, RefreshCw, Server, Sun } from 'lucide-react';
+import { Box, Moon, Plus, RefreshCw, Settings, Sun } from 'lucide-react';
 
 import type { SandboxSummary } from '../../api/types';
 import { cn } from '../../lib/cn';
@@ -12,7 +12,8 @@ interface SidebarProps {
   health: HealthView;
   onSelectSandbox: (name: string) => void;
   onCreateClick: () => void;
-  onProxyClick: () => void;
+  /** 打开设置抽屉（代理设置 + 启动模板管理）。 */
+  onSettingsClick: () => void;
   /** 列表正在首次加载。 */
   loading: boolean;
   onRefresh: () => void;
@@ -30,7 +31,7 @@ export function Sidebar({
   health,
   onSelectSandbox,
   onCreateClick,
-  onProxyClick,
+  onSettingsClick,
   loading,
   onRefresh,
   refreshing,
@@ -109,7 +110,7 @@ export function Sidebar({
         />
       </nav>
 
-      {/* 底部：健康自检 + 代理设置 + 主题切换 */}
+      {/* 底部：健康自检 + 设置 + 主题切换 */}
       <div className="space-y-0.5 border-t border-sidebar-border px-3 py-2.5">
         <div
           className="flex items-center gap-2 px-2 pb-2 text-[11px] text-sidebar-muted"
@@ -132,16 +133,16 @@ export function Sidebar({
         </div>
         <button
           type="button"
-          onClick={onProxyClick}
-          data-testid="page-layout-proxy-button"
+          onClick={onSettingsClick}
+          data-testid="page-layout-settings-button"
           className={cn(
             'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-[13px] text-sidebar-foreground',
             'transition-colors hover:bg-sidebar-hover',
             'focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none',
           )}
         >
-          <Server className="size-4 shrink-0 opacity-80" aria-hidden="true" />
-          <span className="flex-1 text-left">代理设置</span>
+          <Settings className="size-4 shrink-0 opacity-80" aria-hidden="true" />
+          <span className="flex-1 text-left">设置</span>
         </button>
         <button
           type="button"

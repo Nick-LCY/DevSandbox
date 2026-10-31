@@ -19,7 +19,8 @@ interface AppShellProps {
   health: HealthView;
   onSelectSandbox: (name: string) => void;
   onCreateClick: () => void;
-  onProxyClick: () => void;
+  /** 打开设置抽屉（代理设置 + 启动模板管理）。 */
+  onSettingsClick: () => void;
   /** 列表正在首次加载。 */
   loading: boolean;
   /** 手动刷新沙箱列表。 */
@@ -41,7 +42,7 @@ export function AppShell({
   health,
   onSelectSandbox,
   onCreateClick,
-  onProxyClick,
+  onSettingsClick,
   loading,
   onRefresh,
   refreshing,
@@ -58,7 +59,7 @@ export function AppShell({
         health={health}
         onSelectSandbox={onSelectSandbox}
         onCreateClick={onCreateClick}
-        onProxyClick={onProxyClick}
+        onSettingsClick={onSettingsClick}
         loading={loading}
         onRefresh={onRefresh}
         refreshing={refreshing}

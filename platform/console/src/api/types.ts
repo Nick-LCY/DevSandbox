@@ -181,3 +181,34 @@ export interface CreateSandboxRequest {
   workdir?: string | null;
   network?: string | null;
 }
+
+/**
+ * 启动模板的配置体（六项全选填）。
+ *
+ * **字段缺失与字段填了空值不是一回事**：用户没填过的字段不会出现在
+ * 配置体里（服务端按 `exclude_unset` 落盘），前端合并时也按「出现即
+ * 整体替换、缺失即保持现状」处理。
+ */
+export interface TemplateConfig {
+  image?: string | null;
+  mounts?: string[];
+  command?: string | null;
+  workdir?: string | null;
+  env?: Record<string, string>;
+  network?: string | null;
+}
+
+/** 启动模板。标识由服务端生成，与名称解耦（重命名不影响标识）。 */
+export interface Template {
+  id: string;
+  name: string;
+  config: TemplateConfig;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 删除模板的结果：`deleted` 是模板记录文件是否确实删掉了。 */
+export interface TemplateDeleteResult {
+  id: string;
+  deleted: boolean;
+}

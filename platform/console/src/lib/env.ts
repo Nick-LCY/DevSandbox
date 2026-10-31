@@ -37,3 +37,16 @@ export function parseEnvLines(text: string): EnvParseResult {
 
   return { ok: true, env };
 }
+
+/**
+ * 把环境变量字典还原成多行 `键=值` 文本。
+ *
+ * 键名按字典序排：同一份配置每次还原出来的文本都一样，
+ * 模板回填与界面显示不会因为插入顺序不同而抖动。
+ */
+export function formatEnvLines(env: Record<string, string>): string {
+  return Object.keys(env)
+    .sort()
+    .map((key) => `${key}=${env[key]}`)
+    .join('\n');
+}
