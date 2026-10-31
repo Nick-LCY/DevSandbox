@@ -46,7 +46,7 @@ function renderSidebar(overrides: Partial<ComponentProps<typeof Sidebar>> = {}) 
     health: { state: 'ok', text: '服务正常（v0.2.0）' },
     onSelectSandbox: vi.fn(),
     onCreateClick: vi.fn(),
-    onProxyClick: vi.fn(),
+    onSettingsClick: vi.fn(),
     loading: false,
     onRefresh: vi.fn(),
     refreshing: false,
@@ -164,13 +164,13 @@ describe('Sidebar', () => {
     expect(props.onCreateClick).toHaveBeenCalledTimes(1);
   });
 
-  it('底部工具：代理设置与刷新各自回调', () => {
+  it('底部工具：设置与刷新各自回调', () => {
     const { props } = renderSidebar();
 
-    fireEvent.click(screen.getByTestId('page-layout-proxy-button'));
+    fireEvent.click(screen.getByTestId('page-layout-settings-button'));
     fireEvent.click(screen.getByTestId('page-sandbox-list-refresh-button'));
 
-    expect(props.onProxyClick).toHaveBeenCalledTimes(1);
+    expect(props.onSettingsClick).toHaveBeenCalledTimes(1);
     expect(props.onRefresh).toHaveBeenCalledTimes(1);
   });
 });

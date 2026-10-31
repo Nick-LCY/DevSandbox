@@ -64,6 +64,24 @@ export interface DeleteResultModel {
   failed: string[];
 }
 
+/** 启动模板的配置体（字段缺失与字段填了空值不是一回事）。 */
+export interface TemplateConfigModel {
+  image?: string | null;
+  mounts?: string[];
+  command?: string | null;
+  workdir?: string | null;
+  env?: Record<string, string>;
+  network?: string | null;
+}
+
+export interface TemplateModel {
+  id: string;
+  name: string;
+  config: TemplateConfigModel;
+  created_at: string;
+  updated_at: string;
+}
+
 function baseUrl(): string {
   const { host, port } = readFixtures();
   return `http://${host}:${port}`;
@@ -149,4 +167,30 @@ export function health(): Promise<{
   console_mounted: boolean;
 }> {
   return request('/api/health');
+}
+
+/** 列出全部启动模板。 */
+export function listTemplates(): Promise<TemplateModel[]> {
+  return request<TemplateModel[]>('/api/templates');
+}
+
+/** 创建启动模板（名称零限制，空名由前端交互拦）。 */
+export function createTemplate(payload: {
+  name: string;
+  config: TemplateConfigModel;
+}): Promise<TemplateModel> {
+  return request('/api/templates', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+/** 重命名启动模板：只改名称，标识与其余字段不动。 */
+export function renameTemplate(id: string, name: string): Promise<TemplateModel> {
+  return request(`/api/templates/${encodeURIComponent(id)}/rename`, {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+}
+
+/** 删除启动模板。 */
+export function deleteTemplate(id: string): Promise<{ id: string; deleted: boolean }> {
+  return request(`/api/templates/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }

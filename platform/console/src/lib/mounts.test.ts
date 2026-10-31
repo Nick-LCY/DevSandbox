@@ -44,8 +44,27 @@ describe('parseMountDeclaration', () => {
     }
   });
 
-  it('宿主路径必须绝对', () => {
+  it('宿主路径必须绝对（或以 ~/ 开头）', () => {
     const result = parseMountDeclaration('relative/path:/workspace');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('绝对路径');
+    }
+  });
+
+  it('宿主路径允许家目录写法（~ 与 ~/…）', () => {
+    const result = parseMountDeclaration('~/data/project:/workspace');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.declaration.hostPath).toBe('~/data/project');
+    }
+
+    const bare = parseMountDeclaration('~:/workspace');
+    expect(bare.ok).toBe(true);
+  });
+
+  it('~other（别人的家目录）不放过', () => {
+    const result = parseMountDeclaration('~other/data:/workspace');
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error).toContain('绝对路径');
@@ -96,6 +115,11 @@ describe('isSensitiveHostPath', () => {
   it('普通目录不算敏感', () => {
     expect(isSensitiveHostPath('/data/project')).toBe(false);
     expect(isSensitiveHostPath('/etcetera')).toBe(false);
+  });
+
+  it('非绝对路径（家目录写法）不算敏感', () => {
+    expect(isSensitiveHostPath('~/data/project')).toBe(false);
+    expect(isSensitiveHostPath('~')).toBe(false);
   });
 });
 

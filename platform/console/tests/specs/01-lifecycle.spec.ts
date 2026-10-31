@@ -294,7 +294,7 @@ test.describe('网页控制台全流程', () => {
     // 另一个抽屉（代理设置）也是同一个宽度：共用一个存储键。
     await page.keyboard.press('Escape');
     await expect(page.getByTestId('page-sandbox-create-dialog')).toBeHidden();
-    await page.getByTestId('page-layout-proxy-button').click();
+    await page.getByTestId('page-layout-settings-button').click();
     await expect(page.getByTestId('page-settings-dialog')).toBeVisible();
     await waitDrawerSettled(page, 'page-settings-dialog');
     const proxyWidth = (await page.getByTestId('page-settings-dialog').boundingBox())!.width;

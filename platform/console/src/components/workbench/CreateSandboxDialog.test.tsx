@@ -19,7 +19,7 @@
  */
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { formatBytes, formatTimestamp } from '../../lib/format';
 import { ToastProvider } from '../Toast';
@@ -28,6 +28,8 @@ import { CreateSandboxDialog } from './CreateSandboxDialog';
 const mocks = vi.hoisted(() => ({
   listImages: vi.fn(),
   createSandbox: vi.fn(),
+  listTemplates: vi.fn(),
+  createTemplate: vi.fn(),
 }));
 
 vi.mock('../../api/client', async (importOriginal) => {
@@ -38,6 +40,8 @@ vi.mock('../../api/client', async (importOriginal) => {
       ...actual.api,
       listImages: mocks.listImages,
       createSandbox: mocks.createSandbox,
+      listTemplates: mocks.listTemplates,
+      createTemplate: mocks.createTemplate,
     },
   };
 });
@@ -50,6 +54,30 @@ const OTHER_IMAGE = 'sandbox-console-acceptance/local-test:0.1.0';
 const IMAGES = [
   { reference: IMAGE, size_bytes: 1024, created_at: '2026-10-30T01:00:00+00:00' },
   { reference: OTHER_IMAGE, size_bytes: 4096, created_at: '2026-10-30T03:00:00+00:00' },
+];
+
+/** 模板列表（两条）。 */
+const TEMPLATES = [
+  {
+    id: 'tpl_0000000000aa',
+    name: '开发环境',
+    config: {
+      image: IMAGE,
+      mounts: ['/data/{name}:/workspace'],
+      command: 'sleep infinity',
+      workdir: '/workspace',
+      env: { APP: '{name}' },
+    },
+    created_at: '2026-10-31T01:00:00+00:00',
+    updated_at: '2026-10-31T02:00:00+00:00',
+  },
+  {
+    id: 'tpl_0000000000bb',
+    name: '干净环境',
+    config: {},
+    created_at: '2026-10-31T01:00:00+00:00',
+    updated_at: '2026-10-31T02:00:00+00:00',
+  },
 ];
 
 /** 渲染带 Provider 的新建沙箱抽屉。 */
@@ -133,11 +161,58 @@ async function waitImageList(): Promise<void> {
   await waitFor(() => expect(mocks.listImages).toHaveBeenCalledTimes(1));
 }
 
+/** 模板选择器的输入框。 */
+function templateInput(): HTMLInputElement {
+  return screen.getByTestId('page-sandbox-create-template-select') as HTMLInputElement;
+}
+
+/** 打开模板选择器（jsdom 里点输入框打不开弹层，用 ↓ 键打开）。 */
+function openTemplatePicker(): void {
+  fireEvent.keyDown(templateInput(), { key: 'ArrowDown' });
+}
+
+/** 当前弹层里渲染出来的模板候选（按模板名）。 */
+function templateOptionNames(): string[] {
+  return screen
+    .queryAllByTestId('page-sandbox-create-template-option')
+    .map((element) => element.getAttribute('data-template-name') ?? '');
+}
+
+/** 在模板选择器里搜索关键字（前端本地筛选）。 */
+function searchTemplate(keyword: string): void {
+  fireEvent.change(templateInput(), { target: { value: keyword } });
+}
+
+/** 点选弹层里的某个模板。 */
+async function pickTemplate(name: string): Promise<void> {
+  const option = screen
+    .queryAllByTestId('page-sandbox-create-template-option')
+    .find((element) => element.getAttribute('data-template-name') === name);
+  if (!option) {
+    throw new Error(`弹层里没有模板 ${name}`);
+  }
+  fireEvent.click(option);
+  await waitFor(() => expect(templateInput().value).toBe(name));
+}
+
+/** 等模板列表到位。 */
+async function waitTemplateList(): Promise<void> {
+  await waitFor(() => expect(mocks.listTemplates).toHaveBeenCalledTimes(1));
+}
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   mocks.listImages.mockReset();
   mocks.createSandbox.mockReset();
+  mocks.listTemplates.mockReset();
+  mocks.createTemplate.mockReset();
+});
+
+// 默认：镜像列表与模板列表都读得到（各用例自己覆盖内容）。
+beforeEach(() => {
+  mocks.listImages.mockResolvedValue(IMAGES);
+  mocks.listTemplates.mockResolvedValue([]);
 });
 
 describe('新建沙箱抽屉的镜像列表', () => {
@@ -457,5 +532,161 @@ describe('新建沙箱抽屉的创建结果', () => {
 
     await waitFor(() => expect(mocks.createSandbox).toHaveBeenCalledTimes(1));
     expect(mocks.createSandbox.mock.calls[0][0].image).toBe(IMAGE);
+  });
+});
+
+describe('新建沙箱抽屉的模板下拉', () => {
+  it('模板列表可搜可选', async () => {
+    mocks.listTemplates.mockResolvedValue(TEMPLATES);
+
+    renderDialog();
+    await waitTemplateList();
+
+    openTemplatePicker();
+    await waitFor(() => expect(templateOptionNames()).toHaveLength(2));
+
+    // 输入即本地筛选：只剩命中的那一条。
+    searchTemplate('干净');
+    await waitFor(() => expect(templateOptionNames()).toEqual(['干净环境']));
+
+    await pickTemplate('干净环境');
+    expect(templateInput().value).toBe('干净环境');
+  });
+
+  it('选中模板即回填表单（占位符替换成沙箱名）', async () => {
+    mocks.listTemplates.mockResolvedValue(TEMPLATES);
+
+    renderDialog();
+    await waitTemplateList();
+
+    // 先填沙箱名：模板里的 {name} 要替换成它。
+    fireEvent.change(screen.getByTestId('page-sandbox-create-name-input'), {
+      target: { value: 'acc-demo' },
+    });
+
+    openTemplatePicker();
+    await waitFor(() => expect(templateOptionNames()).toHaveLength(2));
+    await pickTemplate('开发环境');
+
+    // 镜像回填（模板里的镜像在宿主本地镜像列表里）。
+    await waitFor(() => expect(imageInput().value).toBe(IMAGE));
+    // 挂载整组替换：宿主路径里的 {name} 换成沙箱名，容器路径原样。
+    await waitFor(() =>
+      expect(
+        (screen.getByTestId('page-sandbox-create-mount-host-input') as HTMLInputElement).value,
+      ).toBe('/data/acc-demo'),
+    );
+    expect(
+      (screen.getByTestId('page-sandbox-create-mount-container-input') as HTMLInputElement).value,
+    ).toBe('/workspace');
+    expect((screen.getByTestId('page-sandbox-create-command-input') as HTMLInputElement).value).toBe(
+      'sleep infinity',
+    );
+    expect((screen.getByTestId('page-sandbox-create-workdir-input') as HTMLInputElement).value).toBe(
+      '/workspace',
+    );
+    expect((screen.getByTestId('page-sandbox-create-env-input') as HTMLTextAreaElement).value).toBe(
+      'APP=acc-demo',
+    );
+  });
+
+  it('模板里的镜像不在宿主列表上：镜像选择器留空，提交走既有校验', async () => {
+    mocks.listTemplates.mockResolvedValue([
+      { ...TEMPLATES[0], config: { image: '宿主上没有的镜像:0.1.0' } },
+    ]);
+
+    renderDialog();
+    await waitTemplateList();
+
+    openTemplatePicker();
+    await waitFor(() => expect(templateOptionNames()).toHaveLength(1));
+    await pickTemplate('开发环境');
+
+    expect(imageInput().value).toBe('');
+    fireEvent.change(screen.getByTestId('page-sandbox-create-name-input'), {
+      target: { value: 'acc-demo' },
+    });
+    fireEvent.click(screen.getByTestId('page-sandbox-create-submit-button'));
+
+    const error = await screen.findByTestId('page-sandbox-create-validation-error');
+    expect(error.textContent).toBe('请选择沙箱镜像');
+    expect(mocks.createSandbox).not.toHaveBeenCalled();
+  });
+});
+
+describe('新建沙箱抽屉的保存为模板', () => {
+  it('空名禁提交：按钮禁用 + 就地红字', async () => {
+    renderDialog();
+    await waitTemplateList();
+
+    fireEvent.click(screen.getByTestId('page-sandbox-create-template-save-button'));
+    const confirm = (await screen.findByTestId(
+      'page-sandbox-create-template-confirm-button',
+    )) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+
+    const input = screen.getByTestId('page-sandbox-create-template-name-input') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '开发环境' } });
+    expect(confirm.disabled).toBe(false);
+
+    // 清空：又禁掉，并在就地给出红字。
+    fireEvent.change(input, { target: { value: '' } });
+    expect(confirm.disabled).toBe(true);
+    const error = await screen.findByTestId('page-sandbox-create-template-name-error');
+    expect(error.textContent).toBe('模板名称不能为空');
+    expect(mocks.createTemplate).not.toHaveBeenCalled();
+  });
+
+  it('保存成功：弹成功 toast（来源 sandbox-template）并关掉弹窗', async () => {
+    mocks.createTemplate.mockResolvedValue({ id: 'tpl_x', name: '开发环境', config: {} });
+
+    renderDialog();
+    await waitTemplateList();
+
+    fireEvent.click(screen.getByTestId('page-sandbox-create-template-save-button'));
+    const input = await screen.findByTestId('page-sandbox-create-template-name-input');
+    fireEvent.change(input, { target: { value: '开发环境' } });
+    fireEvent.click(screen.getByTestId('page-sandbox-create-template-confirm-button'));
+
+    await waitFor(() => expect(mocks.createTemplate).toHaveBeenCalledTimes(1));
+    expect(mocks.createTemplate.mock.calls[0][0].name).toBe('开发环境');
+
+    const toast = await screen.findByTestId('page-toast-item');
+    expect(toast.getAttribute('data-toast-kind')).toBe('success');
+    expect(toast.getAttribute('data-toast-source')).toBe('sandbox-template');
+    await waitFor(() =>
+      expect(screen.queryByTestId('page-sandbox-create-template-dialog')).toBeNull(),
+    );
+  });
+
+  it('保存的是当前表单：只有有值的字段进配置', async () => {
+    mocks.createTemplate.mockResolvedValue({ id: 'tpl_x', name: '开发环境', config: {} });
+
+    renderDialog();
+    await waitTemplateList();
+
+    // 只填镜像与命令，其余留空。
+    openImagePicker();
+    searchImage(IMAGE);
+    await waitFor(() => expect(optionReferences()).toContain(IMAGE));
+    await pickImage(IMAGE);
+    fireEvent.change(screen.getByTestId('page-sandbox-create-command-input'), {
+      target: { value: 'sleep infinity' },
+    });
+
+    fireEvent.click(screen.getByTestId('page-sandbox-create-template-save-button'));
+    const input = await screen.findByTestId('page-sandbox-create-template-name-input');
+    fireEvent.change(input, { target: { value: '开发环境' } });
+    fireEvent.click(screen.getByTestId('page-sandbox-create-template-confirm-button'));
+
+    await waitFor(() => expect(mocks.createTemplate).toHaveBeenCalledTimes(1));
+    const config = mocks.createTemplate.mock.calls[0][0].config;
+    expect(config.image).toBe(IMAGE);
+    expect(config.command).toBe('sleep infinity');
+    // 没填的字段不进配置（加载时保持表单现状）。
+    expect(config.workdir).toBeUndefined();
+    expect(config.mounts).toBeUndefined();
+    expect(config.env).toBeUndefined();
+    expect(config.network).toBeUndefined();
   });
 });

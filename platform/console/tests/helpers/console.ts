@@ -482,3 +482,92 @@ export async function confirmStop(page: Page, name: string): Promise<void> {
   await page.getByTestId('page-sandbox-detail-stop-confirm-button').click();
   await stopped;
 }
+
+/**
+ * 打开设置抽屉（代理设置 + 启动模板管理）。
+ */
+export async function openSettingsDrawer(page: Page): Promise<void> {
+  await gotoWorkbench(page);
+  await page.getByTestId('page-layout-settings-button').click();
+  await expect(page.getByTestId('page-settings-dialog')).toBeVisible();
+}
+
+/**
+ * 在新建沙箱抽屉里选中一个模板（**选中即回填表单**）。
+ *
+ * 模板选择器是可搜索的（Base UI Combobox）：点输入框展开弹层 →
+ * 输入模板名本地筛选 → 点中命中的那条。
+ */
+export async function applyTemplate(page: Page, templateName: string): Promise<void> {
+  const input = page.getByTestId('page-sandbox-create-template-select');
+  await input.click();
+  await expect(page.getByTestId('page-sandbox-create-template-popup')).toBeVisible();
+  // 先清空再填：清空输入 = 放弃当前选中（筛选回到严格的子串匹配）。
+  await input.fill('');
+  await input.fill(templateName);
+  const option = page.locator(`[data-template-name="${templateName}"]`);
+  await expect(option).toHaveCount(1);
+  await option.click();
+  // 选中后输入框回填模板名：等这一句落定才算选完。
+  await expect(input).toHaveValue(templateName);
+}
+
+/**
+ * 在新建沙箱抽屉里把当前表单存成模板。
+ *
+ * 走命名弹窗：填名字 → 点「保存」→ 等成功 toast（来源 sandbox-template）。
+ */
+export async function saveTemplateFromCreateDialog(page: Page, name: string): Promise<void> {
+  await page.getByTestId('page-sandbox-create-template-save-button').click();
+  const dialog = page.getByTestId('page-sandbox-create-template-dialog');
+  await expect(dialog).toBeVisible();
+  await page.getByTestId('page-sandbox-create-template-name-input').fill(name);
+  await page.getByTestId('page-sandbox-create-template-confirm-button').click();
+  await expect(toastItem(page, 'success', 'sandbox-template')).toContainText(
+    `模板 ${name} 已保存`,
+    { timeout: 30_000 },
+  );
+  await expect(dialog).toBeHidden();
+}
+
+/**
+ * 在设置抽屉里重命名一个模板（行内输入框，回车提交）。
+ */
+export async function renameTemplate(
+  page: Page,
+  currentName: string,
+  nextName: string,
+): Promise<void> {
+  const row = page.getByTestId('page-settings-template-item').filter({ hasText: currentName });
+  await expect(row).toHaveCount(1);
+  await row.getByTestId('page-settings-template-rename-button').click();
+  const input = row.getByTestId('page-settings-template-rename-input');
+  await expect(input).toBeVisible();
+  await input.fill(nextName);
+  await input.press('Enter');
+  await expect(toastItem(page, 'success', 'settings-template')).toContainText(
+    `模板 ${nextName} 已重命名`,
+    { timeout: 30_000 },
+  );
+}
+
+/**
+ * 在设置抽屉里删除一个模板（走确认弹窗）。
+ *
+ * 确认弹窗里写明「只删模板，不影响已创建的沙箱」。
+ */
+export async function deleteTemplate(page: Page, name: string): Promise<void> {
+  const row = page.getByTestId('page-settings-template-item').filter({ hasText: name });
+  await expect(row).toHaveCount(1);
+  await row.getByTestId('page-settings-template-delete-button').click();
+  const dialog = page.getByTestId('page-settings-template-delete-dialog');
+  await expect(dialog).toBeVisible();
+  await expect(page.getByTestId('page-settings-template-delete-untouched-note')).toHaveText(
+    '只删模板，不影响已创建的沙箱',
+  );
+  await page.getByTestId('page-settings-template-delete-confirm-button').click();
+  await expect(toastItem(page, 'success', 'settings-template')).toContainText(
+    `模板 ${name} 已删除`,
+    { timeout: 30_000 },
+  );
+}
