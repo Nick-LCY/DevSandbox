@@ -88,6 +88,7 @@ CONSOLE_TEST_PORT=8200 pnpm run test:acceptance
 | **两层哈希路由** | 只有 `#/` 与 `#/sandboxes/<名>[/<会话标识>]` 两层，没有「列表页 / 详情页 / 终端页」之分 | 导航只有两个动作：`gotoWorkbench`（回工作台）与 `gotoDetail`（进沙箱工作区）；刷新与粘贴链接落到同一个位置 |
 | **三个大面板是右侧抽屉** | 新建沙箱 / 沙箱详情 / 代理设置都是右侧滑出、宽度可拖拽的抽屉 | 关闭一律用「点 × / Esc」，**不写滑动关闭**（阈值是面板宽的 50%，很难触发）；抽屉宽度可拖拽且刷新后保持 |
 | **删除一次确认** | 点「确认删除」就直接发 `DELETE`（删除前不再预取回收清单，弹窗里只有后果说明与「不受影响」提示） | 删除一律走 `confirmDelete`：点一次确认 + 等删除请求 |
+| **镜像选择器不自动选中** | 抽屉打开后镜像输入框是空的，用户自己搜、自己选；没选中就提交会就地报「请选择沙箱镜像」 | 选镜像一律走 `selectImage`（展开 → 搜 → 点中命中的那条）；不能靠「默认已选中」写用例 |
 | **停止一次确认** | 工作区头部的「停止」只开确认弹窗，确认后才发 `POST …/stop`；弹窗里有「同时停止依赖容器」勾选（默认勾选） | 停止一律走 `openStopDialog` + `confirmStop` |
 | **创建不再自动选中** | 创建成功后抽屉关掉 + 弹成功 toast，不自动选中新建的沙箱 | 选中改走 `selectCreatedSandbox`（从侧栏选中新沙箱） |
 | **标签 = 会话** | 终端标签条的数据源就是后端会话表，一个标签一个会话；点标签即附着到该会话（服务端回放现场缓冲） | 没有第二份「后端保留的会话」列表；重新附着用 `reattachTerminal`（点已有标签） |
@@ -102,6 +103,10 @@ CONSOLE_TEST_PORT=8200 pnpm run test:acceptance
 | `gotoDetail` | 进某个沙箱的工作区 | `#/sandboxes/<名>` → `page-sandbox-detail-title` |
 | `selectSandbox` | 在侧栏里选中沙箱 | `page-sandbox-list-item` → `page-sandbox-detail-title` |
 | `selectCreatedSandbox` | 创建成功后选中新沙箱（创建不自动选中） | `page-sandbox-list-item` → `page-sandbox-detail-title` |
+| `waitImageListLoaded` | 等宿主镜像列表到位（列表是异步拉回来的，没到时搜索命不中） | `page-sandbox-create-image-refresh-button`（加载中是「正在刷新」，到位后回到「刷新镜像」）|
+| `openImagePicker` | 展开镜像选择器（点输入框或点右侧下拉箭头） | `page-sandbox-create-image-select` → `page-sandbox-create-image-popup` |
+| `searchImage` | 在镜像选择器里搜关键字（前端本地筛选；先清空再填，清空即放弃当前选中） | `page-sandbox-create-image-select` |
+| `selectImage` | 选一张宿主本地镜像（展开 → 搜 → 点中命中的那条） | `[data-image-reference="<引用>"]` → `page-sandbox-create-image-select`（回填引用）|
 | `openDetailDialog` / `detailField` | 开详情抽屉 / 读详情字段 | `page-sandbox-detail-detail-button` → `page-sandbox-detail-dialog` |
 | `closeDetailDialog` | 关详情抽屉（Esc） | `page-sandbox-detail-dialog` → 隐藏 |
 | `openDeleteDialog` / `confirmDelete` | 开删除弹窗 / 一次点确认即删 | `page-sandbox-detail-delete-button` → `page-sandbox-detail-delete-dialog` → `page-sandbox-detail-delete-confirm-button` |
@@ -121,8 +126,8 @@ await page.getByTestId('page-sandbox-list-create-button').first().click();
 
 | 用例文件 | 覆盖的验收标准 |
 |---|---|
-| `01-lifecycle` | 抽屉里下拉选镜像 → 创建（带挂载声明）→ 侧栏选中后核对详情 → 终端执行命令断言回显 → 停止（确认弹窗）→ 再启动 → 删除（确认弹窗先取消、再一次点确认）→ 回空态；镜像列表刷新；详情刷新后字段一致；抽屉宽度可拖拽且刷新后保持；停止确认框取消时后端没收到停止请求 |
-| `02-local-image` | 本地构建镜像出现在网页下拉里；选中后创建成功；沙箱守护进程里确实拿到了它（注入路径走通）；宿主没有的镜像按契约报错，不降级直连 |
+| `01-lifecycle` | 抽屉里用镜像选择器搜镜像并选中 → 创建（带挂载声明）→ 侧栏选中后核对详情 → 终端执行命令断言回显 → 停止（确认弹窗）→ 再启动 → 删除（确认弹窗先取消、再一次点确认）→ 回空态；镜像列表刷新（刷新前后候选条数不变）；详情刷新后字段一致；抽屉宽度可拖拽且刷新后保持；停止确认框取消时后端没收到停止请求 |
+| `02-local-image` | 本地构建镜像能搜到（网页镜像选择器里只剩这一条命中）；选中后创建成功；沙箱守护进程里确实拿到了它（注入路径走通）；宿主没有的镜像搜索 0 命中（弹层给空态）且按契约报错，不降级直连 |
 | `03-terminal` | 同一沙箱两个终端并行可用且互不串扰；终端聚焦时 Ctrl+C 真的到达容器内的 shell（提示符回归 + 退出码 130）；断开浏览器后重连（点已有标签重新附着），终端现场（已输出内容与仍在运行的进程）不丢；重启服务后旧会话失效且页面明确提示 |
 | `04-equivalence` | 同一沙箱：网页与命令行的列表字段、挂载清单、容器状态、回收清单逐项一致；参数相同的两个沙箱（网页建 / 命令行建）挂载与状态流转等价（网页停走确认弹窗） |
 | `05-reclaim` | 经工作台删除（侧栏选中 → 头部删除 → 确认弹窗点一次即删），回收清单通过接口直取逐项核对（沙箱容器、依赖容器、守护进程、systemd 单元、用户与家目录、子 UID/GID 段、平台元数据）；用户声明挂载的外部目录原样存在、内容未变；重复删除幂等 |

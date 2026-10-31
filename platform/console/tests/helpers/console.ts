@@ -97,6 +97,62 @@ export async function waitDrawerSettled(page: Page, testId: string): Promise<voi
 }
 
 /**
+ * 等宿主镜像列表加载完。
+ *
+ * **必须等列表到位再往选择器里打字**：镜像列表是异步拉回来的，
+ * 列表没到时弹层里一条候选都没有，搜索自然命不中。
+ *
+ * 判据是「刷新镜像」按钮的文案：列表加载期间它是「正在刷新」（禁用态），
+ * 加载结束才回到「刷新镜像」。
+ */
+export async function waitImageListLoaded(page: Page): Promise<void> {
+  await expect(page.getByTestId('page-sandbox-create-image-refresh-button')).toHaveText('刷新镜像', {
+    timeout: 30_000,
+  });
+}
+
+/**
+ * 展开新建抽屉里的镜像选择器。
+ *
+ * 镜像选择器是可搜索的（Base UI Combobox）：点输入框展开弹层，
+ * 弹层挂在 body 上（`page-sandbox-create-image-popup`）。
+ */
+export async function openImagePicker(page: Page): Promise<void> {
+  await waitImageListLoaded(page);
+  await page.getByTestId('page-sandbox-create-image-select').click();
+  await expect(page.getByTestId('page-sandbox-create-image-popup')).toBeVisible();
+}
+
+/**
+ * 在镜像选择器里搜关键字（前端本地筛选，不发请求）。
+ *
+ * 先清空再填：**清空输入 = 放弃当前选中**（Base UI 原语行为），筛选因此
+ * 回到严格的子串匹配（关键字与当前选中值完全相同时原语会跳过筛选，
+ * 列表里会混进别的镜像）。
+ */
+export async function searchImage(page: Page, keyword: string): Promise<void> {
+  const input = page.getByTestId('page-sandbox-create-image-select');
+  await input.fill('');
+  await input.fill(keyword);
+}
+
+/**
+ * 在新建抽屉里选一张宿主本地镜像。
+ *
+ * 镜像选择器是可搜索的（Base UI Combobox）：点输入框展开弹层 →
+ * 输入 reference 本地筛选 → 点中命中的那条。
+ */
+export async function selectImage(page: Page, reference: string): Promise<void> {
+  await openImagePicker(page);
+  await searchImage(page, reference);
+  const option = page.locator(`[data-image-reference="${reference}"]`);
+  await expect(option).toHaveCount(1);
+  await option.click();
+  // 选中后输入框回填引用：等这一句落定才算选完。
+  await expect(page.getByTestId('page-sandbox-create-image-select')).toHaveValue(reference);
+}
+
+/**
  * 在新建抽屉里填一份完整的创建表单并提交，返回提交后等待成功提示的耗时（毫秒）。
  *
  * 创建成功后的口径：**抽屉关掉 + 右上角弹一条成功 toast**（不再有成功面板）。
@@ -114,7 +170,7 @@ export async function fillCreateForm(
   },
 ): Promise<number> {
   await page.getByTestId('page-sandbox-create-name-input').fill(options.name);
-  await page.getByTestId('page-sandbox-create-image-select').selectOption(options.image);
+  await selectImage(page, options.image);
   if (options.mountHost) {
     await page.getByTestId('page-sandbox-create-mount-add-button').click();
     const row = page.getByTestId('page-sandbox-create-mount-item').last();

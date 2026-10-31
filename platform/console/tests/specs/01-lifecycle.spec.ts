@@ -18,7 +18,9 @@ import {
   gotoWorkbench,
   openCreateDialog,
   openDeleteDialog,
+  openImagePicker,
   openStopDialog,
+  searchImage,
   selectCreatedSandbox,
   selectSandbox,
   toastItem,
@@ -41,12 +43,18 @@ test.describe('网页控制台全流程', () => {
     const fingerprintBefore = fingerprintDir(workspace.path);
 
     try {
-      // ── ① 新建弹窗：镜像下拉里选宿主本地镜像
+      // ── ① 新建抽屉：镜像选择器里搜到宿主本地镜像
       await openCreateDialog(page);
-      const select = page.getByTestId('page-sandbox-create-image-select');
-      await expect(select).toBeVisible();
-      await expect(select.locator(`option[value="${IMAGE}"]`)).toHaveCount(1);
-      await select.selectOption(IMAGE);
+      const imageInput = page.getByTestId('page-sandbox-create-image-select');
+      await expect(imageInput).toBeVisible();
+      await openImagePicker(page);
+      await searchImage(page, IMAGE);
+      // 搜索是前端本地筛选：只剩命中的这一条。
+      const imageOptions = page.getByTestId('page-sandbox-create-image-option');
+      await expect(imageOptions).toHaveCount(1);
+      await expect(page.locator(`[data-image-reference="${IMAGE}"]`)).toHaveCount(1);
+      await page.locator(`[data-image-reference="${IMAGE}"]`).click();
+      await expect(imageInput).toHaveValue(IMAGE);
 
       // ── ② 填表并提交（含一条用户声明挂载）
       const elapsed = await fillCreateForm(page, {
@@ -156,15 +164,28 @@ test.describe('网页控制台全流程', () => {
 
   test('新建弹窗能刷新宿主本地镜像列表', async ({ page }) => {
     await openCreateDialog(page);
-    const select = page.getByTestId('page-sandbox-create-image-select');
-    // 等镜像列表加载完（弹窗刚打开时只有一个占位选项）
-    await expect.poll(async () => select.locator('option').count(), { timeout: 30_000 }).toBeGreaterThan(1);
-    const before = await select.locator('option').count();
+
+    // 打开选择器并搜一个公共前缀：命中的条数就是候选条数。
+    await openImagePicker(page);
+    await searchImage(page, 'sandbox-platform/');
+    const options = page.getByTestId('page-sandbox-create-image-option');
+    await expect.poll(async () => options.count(), { timeout: 30_000 }).toBeGreaterThan(1);
+    const before = await options.count();
+
+    // 刷新镜像：等接口真的回来，再等按钮从「正在刷新」回到「刷新镜像」。
+    const refreshed = page.waitForResponse(
+      (response) =>
+        response.url().includes('/api/images') && response.request().method() === 'GET',
+      { timeout: 30_000 },
+    );
     await page.getByTestId('page-sandbox-create-image-refresh-button').click();
-    await expect
-      .poll(async () => select.locator('option').count(), { timeout: 30_000 })
-      .toBeGreaterThan(1);
-    expect(await select.locator('option').count()).toBe(before);
+    await refreshed;
+    await expect(page.getByTestId('page-sandbox-create-image-refresh-button')).toHaveText('刷新镜像');
+
+    // 刷新后重新展开选择器再搜一次：候选条数不变。
+    await openImagePicker(page);
+    await searchImage(page, 'sandbox-platform/');
+    await expect.poll(async () => options.count(), { timeout: 30_000 }).toBe(before);
   });
 
   test('沙箱详情刷新后字段保持一致', async ({ page }) => {

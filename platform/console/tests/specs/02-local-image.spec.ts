@@ -7,7 +7,13 @@ import fs from 'node:fs';
 import { expect, test } from '@playwright/test';
 
 import { getSandbox, listImages } from '../helpers/api';
-import { fillCreateForm, openCreateDialog, selectCreatedSandbox } from '../helpers/console';
+import {
+  fillCreateForm,
+  openCreateDialog,
+  openImagePicker,
+  searchImage,
+  selectCreatedSandbox,
+} from '../helpers/console';
 import { sandboxExec, userUid } from '../helpers/host';
 import { RUNTIME_DIR } from '../helpers/paths';
 import { readFixtures } from '../helpers/sandbox';
@@ -39,10 +45,13 @@ test.describe('本地构建镜像（不存在于任何仓库）', () => {
       description: `${fixtures.localImage.manifestProbe}；${registryProbe}`,
     });
 
-    // ── ② 新建弹窗的镜像下拉里有它
+    // ── ② 新建抽屉的镜像选择器里能搜到它
     await openCreateDialog(page);
-    const select = page.getByTestId('page-sandbox-create-image-select');
-    await expect(select.locator(`option[value="${reference}"]`)).toHaveCount(1);
+    await openImagePicker(page);
+    await searchImage(page, reference);
+    // 前端本地筛选：只留下命中的这一条。
+    await expect(page.getByTestId('page-sandbox-create-image-option')).toHaveCount(1);
+    await expect(page.locator(`[data-image-reference="${reference}"]`)).toHaveCount(1);
     const images = await listImages();
     expect(images.some((item) => item.reference === reference)).toBe(true);
 
@@ -86,8 +95,7 @@ test.describe('本地构建镜像（不存在于任何仓库）', () => {
 
   test('宿主上没有的镜像不能被网页选用（报错说人话）', async ({ page }) => {
     await openCreateDialog(page);
-    const select = page.getByTestId('page-sandbox-create-image-select');
-    // 前端只允许选下拉里的镜像；这里直接绕过前端校验，
+    // 前端只允许选搜索得到的镜像；这里直接绕过前端校验，
     // 用「宿主不存在的镜像」调接口，确认后端按契约报错而不是降级直连
     const response = await page.request.post('/api/sandboxes', {
       data: {
@@ -99,6 +107,14 @@ test.describe('本地构建镜像（不存在于任何仓库）', () => {
     expect(response.status()).toBe(400);
     const body = (await response.json()) as { detail?: string };
     expect(body.detail ?? '').toContain('宿主上没有镜像');
-    await expect(select.locator('option[value="sandbox-console-acceptance/does-not-exist:0.1.0"]')).toHaveCount(0);
+
+    // 选择器里搜这个不存在的镜像：一个都没命中，弹层里给的是空态说明。
+    await openImagePicker(page);
+    await searchImage(page, 'sandbox-console-acceptance/does-not-exist:0.1.0');
+    await expect(page.getByTestId('page-sandbox-create-image-no-match')).toBeVisible();
+    await expect(page.getByTestId('page-sandbox-create-image-option')).toHaveCount(0);
+    await expect(
+      page.locator('[data-image-reference="sandbox-console-acceptance/does-not-exist:0.1.0"]'),
+    ).toHaveCount(0);
   });
 });

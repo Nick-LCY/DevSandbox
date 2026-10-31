@@ -1,4 +1,4 @@
-import { Loader2 } from 'lucide-react';
+import { ChevronDown, Loader2 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 
 import { api } from '../../api/client';
@@ -13,6 +13,20 @@ import {
 } from '../../lib/mounts';
 import { validateImageSelection, validateSandboxName } from '../../lib/validate';
 import { useToast } from '../Toast';
+import {
+  Combobox,
+  ComboboxEmpty,
+  ComboboxIcon,
+  ComboboxInput,
+  ComboboxInputGroup,
+  ComboboxItem,
+  ComboboxItemIndicator,
+  ComboboxList,
+  ComboboxPopup,
+  ComboboxPortal,
+  ComboboxPositioner,
+  ComboboxTrigger,
+} from '../ui/combobox';
 import { DrawerShell } from './DrawerShell';
 
 interface MountRow {
@@ -47,14 +61,26 @@ const inputClass =
   'focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 ' +
   'disabled:pointer-events-none disabled:opacity-50';
 
+/**
+ * 镜像选择器的输入框。
+ *
+ * 与抽屉表单的输入框同一口径，只差宽度：它在输入组里是弹性子项
+ * （右侧要给下拉箭头让位），不能写死 w-full。
+ */
+const imageInputClass =
+  'h-8 w-auto min-w-0 flex-1 rounded-lg border border-input bg-transparent px-2.5 py-1 text-[13px] ' +
+  'text-foreground transition-colors outline-none placeholder:text-muted-foreground ' +
+  'focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 ' +
+  'disabled:pointer-events-none disabled:opacity-50';
+
 const labelClass = 'mb-1.5 block text-[12.5px] font-medium text-foreground';
 
 /**
  * 新建沙箱抽屉。
  *
- * 字段与校验整体搬自旧的「新建沙箱」页：镜像下拉（可刷新）、挂载行增删、
- * 启动命令、工作目录、环境变量。创建成功后直接关抽屉，工作台弹成功 toast
- * 并刷新列表（不再有成功面板，也不自动选中新建的沙箱）。
+ * 字段与校验整体搬自旧的「新建沙箱」页：镜像选择器（可搜索、可刷新）、
+ * 挂载行增删、启动命令、工作目录、环境变量。创建成功后直接关抽屉，
+ * 工作台弹成功 toast 并刷新列表（不再有成功面板，也不自动选中新建的沙箱）。
  */
 export function CreateSandboxDialog({
   open,
@@ -65,7 +91,10 @@ export function CreateSandboxDialog({
 }: CreateSandboxDialogProps) {
   const { show } = useToast();
   const [name, setName] = useState('');
+  /** 当前选中的镜像引用（空串 = 没选）。 */
   const [image, setImage] = useState('');
+  /** 镜像选择器的输入框文字（与选中分开管，原语才不会自行回填）。 */
+  const [imageInput, setImageInput] = useState('');
   const [images, setImages] = useState<HostImage[]>([]);
   const [imagesError, setImagesError] = useState('');
   const [loadingImages, setLoadingImages] = useState(true);
@@ -83,18 +112,19 @@ export function CreateSandboxDialog({
     try {
       const list = await api.listImages();
       setImages(list);
-      setImage((current) => {
-        if (current && list.some((item) => item.reference === current)) {
-          return current;
-        }
-        const preferred = list.find((item) => item.reference.includes('sandbox-platform/sandbox-default'));
-        return preferred?.reference ?? list[0]?.reference ?? '';
-      });
+      // 不自动选中任何镜像：抽屉打开后输入框是空的，选中由用户显式决定。
+      // （曾经自动选中默认镜像，原语随即把 label 回填进输入框：
+      // 真实用户是在预填文字后面追加，打字永远命中不了。）
+      // 刷新后已选的镜像可能已经不在宿主上了：清掉选择，输入框也跟着清。
+      const stillThere = (reference: string): boolean =>
+        list.some((item) => item.reference === reference);
+      setImage((current) => (current !== '' && !stillThere(current) ? '' : current));
+      setImageInput((current) => (current !== '' && !stillThere(current) ? '' : current));
     } catch (exc) {
       const message = exc instanceof Error ? exc.message : '读取宿主本地镜像失败';
       setImagesError(message);
       // 镜像列表读取失败：弹失败 toast；抽屉里另留一行就地环境状态说明
-      // （toast 5 秒就消失，只留 toast 会让空下拉变得没有解释）。
+      // （toast 5 秒就消失，只留 toast 会让空的选择器变得没有解释）。
       show('error', message, { source: 'sandbox-create' });
     } finally {
       setLoadingImages(false);
@@ -112,10 +142,13 @@ export function CreateSandboxDialog({
     setWorkdir('');
     setEnvText('');
     setError('');
+    // 镜像选择器归零：输入框空着，没有预填的默认镜像。
+    setImage('');
+    setImageInput('');
     void loadImages();
   }, [open, loadImages]);
 
-  // 页面重新可见时补拉一次镜像：镜像下拉要跟得上宿主上的真实变化。
+  // 页面重新可见时补拉一次镜像：镜像选择器要跟得上宿主上的真实变化。
   useEffect(() => {
     const onVisibilityChange = () => {
       if (document.visibilityState === 'visible' && open) {
@@ -131,6 +164,15 @@ export function CreateSandboxDialog({
       previous.map((row) => (row.id === id ? { ...row, ...patch } : row)),
     );
   }, []);
+
+  /**
+   * 当前选中的镜像（提交用的就是它）。
+   *
+   * 选中只认显式选择（点中候选 / 键盘选中）：输入框里敲出来的文字不算，
+   * 否则筛选会被原语跳过（关键字与选中值完全相同时原语不筛，列表会混进
+   * 别的镜像）。
+   */
+  const selectedImage = images.find((item) => item.reference === image) ?? null;
 
   const submit = useCallback(async () => {
     setError('');
@@ -206,7 +248,18 @@ export function CreateSandboxDialog({
     }
   }, [name, image, mounts, command, workdir, envText, show, onCreated, onOpenChange]);
 
-  const selectedImage = images.find((item) => item.reference === image) ?? null;
+  /**
+   * 镜像按 reference 不区分大小写做子串匹配。
+   *
+   * 不用原语默认的筛选：默认那套走 Intl.Collator 且忽略标点，
+   * 「0.20」会把「0.2.0」也算命中，命中与否不好预期。这里自己给一条
+   * 朴素的子串规则（前端本地筛，不发请求）。
+   */
+  const matchImage = useCallback(
+    (item: HostImage, query: string) =>
+      item.reference.toLowerCase().includes(query.trim().toLowerCase()),
+    [],
+  );
 
   const footer = (
     <>
@@ -285,20 +338,66 @@ export function CreateSandboxDialog({
             启动镜像（宿主本地镜像）
           </label>
           <div className="flex items-center gap-2">
-            <select
-              id="sandbox-image"
-              className={inputClass}
-              value={image}
-              onChange={(event) => setImage(event.target.value)}
-              data-testid="page-sandbox-create-image-select"
+            <Combobox
+              items={images}
+              value={selectedImage}
+              // 输入框受控：原语不再自行回填，文字只由这里改。
+              inputValue={imageInput}
+              onValueChange={(item) => {
+                // 显式选中：输入框回填镜像引用，提交用的也是它。
+                const reference = item?.reference ?? '';
+                setImage(reference);
+                setImageInput(reference);
+              }}
+              onInputValueChange={(next) => {
+                setImageInput(next);
+                // 输入文字偏离当前选中的镜像 → 放弃选中：
+                // 「输入框显示」与「实际提交」因此不会分叉。
+                setImage((current) => (current !== '' && current !== next ? '' : current));
+              }}
+              itemToStringLabel={(item) => item.reference}
+              isItemEqualToValue={(item, current) => item.reference === current.reference}
+              filter={matchImage}
             >
-              <option value="">（请选择）</option>
-              {images.map((item) => (
-                <option key={item.reference} value={item.reference}>
-                  {item.reference}
-                </option>
-              ))}
-            </select>
+              <ComboboxInputGroup className="min-w-0 flex-1">
+                <ComboboxInput
+                  id="sandbox-image"
+                  className={imageInputClass}
+                  placeholder="搜索镜像"
+                  data-testid="page-sandbox-create-image-select"
+                />
+                <ComboboxTrigger
+                  aria-label="展开镜像列表"
+                  data-testid="page-sandbox-create-image-trigger"
+                >
+                  <ComboboxIcon>
+                    <ChevronDown className="size-4" aria-hidden="true" />
+                  </ComboboxIcon>
+                </ComboboxTrigger>
+              </ComboboxInputGroup>
+              <ComboboxPortal>
+                <ComboboxPositioner>
+                  <ComboboxPopup data-testid="page-sandbox-create-image-popup">
+                    <ComboboxEmpty data-testid="page-sandbox-create-image-no-match">
+                      暂无匹配镜像
+                    </ComboboxEmpty>
+                    <ComboboxList>
+                      {(item: HostImage) => (
+                        <ComboboxItem
+                          key={item.reference}
+                          value={item}
+                          data-image-reference={item.reference}
+                          data-testid="page-sandbox-create-image-option"
+                        >
+                          {item.reference}
+                          <ComboboxItemIndicator />
+                        </ComboboxItem>
+                      )}
+                    </ComboboxList>
+                  </ComboboxPopup>
+                </ComboboxPositioner>
+              </ComboboxPortal>
+            </Combobox>
             <button
               type="button"
               onClick={() => void loadImages()}
