@@ -15,7 +15,7 @@
 - **组件里不得写裸色值**（十六进制、`rgb()`、`oklch()` 字面量一律禁止）。确需新色时先进令牌再引用。
 - 新增令牌必须同时写 `:root` 与 `.dark` 两处（暗色逐项映射），并在 `@theme` 里补 `--color-*` 映射，否则暗色下会退回浏览器默认色。
 - 透明度通道：所有颜色令牌的 alpha 槽位统一写 `oklch(L C H / var(--app-alpha))`，要整体调透明度只改 `--app-alpha` 一个值。
-- 豁免清单（用字面 alpha、不跟通道缩放）：`--app-ring`（聚焦环）、`--app-shadow-sm` / `--app-shadow-md` / `--app-shadow-lg`（三层阴影需要各自不同的 alpha）。
+- 豁免清单（用字面 alpha、不跟通道缩放）：`--app-ring`（聚焦环）、`--app-shadow-sm` / `--app-shadow-md` / `--app-shadow-lg`（三层阴影需要各自不同的 alpha）、`--app-border` / `--app-border-strong` / `--app-input` / `--app-sidebar-border`（暗色下的白系边框与输入底需要固定低 alpha，挂了通道会变成纯白实线）。
 - 状态色只有四个语义，不另造：运行 = 品牌绿、启动中 / 停止中 = 琥珀（脉动用 `animate-status-pulse`）、已停止 = 灰、失败 = 红。
 - 侧栏两套主题下都是深常青绿；**终端区域恒定局部深色**（`--app-terminal-bg` / `--app-terminal-fg` / `--app-terminal-accent`），亮暗切换不影响终端可读性。
 

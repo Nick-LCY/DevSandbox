@@ -225,44 +225,45 @@
 
 .dark {
   /* 逐项映射旧暗色变量；品牌色不用旧蓝 #4c8dff（降级为 --app-info），改常青绿 */
-  --app-background: #0f1420;
-  --app-card: #161d2c;
-  --app-muted: #161d2c;
-  --app-elevated: #1d2637;
-  --app-accent: #1d2637;
-  --app-foreground: #e6ebf5;
-  --app-muted-foreground: #93a0b8;
-  --app-faint: #6f7d95;
-  --app-border: #2a3446;
-  --app-border-strong: #38445a;
-  --app-input: #2a3446;
-  --app-primary: oklch(0.76 0.13 152 / var(--app-alpha));
-  --app-primary-hover: oklch(0.82 0.13 152 / var(--app-alpha));
-  --app-primary-foreground: oklch(0.16 0.03 151 / var(--app-alpha));
-  --app-primary-bright: oklch(0.82 0.14 152 / var(--app-alpha));
-  --app-destructive: #ff6b6b;
-  --app-destructive-soft: oklch(0.31 0.075 27 / var(--app-alpha));
+  --app-background: oklch(0.16 0.02 151 / var(--app-alpha));
+  --app-card: oklch(0.205 0.025 151 / var(--app-alpha));
+  --app-muted: oklch(0.25 0.022 151 / var(--app-alpha));
+  --app-elevated: oklch(0.235 0.028 151 / var(--app-alpha));
+  --app-accent: oklch(0.3 0.045 151 / var(--app-alpha));
+  --app-foreground: oklch(0.94 0.012 145 / var(--app-alpha));
+  --app-muted-foreground: oklch(0.68 0.022 151 / var(--app-alpha));
+  --app-faint: oklch(0.58 0.02 151 / var(--app-alpha));
+  /* 白系边框/输入底：固定低 alpha，不挂 --app-alpha（挂了会变纯白实线） */
+  --app-border: oklch(1 0 0 / 0.10);
+  --app-border-strong: oklch(1 0 0 / 0.22);
+  --app-input: oklch(1 0 0 / 0.15);
+  --app-primary: oklch(0.76 0.14 151 / var(--app-alpha));
+  --app-primary-hover: oklch(0.82 0.13 151 / var(--app-alpha));
+  --app-primary-foreground: oklch(0.18 0.02 151 / var(--app-alpha));
+  --app-primary-bright: oklch(0.82 0.14 151 / var(--app-alpha));
+  --app-destructive: oklch(0.63 0.18 27 / var(--app-alpha));
+  --app-destructive-soft: oklch(0.31 0.085 27 / var(--app-alpha));
   --app-warning: #ffb454;
   --app-warning-soft: oklch(0.32 0.06 62 / var(--app-alpha));
   --app-info: #4c8dff;
   --app-info-soft: oklch(0.28 0.08 250 / var(--app-alpha));
   --app-success: #4ec9a5;
   --app-success-soft: oklch(0.28 0.055 165 / var(--app-alpha));
-  --app-sidebar: oklch(0.165 0.026 151 / var(--app-alpha));
-  --app-sidebar-hover: oklch(0.215 0.032 151 / var(--app-alpha));
+  --app-sidebar: oklch(0.13 0.02 151 / var(--app-alpha));
+  --app-sidebar-hover: oklch(0.22 0.026 151 / var(--app-alpha));
   --app-sidebar-active: oklch(0.26 0.045 151 / var(--app-alpha));
-  --app-sidebar-border: oklch(0.24 0.03 151 / var(--app-alpha));
-  --app-sidebar-foreground: oklch(0.95 0.008 150 / var(--app-alpha));
+  --app-sidebar-border: oklch(1 0 0 / 0.10);
+  --app-sidebar-foreground: oklch(0.93 0.012 145 / var(--app-alpha));
   --app-sidebar-muted: oklch(0.68 0.022 151 / var(--app-alpha));
-  --app-ring: oklch(0.76 0.13 152 / 0.25);
+  --app-ring: oklch(0.7 0.12 150 / 0.25);
   --app-shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
   --app-shadow-md: 0 1px 2px rgb(0 0 0 / 0.35), 0 6px 16px rgb(0 0 0 / 0.35);
   --app-shadow-lg: 0 2px 6px rgb(0 0 0 / 0.45), 0 22px 52px rgb(0 0 0 / 0.55);
 
-  --app-secondary: oklch(0.215 0.028 151 / var(--app-alpha));
+  --app-secondary: oklch(0.27 0.026 151 / var(--app-alpha));
   --app-secondary-foreground: var(--app-foreground);
   --app-accent-foreground: var(--app-foreground);
-  --app-popover: var(--app-card);
+  --app-popover: oklch(0.23 0.024 151 / var(--app-alpha));
   --app-popover-foreground: var(--app-foreground);
   --app-card-foreground: var(--app-foreground);
 }
