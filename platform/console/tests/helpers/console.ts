@@ -531,6 +531,19 @@ export async function saveTemplateFromCreateDialog(page: Page, name: string): Pr
 }
 
 /**
+ * 按模板名定位设置抽屉里的那一行。
+ *
+ * 走 `data-template-name` 属性，不按行内文字筛：行内重命名时模板名那一段会被
+ * 输入框替掉（名字变成输入框的**值**，不再是行的文字内容），按文字筛出来的行
+ * 在点完「重命名」之后就再也匹配不上——行还在，输入框也在，只是筛条件失效了。
+ * 属性里的名字在重命名提交前一直不变，用它定位才稳。
+ */
+function templateRow(page: Page, name: string): Locator {
+  const escaped = name.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return page.locator(`[data-testid="page-settings-template-item"][data-template-name="${escaped}"]`);
+}
+
+/**
  * 在设置抽屉里重命名一个模板（行内输入框，回车提交）。
  */
 export async function renameTemplate(
@@ -538,7 +551,7 @@ export async function renameTemplate(
   currentName: string,
   nextName: string,
 ): Promise<void> {
-  const row = page.getByTestId('page-settings-template-item').filter({ hasText: currentName });
+  const row = templateRow(page, currentName);
   await expect(row).toHaveCount(1);
   await row.getByTestId('page-settings-template-rename-button').click();
   const input = row.getByTestId('page-settings-template-rename-input');
@@ -557,7 +570,7 @@ export async function renameTemplate(
  * 确认弹窗里写明「只删模板，不影响已创建的沙箱」。
  */
 export async function deleteTemplate(page: Page, name: string): Promise<void> {
-  const row = page.getByTestId('page-settings-template-item').filter({ hasText: name });
+  const row = templateRow(page, name);
   await expect(row).toHaveCount(1);
   await row.getByTestId('page-settings-template-delete-button').click();
   const dialog = page.getByTestId('page-settings-template-delete-dialog');
