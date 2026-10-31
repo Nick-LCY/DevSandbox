@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -219,6 +220,69 @@ def test_create_sandbox_with_unbalanced_quotes_returns_400(client: TestClient) -
     response = client.post("/api/sandboxes", json={"name": "demo", "command": "echo '未闭合"})
     assert response.status_code == 400
     assert "引号" in response.json()["detail"]
+
+
+# ---------------------------------------------------------------- 挂载宿主路径的 ~ 展开
+def test_create_sandbox_expands_home_prefix_in_mounts(
+    client: TestClient, fake_service: FakeSandboxService
+) -> None:
+    """挂载宿主路径的 ~ 与 ~/ 展开为服务运行用户的家目录。"""
+    client.post(
+        "/api/sandboxes",
+        json={"name": "demo", "mounts": ["~/data:/data", "~:/rootish"]},
+    )
+    request: CreateRequest = fake_service.calls[-1][1][0]
+    home = os.path.expanduser("~")
+    assert request.mount_declarations == (f"{home}/data:/data", f"{home}:/rootish")
+
+
+def test_create_sandbox_does_not_expand_container_path(
+    client: TestClient, fake_service: FakeSandboxService
+) -> None:
+    """容器路径段里的 ~ 不展开：原样交给核心包。"""
+    client.post("/api/sandboxes", json={"name": "demo", "mounts": ["/tmp/demo:~/data"]})
+    request: CreateRequest = fake_service.calls[-1][1][0]
+    assert request.mount_declarations == ("/tmp/demo:~/data",)
+
+
+def test_create_sandbox_does_not_expand_other_user_prefix(
+    client: TestClient, fake_service: FakeSandboxService
+) -> None:
+    """~other 形式不展开（原样交给核心包）。"""
+    client.post("/api/sandboxes", json={"name": "demo", "mounts": ["~other/data:/data"]})
+    request: CreateRequest = fake_service.calls[-1][1][0]
+    assert request.mount_declarations == ("~other/data:/data",)
+
+
+def test_create_sandbox_expanded_mount_host_is_absolute(
+    client: TestClient, fake_service: FakeSandboxService
+) -> None:
+    """展开后的宿主路径是绝对路径（进核心请求前已是完整路径）。"""
+    client.post("/api/sandboxes", json={"name": "demo", "mounts": ["~/data:/data:ro"]})
+    request: CreateRequest = fake_service.calls[-1][1][0]
+    host = request.mount_declarations[0].split(":")[0]
+    assert host.startswith("/")
+    assert not host.startswith("~")
+    assert request.mount_declarations[0].endswith(":/data:ro")
+
+
+def test_create_sandbox_does_not_expand_env_command_or_workdir(
+    client: TestClient, fake_service: FakeSandboxService
+) -> None:
+    """环境变量值、命令与工作目录一律不展开（展开会让用户难以预期内容被改写）。"""
+    client.post(
+        "/api/sandboxes",
+        json={
+            "name": "demo",
+            "env": {"HOME": "~"},
+            "command": "echo ~",
+            "workdir": "~/work",
+        },
+    )
+    request: CreateRequest = fake_service.calls[-1][1][0]
+    assert request.env == {"HOME": "~"}
+    assert request.command == ("echo", "~")
+    assert request.workdir == "~/work"
 
 
 def test_list_sandboxes_returns_name_state_image_and_created_at(
