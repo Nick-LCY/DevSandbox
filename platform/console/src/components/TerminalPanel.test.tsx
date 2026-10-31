@@ -30,10 +30,16 @@ const viewMocks = vi.hoisted(() => ({
   status: 'connecting',
   /** 按会话标识指定状态：验证状态栏只反映当前会话。 */
   bySession: {} as Record<string, string>,
-  /** 按会话标识指定完整状态（含退出码 / 退避秒数）：验证终态提示。 */
+  /** 按会话标识指定完整状态（含退出码 / 结束原因 / 退避秒数）：验证终态提示。 */
   states: {} as Record<
     string,
-    { status: string; message?: string; exitCode?: number | null; retryDelaySeconds?: number }
+    {
+      status: string;
+      message?: string;
+      exitCode?: number | null;
+      exitReason?: string | null;
+      retryDelaySeconds?: number;
+    }
   >,
   /**
    * 上报次数：自增后终端视图会**再上报一次**当前状态。
@@ -72,6 +78,7 @@ vi.mock('./TerminalView', async () => {
         status: string;
         message: string;
         exitCode?: number | null;
+        exitReason?: string | null;
         retryDelaySeconds?: number;
       }) => void;
     }) => {
@@ -84,6 +91,7 @@ vi.mock('./TerminalView', async () => {
             status: override.status,
             message: override.message ?? '模拟状态',
             exitCode: override.exitCode,
+            exitReason: override.exitReason,
             retryDelaySeconds: override.retryDelaySeconds,
           });
           return;
@@ -106,6 +114,7 @@ function makeRecord(overrides: Partial<TerminalSessionRecord> = {}): TerminalSes
     last_attached_at: '2026-10-30T01:00:00+00:00',
     state: 'running',
     exit_code: null,
+    exit_reason: null,
     pid: 4242,
     cols: 80,
     rows: 24,
@@ -553,6 +562,26 @@ describe('终端状态提示', () => {
     const toast = await screen.findByTestId('page-toast-item');
     expect(toast.getAttribute('data-toast-kind')).toBe('info');
     expect(toast.textContent).toContain('终端会话已结束');
+    expect(toastsOf('error')).toHaveLength(0);
+  });
+
+  it('用户主动关闭（结束原因 closed_by_user）：弹成功 toast，不当成失败', async () => {
+    viewMocks.states = {
+      'sess-a': {
+        status: 'closed',
+        message: '终端进程已退出（退出码 -1）',
+        exitCode: -1,
+        exitReason: 'closed_by_user',
+      },
+    };
+    mockSessions([makeRecord({ session_id: 'sess-a' })]);
+
+    renderPanel();
+
+    const toast = await screen.findByTestId('page-toast-item');
+    expect(toast.getAttribute('data-toast-kind')).toBe('success');
+    expect(toast.getAttribute('data-toast-source')).toBe('terminal-status');
+    expect(toast.textContent).toContain('已关闭终端');
     expect(toastsOf('error')).toHaveLength(0);
   });
 

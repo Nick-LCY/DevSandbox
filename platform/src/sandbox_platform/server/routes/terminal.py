@@ -169,7 +169,7 @@ async def _serve_session(websocket: WebSocket, session: TerminalSession) -> None
         if output_task in done and session.exited:
             await websocket.send_text(
                 json.dumps(
-                    {"type": "exit", "code": session.exit_code},
+                    {"type": "exit", "code": session.exit_code, "reason": session.exit_reason},
                     ensure_ascii=False,
                 )
             )

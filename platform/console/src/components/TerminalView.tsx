@@ -147,7 +147,11 @@ export function TerminalView({ sessionId, retryToken = 0, onStateChange }: Termi
     const report = (
       status: TerminalStatus,
       message: string,
-      extra?: { exitCode?: number | null; retryDelaySeconds?: number },
+      extra?: {
+        exitCode?: number | null;
+        exitReason?: string | null;
+        retryDelaySeconds?: number;
+      },
     ): void => {
       stateCallbackRef.current({ status, message, ...extra });
     };
@@ -252,6 +256,8 @@ export function TerminalView({ sessionId, retryToken = 0, onStateChange }: Termi
             finished = true;
             report('closed', `终端进程已退出（退出码 ${frame.code ?? '未知'}）`, {
               exitCode: frame.code,
+              // 结束原因透传给上层：用户主动关闭与容器内进程自己退出语义不同
+              exitReason: frame.reason,
             });
             return;
           }

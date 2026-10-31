@@ -37,6 +37,13 @@ SESSION_STATE_RUNNING = "running"
 SESSION_STATE_EXITED = "exited"
 SESSION_STATE_ORPHANED = "orphaned"
 
+# 会话结束原因：区分「容器内进程自己退出」与「被人为关掉」，
+# 客户端据此提示成功还是失败（主动关闭不该报成异常退出）。
+SESSION_EXIT_REASON_EXITED = "exited"  # 容器内进程自己退出
+SESSION_EXIT_REASON_CLOSED_BY_USER = "closed_by_user"  # 用户主动关闭
+SESSION_EXIT_REASON_RECLAIMED = "reclaimed"  # 空闲回收
+SESSION_EXIT_REASON_SHUTDOWN = "shutdown"  # 服务退出兜底
+
 # 清理遗留会话时可选的「容器内进程清理」回调：
 # (沙箱名, 容器名, 会话标识) -> None
 ContainerSessionKiller = Callable[[str, str, str], None]
@@ -75,6 +82,8 @@ class TerminalSessionRecord:
     attached_count: int
     # 建会话的服务进程号：启动清理时用来判断「这条记录是不是另一个实例的」
     host_pid: int = 0
+    # 结束原因（未结束为空）：见 SESSION_EXIT_REASON_* 常量
+    exit_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """转为可 JSON 序列化的字典。"""
@@ -97,6 +106,8 @@ class TerminalSessionRecord:
             rows=int(data.get("rows", 0) or 0),
             attached_count=int(data.get("attached_count", 0) or 0),
             host_pid=int(data.get("host_pid", 0) or 0),
+            # 旧记录文件没有这个字段：按空值补齐（不炸）
+            exit_reason=None if data.get("exit_reason") is None else str(data["exit_reason"]),
         )
 
 
@@ -301,4 +312,5 @@ def new_session_record(
         rows=rows,
         attached_count=0,
         host_pid=os.getpid() if host_pid is None else host_pid,
+        exit_reason=None,
     )

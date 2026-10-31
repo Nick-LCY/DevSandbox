@@ -445,6 +445,8 @@ class TerminalSessionModel(BaseModel):
     rows: int
     attached_count: int
     host_pid: int
+    # 会话结束的原因（未结束为空）：见 SESSION_EXIT_REASON_* 常量
+    exit_reason: str | None = None
 
     @classmethod
     def from_record(cls, record: Any) -> TerminalSessionModel:
@@ -463,4 +465,5 @@ class TerminalSessionModel(BaseModel):
             rows=record.rows,
             attached_count=record.attached_count,
             host_pid=getattr(record, "host_pid", 0),
+            exit_reason=getattr(record, "exit_reason", None),
         )

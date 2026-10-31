@@ -41,6 +41,9 @@ from sandbox_platform import (
 from sandbox_platform.server import create_app
 from sandbox_platform.server.deps import get_terminal_manager, get_terminal_manager_ws
 from sandbox_platform.server.sessions import (
+    SESSION_EXIT_REASON_CLOSED_BY_USER,
+    SESSION_EXIT_REASON_EXITED,
+    SESSION_EXIT_REASON_RECLAIMED,
     SESSION_STATE_EXITED,
     SESSION_STATE_ORPHANED,
     SESSION_STATE_RUNNING,
@@ -75,6 +78,7 @@ RECORD_FIELDS = {
     "rows",
     "attached_count",
     "host_pid",
+    "exit_reason",
 }
 
 
@@ -343,6 +347,17 @@ def test_record_state_transitions(config: PlatformConfig) -> None:
     assert reloaded.exit_code == 7
 
 
+def test_record_from_dict_tolerates_missing_exit_reason() -> None:
+    """旧记录文件没有结束原因这个字段：读回来按空值补齐，不炸。"""
+    payload = make_record("sess-legacy").to_dict()
+    payload.pop("exit_reason", None)
+
+    record = TerminalSessionRecord.from_dict(payload)
+
+    assert record.exit_reason is None
+    assert record.session_id == "sess-legacy"
+
+
 # ---------------------------------------------------------------- 会话创建与附着
 def test_create_session_persists_record(
     manager: TerminalSessionManager, config: PlatformConfig, loop
@@ -365,7 +380,7 @@ def test_create_session_persists_record(
         assert stored.cols == 120
         assert stored.rows == 40
     finally:
-        session.close()
+        session.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
 
 
 def test_create_session_fails_for_missing_sandbox(manager: TerminalSessionManager) -> None:
@@ -396,7 +411,7 @@ def test_attach_and_detach_update_counter(
         assert stored is not None
         assert stored.attached_count == 1
     finally:
-        session.close()
+        session.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
 
 
 def test_sessions_are_independent(manager: TerminalSessionManager, loop) -> None:
@@ -417,8 +432,8 @@ def test_sessions_are_independent(manager: TerminalSessionManager, loop) -> None
         # 另一个会话既没收到输入，也没收到输出
         assert collect(second_stream, loop, timeout=0.5) == b""
     finally:
-        first.close()
-        second.close()
+        first.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
+        second.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
 
 
 # ---------------------------------------------------------------- 断线与回放
@@ -454,7 +469,7 @@ def test_disconnect_keeps_session_and_replays_buffer(
         assert snapshot2.count(b"while-offline") == 1
         session.close_stream(stream2)
     finally:
-        session.close()
+        session.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
 
 
 def test_resize_sets_pty_window_size(manager: TerminalSessionManager, loop) -> None:
@@ -468,7 +483,7 @@ def test_resize_sets_pty_window_size(manager: TerminalSessionManager, loop) -> N
         assert session.record.cols == 132
         assert session.record.rows == 43
     finally:
-        session.close()
+        session.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
 
 
 def test_exit_persists_state_and_code(
@@ -493,7 +508,9 @@ def test_exit_persists_state_and_code(
     assert stored is not None
     assert stored.state == SESSION_STATE_EXITED
     assert stored.exit_code == 7
-    session.close()
+    # 会话已经自己退出了：这次关闭不覆盖既有原因。
+    session.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
+    assert session.exit_reason == SESSION_EXIT_REASON_EXITED
 
 
 # ---------------------------------------------------------------- 重启清理
@@ -738,6 +755,8 @@ def test_websocket_reports_exit_code(
                     break
             assert frames[-1]["type"] == "exit"
             assert frames[-1]["code"] == 5
+            # 容器内进程自己退出：原因必须是 exited（不得被当成用户主动关闭）
+            assert frames[-1]["reason"] == "exited"
 
 
 # ---------------------------------------------------------------- 伪终端底层
@@ -904,7 +923,7 @@ def test_session_count_limits_are_enforced(
                 ).result(timeout=30)
             assert len(per_sandbox.list_records()) == 1
         finally:
-            first.close()
+            first.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
 
         only = create_session(overall, loop)
         try:
@@ -914,7 +933,7 @@ def test_session_count_limits_are_enforced(
                 ).result(timeout=30)
             assert len(overall.list_records()) == 1
         finally:
-            only.close()
+            only.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
     finally:
         per_sandbox.close_all()
         overall.close_all()
@@ -948,6 +967,67 @@ def test_idle_sessions_are_reclaimed(
         manager.close_all()
 
 
+def test_idle_reclaim_persists_reclaimed_reason(
+    config: PlatformConfig, fake_service: FakeService, loop
+) -> None:
+    """空闲回收：结束原因落库为 ``reclaimed``（不是失败，也不是正常退出）。"""
+    manager = TerminalSessionManager(
+        config, fake_service, spawner=pty_spawner(["cat"]), idle_timeout=60
+    )
+    session = create_session(manager, loop)
+    try:
+        # 把最近附着时间推到过去，模拟长时间没人用
+        session.record.last_attached_at = "2020-01-01T00:00:00+00:00"
+        assert manager.reap_idle_sessions() == [session.session_id]
+        assert manager.get(session.session_id) is None
+
+        stored = wait_record(
+            config,
+            session.session_id,
+            lambda item: item.exit_reason == SESSION_EXIT_REASON_RECLAIMED,
+        )
+        assert stored is not None
+        assert stored.state == SESSION_STATE_EXITED
+        assert stored.exit_reason == SESSION_EXIT_REASON_RECLAIMED
+    finally:
+        manager.close_all()
+
+
+def test_delete_after_natural_exit_keeps_exited_reason(
+    config: PlatformConfig, fake_service: FakeService, loop
+) -> None:
+    """会话自然退出后再删除：结束原因不被「用户主动关闭」覆盖。
+
+    已经退出的会话走关闭流程时不再改原因：容器内进程自己退出的会话，
+    原因一直是 ``exited``（客户端据此提示正常结束而不是失败）。
+    """
+    manager = TerminalSessionManager(
+        config, fake_service, spawner=pty_spawner(["sh", "-c", "exit 0"])
+    )
+    session = create_session(manager, loop)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and not session.exited:
+        time.sleep(0.05)
+    assert session.exited
+    assert session.exit_reason == SESSION_EXIT_REASON_EXITED
+
+    stored = wait_record(
+        config,
+        session.session_id,
+        lambda item: item.exit_reason == SESSION_EXIT_REASON_EXITED,
+    )
+    assert stored is not None
+    assert stored.exit_reason == SESSION_EXIT_REASON_EXITED
+
+    # 删除（走的是「用户主动关闭」那条关闭流程）
+    removal = manager.remove_session(session.session_id)
+    assert removal is not None
+    assert removal.state == SESSION_STATE_EXITED
+    # 既有原因没被覆盖。
+    assert session.exit_reason == SESSION_EXIT_REASON_EXITED
+    manager.close_all()
+
+
 def test_resize_is_persisted(
     config: PlatformConfig, fake_service: FakeService, loop
 ) -> None:
@@ -961,7 +1041,7 @@ def test_resize_is_persisted(
         assert stored.cols == 132
         assert stored.rows == 43
     finally:
-        session.close()
+        session.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
         manager.close_all()
 
 
@@ -988,7 +1068,7 @@ def test_input_over_limit_drops_newest_and_warns(
         assert frame.kind == FRAME_ERROR
         assert "截断" in frame.message
     finally:
-        session.close()
+        session.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
         manager.close_all()
 
 
@@ -1013,7 +1093,7 @@ def test_concurrent_attaches_do_not_duplicate_output(
         assert b"shared-line" in third_snapshot
         assert collect(third, loop, timeout=0.5) == b""
     finally:
-        session.close()
+        session.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
 
 
 def test_close_reclaims_io_thread(manager: TerminalSessionManager, loop) -> None:
@@ -1021,7 +1101,7 @@ def test_close_reclaims_io_thread(manager: TerminalSessionManager, loop) -> None
     session = create_session(manager, loop)
     thread = session._thread
     assert thread.is_alive()
-    session.close()
+    session.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
     assert not thread.is_alive()
 
 
@@ -1035,7 +1115,7 @@ def test_close_kills_container_side_session(
     service = FakeServiceWithDaemon()
     manager = TerminalSessionManager(config, service, spawner=pty_spawner(["cat"]))
     session = create_session(manager, loop)
-    session.close()
+    session.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
     assert service.daemon.killed == [("sandbox-demo", session.session_id)]
     manager.close_all()
 
@@ -1096,7 +1176,7 @@ def test_large_paste_does_not_deadlock(
             seen += collect(stream, loop, timeout=5.0)
         assert b"\x03" in seen
     finally:
-        session.close()
+        session.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
         manager.close_all()
 
 
@@ -1234,7 +1314,6 @@ def test_remove_unknown_session_returns_none(manager: TerminalSessionManager) ->
     """会话不存在：返回空（路由据此回 404）。"""
     assert manager.remove_session("sess-nope") is None
 
-
 def test_removed_session_record_is_not_written_back(
     config: PlatformConfig, fake_service: FakeService, loop
 ) -> None:
@@ -1356,6 +1435,8 @@ def test_http_delete_running_session_closes_attached_connection(
         # 附着中的连接走既有的退出帧路径：收到结束标记
         message = ws.receive_json()
         assert message["type"] == "exit"
+        # 结束原因带上「用户主动关闭」：客户端据此提示成功而不是失败
+        assert message["reason"] == "closed_by_user"
         # 随后连接被正常关闭（不是挂着等超时）
         with pytest.raises(WebSocketDisconnect):
             ws.receive_json()
@@ -1401,6 +1482,7 @@ def test_http_delete_survives_close_failure(
             # 结束标记先发：浏览器已经收到退出帧
             message = ws.receive_json()
             assert message["type"] == "exit"
+            assert message["reason"] == "closed_by_user"
             with pytest.raises(WebSocketDisconnect):
                 ws.receive_json()
     finally:
@@ -1451,6 +1533,8 @@ def test_exit_frame_is_sent_before_container_cleanup(
         frame = collect_frame(stream, loop, timeout=5.0)
         assert frame is not None
         assert frame.kind == FRAME_EXIT
+        # 结束原因已经写上（不等清理跑完）
+        assert session.exit_reason == "closed_by_user"
     finally:
         release_cleanup.set()
         worker.join(timeout=10)

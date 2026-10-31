@@ -32,6 +32,13 @@ export interface TerminalState {
   message: string;
   /** 进程退出码（`closed` 时有值；null 表示后端没给退出码）。 */
   exitCode?: number | null;
+  /**
+   * 会话结束的原因（`closed` 时有值；null 表示后端没给或旧版本没带）。
+   *
+   * 取值与后端一致：`exited`（容器内进程自己退出）/ `closed_by_user`
+   * （用户主动关闭）/ `reclaimed`（空闲回收）/ `shutdown`（服务退出兜底）。
+   */
+  exitReason?: string | null;
   /** 重连退避秒数（`reconnecting` 且确实在退避等待时有值）。 */
   retryDelaySeconds?: number;
 }
@@ -46,7 +53,10 @@ export interface StateFeedback {
  * 终端状态 → 操作反馈（toast）。
  *
  * - `invalid` / `warning`：服务端报错帧与会话失效，失败 toast；
- * - `closed`：退出码 0 是正常收尾（提示蓝），非 0 是失败（提示红，文案带退出码）；
+ * - `closed`：用户主动关的（结束原因 `closed_by_user`）是**成功** toast；
+ *   空闲回收（`reclaimed`）与服务退出兜底（`shutdown`）是**提示** toast；
+ *   容器内进程自己退出的，退出码 0 是正常收尾（提示蓝），非 0 是失败
+ *   （提示红，文案带退出码）；
  * - `reconnecting`：退避等待中，提示蓝，文案带退避秒数；
  * - `failed`：重连到上限，失败 toast。
  *
@@ -57,6 +67,15 @@ export function feedbackForState(state: TerminalState): StateFeedback | null {
     return { kind: 'error', text: state.message };
   }
   if (state.status === 'closed') {
+    // 用户主动关闭：成功语义，不报成异常退出。
+    if (state.exitReason === 'closed_by_user') {
+      return { kind: 'success', text: '已关闭终端' };
+    }
+    // 空闲回收与服务退出兜底：会话确实结束了，但不是异常退出。
+    // 报成失败会让用户以为终端崩了。
+    if (state.exitReason === 'reclaimed' || state.exitReason === 'shutdown') {
+      return { kind: 'info', text: '终端会话已结束' };
+    }
     if (state.exitCode === 0) {
       return { kind: 'info', text: '终端会话已结束' };
     }
@@ -86,10 +105,12 @@ export function feedbackForState(state: TerminalState): StateFeedback | null {
  * 状态提示的去重键：同一会话的同一个提示不重复弹。
  *
  * 退避秒数进键：同一档退避只弹一次，档位变了才弹新的一条。
+ * 结束原因也进键：同一会话先「正常结束」后「主动关闭」是两条不同的提示，
+ * 不能互相顶掉。
  */
 export function feedbackKey(state: TerminalState): string {
   if (state.status === 'closed') {
-    return `closed:${state.exitCode ?? 'unknown'}`;
+    return `closed:${state.exitReason ?? 'unknown'}:${state.exitCode ?? 'unknown'}`;
   }
   if (state.status === 'reconnecting') {
     return `reconnecting:${state.retryDelaySeconds ?? 'pending'}`;

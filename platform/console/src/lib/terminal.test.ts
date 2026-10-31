@@ -16,9 +16,16 @@ describe('parseTerminalFrame', () => {
     expect(frame).toEqual({ type: 'hello', sessionId: 'abc', sandbox: 'demo', cols: 100, rows: 30 });
   });
 
-  it('解析 exit 帧', () => {
+  it('解析 exit 帧（带结束原因）', () => {
+    const frame = parseTerminalFrame(
+      JSON.stringify({ type: 'exit', code: -1, reason: 'closed_by_user' }),
+    );
+    expect(frame).toEqual({ type: 'exit', code: -1, reason: 'closed_by_user' });
+  });
+
+  it('解析 exit 帧（服务端没带原因）：原因为 null', () => {
     const frame = parseTerminalFrame(JSON.stringify({ type: 'exit', code: 0 }));
-    expect(frame).toEqual({ type: 'exit', code: 0 });
+    expect(frame).toEqual({ type: 'exit', code: 0, reason: null });
   });
 
   it('解析 error 帧', () => {

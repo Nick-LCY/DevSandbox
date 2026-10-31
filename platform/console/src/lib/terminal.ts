@@ -10,7 +10,7 @@
 /** 服务端发来的文本帧。 */
 export type TerminalFrame =
   | { type: 'hello'; sessionId: string; sandbox: string; cols: number; rows: number }
-  | { type: 'exit'; code: number | null }
+  | { type: 'exit'; code: number | null; reason: string | null }
   | { type: 'error'; message: string }
   | { type: 'unknown'; raw: string };
 
@@ -53,7 +53,12 @@ export function parseTerminalFrame(text: string): TerminalFrame {
     };
   }
   if (kind === 'exit') {
-    return { type: 'exit', code: typeof record.code === 'number' ? record.code : null };
+    return {
+      type: 'exit',
+      code: typeof record.code === 'number' ? record.code : null,
+      // 结束原因（服务端旧版本可能不带）：缺失一律当 null，不做推测。
+      reason: typeof record.reason === 'string' ? record.reason : null,
+    };
   }
   if (kind === 'error') {
     return {

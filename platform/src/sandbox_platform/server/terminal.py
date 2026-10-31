@@ -42,6 +42,10 @@ from sandbox_platform.metadata import utc_now
 from starlette.concurrency import run_in_threadpool
 
 from .sessions import (
+    SESSION_EXIT_REASON_CLOSED_BY_USER,
+    SESSION_EXIT_REASON_EXITED,
+    SESSION_EXIT_REASON_RECLAIMED,
+    SESSION_EXIT_REASON_SHUTDOWN,
     SESSION_STATE_EXITED,
     SESSION_STATE_RUNNING,
     TerminalSessionRecord,
@@ -232,6 +236,11 @@ class TerminalSession:
         return self.record.exit_code
 
     @property
+    def exit_reason(self) -> str | None:
+        """会话结束的原因（未结束为空，见 SESSION_EXIT_REASON_* 常量）。"""
+        return self.record.exit_reason
+
+    @property
     def exited(self) -> bool:
         """容器内进程是否已退出。"""
         return self.record.state == SESSION_STATE_EXITED
@@ -319,8 +328,13 @@ class TerminalSession:
             self.record.attached_count = max(0, self.record.attached_count - 1)
         self._mark_dirty()
 
-    def close(self) -> None:
+    def close(self, reason: str) -> None:
         """关闭会话：终止容器内进程并回收伪终端。
+
+        ``reason`` 是结束原因（见 ``SESSION_EXIT_REASON_*`` 常量），**必填**：
+        每次关闭都得说清是为什么关的，状态机才闭合。只有本次调用**真的把一个
+        运行中的会话关掉**时才写进记录——已经退出的会话不覆盖既有原因
+        （容器内进程自己退出的会话，原因保持 ``exited``）。
 
         关闭流程分两段：
 
@@ -344,6 +358,9 @@ class TerminalSession:
                 self.record.state = SESSION_STATE_EXITED
                 if self.record.exit_code is None:
                     self.record.exit_code = -1
+                # 结束原因只在「本次真的关掉了运行中的会话」时写：已退出的会话
+                # 保留既有原因（如容器内进程自己退出 = exited）
+                self.record.exit_reason = reason
             streams = list(self._streams)
         if was_running:
             # 还连着的浏览器必须知道会话没了：走既有的退出帧路径，它们据此
@@ -569,6 +586,8 @@ class TerminalSession:
             exit_code = code if code is not None else self.pty.poll()
             self.record.state = SESSION_STATE_EXITED
             self.record.exit_code = exit_code if exit_code is not None else -1
+            # 容器内进程自己退出：与「被人为关掉」区分开，客户端据此提示正常结束
+            self.record.exit_reason = SESSION_EXIT_REASON_EXITED
             self.record.attached_count = 0
             streams = list(self._streams)
         self._mark_dirty()
@@ -680,7 +699,9 @@ class TerminalSessionManager:
             await run_in_threadpool(self._save_record, record)
         except Exception:
             try:
-                session.close()
+                # 回滚路径：会话记录没落盘、用户没碰过它，属系统级收尾
+                #（与「服务退出兜底」同一类原因）
+                session.close(SESSION_EXIT_REASON_SHUTDOWN)
             except Exception as exc:  # pragma: no cover - 收尾失败不影响原始错误
                 logger.warning("回滚新建的终端会话 %s 时出错：%s", record.session_id, exc)
             with self._lock:
@@ -728,7 +749,8 @@ class TerminalSessionManager:
     def _close_quietly(self, session: TerminalSession) -> None:
         """关掉一个会话并把异常吃掉（退出兜底路径不让异常冒到线程池外）。"""
         try:
-            session.close()
+            # 服务退出兜底：不是用户主动关的
+            session.close(SESSION_EXIT_REASON_SHUTDOWN)
         except Exception as exc:  # pragma: no cover - 退出兜底路径
             logger.warning(
                 "关闭终端会话 %s 时出错：%s", session.session_id, exc, exc_info=True
@@ -754,7 +776,8 @@ class TerminalSessionManager:
         state = session.state
         closed = False
         try:
-            session.close()
+            # DELETE 路由路径：用户主动关掉这个会话
+            session.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
             closed = True
         except Exception as exc:
             logger.warning(
@@ -840,7 +863,8 @@ class TerminalSessionManager:
         if session is None:
             return
         try:
-            session.close()
+            # 空闲回收：没有人主动关，是平台自己收走的
+            session.close(SESSION_EXIT_REASON_RECLAIMED)
         except Exception as exc:
             # 回收路径的异常不往上抛：否则一次失败的回收会连带新建会话失败
             logger.warning(

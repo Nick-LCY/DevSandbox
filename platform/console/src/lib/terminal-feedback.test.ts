@@ -26,11 +26,44 @@ describe('feedbackForState', () => {
     });
   });
 
+  it('用户主动关闭（结束原因 closed_by_user）：成功提示，不报成异常退出', () => {
+    expect(
+      feedbackForState({
+        status: 'closed',
+        message: '终端进程已退出（退出码 -1）',
+        exitCode: -1,
+        exitReason: 'closed_by_user',
+      }),
+    ).toEqual({ kind: 'success', text: '已关闭终端' });
+  });
+
   it('正常退出（退出码 0）：提示色，文案不带退出码', () => {
     expect(feedbackForState({ status: 'closed', message: '已退出', exitCode: 0 })).toEqual({
       kind: 'info',
       text: '终端会话已结束',
     });
+  });
+
+  it('空闲回收（结束原因 reclaimed）：提示色，不是失败', () => {
+    expect(
+      feedbackForState({
+        status: 'closed',
+        message: '会话已回收',
+        exitCode: -1,
+        exitReason: 'reclaimed',
+      }),
+    ).toEqual({ kind: 'info', text: '终端会话已结束' });
+  });
+
+  it('服务退出兜底（结束原因 shutdown）：提示色，不是失败', () => {
+    expect(
+      feedbackForState({
+        status: 'closed',
+        message: '服务已退出',
+        exitCode: null,
+        exitReason: 'shutdown',
+      }),
+    ).toEqual({ kind: 'info', text: '终端会话已结束' });
   });
 
   it('异常退出（退出码非 0）：失败提示，文案带退出码', () => {
@@ -63,12 +96,40 @@ describe('feedbackForState', () => {
 describe('feedbackKey', () => {
   it('同一个状态进同一个键（退避秒数进键，档位变了才换键）', () => {
     expect(feedbackKey({ status: 'failed', message: '重连失败' })).toBe('failed');
-    expect(feedbackKey({ status: 'closed', message: 'x', exitCode: 1 })).toBe('closed:1');
-    expect(feedbackKey({ status: 'closed', message: 'x', exitCode: null })).toBe('closed:unknown');
+    expect(feedbackKey({ status: 'closed', message: 'x', exitCode: 1 })).toBe(
+      'closed:unknown:1',
+    );
+    expect(feedbackKey({ status: 'closed', message: 'x', exitCode: null })).toBe(
+      'closed:unknown:unknown',
+    );
     expect(feedbackKey({ status: 'reconnecting', message: 'x', retryDelaySeconds: 4 })).toBe(
       'reconnecting:4',
     );
     expect(feedbackKey({ status: 'warning', message: '告警原文' })).toBe('warning:告警原文');
+  });
+
+  it('结束原因不同 → 键不同：两条提示不互相顶掉去重', () => {
+    const closedByUser = feedbackKey({
+      status: 'closed',
+      message: 'x',
+      exitCode: -1,
+      exitReason: 'closed_by_user',
+    });
+    const exited = feedbackKey({
+      status: 'closed',
+      message: 'x',
+      exitCode: 1,
+      exitReason: 'exited',
+    });
+    expect(closedByUser).toBe('closed:closed_by_user:-1');
+    expect(exited).toBe('closed:exited:1');
+    expect(closedByUser).not.toBe(exited);
+
+    // 登记表里：两条都算新提示（第一条不会被第二条顶掉）
+    const ledger = createFeedbackLedger();
+    expect(claimFeedback(ledger, 'sess-a', closedByUser)).toBe(true);
+    expect(claimFeedback(ledger, 'sess-a', closedByUser)).toBe(false);
+    expect(claimFeedback(ledger, 'sess-a', exited)).toBe(true);
   });
 });
 
