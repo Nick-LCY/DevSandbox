@@ -62,7 +62,7 @@ pnpm run typecheck  # tsc --noEmit，零错误
 pnpm run test       # vitest run，纯数据转换逻辑与组件交互的单元测试
 ```
 
-单元测试覆盖挂载声明解析、环境变量解析、两层路由解析（含畸形百分号编码）、字节与时间格式化、终端帧协议解析、终端状态提示的口径与去重规则（纯函数）、代理状态文案转换、主题存取、抽屉宽度的存取与换算、轮询失败计数，终端面板的会话标签与关闭会话交互（标签渲染、点标签回调、运行中与已退出的两套确认文案、确认与取消、失败提示、记录已不存在、关闭流程未走完、列表刷新失败、终态提示、同一状态反复上报不重复刷屏、轮询连续失败），工作台的列表读取失败与轮询失败反馈、停止沙箱先弹确认框，新建沙箱抽屉的镜像列表失败说明与创建成功收口，代理设置的重启失败反馈不被状态刷新失败顶掉，删除沙箱确认的一次点即执行，停止沙箱确认弹窗的勾选项与忙碌锁，以及抽屉外壳的焦点管理、关闭途径、宽度拖拽把手与指针拖拽路径（拖动中不落盘、松手落盘一次、按下即松手不落盘、视口宽不可用时不换算），最后是全局 toast 组件本身（类型 → 配色类映射、5 秒自动消失、关闭键提前关闭、倒计时圆环的动画类名与时长、悬停 / 点提示区 / 聚焦提示区 / 按下提示条不暂停倒计时、按 F6 不被 Base UI 接管、窗口失焦停表与回前台整体重走 5 秒、新反馈顶掉旧条并重置计时、退场竞态下圆环重建）。组件测试用 jsdom 环境（文件头部 `@vitest-environment jsdom` 注解切换），依赖 `@testing-library/react` 与 `jsdom`。
+单元测试覆盖挂载声明解析、环境变量解析、两层路由解析（含畸形百分号编码）、字节与时间格式化、终端帧协议解析、终端状态提示的口径与去重规则（纯函数）、代理状态文案转换、主题存取、抽屉宽度的存取与换算、轮询失败计数，终端面板的会话标签与关闭会话交互（标签渲染、点标签回调、运行中与已退出的两套确认文案、确认与取消、失败提示、记录已不存在、关闭流程未走完、列表刷新失败、终态提示、同一状态反复上报不重复刷屏、轮询连续失败），工作台的列表读取失败与轮询失败反馈、停止沙箱先弹确认框，新建沙箱抽屉的镜像列表失败说明与创建成功收口，代理设置的重启失败反馈不被状态刷新失败顶掉，删除沙箱确认的一次点即执行，停止沙箱确认弹窗的勾选项与忙碌锁，以及抽屉外壳的焦点管理、关闭途径、宽度拖拽把手（条子中间带竖向抓握图标）与指针拖拽路径（拖动中不落盘、松手落盘一次、按下即松手不落盘、视口宽不可用时不换算），最后是全局 toast 组件本身（类型 → 配色类映射、5 秒自动消失、关闭键提前关闭、倒计时圆环的动画类名与时长、悬停 / 点提示区 / 聚焦提示区 / 按下提示条不暂停倒计时、按 F6 不被 Base UI 接管、窗口失焦停表与回前台整体重走 5 秒、新反馈顶掉旧条并重置计时、退场竞态下圆环重建）。组件测试用 jsdom 环境（文件头部 `@vitest-environment jsdom` 注解切换），依赖 `@testing-library/react` 与 `jsdom`。
 
 toast 挂全局 `ToastProvider`：组件测试渲染带 Provider 的片段，断言看 `page-toast-item` 与 `data-toast-kind`（必要时再加 `data-toast-source`）。
 
@@ -228,7 +228,7 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 新建沙箱 / 沙箱详情 / 代理设置走 `src/components/workbench/DrawerShell.tsx`，底层是 Base UI 的 Drawer 原语（`src/components/ui/drawer.tsx`，零新增依赖）。
 
 - **右侧滑出**：抽屉从右侧滑入，`swipeDirection="right"`。
-- **宽度可拖拽**：面板左边缘一条 6 像素竖条（`page-drawer-resize-handle`，`role="separator"`）。拖动时只更新抽屉内部的本地状态，**松手才**把最终宽度上抛并写入存储（避免每像素重渲染整个工作台）。把手上按左右方向键每次调 2 个百分点，`Home` 回默认宽度。
+- **宽度可拖拽**：面板左边缘一条 14 像素竖条（`page-drawer-resize-handle`，`role="separator"`），条子中间竖直放一个抓握图标（lucide `GripVertical`）提示这里能拖。拖动时只更新抽屉内部的本地状态，**松手才**把最终宽度上抛并写入存储（避免每像素重渲染整个工作台）。把手上按左右方向键每次调 2 个百分点，`Home` 回默认宽度。
 - **已知边界（窄屏）**：视口宽度 < 640px 时抽屉**占满整屏**（宽度百分比不生效），**拖拽把手不提供入口**（`hidden sm:flex`）——可见但拖不动的把手会把脏宽度写进存储，窄屏干脆不给拖拽入口。窄屏下想调宽度得把窗口拉宽。
 - **宽度共用一个存储键**：`sandbox-console-drawer-width`（`src/lib/drawer-width.ts`），存的是视口宽度的百分比，默认 40，钳位区间 [20, 80]。三个抽屉共用一份宽度：拖动任意一个，其余两个跟着变；刷新页面后保持。
 - **滑动关闭**：Base UI 的横向滑动关闭**没有开关**，因此拖拽把手挂了 `data-base-ui-swipe-ignore="x"`，正文容器挂了 `data-base-ui-swipe-ignore`（表单里拖选文本不会被吃掉）。验收脚本一律用「点 × / Esc」关闭，不写滑动关闭。
@@ -302,7 +302,7 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 | 代理设置 | `settings` | `page-settings-dialog`（抽屉容器）/ `page-settings-title` / `page-settings-summary` / `page-settings-container-running` / `page-settings-healthy` / `page-settings-tcp-ok` / `page-settings-ca-fetchable` / `page-settings-cache-size` / `page-settings-certificate-ready` / `page-settings-proxy-url` / `page-settings-detail` / `page-settings-refresh-button` / `page-settings-restart-button` / `page-settings-restart-result` / `page-settings-restarted` / `page-settings-restart-message` / `page-settings-ca-changed` / `page-settings-ca-reinstalled` / `page-settings-ca-conclusion` / `page-settings-reinstalled-users` / `page-settings-failed-users` / `page-settings-loading` |
 | 删除沙箱 | `sandbox-detail-delete` | `page-sandbox-detail-delete-dialog` / `page-sandbox-detail-delete-title` / `page-sandbox-detail-delete-untouched-note` / `page-sandbox-detail-delete-confirm-button` / `page-sandbox-detail-delete-cancel-button` |
 | 停止沙箱 | `sandbox-detail-stop` | `page-sandbox-detail-stop-dialog` / `page-sandbox-detail-stop-title` / `page-sandbox-detail-stop-dependencies-checkbox`（「同时停止依赖容器」，默认勾选）/ `page-sandbox-detail-stop-confirm-button` / `page-sandbox-detail-stop-cancel-button` |
-| 抽屉 | `drawer` | `page-drawer-resize-handle`（宽度拖拽把手，`role="separator"`）|
+| 抽屉 | `drawer` | `page-drawer-resize-handle`（宽度拖拽把手，`role="separator"`，条子中间带竖向抓握图标）|
 | 全局反馈 | `toast` | `page-toast-region`（右上角视口容器）/ `page-toast-item`（每条提示，带 `data-toast-kind="success\|error\|info"`，可选带 `data-toast-source="<来源>"`）/ `page-toast-close`（关闭键）|
 
 **已退役的标识**：

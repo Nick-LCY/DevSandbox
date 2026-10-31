@@ -8,7 +8,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react';
-import { X } from 'lucide-react';
+import { GripVertical, X } from 'lucide-react';
 
 import { cn } from '../../lib/cn';
 import {
@@ -261,7 +261,7 @@ export function DrawerShell({
               'data-closed:animate-out data-closed:slide-out-to-right',
             )}
           >
-            {/* 宽度拖拽把手：左边缘 6 像素竖条。 */}
+            {/* 宽度拖拽把手：左边缘竖条，中间带竖向抓握图标。 */}
             <div
               role="separator"
               aria-orientation="vertical"
@@ -283,11 +283,23 @@ export function DrawerShell({
               className={cn(
                 // 窄屏（< 640px）抽屉占满整屏：宽度拖不动，把手也不提供入口
                 // （可见但拖不动的把手会往存储里写脏宽度）。
-                'hidden sm:flex absolute inset-y-0 left-0 z-10 w-1.5 cursor-ew-resize touch-none select-none',
-                'bg-border/60 transition-colors hover:bg-primary/40 focus-visible:outline-none',
+                // 竖条加宽到 14 像素：6 像素的细条既装不下图标，拖拽命中也太窄。
+                'group hidden sm:flex absolute inset-y-0 left-0 z-10 w-3.5 cursor-ew-resize touch-none select-none',
+                'items-center justify-center',
+                'bg-border/50 transition-colors hover:bg-primary/30 focus-visible:outline-none',
                 'focus-visible:ring-3 focus-visible:ring-ring/50',
               )}
-            />
+            >
+              {/*
+                竖向抓握图标：纯视觉提示，装饰性元素对辅助技术隐藏
+                （把手本身已有 aria-label）。pointer-events-none 保证
+                事件目标始终是把手本身，指针捕获与命中判定不受影响。
+              */}
+              <GripVertical
+                className="pointer-events-none size-3 text-muted-foreground transition-colors group-hover:text-foreground group-focus-visible:text-foreground"
+                aria-hidden="true"
+              />
+            </div>
 
             <div className="flex items-center justify-between gap-4 border-b border-border px-5 py-3.5">
               <DrawerTitle className="text-[15px] font-semibold">{title}</DrawerTitle>

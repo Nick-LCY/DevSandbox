@@ -8,6 +8,7 @@
  * - 关闭被禁用时（不可逆操作进行中）Esc 与关闭按钮都不响应；
  * - 打开时焦点落进抽屉里；
  * - 宽度拖拽把手存在，且是 role=separator 的竖向分隔条；
+ * - 把手上带竖向抓握图标（纯视觉提示，装饰性元素对辅助技术隐藏）；
  * - 把手上按方向键能改宽度（每次 2 个百分点，Home 回默认值）；
  * - 指针拖拽宽度：拖动过程中不落盘，松手才落盘一次（按下即松手不落盘）。
  */
@@ -130,6 +131,18 @@ describe('DrawerShell', () => {
     expect(handle.getAttribute('tabindex')).toBe('0');
     // 横向滑动关闭是原语自带的：把手必须挡住它。
     expect(handle.getAttribute('data-base-ui-swipe-ignore')).toBe('x');
+  });
+
+  it('把手上带竖向抓握图标：装饰性元素，辅助技术不读', async () => {
+    renderDrawer();
+    await screen.findByTestId('page-sandbox-create-dialog');
+
+    const handle = screen.getByTestId('page-drawer-resize-handle');
+    // lucide 的 GripVertical：svg 上的类名带图标名。
+    const icon = handle.querySelector('svg.lucide-grip-vertical');
+    expect(icon).not.toBeNull();
+    // 装饰性图标：把手本身已有 aria-label，图标不再重复播报。
+    expect(icon?.getAttribute('aria-hidden')).toBe('true');
   });
 
   it('把手上按方向键改宽度：左右各 2 个百分点，Home 回默认值', async () => {
