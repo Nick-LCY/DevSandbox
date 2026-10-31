@@ -9,6 +9,7 @@ from __future__ import annotations
 from fastapi import Request, WebSocket
 from sandbox_platform import PlatformConfig, SandboxService
 
+from .templates import TemplateStore
 from .terminal import TerminalSessionManager
 
 
@@ -28,6 +29,15 @@ def get_service(request: Request) -> SandboxService:
         service = SandboxService(get_config(request))
         request.app.state.sandbox_service = service
     return service
+
+
+def get_template_store(request: Request) -> TemplateStore:
+    """取应用级模板库（整个进程共用一个实例）。"""
+    store = getattr(request.app.state, "template_store", None)
+    if store is None:
+        store = TemplateStore(get_config(request))
+        request.app.state.template_store = store
+    return store
 
 
 def get_terminal_manager(request: Request) -> TerminalSessionManager:

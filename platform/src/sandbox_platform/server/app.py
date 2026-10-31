@@ -15,6 +15,7 @@ from sandbox_platform import ConfigError, PlatformConfig, SandboxService, __vers
 from .errors import install_exception_handlers
 from .routes import api_router
 from .sessions import prepare_sessions_dir, purge_leftover_sessions
+from .templates import ensure_builtin_templates, prepare_templates_dir
 from .terminal import TerminalSessionManager
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("平台数据目录已就绪：%s", config.home)
 
     prepare_sessions_dir(config)
+
+    # 模板库目录与内置模板种子：准备失败只记日志，不阻断服务启动
+    try:
+        prepare_templates_dir(config)
+        injected = ensure_builtin_templates(config)
+    except (ConfigError, OSError) as exc:
+        logger.error("模板库准备失败（不阻断服务启动）：%s", exc)
+        injected = []
+    if injected:
+        logger.info("已注入内置模板：%s", "、".join(injected))
 
     # 终端会话管理器整个进程共用一个：伪终端与容器内进程都活在它身上
     service = getattr(app.state, "sandbox_service", None)

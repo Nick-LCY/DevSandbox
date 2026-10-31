@@ -6,8 +6,9 @@
 
 from __future__ import annotations
 
+import os
 import shlex
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from sandbox_platform import (
@@ -17,7 +18,6 @@ from sandbox_platform import (
     CreateResult,
     DeleteResult,
     HostImage,
-    ProxyContainerStatus,
     ProxyRestartResult,
     ProxyStatus,
     ReclaimPlan,
@@ -27,6 +27,43 @@ from sandbox_platform import ValidationError as PlatformValidationError
 
 # 环境变量值的脱敏占位：详情接口只回键名
 ENV_VALUE_MASK = "***"
+
+
+def expand_home_prefix(declaration: str) -> str:
+    """展开挂载声明里**宿主路径段**的前导 ``~``。
+
+    口径：
+
+    - 宿主路径段恰为 ``~`` 或以 ``~/`` 开头：开头的 ``~`` 换成服务运行用户的家目录。
+    - ``~other`` 形式不展开（原样交给核心包）。
+    - 容器路径段与读写标记段不展开；环境变量值、命令、工作目录也不展开。
+    - 取不到家目录时保持原样。
+    """
+    parts = declaration.split(":", 2)
+    host = parts[0]
+    expanded = _expand_home_segment(host)
+    if expanded == host:
+        return declaration
+    parts[0] = expanded
+    return ":".join(parts)
+
+
+def expand_mounts_home_prefix(mounts: list[str]) -> list[str]:
+    """批量展开挂载声明列表里宿主路径段的前导 ``~``。"""
+    return [expand_home_prefix(item) for item in mounts]
+
+
+def _expand_home_segment(host: str) -> str:
+    """展开单个宿主路径段的前导 ``~``（只处理 ``~`` 与 ``~/`` 两种形态）。"""
+    if host != "~" and not host.startswith("~/"):
+        return host
+    home = os.path.expanduser("~")
+    if not home.startswith("/"):
+        # 取不到家目录（HOME 为空或不是绝对路径）：保持原样
+        return host
+    if host == "~":
+        return home
+    return home + host[1:]
 
 
 class CreateSandboxRequest(BaseModel):
@@ -54,11 +91,15 @@ class CreateSandboxRequest(BaseModel):
     )
 
     def to_core_request(self) -> CreateRequest:
-        """转成核心包的创建入参。"""
+        """转成核心包的创建入参。
+
+        挂载声明的宿主路径段在这里展开 ``~``：展开目标是服务运行用户的家目录。
+        容器路径、环境变量、命令与工作目录一律不展开。
+        """
         return CreateRequest(
             name=self.name,
             image=self.image,
-            mount_declarations=tuple(self.mounts),
+            mount_declarations=tuple(expand_mounts_home_prefix(self.mounts)),
             command=self._command_tuple(),
             env=dict(self.env),
             workdir=self.workdir,
@@ -467,3 +508,77 @@ class TerminalSessionModel(BaseModel):
             host_pid=getattr(record, "host_pid", 0),
             exit_reason=getattr(record, "exit_reason", None),
         )
+
+
+# ---------------------------------------------------------------- 启动模板
+class TemplateConfig(BaseModel):
+    """启动模板的配置体（六项全选填）。
+
+    开了 ``extra="forbid"``：多传字段直接 400，不静默吞掉。
+    落盘只导出用户真正填过的字段——「字段缺失」与「字段填了空值」不混同
+    （模板应用语义是「出现字段整体替换、缺失字段保持现状」）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    image: str | None = Field(default=None, description="沙箱镜像（缺省取平台默认镜像）")
+    mounts: list[str] = Field(
+        default_factory=list,
+        description="用户声明挂载，格式 宿主路径:容器路径[:ro]；平台不创建也不删除宿主目录",
+    )
+    command: str | list[str] | None = Field(
+        default=None, description="容器启动命令（覆盖镜像默认入口）"
+    )
+    workdir: str | None = Field(default=None, description="容器工作目录")
+    env: dict[str, str] = Field(default_factory=dict, description="容器环境变量")
+    network: str | None = Field(
+        default=None, description="网桥网络名（缺省 <沙箱名>-net；用户指定的网络平台不回收）"
+    )
+
+
+class TemplateCreateRequest(BaseModel):
+    """创建启动模板的请求体。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(description="模板名称（零限制：不 strip、不限长、不校验字符集）")
+    config: TemplateConfig = Field(default_factory=TemplateConfig, description="模板配置体")
+
+
+class TemplateRenameRequest(BaseModel):
+    """重命名启动模板的请求体。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(description="模板新名称（零限制：不 strip、不限长、不校验字符集）")
+
+
+class TemplateResponse(BaseModel):
+    """启动模板的一条记录。
+
+    ``config`` 原样透传：用户没填过的字段就是没有，不是空值。
+    """
+
+    id: str
+    name: str
+    config: dict[str, Any] = Field(description="模板配置体（原样透传）")
+    created_at: str
+    updated_at: str
+
+    @classmethod
+    def from_record(cls, record: Any) -> TemplateResponse:
+        """由模板记录生成。"""
+        return cls(
+            id=record.id,
+            name=record.name,
+            config=dict(record.config),
+            created_at=record.created_at,
+            updated_at=record.updated_at,
+        )
+
+
+class TemplateDeleteResponse(BaseModel):
+    """删除启动模板的结果。"""
+
+    id: str
+    deleted: bool = Field(description="模板记录文件是否确实删掉了")
