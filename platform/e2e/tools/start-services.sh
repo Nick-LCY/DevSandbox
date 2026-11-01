@@ -11,7 +11,7 @@
 #   E2E_PG_IMAGE       postgres 镜像（默认 postgres:16.15-alpine3.24）
 #   E2E_PG_PASSWORD    postgres 密码（默认 postgres）
 #   E2E_APP_CONTAINER  应用容器名（默认 app）
-#   E2E_APP_IMAGE      应用容器镜像（默认复用沙箱镜像）
+#   E2E_APP_IMAGE      应用容器镜像（默认 python:3.12-alpine，docker 直接拉取）
 #   E2E_APP_PORT       应用端口（默认 8000）
 set -euo pipefail
 
@@ -21,7 +21,7 @@ PG_CONTAINER="${E2E_PG_CONTAINER:-postgres}"
 PG_IMAGE="${E2E_PG_IMAGE:-postgres:16.15-alpine3.24}"
 PG_PASSWORD="${E2E_PG_PASSWORD:-postgres}"
 APP_CONTAINER="${E2E_APP_CONTAINER:-app}"
-APP_IMAGE="${E2E_APP_IMAGE:-sandbox-platform/sandbox-default:0.1.0}"
+APP_IMAGE="${E2E_APP_IMAGE:-python:3.12-alpine}"
 APP_PORT="${E2E_APP_PORT:-8000}"
 
 log() { echo "[services] $*"; }
@@ -59,30 +59,29 @@ docker run -d \
 log "拉起静态页容器 ${APP_CONTAINER}（镜像 ${APP_IMAGE}，端口 ${APP_PORT}）"
 docker rm -f "$APP_CONTAINER" >/dev/null 2>&1 || true
 
-# 容器先建后拷文件：服务脚本、页面、自签证书都要在就位后才启动服务。
-docker create \
-  --name "$APP_CONTAINER" \
-  --network "$NETWORK" \
-  --entrypoint "" \
-  "$APP_IMAGE" \
-  sh -c "mkdir -p /srv/www; while [ ! -f /srv/www/serve.py ]; do sleep 0.2; done; exec python3 /srv/www/serve.py" >/dev/null
-docker start "$APP_CONTAINER" >/dev/null
-
-for _ in $(seq 1 50); do
-  if docker exec "$APP_CONTAINER" test -d /srv/www 2>/dev/null; then break; fi
-  sleep 0.2
-done
-
+# 自签证书先在宿主侧生成：证书要与静态页服务放在同一个目录里
 CERT_DIR="$(mktemp -d)"
 trap 'rm -rf "$CERT_DIR"' EXIT
 openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
   -subj "/CN=${APP_CONTAINER}" \
   -keyout "$CERT_DIR/key.pem" -out "$CERT_DIR/cert.pem" >/dev/null 2>&1
 
-docker cp "$E2E_DIR/fixtures/app/serve.py" "${APP_CONTAINER}:/srv/www/serve.py"
-docker cp "$E2E_DIR/fixtures/app/index.html" "${APP_CONTAINER}:/srv/www/index.html"
+# 容器先建后拷文件：静态页服务、页面、自签证书都在就位后才启动服务。
+# 镜像自带 python 解释器，容器命令直接跑静态页服务（不做任何包装）。
+docker create \
+  --name "$APP_CONTAINER" \
+  --network "$NETWORK" \
+  --entrypoint "" \
+  -e APP_PORT="$APP_PORT" \
+  "$APP_IMAGE" \
+  python /srv/www/serve.py >/dev/null
+
+# docker cp 不会创建缺失的父目录：整目录拷（/srv/www 由此创建），再拷两张证书
+docker cp "$E2E_DIR/fixtures/app" "${APP_CONTAINER}:/srv/www"
 docker cp "$CERT_DIR/key.pem" "${APP_CONTAINER}:/srv/www/key.pem"
 docker cp "$CERT_DIR/cert.pem" "${APP_CONTAINER}:/srv/www/cert.pem"
+
+docker start "$APP_CONTAINER" >/dev/null
 
 # ---------------------------------------------------------------- 就绪等待
 wait_for_postgres() {

@@ -28,8 +28,8 @@ platform/e2e/
 
 | 前提 | 说明 |
 |---|---|
-| Node 22 + pnpm | 沙箱默认镜像自带（nvm 管理），宿主也可用 |
-| 浏览器 | Playwright chromium 1.64.1（构建号 1248），沙箱默认镜像已预装，**不要**再跑 `playwright install` |
+| Node 22 + pnpm | 沙箱镜像自带（nvm 管理），宿主也可用；**默认全栈镜像已退役**，沙箱镜像须自行提供 Node 22 与 pnpm |
+| 浏览器 | Playwright chromium 1.64.1（构建号 1248），沙箱镜像需已预装，**不要**再跑 `playwright install` |
 | 依赖容器 | postgres 与被测应用容器与沙箱容器**同一网桥网络**，按容器名互访 |
 | 数据库客户端 | 沙箱镜像内**没有** psql，shell 里操作数据库一律 `docker exec <pg容器名> psql` |
 
@@ -172,13 +172,17 @@ Error: 依赖「app」等待超时；判据：HTTP 状态码 200 且响应体包
 
 ## 七、在沙箱里跑通（完整步骤）
 
+> **镜像要求**：默认全栈沙箱镜像已退役。跑这套基建需要**沙箱镜像自带 Node 22 + pnpm + Playwright chromium 1.64.1**
+> （示例：`node:22-bookworm`；pnpm 用 `corepack enable pnpm` 启用，浏览器用
+> `pnpm exec playwright install --with-deps chromium` 装）。
+
 **标准流程（任务 06 之后）**：被测应用是真实全栈应用，环境由示例项目一把起：
 
 ```bash
 # 1. 宿主：创建沙箱，把代码目录挂进去
 cd platform
 uv run python cli/sandboxctl.py create sample-lab \
-  --image sandbox-platform/sandbox-default:0.1.0 \
+  --image node:22-bookworm \
   --mount "$PWD/examples/fullstack-sample:/workspace/fullstack-sample" \
   --mount "$PWD/e2e:/workspace/e2e"
 
@@ -206,7 +210,7 @@ uv run python cli/sandboxctl.py delete sample-lab --yes
 ```bash
 # 沙箱容器内
 cd /workspace/e2e
-bash tools/start-services.sh        # postgres + 静态页容器 app
+bash tools/start-services.sh        # postgres + 静态页容器 app（静态页底座镜像：python:3.12-alpine）
 pnpm run test:scripted
 ```
 
