@@ -21,6 +21,8 @@
 
 > `scripts/`（一期任务 04 的冒烟脚本目录，含 `scripts/smoke-lifecycle.sh`）已于 2026-11-01 整体移除：该脚本跑的是「创建 → 关闭 → 启动 → 删除 → 回收校验」，同一链路已由宿主级 pytest 用例 `tests/test_root_lifecycle.py::test_full_lifecycle_create_stop_start_delete` 覆盖，脚本不再单独维护。
 
+> `examples/`（一期任务 06 的全栈示例项目，含 `examples/fullstack-sample/`）已于 2026-11-01 整体移除：示例依赖的默认全栈沙箱镜像已退役，示例用例链随之出栈，端到端验收收敛为 `e2e/` 的「静态页可达冒烟 + 契约断言」；示例的实测记录留档在仓库根 `RESULTS.md` 与 `e2e/RESULTS.md`，内容一字未改。
+
 ## 环境准备
 
 ```bash

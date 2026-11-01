@@ -5,7 +5,6 @@
  */
 
 import { DependencySpec } from './config';
-import { withClient } from './postgres';
 
 /** HTTP 判据的单次请求超时（毫秒）。 */
 const HTTP_PROBE_TIMEOUT_MS = 10_000;
@@ -13,10 +12,6 @@ const HTTP_PROBE_TIMEOUT_MS = 10_000;
 /** 判据检查：不通过就抛错，错误信息里带依赖名与判据。 */
 export async function checkDependency(dep: DependencySpec): Promise<void> {
   try {
-    if (dep.type === 'postgres') {
-      await checkPostgres(dep);
-      return;
-    }
     if (dep.type === 'http') {
       await checkHttp(dep);
       return;
@@ -27,15 +22,6 @@ export async function checkDependency(dep: DependencySpec): Promise<void> {
       `依赖「${dep.name}」未就绪；判据：${dep.criterion}；原因：${(error as Error).message}`,
     );
   }
-}
-
-async function checkPostgres(dep: DependencySpec): Promise<void> {
-  await withClient(dep.url, async (client) => {
-    const result = await client.query<{ ok: number }>('SELECT 1 AS ok');
-    if (result.rows.length !== 1 || Number(result.rows[0].ok) !== 1) {
-      throw new Error(`SELECT 1 返回异常：${JSON.stringify(result.rows)}`);
-    }
-  });
 }
 
 async function checkHttp(dep: DependencySpec): Promise<void> {

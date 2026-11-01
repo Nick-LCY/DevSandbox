@@ -1,15 +1,11 @@
 #!/usr/bin/env bash
-# start-services.sh —— 在沙箱网内拉起依赖容器
+# start-services.sh —— 在沙箱网内拉起静态页容器
 #
-# 拉起两个容器（都在沙箱网桥网络上，按容器名互访）：
-#   postgres —— 依赖数据库，容器名 postgres
-#   app      —— 最小静态页，容器名 app，端口 8000
+# 拉起一个容器（在沙箱网桥网络上，按容器名互访）：
+#   app —— 最小静态页，容器名 app，端口 8000
 #
 # 环境变量：
 #   E2E_NETWORK        沙箱网桥网络名（不给就自动从沙箱容器上读）
-#   E2E_PG_CONTAINER   postgres 容器名（默认 postgres）
-#   E2E_PG_IMAGE       postgres 镜像（默认 postgres:16.15-alpine3.24）
-#   E2E_PG_PASSWORD    postgres 密码（默认 postgres）
 #   E2E_APP_CONTAINER  应用容器名（默认 app）
 #   E2E_APP_IMAGE      应用容器镜像（默认 python:3.12-alpine，docker 直接拉取）
 #   E2E_APP_PORT       应用端口（默认 8000）
@@ -17,9 +13,6 @@ set -euo pipefail
 
 E2E_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-PG_CONTAINER="${E2E_PG_CONTAINER:-postgres}"
-PG_IMAGE="${E2E_PG_IMAGE:-postgres:16.15-alpine3.24}"
-PG_PASSWORD="${E2E_PG_PASSWORD:-postgres}"
 APP_CONTAINER="${E2E_APP_CONTAINER:-app}"
 APP_IMAGE="${E2E_APP_IMAGE:-python:3.12-alpine}"
 APP_PORT="${E2E_APP_PORT:-8000}"
@@ -43,17 +36,6 @@ detect_network() {
 
 NETWORK="$(detect_network)"
 log "沙箱网络：${NETWORK}"
-
-# ---------------------------------------------------------------- postgres
-log "拉起 postgres 容器 ${PG_CONTAINER}（镜像 ${PG_IMAGE}）"
-docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
-docker run -d \
-  --name "$PG_CONTAINER" \
-  --network "$NETWORK" \
-  -e POSTGRES_USER=postgres \
-  -e POSTGRES_PASSWORD="$PG_PASSWORD" \
-  -e POSTGRES_DB=postgres \
-  "$PG_IMAGE" >/dev/null
 
 # ---------------------------------------------------------------- app
 log "拉起静态页容器 ${APP_CONTAINER}（镜像 ${APP_IMAGE}，端口 ${APP_PORT}）"
@@ -84,33 +66,33 @@ docker cp "$CERT_DIR/cert.pem" "${APP_CONTAINER}:/srv/www/cert.pem"
 docker start "$APP_CONTAINER" >/dev/null
 
 # ---------------------------------------------------------------- 就绪等待
-wait_for_postgres() {
-  local deadline=$((SECONDS + 90))
-  while [ "$SECONDS" -lt "$deadline" ]; do
-    if docker exec "$PG_CONTAINER" pg_isready -U postgres -d postgres >/dev/null 2>&1; then
-      log "postgres 已就绪"
-      return 0
-    fi
-    sleep 1
-  done
-  echo "postgres 容器 ${PG_CONTAINER} 未在 90 秒内就绪" >&2
-  return 1
+# 探测地址：优先用容器在沙箱网内的地址（容器内外都探得到），
+# 拿不到地址时才退回容器名（只有容器内能解析）。
+app_probe_addr() {
+  local ip
+  ip="$(docker inspect "$APP_CONTAINER" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null | awk '{print $1}')"
+  if [ -n "$ip" ]; then
+    echo "$ip"
+  else
+    echo "$APP_CONTAINER"
+  fi
 }
 
 wait_for_app() {
   local deadline=$((SECONDS + 60))
+  local addr
+  addr="$(app_probe_addr)"
   while [ "$SECONDS" -lt "$deadline" ]; do
-    if node -e "fetch('http://${APP_CONTAINER}:${APP_PORT}/').then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1))" >/dev/null 2>&1; then
-      log "应用容器 ${APP_CONTAINER} 已就绪：http://${APP_CONTAINER}:${APP_PORT}"
+    if node -e "fetch('http://${addr}:${APP_PORT}/').then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1))" >/dev/null 2>&1; then
+      log "静态页容器 ${APP_CONTAINER} 已就绪：http://${APP_CONTAINER}:${APP_PORT}"
       return 0
     fi
     sleep 1
   done
-  echo "应用容器 ${APP_CONTAINER} 未在 60 秒内就绪" >&2
+  echo "静态页容器 ${APP_CONTAINER} 未在 60 秒内就绪" >&2
   return 1
 }
 
-wait_for_postgres
 wait_for_app
 
-log "依赖容器就绪：${PG_CONTAINER}、${APP_CONTAINER}（同一网络 ${NETWORK}）"
+log "静态页容器就绪：${APP_CONTAINER}（网络 ${NETWORK}）"

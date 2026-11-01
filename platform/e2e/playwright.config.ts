@@ -1,14 +1,11 @@
 /**
  * 端到端测试基建 —— Playwright 配置。
  *
- * 两个 project：
+ * 单 project：
  *   scripted —— 跑 `tests/e2e` 下的脚本化用例，退出码即判定结果（0 = 通过）。
- *   explore  —— 跑 `explore` 目录下的探索会话，trace 全开、产出截图与 trace，
- *               退出码恒为 0，不参与判定。
  *
- * 两种模式都能用单条命令单独执行：
+ * 跑法：
  *   pnpm run test:scripted
- *   pnpm run test:explore
  *
  * 产物（截图、trace、报告）一律落在用户声明挂载的代码目录 `artifacts/` 下，
  * 不写容器临时层、不上传外部服务。
@@ -21,11 +18,10 @@ const ARTIFACTS = 'artifacts';
 const WORKERS = Number(process.env.E2E_WORKERS ?? '2');
 
 export default defineConfig({
-  // testDir 取基建根目录，两个 project 各自用 testMatch 圈定自己的用例范围。
-  testDir: './',
+  // 用例目录收窄到 tests/e2e，基建自身的脚本与配置不会被当成用例。
+  testDir: './tests/e2e',
   outputDir: `${ARTIFACTS}/test-results`,
   globalSetup: './global-setup.ts',
-  globalTeardown: './global-teardown.ts',
   timeout: 60_000,
   expect: { timeout: 10_000 },
   fullyParallel: true,
@@ -53,13 +49,8 @@ export default defineConfig({
   projects: [
     {
       name: 'scripted',
-      testMatch: 'tests/e2e/**/*.spec.ts',
+      testMatch: '**/*.spec.ts',
       use: { ...devices['Desktop Chrome'] },
-    },
-    {
-      name: 'explore',
-      testMatch: 'explore/**/*.spec.ts',
-      use: { ...devices['Desktop Chrome'], trace: 'on', screenshot: 'on' },
     },
   ],
 });

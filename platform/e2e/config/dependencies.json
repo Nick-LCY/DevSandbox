@@ -2,31 +2,6 @@
   "$comment": "依赖清单（数据驱动）。可用环境变量 E2E_DEPENDENCIES_FILE 指向别的清单文件；单个依赖的连接串可用同名环境变量覆盖。",
   "dependencies": [
     {
-      "name": "postgres",
-      "type": "postgres",
-      "url": "postgres://postgres:postgres@postgres:5432/postgres",
-      "urlEnv": "E2E_PG_URL",
-      "criterion": "SELECT 1 返回且仅返回一行 1（node pg 连容器名 postgres:5432）",
-      "timeoutSeconds": 120
-    },
-    {
-      "name": "minio",
-      "type": "http",
-      "url": "http://minio:9000/minio/health/live",
-      "urlEnv": "E2E_MINIO_URL",
-      "criterion": "HTTP 状态码 200（MinIO 存活探针 /minio/health/live）",
-      "timeoutSeconds": 120
-    },
-    {
-      "name": "logto",
-      "type": "http",
-      "url": "http://logto:3001/oidc/.well-known/openid-configuration",
-      "urlEnv": "E2E_LOGTO_URL",
-      "criterion": "HTTP 状态码 200 且响应体包含 issuer（Logto 默认租户的 OIDC 发现文档）",
-      "timeoutSeconds": 120,
-      "bodyIncludes": "\"issuer\""
-    },
-    {
       "name": "app",
       "type": "http",
       "url": "http://app:8000/",

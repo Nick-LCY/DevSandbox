@@ -1,31 +1,15 @@
 /**
  * 健康检查门禁 —— 全局 setup。
  *
- * 顺序固定，不可调换：
- *   ① 等待依赖健康（每个依赖有明确判据，单依赖等待上限 120 秒）
- *   ② 执行数据库迁移（迁移进模板库）
- *   ③ 载入种子数据（种进模板库）
- * 三步全过才允许开始跑用例；任一步失败立即整体失败，并打印失败依赖名与判据。
- *
- * 模板库是每用例独立数据库的克隆源：用例库由 `CREATE DATABASE ... TEMPLATE ...` 得到。
+ * 单步：等待静态页健康。判据数据驱动（`config/dependencies.json`），
+ * 单依赖等待上限 120 秒；判据通过才允许开始跑用例，
+ * 失败立即整体失败，并打印失败依赖名与判据。
  */
 
 import fs from 'node:fs';
-import path from 'node:path';
 
-import {
-  adminUrl,
-  artifactsDir,
-  databaseUrl,
-  e2eRoot,
-  loadDependencies,
-  postgresDependency,
-  templateDatabase,
-  withDatabase,
-  DependencySpec,
-} from './helpers/config';
+import { artifactsDir, loadDependencies, DependencySpec } from './helpers/config';
 import { checkDependency } from './helpers/health';
-import { createDatabase, dropDatabase, withClient } from './helpers/postgres';
 
 /** 单依赖等待上限（毫秒）。 */
 const MAX_WAIT_MS = 120_000;
@@ -65,47 +49,6 @@ async function waitForDependency(dep: DependencySpec): Promise<void> {
   );
 }
 
-/** 按文件名排序取 SQL 文件。 */
-function sqlFiles(dirName: string): string[] {
-  const dir = path.join(e2eRoot(), dirName);
-  if (!fs.existsSync(dir)) return [];
-  return fs
-    .readdirSync(dir)
-    .filter((name) => name.toLowerCase().endsWith('.sql'))
-    .sort()
-    .map((name) => path.join(dir, name));
-}
-
-/** 第 ② 步：重建模板库并执行迁移。 */
-async function runMigrations(admin: string, template: string): Promise<void> {
-  await dropDatabase(admin, template);
-  await createDatabase(admin, template);
-  const templateUrl = withDatabase(admin, template);
-  const files = sqlFiles('migrations');
-  if (files.length === 0) throw new Error('migrations 目录里没有迁移脚本');
-  await withClient(templateUrl, async (client) => {
-    for (const file of files) {
-      await client.query(fs.readFileSync(file, 'utf8'));
-      log(`迁移已执行：${path.basename(file)}`);
-    }
-  });
-}
-
-/** 第 ③ 步：载入种子数据。 */
-async function loadSeed(admin: string, template: string): Promise<void> {
-  const templateUrl = withDatabase(admin, template);
-  const files = sqlFiles('seeds');
-  if (files.length === 0) throw new Error('seeds 目录里没有种子脚本');
-  await withClient(templateUrl, async (client) => {
-    for (const file of files) {
-      await client.query(fs.readFileSync(file, 'utf8'));
-      log(`种子已载入：${path.basename(file)}`);
-    }
-    const versions = await client.query<{ version: string }>('SELECT version FROM seed_meta ORDER BY version');
-    log(`模板库 ${template} 的种子版本：${versions.rows.map((row) => row.version).join(', ') || '（空）'}`);
-  });
-}
-
 export default async function globalSetup(): Promise<void> {
   const runId = `run_${Date.now().toString(36)}`;
   process.env.E2E_RUN_ID = runId;
@@ -113,21 +56,12 @@ export default async function globalSetup(): Promise<void> {
   fs.mkdirSync(artifactsDir(), { recursive: true });
 
   const dependencies = loadDependencies();
-  const admin = adminUrl(dependencies);
-  const template = templateDatabase();
-  const pgDep = postgresDependency(dependencies);
 
-  log(`运行编号 ${runId}；模板库 ${template}；依赖 ${dependencies.map((d) => d.name).join('、')}`);
-  log('第 ① 步：等待依赖健康');
+  log(`运行编号 ${runId}；依赖 ${dependencies.map((d) => d.name).join('、')}`);
+  log('第 ① 步：等待静态页健康');
   for (const dep of dependencies) {
     await waitForDependency(dep);
   }
 
-  log('第 ② 步：执行数据库迁移');
-  await runMigrations(admin, template);
-
-  log('第 ③ 步：载入种子数据');
-  await loadSeed(admin, template);
-
-  log(`门禁通过（postgres 连接串 ${pgDep.url}），开始执行用例`);
+  log('门禁通过，开始执行用例');
 }

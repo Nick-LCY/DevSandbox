@@ -2,7 +2,7 @@
   "name": "@sandbox-platform/e2e",
   "version": "0.1.0",
   "private": true,
-  "description": "沙箱平台端到端测试基建：脚本模式 + 探索模式 + 健康检查门禁 + 每用例独立数据库",
+  "description": "沙箱平台端到端测试基建：静态页可达冒烟 + 健康检查门禁 + 契约断言",
   "engines": {
     "node": ">=22"
   },
@@ -10,22 +10,16 @@
   "scripts": {
     "test": "pnpm run test:scripted",
     "test:scripted": "playwright test --project=scripted",
-    "test:explore": "bash tools/run-explore.sh",
-    "test:all": "bash tools/run-all.sh",
     "gate": "bash tools/assert-contracts.sh",
     "install:deps": "bash tools/install-deps.sh",
-    "db:new": "bash tools/new-test-db.sh create",
-    "db:bench": "bash tools/new-test-db.sh bench 10",
     "services:up": "bash tools/start-services.sh",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@playwright/test": "1.64.1",
-    "pg": "8.23.1"
+    "@playwright/test": "1.64.1"
   },
   "devDependencies": {
     "@types/node": "22.20.5",
-    "@types/pg": "8.23.1",
     "typescript": "5.9.3"
   }
 }

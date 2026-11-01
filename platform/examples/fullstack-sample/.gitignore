@@ -1,6 +1,0 @@
-# 依赖与构建产物（正常情况下这些都在容器内的 /opt/sample，不进仓库）
-.venv/
-node_modules/
-dist/
-__pycache__/
-*.pyc

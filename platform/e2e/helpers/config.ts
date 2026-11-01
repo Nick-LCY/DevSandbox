@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /** 单个依赖的健康判据类型。 */
-export type DependencyType = 'postgres' | 'http';
+export type DependencyType = 'http';
 
 /** 一个依赖的声明。 */
 export interface DependencySpec {
@@ -36,16 +36,6 @@ export interface DependencyManifest {
 
 /** 规定的单依赖等待超时上限（秒）。 */
 export const MAX_DEPENDENCY_TIMEOUT_SECONDS = 120;
-
-/** 模板库名：用例库由它克隆而来。 */
-export function templateDatabase(): string {
-  return process.env.E2E_TEMPLATE_DB ?? 'e2e_template';
-}
-
-/** 用例库名前缀（并行隔离与残留清理都按它识别）。 */
-export function testDatabasePrefix(): string {
-  return process.env.E2E_TEST_DB_PREFIX ?? 'e2e_test_';
-}
 
 /** 基建根目录：优先环境变量，其次向上找 `playwright.config.ts`。 */
 export function e2eRoot(): string {
@@ -96,28 +86,4 @@ export function loadDependencies(): DependencySpec[] {
     const override = dep.urlEnv ? process.env[dep.urlEnv] : undefined;
     return { ...dep, url: override && override.length > 0 ? override : dep.url };
   });
-}
-
-/** 找 postgres 依赖（迁移、种子、模板库都走它）。 */
-export function postgresDependency(dependencies: DependencySpec[]): DependencySpec {
-  const dep = dependencies.find((item) => item.type === 'postgres');
-  if (!dep) throw new Error('依赖清单里没有 postgres 依赖，无法执行迁移与种子');
-  return dep;
-}
-
-/** 把连接串里的库名换成另一个（连接串其余部分保持不变）。 */
-export function withDatabase(url: string, database: string): string {
-  const parsed = new URL(url);
-  parsed.pathname = `/${database}`;
-  return parsed.toString();
-}
-
-/** 用例库连接串：以 postgres 依赖的连接串为底，换库名。 */
-export function databaseUrl(dependencies: DependencySpec[], database: string): string {
-  return withDatabase(postgresDependency(dependencies).url, database);
-}
-
-/** 管理连接串（连到 postgres 库本身，用于建库删库）。 */
-export function adminUrl(dependencies: DependencySpec[]): string {
-  return databaseUrl(dependencies, 'postgres');
 }

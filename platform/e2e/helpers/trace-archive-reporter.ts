@@ -2,7 +2,7 @@
  * 产物归档 reporter —— 把每条用例的 trace 复制到 `artifacts/traces/`。
  *
  * 原因：Playwright 每次运行都会清空 `outputDir`，后一次运行会覆盖前一次运行的 trace。
- * 这里额外留一份按「模式 + 用例」命名的副本，脚本模式与探索模式的 trace 可以同时保留。
+ * 这里额外留一份按「project + 用例」命名的副本，多次运行的 trace 可以同时保留。
  */
 
 import fs from 'node:fs';

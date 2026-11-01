@@ -1,17 +1,15 @@
+import { test, expect } from '@playwright/test';
+
 import { screenshotPath } from '../../helpers/artifacts';
-import { test, expect } from '../../fixtures/test-db';
 
 /**
- * 最小端到端样例：打开应用首页 → 断言 data-testid 元素存在 → 截图。
+ * 最小端到端冒烟：打开静态页首页 → 断言 data-testid 元素存在 → 截图。
  *
- * 只断言 page-home-title：这一个标识在「基建自检用的最小静态页」与
- * 「全栈示例应用」上都存在，因此本用例在两种流程下都成立。
- * 静态页更细的断言在探索模式里做（不参与判定）。
+ * 只断言 page-home-title：这一个标识是静态页底座的稳定契约，
+ * 断言它就等于断言「页面可达 + 定位入口可用」。
  */
-test.describe('最小端到端样例', () => {
-  test('打开示例页 → 断言 data-testid 元素存在 → 截图', async ({ page, testDb }, testInfo) => {
-    console.log(`[用例] 用例库=${testDb.name} worker=${testInfo.workerIndex}`);
-
+test.describe('最小端到端冒烟', () => {
+  test('打开静态页 → 断言 data-testid 元素存在 → 截图', async ({ page }, testInfo) => {
     const response = await page.goto('/');
     expect(response?.status()).toBe(200);
 
