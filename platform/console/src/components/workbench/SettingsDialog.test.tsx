@@ -10,7 +10,8 @@
  * - 模板列表渲染（名称 + 更新时间）与空态；
  * - 行内重命名：回车提交、Esc 取消、空名禁提交；
  * - 删除走确认弹窗，文案写明只删模板、不影响已创建的沙箱；
- * - 删除结果说「没删掉」时提示「记录已不存在」，不谎报已删除。
+ * - 删除结果说「没删掉」时提示「记录已不存在」，不谎报已删除；
+ * - 模板管理区不再挂说明段（模板是什么由文档讲，界面不重复）。
  */
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -162,6 +163,13 @@ describe('设置抽屉的模板管理区', () => {
 
     const empty = await screen.findByTestId('page-settings-template-empty');
     expect(empty.textContent).toContain('还没有模板');
+  });
+
+  it('模板管理区不再挂说明段', async () => {
+    renderDialog();
+
+    await screen.findByTestId('page-settings-template-empty');
+    expect(document.body.textContent).not.toContain('模板是一份沙箱启动配置');
   });
 
   it('读不到模板列表：弹失败 toast（来源 settings-template）', async () => {

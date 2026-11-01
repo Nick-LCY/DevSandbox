@@ -13,6 +13,8 @@
  *   构建时间；
  * - 弹层顶部没有空白块（第一块可见内容就是列表首行）；
  * - 输入框右侧有下拉箭头；
+ * - 精简后的文案：挂载空态只留「暂未声明挂载。」、模板下拉下不再挂说明段、
+ *   保存模板弹窗只留「仅保存已填写内容。」；
  * - 没选镜像就提交：抽屉里就地报「请选择沙箱镜像」；
  * - 模板回填的时序：模板列表（毫秒级）先到、镜像列表（秒级）后到时，
  *   模板镜像不被静默清空（镜像真不在宿主上时，列表到齐后再清）；
@@ -896,7 +898,8 @@ describe('新建沙箱抽屉的保存为模板', () => {
     );
   });
 
-  it('保存的是当前表单：只有有值的字段进配置', async () => {    mocks.createTemplate.mockResolvedValue({ id: 'tpl_x', name: '开发环境', config: {} });
+  it('保存为模板：只有有值的字段进配置', async () => {
+    mocks.createTemplate.mockResolvedValue({ id: 'tpl_x', name: '开发环境', config: {} });
 
     renderDialog();
     await waitTemplateList();
@@ -947,5 +950,33 @@ describe('新建沙箱抽屉的保存为模板', () => {
     const config = mocks.createTemplate.mock.calls[0][0].config;
     // 只留填了路径的那一行（路径先 trim），空行不进配置。
     expect(config.mounts).toEqual(['/data:/workspace']);
+  });
+});
+
+describe('新建沙箱抽屉的精简文案', () => {
+  it('挂载空态只留一句「暂未声明挂载。」', async () => {
+    renderDialog();
+
+    const empty = await screen.findByTestId('page-sandbox-create-mount-empty');
+    expect(empty.textContent).toBe('暂未声明挂载。');
+    // 挂载格式的说明段已删（格式口径在工程文档里，不占界面）。
+    expect(empty.textContent).not.toContain('挂载格式');
+  });
+
+  it('模板下拉下不再挂说明段', async () => {
+    renderDialog();
+    await waitTemplateList();
+
+    expect(document.body.textContent).not.toContain('选中模板即回填');
+  });
+
+  it('保存模板弹窗的说明只留「仅保存已填写内容。」', async () => {
+    renderDialog();
+    await waitTemplateList();
+
+    fireEvent.click(screen.getByTestId('page-sandbox-create-template-save-button'));
+    const dialog = await screen.findByTestId('page-sandbox-create-template-dialog');
+    expect(dialog.textContent).toContain('仅保存已填写内容。');
+    expect(dialog.textContent).not.toContain('保存的是当前表单里的');
   });
 });

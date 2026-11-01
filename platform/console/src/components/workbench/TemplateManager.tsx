@@ -142,12 +142,6 @@ export function TemplateManager() {
           )}
         </button>
       </div>
-
-      <p className="mb-2 text-[12px] text-muted-foreground">
-        模板是一份沙箱启动配置：新建沙箱时选中即回填。删除模板只影响模板本身，
-        已经创建好的沙箱不受影响。
-      </p>
-
       {loading && templates.length === 0 && (
         <p className="text-[12.5px] text-muted-foreground" data-testid="page-settings-template-loading">
           正在读取模板列表…

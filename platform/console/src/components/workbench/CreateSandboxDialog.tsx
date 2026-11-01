@@ -614,10 +614,6 @@ export function CreateSandboxDialog({
               </ComboboxPositioner>
             </ComboboxPortal>
           </Combobox>
-          <p className="mt-1.5 text-[12px] text-muted-foreground">
-            选中模板即回填表单：模板里写了的字段整体替换，没写的字段保持现状。
-            模板声明原样回填，不做任何占位符替换。
-          </p>
           {!loadingTemplates && templates.length === 0 && !templatesError && (
             <p className="mt-1.5 text-[12px] text-muted-foreground" data-testid="page-sandbox-create-template-empty">
               还没有模板。填好表单后点页脚的「保存为模板」把这份配置存起来。
@@ -780,7 +776,7 @@ export function CreateSandboxDialog({
             </div>
             {mounts.length === 0 && (
               <p className="text-[12px] text-muted-foreground" data-testid="page-sandbox-create-mount-empty">
-                暂未声明挂载。挂载格式为 宿主路径:容器路径[:ro]，平台不创建也不删除宿主目录。
+                暂未声明挂载。
               </p>
             )}
             <ul className="m-0 list-none space-y-2 p-0">
@@ -945,8 +941,7 @@ export function CreateSandboxDialog({
           </p>
         )}
         <p className="mt-2 text-[12px] text-muted-foreground">
-          保存的是当前表单里的镜像、挂载声明、启动命令、工作目录与环境变量；
-          没填的字段不进模板（加载时保持表单现状）。
+          仅保存已填写内容。
         </p>
       </ModalShell>
     </>
