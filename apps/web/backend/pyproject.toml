@@ -1,0 +1,46 @@
+[project]
+name = "sandbox-console-backend"
+version = "0.1.0"
+description = "沙箱平台控制台服务端（HTTP 接口、网页终端桥接、前端构建产物托管）"
+requires-python = ">=3.12"
+dependencies = [
+    # 核心包：服务端只做编排与转译，生命周期逻辑全在核心包内
+    "sandbox-platform-core",
+    "fastapi>=0.162.0",
+    "uvicorn>=0.54.0",
+    # 下界 15.0：uvicorn 的 sansio WebSocket 实现（--ws auto 默认选中它）
+    # 直接 import 顶层 websockets.server 模块取 ServerProtocol，
+    # 该模块只在 websockets 14.0 起的新 asyncio 实现里存在；
+    # 版本更低会让服务在启动时直接 ImportError，网页终端根本起不来。
+    "websockets>=15.0",
+]
+
+[tool.uv.sources]
+# 核心包取工作区内的本地成员，不从索引拉
+sandbox-platform-core = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.16.0",
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sandbox_console"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "root: 需要真实 root 权限与 systemd 用户会话的宿主级测试",
+]
+# 模块前缀两条都要在：核心包（sandbox_platform）与服务端包（sandbox_console）
+# 内部触发的 DeprecationWarning 一律升级为错误。
+filterwarnings = [
+    "error::DeprecationWarning:sandbox_platform.*",
+    "error::DeprecationWarning:sandbox_console.*",
+]

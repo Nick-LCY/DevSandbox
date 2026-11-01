@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# 构建产物
+dist/
+build/
+*.egg-info/
+
+# 前端工程（网页控制台）
+web/frontend/node_modules/
+web/frontend/dist/
+web/frontend/.vite/
+
+# 一次性视觉原型（不进版本库）
+web/frontend/prototype/
+
+# 端到端验收产物（截图 / trace / 报告 / 运行期状态）
+web/frontend/tests/artifacts/
+web/frontend/tests/.runtime/
+
+# 端到端基建（apps/web/e2e 自带 .gitignore，这里兜底同款规则）
+web/e2e/node_modules/
+web/e2e/artifacts/
+
+# 平台运行期数据（默认数据根目录在 /var/lib，这里兜底本地调试目录）
+platform-home/

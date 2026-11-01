@@ -1,0 +1,35 @@
+# 工作区根：只做成员编排，不装包（virtual project）。
+#
+# 成员：
+#   core        —— 核心包（sandbox_platform），与界面无关的生命周期内核
+#   web/backend —— 控制台服务端包（sandbox_console），HTTP 接口与网页终端桥接
+#
+# 依赖方向单向：web/backend 依赖 core，core 不认识 web/backend。
+# 命令行（apps/cli）不是成员：它是单文件薄壳，用
+# `uv run --project apps/core python apps/cli/sandboxctl.py` 跑。
+[project]
+name = "sandbox-apps"
+version = "0.1.0"
+description = "沙箱平台应用工作区：核心包、控制台服务端、网页控制台与命令行"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["core", "web/backend"]
+
+[tool.ruff.lint]
+# 仓库历史基线规则集：只保留 pyflakes 错误（E4 导入、E7 语句、E9 运行时）
+# 与 pyflakes 未定义名（F）这几类致命问题。
+#
+# 为什么不用 ruff 的默认规则集：新版 ruff 默认选中的规则集在仓库里命中 59 处
+# 历史风格项（未排序导入 18 处、函数默认值里的函数调用 19 处、宽泛 except 8 处等），
+# 全部是既有代码的既有写法，不在清偿范围。真要一次性清偿会制造大量无关改动，
+# 掩盖真实差异。因此这里显式把口径钉死在历史基线上，
+# 往后新写的代码按基线规则守住，风格清债另开一轮。
+#
+# 配置放在工作区根：两个包目录里没有 [tool.ruff] 段，
+# ruff 会逐级向上找到本文件，两个包共用同一套规则。
+select = ["E4", "E7", "E9", "F"]
