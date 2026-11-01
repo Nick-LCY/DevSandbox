@@ -4,7 +4,6 @@ import {
   applyTemplateConfig,
   collectTemplateConfig,
   parseTemplateMounts,
-  substituteNamePlaceholder,
   type TemplateFormState,
 } from './templates';
 
@@ -21,23 +20,6 @@ function emptyForm(overrides: Partial<TemplateFormState> = {}): TemplateFormStat
     ...overrides,
   };
 }
-
-describe('substituteNamePlaceholder', () => {
-  it('有沙箱名：{name} 换成沙箱名', () => {
-    expect(substituteNamePlaceholder('/data/{name}', 'demo')).toBe('/data/demo');
-    expect(substituteNamePlaceholder('{name}', 'demo')).toBe('demo');
-    expect(substituteNamePlaceholder('a-{name}-b-{name}', 'demo')).toBe('a-demo-b-demo');
-  });
-
-  it('沙箱名为空：占位符原样保留', () => {
-    expect(substituteNamePlaceholder('/data/{name}', '')).toBe('/data/{name}');
-    expect(substituteNamePlaceholder('{name}', '')).toBe('{name}');
-  });
-
-  it('没有占位符：原样返回', () => {
-    expect(substituteNamePlaceholder('/data/project', 'demo')).toBe('/data/project');
-  });
-});
 
 describe('parseTemplateMounts', () => {
   it('解析 宿主路径:容器路径 与只读后缀', () => {
@@ -80,11 +62,7 @@ describe('applyTemplateConfig', () => {
       network: 'old-net',
     });
 
-    const result = applyTemplateConfig(
-      form,
-      { image: 'new-image:1', command: 'new-command' },
-      'demo',
-    );
+    const result = applyTemplateConfig(form, { image: 'new-image:1', command: 'new-command' });
 
     expect(result.form.image).toBe('new-image:1');
     expect(result.form.command).toBe('new-command');
@@ -98,15 +76,11 @@ describe('applyTemplateConfig', () => {
 
   it('字段缺失与字段填了空值是两回事', () => {
     // 缺 image 字段：表单里的镜像保持不变。
-    const kept = applyTemplateConfig(emptyForm({ image: 'keep:1' }), { command: 'x' }, 'demo');
+    const kept = applyTemplateConfig(emptyForm({ image: 'keep:1' }), { command: 'x' });
     expect(kept.form.image).toBe('keep:1');
 
     // image 出现且取值是 null：整体替换（清空选择）。
-    const cleared = applyTemplateConfig(
-      emptyForm({ image: 'keep:1' }),
-      { image: null },
-      'demo',
-    );
+    const cleared = applyTemplateConfig(emptyForm({ image: 'keep:1' }), { image: null });
     expect(cleared.form.image).toBe('');
   });
 
@@ -118,7 +92,7 @@ describe('applyTemplateConfig', () => {
       ],
     });
 
-    const result = applyTemplateConfig(form, { mounts: ['/new/c:/c'] }, 'demo');
+    const result = applyTemplateConfig(form, { mounts: ['/new/c:/c'] });
 
     expect(result.form.mounts).toEqual([
       { hostPath: '/new/c', containerPath: '/c', readOnly: false },
@@ -127,95 +101,75 @@ describe('applyTemplateConfig', () => {
 
   it('env 整组替换', () => {
     const form = emptyForm({ env: { OLD: '1', KEEP: '2' } });
-    const result = applyTemplateConfig(form, { env: { NEW: '3' } }, 'demo');
+    const result = applyTemplateConfig(form, { env: { NEW: '3' } });
     expect(result.form.env).toEqual({ NEW: '3' });
   });
 
-  it('占位符替换作用在整条挂载声明上（宿主与容器路径都换，:ro 不受影响）', () => {
-    const result = applyTemplateConfig(
-      emptyForm(),
-      { mounts: ['/data/{name}:/work/{name}:ro'], env: { APP: '{name}' } },
-      'demo',
-    );
+  it('模板声明原样回填：挂载里的字面量一个都不替换', () => {
+    const result = applyTemplateConfig(emptyForm(), {
+      mounts: ['/data/{name}:/work/{name}:ro'],
+      env: { APP: '{name}' },
+    });
     expect(result.form.mounts).toEqual([
-      { hostPath: '/data/demo', containerPath: '/work/demo', readOnly: true },
+      { hostPath: '/data/{name}', containerPath: '/work/{name}', readOnly: true },
     ]);
-    expect(result.form.env).toEqual({ APP: 'demo' });
+    expect(result.form.env).toEqual({ APP: '{name}' });
   });
 
-  it('沙箱名为空：占位符原样保留', () => {
-    const result = applyTemplateConfig(
-      emptyForm(),
-      { mounts: ['/data/{name}:/workspace'], command: 'echo {name}' },
-      '',
-    );
-    expect(result.form.mounts[0].hostPath).toBe('/data/{name}');
+  it('模板声明原样回填：命令、工作目录与网络同样不替换', () => {
+    const result = applyTemplateConfig(emptyForm(), {
+      command: 'echo {name}',
+      workdir: '/work/{name}',
+      network: 'net-{name}',
+    });
     expect(result.form.command).toBe('echo {name}');
+    expect(result.form.workdir).toBe('/work/{name}');
+    expect(result.form.network).toBe('net-{name}');
   });
 
   it('模板里的挂载有解析不了的：跳过的条数报出来', () => {
-    const result = applyTemplateConfig(
-      emptyForm(),
-      { mounts: ['/data/a:/workspace', '畸形声明'] },
-      'demo',
-    );
+    const result = applyTemplateConfig(emptyForm(), {
+      mounts: ['/data/a:/workspace', '畸形声明'],
+    });
     expect(result.skippedDeclarations).toBe(1);
     expect(result.form.mounts).toHaveLength(1);
   });
 
   it('网络字段：出现即透传，缺失即保持现状', () => {
-    const withNetwork = applyTemplateConfig(
-      emptyForm({ network: null }),
-      { network: 'template-net' },
-      'demo',
-    );
+    const withNetwork = applyTemplateConfig(emptyForm({ network: null }), {
+      network: 'template-net',
+    });
     expect(withNetwork.form.network).toBe('template-net');
 
-    const withoutNetwork = applyTemplateConfig(
-      emptyForm({ network: 'kept-net' }),
-      { image: 'x:1' },
-      'demo',
-    );
+    const withoutNetwork = applyTemplateConfig(emptyForm({ network: 'kept-net' }), {
+      image: 'x:1',
+    });
     expect(withoutNetwork.form.network).toBe('kept-net');
   });
 
-  it('命令是数组：表单输入框留空，数组进隐藏状态（占位符逐个替换）', () => {
-    const result = applyTemplateConfig(
-      emptyForm({ command: '旧命令' }),
-      { command: ['/bin/sh', '-c', 'echo {name}'] },
-      'demo',
-    );
+  it('命令是数组：表单输入框留空，数组进隐藏状态（元素原样透传）', () => {
+    const result = applyTemplateConfig(emptyForm({ command: '旧命令' }), {
+      command: ['/bin/sh', '-c', 'echo {name}'],
+    });
     // 表单那一行装不下数组：留空。
     expect(result.form.command).toBe('');
-    // 数组原样透传，每个元素都替换过占位符。
-    expect(result.form.commandArray).toEqual(['/bin/sh', '-c', 'echo demo']);
-  });
-
-  it('命令是数组且沙箱名为空：占位符原样保留', () => {
-    const result = applyTemplateConfig(
-      emptyForm(),
-      { command: ['echo', '{name}'] },
-      '',
-    );
-    expect(result.form.commandArray).toEqual(['echo', '{name}']);
+    // 数组原样透传，每个元素都不做替换。
+    expect(result.form.commandArray).toEqual(['/bin/sh', '-c', 'echo {name}']);
   });
 
   it('命令字段缺失：表单命令与隐藏数组都保持现状', () => {
     const result = applyTemplateConfig(
       emptyForm({ command: '保留的命令', commandArray: ['保留', '的数组'] }),
       { image: 'x:1' },
-      'demo',
     );
     expect(result.form.command).toBe('保留的命令');
     expect(result.form.commandArray).toEqual(['保留', '的数组']);
   });
 
   it('命令字段出现且是字符串：清掉之前的隐藏数组', () => {
-    const result = applyTemplateConfig(
-      emptyForm({ commandArray: ['旧的数组'] }),
-      { command: '新的命令' },
-      'demo',
-    );
+    const result = applyTemplateConfig(emptyForm({ commandArray: ['旧的数组'] }), {
+      command: '新的命令',
+    });
     expect(result.form.command).toBe('新的命令');
     expect(result.form.commandArray).toBeNull();
   });
@@ -254,7 +208,7 @@ describe('collectTemplateConfig', () => {
       command: 'sleep infinity',
     });
     const config = collectTemplateConfig(form);
-    const applied = applyTemplateConfig(emptyForm({ workdir: '/kept' }), config, 'demo');
+    const applied = applyTemplateConfig(emptyForm({ workdir: '/kept' }), config);
     expect(applied.form.image).toBe('sandbox-platform/base:0.3.0');
     expect(applied.form.command).toBe('sleep infinity');
     expect(applied.form.workdir).toBe('/kept');

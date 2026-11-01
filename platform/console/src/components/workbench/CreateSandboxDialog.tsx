@@ -14,7 +14,6 @@ import {
 import {
   applyTemplateConfig,
   collectTemplateConfig,
-  substituteNamePlaceholder,
   type TemplateFormState,
 } from '../../lib/templates';
 import { validateImageSelection, validateSandboxName } from '../../lib/validate';
@@ -96,8 +95,11 @@ const labelClass = 'mb-1.5 block text-[12.5px] font-medium text-foreground';
  *
  * 本轮加了两块模板能力：
  * - **加载模板**：可搜索下拉（复用 Combobox 原语），**选中即回填表单**
- *   （合并口径见 `lib/templates.ts`：出现的字段整体替换、缺失的保持现状）；
- * - **保存为模板**：命名弹窗，空名禁止提交，成功后弹成功 toast。
+ *   （合并口径见 `lib/templates.ts`：出现的字段整体替换、缺失的保持现状；
+ *   **模板声明原样回填**，不做任何占位符替换）；这块放在抽屉内容的
+ *   **最上方**（沙箱名输入之前）。
+ * - **保存为模板**：按钮放在抽屉**页脚**（「创建沙箱」主按钮左侧，次级样式），
+ *   点它开命名弹窗（空名禁止提交），成功后弹成功 toast。
  */
 export function CreateSandboxDialog({
   open,
@@ -130,7 +132,7 @@ export function CreateSandboxDialog({
    * 模板带来的数组命令（隐藏状态）。
    *
    * 后端契约允许命令是字符串数组，但表单只有一个单行输入框装不下：数组命令
-   * 原样存在这里透传（每个元素都做过 `{name}` 替换），命令输入框留空。
+   * 原样存在这里透传（每个元素原样保留），命令输入框留空。
    * 提交时这里的数组优先于表单里的命令。
    */
   const [commandArray, setCommandArray] = useState<string[] | null>(null);
@@ -277,12 +279,11 @@ export function CreateSandboxDialog({
    * 加载模板：按模板配置回填表单。
    *
    * 合并口径在 `lib/templates.ts` 里：模板里出现的字段整体替换，
-   * 没出现的字段保持表单现状；`{name}` 替换成当前沙箱名（沙箱名为空时
-   * 保留占位符原样，提交前会再替换一次）。
+   * 没出现的字段保持表单现状；**模板声明原样回填**（不做任何占位符替换）。
    */
   const applyTemplate = useCallback(
     (template: Template) => {
-      const result = applyTemplateConfig(currentFormState(), template.config, name.trim());
+      const result = applyTemplateConfig(currentFormState(), template.config);
       // 模板里的镜像不在宿主本地镜像列表中：镜像选择器留空，
       // 提交时走既有的「请选择沙箱镜像」校验（宿主上没有的镜像不能建）。
       // **只有镜像列表已经拿到过才判这一条**：列表是秒级的宿主枚举，模板是
@@ -316,7 +317,7 @@ export function CreateSandboxDialog({
         );
       }
     },
-    [currentFormState, images, imagesLoaded, name, show],
+    [currentFormState, images, imagesLoaded, show],
   );
 
   /** 保存为模板：把当前表单存成一份模板配置。 */
@@ -360,15 +361,15 @@ export function CreateSandboxDialog({
       return;
     }
 
-    // 沙箱名后补的情况：模板里的 `{name}` 占位符在加载时可能没能替换
-    // （当时沙箱名还是空的），提交前用当前沙箱名再替换一次。
+    // 提交的内容一律原样：模板里写了什么字面量，就提交什么字面量
+    // （不做任何占位符替换；后端既有校验兜底，路径不存在会得到明确报错）。
     const sandboxName = name.trim();
 
     const declarations: string[] = [];
     const parsedDeclarations: MountDeclaration[] = [];
     for (const row of mounts) {
-      const hostPath = substituteNamePlaceholder(row.hostPath.trim(), sandboxName);
-      const containerPath = substituteNamePlaceholder(row.containerPath.trim(), sandboxName);
+      const hostPath = row.hostPath.trim();
+      const containerPath = row.containerPath.trim();
       if (hostPath === '' && containerPath === '') {
         continue;
       }
@@ -395,26 +396,21 @@ export function CreateSandboxDialog({
       setError(envResult.error);
       return;
     }
-    // 环境变量的值同样可能带 `{name}` 占位符：提交前替换一次。
-    const env: Record<string, string> = {};
-    for (const [key, value] of Object.entries(envResult.env)) {
-      env[key] = substituteNamePlaceholder(value, sandboxName);
-    }
+    // 环境变量的值原样提交：模板里写了什么就是什么。
+    const env: Record<string, string> = { ...envResult.env };
 
     setSubmitting(true);
     try {
       // 命令：模板带来的数组命令优先（表单输入框装不下它）；否则用表单里的
-      // 字符串命令。两种形态提交前都再替换一次 `{name}` 占位符。
+      // 字符串命令。两种形态都原样提交（不替换任何占位符）。
       const commandPayload =
         commandArray !== null
           ? commandArray.length === 0
             ? null
-            : commandArray.map((item) =>
-                substituteNamePlaceholder(item, sandboxName),
-              )
+            : [...commandArray]
           : command.trim() === ''
             ? null
-            : substituteNamePlaceholder(command.trim(), sandboxName);
+            : command.trim();
       const created = await api.createSandbox({
         name: sandboxName,
         image,
@@ -422,13 +418,11 @@ export function CreateSandboxDialog({
         image_source: 'host',
         mounts: declarations,
         command: commandPayload,
-        workdir:
-          workdir.trim() === '' ? null : substituteNamePlaceholder(workdir.trim(), sandboxName),
+        workdir: workdir.trim() === '' ? null : workdir.trim(),
         env,
         // 网络：表单里不渲染输入项，只有模板可能带；没有就是平台默认。
-        // 网络名里同样可能带 `{name}` 占位符：提交前替换一次。
-        network:
-          network === null ? null : substituteNamePlaceholder(network, sandboxName),
+        // 网络名原样提交（不替换任何占位符）。
+        network,
       });
       // 创建成功：关抽屉 → 通知工作台（弹成功 toast + 刷新列表）→ 清空表单。
       onOpenChange(false);
@@ -492,6 +486,23 @@ export function CreateSandboxDialog({
       >
         取消
       </button>
+      {/*
+        保存为模板：次级按钮，放在主按钮「创建沙箱」左边。
+        点它开命名弹窗（空名禁提交），成功弹一条成功 toast（来源 sandbox-template）。
+      */}
+      <button
+        type="button"
+        onClick={() => {
+          setTemplateName('');
+          setTemplateNameTouched(false);
+          setSaveTemplateOpen(true);
+        }}
+        disabled={submitting}
+        data-testid="page-sandbox-create-template-save-button"
+        className="inline-flex h-8 items-center justify-center rounded-lg border border-border bg-background px-3 text-[13px] text-foreground transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+      >
+        保存为模板
+      </button>
       <button
         type="button"
         onClick={() => void submit()}
@@ -529,6 +540,100 @@ export function CreateSandboxDialog({
         <h2 className="sr-only" data-testid="page-sandbox-create-title">
           新建沙箱
         </h2>
+
+        {/*
+          加载模板：抽屉内容的**第一个块**（在沙箱名输入之前）。
+          选中即按合并口径回填表单，**模板声明原样回填**（不做任何占位符替换）。
+        */}
+        <div className="mb-4">
+          <label className={labelClass} htmlFor="sandbox-template">
+            加载模板
+          </label>
+          <Combobox
+            items={templates}
+            value={selectedTemplate}
+            // 输入框受控：原语不再自行回填，文字只由这里改。
+            inputValue={templateInput}
+            onValueChange={(item) => {
+              // 显式选中：**选中即回填表单**（不另设「应用」按钮）。
+              const chosen = item ?? null;
+              setSelectedTemplate(chosen);
+              setTemplateInput(chosen?.name ?? '');
+              if (chosen) {
+                applyTemplate(chosen);
+              }
+            }}
+            onInputValueChange={(next) => {
+              setTemplateInput(next);
+              // 输入文字偏离当前选中的模板 → 放弃选中。
+              setSelectedTemplate((current) =>
+                current !== null && current.name !== next ? null : current,
+              );
+            }}
+            itemToStringLabel={(item) => item.name}
+            isItemEqualToValue={(item, current) => item.id === current.id}
+            filter={matchTemplate}
+          >
+            <ComboboxInputGroup className="min-w-0 flex-1">
+              <ComboboxInput
+                id="sandbox-template"
+                className={imageInputClass}
+                placeholder="搜索模板"
+                data-testid="page-sandbox-create-template-select"
+              />
+              <ComboboxTrigger
+                aria-label="展开模板列表"
+                data-testid="page-sandbox-create-template-trigger"
+              >
+                <ComboboxIcon>
+                  <ChevronDown className="size-4" aria-hidden="true" />
+                </ComboboxIcon>
+              </ComboboxTrigger>
+            </ComboboxInputGroup>
+            <ComboboxPortal>
+              <ComboboxPositioner>
+                <ComboboxPopup data-testid="page-sandbox-create-template-popup">
+                  <ComboboxEmpty data-testid="page-sandbox-create-template-no-match">
+                    暂无匹配模板
+                  </ComboboxEmpty>
+                  <ComboboxList>
+                    {(item: Template) => (
+                      <ComboboxItem
+                        key={item.id}
+                        value={item}
+                        data-template-id={item.id}
+                        data-template-name={item.name}
+                        data-testid="page-sandbox-create-template-option"
+                      >
+                        {item.name}
+                        <ComboboxItemIndicator />
+                      </ComboboxItem>
+                    )}
+                  </ComboboxList>
+                </ComboboxPopup>
+              </ComboboxPositioner>
+            </ComboboxPortal>
+          </Combobox>
+          <p className="mt-1.5 text-[12px] text-muted-foreground">
+            选中模板即回填表单：模板里写了的字段整体替换，没写的字段保持现状。
+            模板声明原样回填，不做任何占位符替换。
+          </p>
+          {!loadingTemplates && templates.length === 0 && !templatesError && (
+            <p className="mt-1.5 text-[12px] text-muted-foreground" data-testid="page-sandbox-create-template-empty">
+              还没有模板。填好表单后点页脚的「保存为模板」把这份配置存起来。
+            </p>
+          )}
+          {templatesError && (
+            <p
+              // 环境状态说明（不是操作结果），故走 role=status 而不是行内红字。
+              role="status"
+              className="mt-1.5 text-[12px] text-muted-foreground"
+              data-testid="page-sandbox-create-template-status"
+            >
+              模板列表读取失败，原因见右上角提示：{templatesError}
+            </p>
+          )}
+        </div>
 
         {error && (
           <div
@@ -657,110 +762,6 @@ export function CreateSandboxDialog({
               <p className="mt-1.5 text-[12px] text-muted-foreground" data-testid="page-sandbox-create-image-detail">
                 {selectedImage.reference} · {formatBytes(selectedImage.size_bytes)} · 构建于{' '}
                 {formatTimestamp(selectedImage.created_at)}
-              </p>
-            )}
-          </div>
-
-          <div>
-            <label className={labelClass} htmlFor="sandbox-template">
-              加载模板
-            </label>
-            <div className="flex items-center gap-2">
-              <Combobox
-                items={templates}
-                value={selectedTemplate}
-                // 输入框受控：原语不再自行回填，文字只由这里改。
-                inputValue={templateInput}
-                onValueChange={(item) => {
-                  // 显式选中：**选中即回填表单**（不另设「应用」按钮）。
-                  const chosen = item ?? null;
-                  setSelectedTemplate(chosen);
-                  setTemplateInput(chosen?.name ?? '');
-                  if (chosen) {
-                    applyTemplate(chosen);
-                  }
-                }}
-                onInputValueChange={(next) => {
-                  setTemplateInput(next);
-                  // 输入文字偏离当前选中的模板 → 放弃选中。
-                  setSelectedTemplate((current) =>
-                    current !== null && current.name !== next ? null : current,
-                  );
-                }}
-                itemToStringLabel={(item) => item.name}
-                isItemEqualToValue={(item, current) => item.id === current.id}
-                filter={matchTemplate}
-              >
-                <ComboboxInputGroup className="min-w-0 flex-1">
-                  <ComboboxInput
-                    id="sandbox-template"
-                    className={imageInputClass}
-                    placeholder="搜索模板"
-                    data-testid="page-sandbox-create-template-select"
-                  />
-                  <ComboboxTrigger
-                    aria-label="展开模板列表"
-                    data-testid="page-sandbox-create-template-trigger"
-                  >
-                    <ComboboxIcon>
-                      <ChevronDown className="size-4" aria-hidden="true" />
-                    </ComboboxIcon>
-                  </ComboboxTrigger>
-                </ComboboxInputGroup>
-                <ComboboxPortal>
-                  <ComboboxPositioner>
-                    <ComboboxPopup data-testid="page-sandbox-create-template-popup">
-                      <ComboboxEmpty data-testid="page-sandbox-create-template-no-match">
-                        暂无匹配模板
-                      </ComboboxEmpty>
-                      <ComboboxList>
-                        {(item: Template) => (
-                          <ComboboxItem
-                            key={item.id}
-                            value={item}
-                            data-template-id={item.id}
-                            data-template-name={item.name}
-                            data-testid="page-sandbox-create-template-option"
-                          >
-                            {item.name}
-                            <ComboboxItemIndicator />
-                          </ComboboxItem>
-                        )}
-                      </ComboboxList>
-                    </ComboboxPopup>
-                  </ComboboxPositioner>
-                </ComboboxPortal>
-              </Combobox>
-              <button
-                type="button"
-                onClick={() => {
-                  setTemplateName('');
-                  setTemplateNameTouched(false);
-                  setSaveTemplateOpen(true);
-                }}
-                data-testid="page-sandbox-create-template-save-button"
-                className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-[13px] text-foreground transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
-              >
-                保存为模板
-              </button>
-            </div>
-            <p className="mt-1.5 text-[12px] text-muted-foreground">
-              选中模板即回填表单：模板里写了的字段整体替换，没写的字段保持现状。
-              路径里的 <span className="font-mono">{'{name}'}</span> 会替换成沙箱名。
-            </p>
-            {!loadingTemplates && templates.length === 0 && !templatesError && (
-              <p className="mt-1.5 text-[12px] text-muted-foreground" data-testid="page-sandbox-create-template-empty">
-                还没有模板。填好表单后点「保存为模板」把这份配置存起来。
-              </p>
-            )}
-            {templatesError && (
-              <p
-                // 环境状态说明（不是操作结果），故走 role=status 而不是行内红字。
-                role="status"
-                className="mt-1.5 text-[12px] text-muted-foreground"
-                data-testid="page-sandbox-create-template-status"
-              >
-                模板列表读取失败，原因见右上角提示：{templatesError}
               </p>
             )}
           </div>

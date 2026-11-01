@@ -16,9 +16,9 @@
  * - 没选镜像就提交：抽屉里就地报「请选择沙箱镜像」；
  * - 模板回填的时序：模板列表（毫秒级）先到、镜像列表（秒级）后到时，
  *   模板镜像不被静默清空（镜像真不在宿主上时，列表到齐后再清）；
- * - 模板的命令是数组：应用不崩、命令输入框留空、提交原样透传，
- *   `{name}` 占位符逐个替换；
- * - 沙箱名后补：提交时挂载 / 网络 / 命令数组里的占位符全部替换干净；
+ * - 模板的命令是数组：应用不崩、命令输入框留空、提交原样透传；
+ * - 模板声明**不做任何占位符替换**：回填与提交都原样保留字面量
+ *   （挂载 / 环境变量 / 命令 / 工作目录 / 网络）；
  * - 创建成功后不再渲染成功面板（成功面板已退役）；
  * - 创建成功后触发回调并关闭抽屉。
  */
@@ -586,13 +586,13 @@ describe('新建沙箱抽屉的模板下拉', () => {
     expect(templateInput().value).toBe('干净环境');
   });
 
-  it('选中模板即回填表单（占位符替换成沙箱名）', async () => {
+  it('选中模板即回填表单（模板声明原样回填，不做占位符替换）', async () => {
     mocks.listTemplates.mockResolvedValue(TEMPLATES);
 
     renderDialog();
     await waitTemplateList();
 
-    // 先填沙箱名：模板里的 {name} 要替换成它。
+    // 先填沙箱名：模板里的字面量不会被它影响。
     fireEvent.change(screen.getByTestId('page-sandbox-create-name-input'), {
       target: { value: 'acc-demo' },
     });
@@ -603,11 +603,11 @@ describe('新建沙箱抽屉的模板下拉', () => {
 
     // 镜像回填（模板里的镜像在宿主本地镜像列表里）。
     await waitFor(() => expect(imageInput().value).toBe(IMAGE));
-    // 挂载整组替换：宿主路径里的 {name} 换成沙箱名，容器路径原样。
+    // 挂载整组替换：字面量原样保留（不做任何占位符替换）。
     await waitFor(() =>
       expect(
         (screen.getByTestId('page-sandbox-create-mount-host-input') as HTMLInputElement).value,
-      ).toBe('/data/acc-demo'),
+      ).toBe('/data/{name}'),
     );
     expect(
       (screen.getByTestId('page-sandbox-create-mount-container-input') as HTMLInputElement).value,
@@ -619,7 +619,7 @@ describe('新建沙箱抽屉的模板下拉', () => {
       '/workspace',
     );
     expect((screen.getByTestId('page-sandbox-create-env-input') as HTMLTextAreaElement).value).toBe(
-      'APP=acc-demo',
+      'APP={name}',
     );
   });
 
@@ -712,7 +712,7 @@ describe('新建沙箱抽屉的数组命令模板', () => {
     },
   };
 
-  it('命令是数组：应用不崩，命令输入框留空，提交原样透传（占位符逐个替换）', async () => {
+  it('命令是数组：应用不崩，命令输入框留空，提交原样透传', async () => {
     mocks.listTemplates.mockResolvedValue([ARRAY_COMMAND_TEMPLATE]);
     mocks.createSandbox.mockResolvedValue({
       metadata: { name: 'acc-demo' },
@@ -739,8 +739,8 @@ describe('新建沙箱抽屉的数组命令模板', () => {
     await waitFor(() => expect(mocks.createSandbox).toHaveBeenCalledTimes(1));
 
     const payload = mocks.createSandbox.mock.calls[0][0];
-    // 数组原样透传，每个元素都替换过占位符。
-    expect(payload.command).toEqual(['/bin/sh', '-c', 'echo acc-demo']);
+    // 数组原样透传，每个元素都不做替换。
+    expect(payload.command).toEqual(['/bin/sh', '-c', 'echo {name}']);
     // 镜像一并回填（它在宿主列表里）。
     expect(payload.image).toBe(IMAGE);
   });
@@ -771,10 +771,10 @@ describe('新建沙箱抽屉的数组命令模板', () => {
     await waitFor(() => expect(mocks.createSandbox).toHaveBeenCalledTimes(1));
 
     const payload = mocks.createSandbox.mock.calls[0][0];
-    expect(payload.command).toEqual(['/bin/sh', '-c', 'echo acc-demo']);
+    expect(payload.command).toEqual(['/bin/sh', '-c', 'echo {name}']);
   });
 
-  it('沙箱名后补：提交时占位符全部替换干净（挂载 / 网络 / 命令数组）', async () => {
+  it('模板声明原样提交：挂载 / 网络 / 命令数组里的字面量一个都不替换', async () => {
     mocks.listTemplates.mockResolvedValue([
       {
         ...TEMPLATES[0],
@@ -798,7 +798,7 @@ describe('新建沙箱抽屉的数组命令模板', () => {
     await waitTemplateList();
     await waitImagesSettled();
 
-    // 沙箱名还空着：占位符原样保留。
+    // 沙箱名还空着：模板声明原样回填（字面量不被任何东西改写）。
     openTemplatePicker();
     await waitFor(() => expect(templateOptionNames()).toHaveLength(1));
     await pickTemplate('开发环境');
@@ -806,7 +806,7 @@ describe('新建沙箱抽屉的数组命令模板', () => {
     expect(mountHostInput().value).toBe('/data/{name}');
     expect(mountContainerInput().value).toBe('/work/{name}');
 
-    // 再填沙箱名并提交。
+    // 再填沙箱名并提交：提交内容仍与模板声明一字不差。
     fireEvent.change(screen.getByTestId('page-sandbox-create-name-input'), {
       target: { value: 'acc-demo' },
     });
@@ -814,13 +814,40 @@ describe('新建沙箱抽屉的数组命令模板', () => {
     await waitFor(() => expect(mocks.createSandbox).toHaveBeenCalledTimes(1));
 
     const payload = mocks.createSandbox.mock.calls[0][0];
-    expect(payload.mounts).toEqual(['/data/acc-demo:/work/acc-demo:ro']);
-    expect(payload.command).toEqual(['/bin/sh', '-c', 'echo acc-demo']);
-    expect(payload.network).toBe('net-acc-demo');
-    expect(payload.workdir).toBe('/work/acc-demo');
-    expect(payload.env).toEqual({ APP: 'acc-demo' });
-    // 一个占位符都不许残留。
-    expect(JSON.stringify(payload)).not.toContain('{name}');
+    expect(payload.mounts).toEqual(['/data/{name}:/work/{name}:ro']);
+    expect(payload.command).toEqual(['/bin/sh', '-c', 'echo {name}']);
+    expect(payload.network).toBe('net-{name}');
+    expect(payload.workdir).toBe('/work/{name}');
+    expect(payload.env).toEqual({ APP: '{name}' });
+    // 字面量原样提交：模板里写了什么，平台就收到什么。
+    expect(JSON.stringify(payload)).toContain('{name}');
+  });
+});
+
+describe('新建沙箱抽屉的模板入口位置', () => {
+  it('加载模板块放在抽屉内容的最上方（沙箱名输入之前）', () => {
+    renderDialog();
+
+    const dialog = screen.getByTestId('page-sandbox-create-dialog');
+    // 只看带标识的输入框（原语内部还有无标识的隐藏输入）。
+    const inputs = Array.from(dialog.querySelectorAll('input[data-testid]'));
+    expect(inputs.length).toBeGreaterThan(1);
+    // 抽屉正文里的第一个输入框是模板选择器，第二个才是沙箱名。
+    expect(inputs[0].getAttribute('data-testid')).toBe('page-sandbox-create-template-select');
+    expect(inputs[1].getAttribute('data-testid')).toBe('page-sandbox-create-name-input');
+  });
+
+  it('保存为模板按钮在页脚里，且在「创建沙箱」主按钮左侧', () => {
+    renderDialog();
+
+    const save = screen.getByTestId('page-sandbox-create-template-save-button');
+    const submit = screen.getByTestId('page-sandbox-create-submit-button');
+    // 文案精确为「保存为模板」。
+    expect(save.textContent).toBe('保存为模板');
+    // 两个按钮同在页脚按钮区。
+    expect(save.parentElement).toBe(submit.parentElement);
+    // 位置在主按钮左侧。
+    expect(save.compareDocumentPosition(submit) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });
 

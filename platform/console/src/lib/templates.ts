@@ -1,19 +1,19 @@
 /**
- * 启动模板的纯逻辑：占位符替换、挂载解析、表单合并与反向收集。
+ * 启动模板的纯逻辑：挂载解析、表单合并与反向收集。
  *
  * 模板是一份「沙箱启动配置」：镜像、挂载声明、启动命令、工作目录、
- * 环境变量、网桥网络。核心口径有两条，落地都在本文件里：
+ * 环境变量、网桥网络。核心口径有三条，落地都在本文件里：
  *
  * - **合并语义**：模板里**出现**的字段整体替换表单值（挂载是整组替换，
  *   不是逐条并入；环境变量也是整组替换），**缺失**的字段保持表单现状。
  *   「出现」用 `hasOwnProperty` 判断——`{"image": null}`（填了空值）与
  *   缺 image 字段（没填过）是两回事，不能混同。
- * - **`{name}` 占位符**：模板配置的任意字符串位置都可以写 `{name}`，
- *   加载模板时替换成当前沙箱名；**沙箱名为空时保留占位符原样**
- *   （替换成空串会把配置改写成不可用的形态）。
+ * - **模板声明原样透传**：模板配置里的字符串**不做任何替换**——加载时
+ *   原样回填表单，提交时原样进创建请求。模板里写了什么字面量，平台就
+ *   收到什么字面量（后端既有校验兜底：路径不存在会得到明确报错）。
  * - **命令可以是数组**：后端契约收 `str | list[str] | null`。字符串命令走
  *   表单回填；数组命令表单装不下（只有一个输入框），进隐藏状态原样透传，
- *   每个元素同样做 `{name}` 替换。
+ *   每个元素同样原样保留。
  *
  * 本文件不碰网络与界面：数据进、结果出，方便单测。
  */
@@ -21,9 +21,6 @@
 import type { TemplateConfig } from '../api/types';
 
 export type { TemplateConfig };
-
-/** 沙箱名占位符。 */
-export const NAME_PLACEHOLDER = '{name}';
 
 /**
  * 模板里的一条挂载声明解析出来的表格行。
@@ -50,8 +47,8 @@ export interface TemplateFormState {
    * 模板带来的数组命令（隐藏状态）。
    *
    * 后端契约允许命令是字符串数组（`str | list[str] | null`），但表单只有
-   * 一行命令输入框装不下数组：数组命令原样存在这里透传（每个元素都做过
-   * `{name}` 替换），命令输入框留空。提交时这里的数组**优先于**表单命令。
+   * 一行命令输入框装不下数组：数组命令原样存在这里透传（每个元素原样
+   * 保留），命令输入框留空。提交时这里的数组**优先于**表单命令。
    */
   commandArray: string[] | null;
   workdir: string;
@@ -78,19 +75,6 @@ export interface ApplyTemplateResult {
 /** 判断字段在配置里「出现」了没有（区分缺失与空值）。 */
 function has(config: TemplateConfig, field: keyof TemplateConfig): boolean {
   return Object.prototype.hasOwnProperty.call(config, field);
-}
-
-/**
- * 把文本里的 `{name}` 替换成沙箱名。
- *
- * 沙箱名为空时**保留占位符原样**：替换成空串会让挂载路径、命令一类
- * 配置变成不可用的形态（例如宿主路径直接变成 `/data/`）。
- */
-export function substituteNamePlaceholder(text: string, sandboxName: string): string {
-  if (sandboxName === '') {
-    return text;
-  }
-  return text.split(NAME_PLACEHOLDER).join(sandboxName);
 }
 
 /**
@@ -168,13 +152,12 @@ export function formatTemplateMount(row: TemplateMountRow): string {
  * 合并口径：**config 里出现的字段整体替换表单值**（挂载列表整组替换、
  * 环境变量整组替换），**没出现的字段保持表单现状**。
  *
- * 挂载占位符替换作用在**整条声明文本**上：宿主路径与容器路径里的
- * `{name}` 都会被换成沙箱名，`:ro` 后缀不受影响。
+ * **不做任何占位符替换**：模板里的字符串原样回填（含 `{name}` 这样的
+ * 字面量），后端既有校验兜底（路径不存在会得到明确报错）。
  */
 export function applyTemplateConfig(
   form: TemplateFormState,
   config: TemplateConfig,
-  sandboxName: string,
 ): ApplyTemplateResult {
   const next: TemplateFormState = {
     image: form.image,
@@ -193,10 +176,8 @@ export function applyTemplateConfig(
   }
 
   if (has(config, 'mounts')) {
-    const declarations = (config.mounts ?? []).map((item) =>
-      substituteNamePlaceholder(item, sandboxName),
-    );
-    const parsed = parseTemplateMounts(declarations);
+    // 挂载声明原样解析：宿主路径与容器路径里的字面量一个都不替换。
+    const parsed = parseTemplateMounts(config.mounts ?? []);
     next.mounts = parsed.rows;
     skippedDeclarations = parsed.skipped;
   }
@@ -204,40 +185,27 @@ export function applyTemplateConfig(
   if (has(config, 'command')) {
     const raw = config.command;
     if (Array.isArray(raw)) {
-      // 数组命令：表单输入框装不下，原样进隐藏状态（每个元素都替换占位符）。
+      // 数组命令：表单输入框装不下，原样进隐藏状态（每个元素原样保留）。
       next.command = '';
-      next.commandArray = raw.map((item) =>
-        substituteNamePlaceholder(item, sandboxName),
-      );
+      next.commandArray = [...raw];
     } else {
-      next.command =
-        raw === null || raw === undefined
-          ? ''
-          : substituteNamePlaceholder(raw, sandboxName);
+      next.command = raw === null || raw === undefined ? '' : raw;
       next.commandArray = null;
     }
   }
 
   if (has(config, 'workdir')) {
-    next.workdir =
-      config.workdir === null || config.workdir === undefined
-        ? ''
-        : substituteNamePlaceholder(config.workdir, sandboxName);
+    next.workdir = config.workdir === null || config.workdir === undefined ? '' : config.workdir;
   }
 
   if (has(config, 'env')) {
-    const env: Record<string, string> = {};
-    for (const [key, value] of Object.entries(config.env ?? {})) {
-      env[key] = substituteNamePlaceholder(value, sandboxName);
-    }
-    next.env = env;
+    // 环境变量的值原样保留：模板里写了什么就是什么。
+    next.env = { ...(config.env ?? {}) };
   }
 
   if (has(config, 'network')) {
     next.network =
-      config.network === null || config.network === undefined
-        ? null
-        : substituteNamePlaceholder(config.network, sandboxName);
+      config.network === null || config.network === undefined ? null : config.network;
   }
 
   return { form: next, skippedDeclarations };
