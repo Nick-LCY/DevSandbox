@@ -243,7 +243,7 @@ cd platform/console && pnpm run typecheck && pnpm run test && pnpm run typecheck
 > - 验收日期：2026-10-31
 > - 验收对象：控制台模板轮（后端模板服务端 + 前端模板能力 + 字体子集），判据来自 `docs/prds/console-templates.md` 与 `docs/tasks/console-templates/04-acceptance-and-docs.md`
 > - 验收方式：三套测试全量跑（后端 pytest + ruff、前端 typecheck + typecheck:tests + vitest + build、Playwright 真机 22 条）
-> - **总结论：三套测试全绿；真机 22 条用例全部通过（0 失败 / 0 跳过 / 0 flaky），退出码 0；期间只发现 1 处验收脚本自身的定位器缺陷（不是平台缺陷），已在脚本里修掉**
+> - **总结论：三套测试全绿；真机 22 条用例全部通过（0 失败 / 0 跳过 / 0 flaky），退出码 0；期间只发现 2 处验收脚本自身的定位器 / 断言缺陷（不是平台缺陷），已在脚本里修掉**
 > - 留档：本节；任务与看板见 `docs/tasks/console-templates/03-template-console.md`、`docs/tasks/console-templates/04-acceptance-and-docs.md`
 
 ### 8.1 三套测试总览
@@ -254,9 +254,9 @@ cd platform/console && pnpm run typecheck && pnpm run test && pnpm run typecheck
 | 后端静态检查 | `cd platform && uv run ruff check src/ tests/ cli/` | **0 告警**（口径钉死在 E4 / E7 / E9 / F） | < 1 秒 |
 | 前端类型检查 | `cd platform/console && pnpm run typecheck` | **0 错误** | 约 6 秒 |
 | 验收脚本类型检查 | `pnpm run typecheck:tests` | **0 错误** | 约 6 秒 |
-| 前端单测 | `pnpm run test`（vitest） | **23 个文件 / 269 passed / 0 failed** | 3.84 秒 |
+| 前端单测 | `pnpm run test`（vitest） | **23 个文件 / 267 passed / 0 failed** | 3.80 秒 |
 | 前端构建 | `pnpm run build` | **成功**（`dist/` 已刷新，真机服务托管的就是这一份产物） | 2.44 秒 |
-| 真机验收 | `pnpm run test:acceptance`（Playwright chromium 1.64.1） | **22 passed / 0 failed / 0 skipped / 0 flaky**，退出码 **0** | **6.0 分钟**（results.json 实测 362.75 秒） |
+| 真机验收 | `pnpm run test:acceptance`（Playwright chromium 1.64.1） | **22 passed / 0 failed / 0 skipped / 0 flaky**，退出码 **0** | **6.0 分钟**（results.json 实测 361.80 秒） |
 
 **ruff 口径**：`platform/pyproject.toml` 补了 `[tool.ruff.lint]` 配置，把规则集钉在 `select = ["E4", "E7", "E9", "F"]`（仓库历史基线：pyflakes 的导入错误 / 语句错误 / 未定义名）。
 新版 ruff 默认规则集在本仓命中 **59 处历史风格项**（未排序导入 18 处、函数默认值里的函数调用 19 处、宽泛 except 8 处、`try-except-pass` / 冗余 return / 未用 noqa 等 14 处），
@@ -285,7 +285,7 @@ cd platform/console && pnpm run typecheck && pnpm run test && pnpm run typecheck
 | 17 | `05-reclaim` | 重复删除同一沙箱是幂等的（返回不存在，不报错） | 62ms | 通过 |
 | 18 | `06-boundary` | 沙箱内依赖镜像拉取统一经镜像代理 | 8.6s | 通过 |
 | 19 | `06-boundary` | 服务只监听回环地址、不做认证、不暴露接口文档 | 533ms | 通过 |
-| 20 | `07-templates` | 保存模板 → 新建抽屉加载回填（含 `{name}` 替换）→ 重命名 → 删除 → 刷新不复活 | 3.8s | 通过（**首跑红，修脚本后通过**，见 8.4） |
+| 20 | `07-templates` | 保存模板 → 新建抽屉加载回填（镜像与挂载）→ 重命名 → 删除 → 刷新不复活 | 3.7s | 通过（**首跑红，修脚本后通过**，见 8.4） |
 | 21 | `07-templates` | 模板合并语义：出现的字段整体替换，没出现的保持现状 | 1.5s | 通过 |
 | 22 | `07-templates` | 删除模板走确认弹窗：文案写明只删模板、不影响已创建的沙箱 | 1.9s | 通过 |
 
@@ -296,15 +296,15 @@ cd platform/console && pnpm run typecheck && pnpm run test && pnpm run typecheck
 
 | 步骤 | 操作 | 断言与实测 | 结论 |
 |---|---|---|---|
-| ① 存模板 | 新建抽屉填「沙箱名 + 镜像 + 一条挂载（宿主 `/data/{name}` → 容器 `/workspace`）+ 命令 `sleep infinity` + 环境变量 `APP={name}`」→「保存为模板」→ 命名弹窗填名 | 服务端落盘的是**带占位符的原文**：`mounts = ["/data/{name}:/workspace"]`、`env = {"APP": "{name}"}`、`command = "sleep infinity"`（服务端不替换占位符）；落盘校验走接口直取 | 通过 |
-| ② 回填 | 重新打开新建抽屉 → 「加载模板」下拉搜到并选中该模板 | 挂载宿主路径 → `/data/acc-tpl-demo`（`{name}` 换成沙箱名）、容器路径 → `/workspace`、命令 → `sleep infinity`、环境变量 → `APP=acc-tpl-demo`、镜像 → 一并回填为测试镜像引用 | 通过 |
-| ③ 重命名 | 设置抽屉 → 行内重命名（回车提交） | 名称改为新名、**模板标识不变**（接口直取核对 `id` 与改名前一致）、配置体不变（`mounts` 仍是 `["/data/{name}:/workspace"]`） | 通过 |
+| ① 存模板 | 新建抽屉填「沙箱名 + 镜像 + 一条挂载（宿主 `/data/acc-tpl-demo` → 容器 `/workspace`）+ 命令 `sleep infinity` + 环境变量 `APP=demo`」→「保存为模板」→ 命名弹窗填名 | 服务端落盘的是**表单里的原文**：`mounts = ["/data/acc-tpl-demo:/workspace"]`、`env = {"APP": "demo"}`、`command = "sleep infinity"`（服务端不改写声明）；落盘校验走接口直取 | 通过 |
+| ② 回填 | 重新打开新建抽屉 → 「加载模板」下拉搜到并选中该模板 | 挂载宿主路径 → `/data/acc-tpl-demo`（**原样回填，不做任何替换**）、容器路径 → `/workspace`、命令 → `sleep infinity`、环境变量 → `APP=demo`、镜像 → 一并回填为测试镜像引用 | 通过 |
+| ③ 重命名 | 设置抽屉 → 行内重命名（回车提交） | 名称改为新名、**模板标识不变**（接口直取核对 `id` 与改名前一致）、配置体不变（`mounts` 仍是 `["/data/acc-tpl-demo:/workspace"]`） | 通过 |
 | ④ 删除 | 设置抽屉 → 删除 → 确认弹窗 → 确认删除 | 模板列表里该行消失、接口直取列表里也没有了；确认弹窗文案写着「只删模板，不影响已创建的沙箱」 | 通过 |
-| ⑤ 刷新不复活 | `page.reload()` 后重新打开设置抽屉 | 模板列表为空（0 行）、接口直取也没有该模板——删掉的内置模板不会被墓碑机制之外的路径复活 | 通过 |
+| ⑤ 刷新不复活 | `page.reload()` 后重新打开设置抽屉 | 删掉的那一行不再出现（按 `data-template-name` 定位那一行，0 行）、接口直取也没有该模板——删掉的内置模板不会被墓碑机制之外的路径复活 | 通过 |
 | ⑥ 合并语义 | 存一份「只有命令」的模板 → 换一份表单（先手填一条挂载）→ 加载该模板 | 命令被替换成模板里的（字段出现 → 整体替换），手填的挂载保持现状（字段缺失 → 保持现状）；模板里的镜像 / 挂载 / 工作目录 / 环境变量都不进配置 | 通过 |
 | ⑦ 删除确认 | 点删除 → 取消 → 再点删除 → 确认 | 取消时模板还在（1 行），确认后模板没了（0 行）；弹窗标题是「删除模板 <名字>」 | 通过 |
 
-**模板占位符的落盘口径**：`{name}` 只在**前端回填时**替换；服务端落盘的是原文。这一点在用例里用接口直取逐字核对过，不是「看起来对」。
+**模板声明的透传口径**：模板配置里的字符串**不做任何占位符替换**——回填时原样回填、提交时原样提交，服务端落盘也是原文。这一点在用例里用接口直取逐字核对过，不是「看起来对」。
 
 ### 8.4 失败修复归类
 
@@ -313,6 +313,7 @@ cd platform/console && pnpm run typecheck && pnpm run test && pnpm run typecheck
 | # | 现象 | 归类 | 理由 | 处理 |
 |---|---|---|---|---|
 | 1 | 点「重命名」后找不到 `page-settings-template-rename-input` | **用例问题（定位器过窄）**，不是代码缺陷 | 失败瞬间的可访问性快照显示输入框**就在页面上且可见**（`listitem` 里是 `textbox` + 「保存」+「取消」）。真正原因是验收脚本用「按行内文字筛」定位模板行（`filter({ hasText: 名字 })`）：行内重命名一旦开始，模板名那一段会被输入框替掉——名字变成输入框的**值**，不再是行的文字内容，按文字筛出来的行当场就再也匹配不上，条件失效而非元素缺失 | 改 `tests/helpers/console.ts`：模板行一律按 `data-template-name` **属性**定位（该属性在重命名提交前一直不变），`renameTemplate` 与 `deleteTemplate` 两个 helper 共用一个 `templateRow()` |
+| 2 | `07-templates` 第 ⑤ 步断言「设置抽屉的模板列表为空」失败（实测 1 行） | **用例问题（断言过宽）**，不是代码缺陷 | 宿主平台数据根里有一份手工建的模板（名为 `test`，不在验收前缀下），用例原先断言整张模板列表为空——任何用户自建模板都会把它顶红（连带把下一条用例的「1 行」断言也顶红） | 断言改成「按 `data-template-name` 定位自己那一行」：删掉的那一行不再出现（0 行）、取消删除后自己那一行还在（1 行），不再断言整张列表的条数 |
 
 **代码侧零改动**：平台核心包、命令行与前端实现都没为这次失败动过一行——失败的是验收脚本的定位器口径，不是产品行为。
 
@@ -346,7 +347,27 @@ cd platform/console && pnpm run typecheck && pnpm run test && pnpm run typecheck
 验收跑完后：平台数据根 `templates/` 目录**为空**（无残留模板）；无 `acc-` 前缀的残留沙箱（0 条）；验收用的本地测试镜像已删；
 `tests/.runtime/` 已清空；宿主上仅存一个与本轮无关的既有沙箱（`123`，创建于本轮开始之前）。
 
-### 8.8 复现方式
+### 8.8 验收反馈轮复跑留档（2026-10-31）
+
+本轮按验收反馈改了控制台前端的三处交互，后端与命令行零改动：
+
+| 改动 | 内容 |
+|---|---|
+| **移除 `{name}` 占位符机制** | `lib/templates.ts` 删掉 `substituteNamePlaceholder`，`applyTemplateConfig` 去掉沙箱名参数；新建沙箱抽屉提交前对挂载 / 环境变量值 / 命令 / 工作目录 / 网络的兜底替换一并删掉。**模板声明原样透传**：回填与提交都是模板里的原文，后端既有校验兜底（路径不存在会得到明确报错） |
+| **加载模板块上移** | 「加载模板」可搜索下拉移到抽屉内容的最上方（沙箱名输入之前），既有 `data-testid` 一个没动 |
+| **保存按钮移至页脚** | 「保存为模板」从加载模板块移出，放到抽屉页脚、「创建沙箱」主按钮左侧（次级按钮样式）；文案仍是「保存为模板」，命名弹窗 / 空名禁提交 / 成功 toast（来源 `sandbox-template`）行为不变 |
+
+复跑结论：
+
+| 套 | 结果 | 耗时 |
+|---|---|---|
+| 前端类型检查（`typecheck` + `typecheck:tests`） | **0 错误** | 约 12 秒 |
+| 前端单测（vitest） | **23 个文件 / 267 passed / 0 failed**（基线 269：删 4 条占位符用例、新增 2 条模板入口位置用例） | 3.80 秒 |
+| 前端构建（`pnpm run build`） | **成功** | 2.47 秒 |
+| 真机验收（Playwright） | **22 passed / 0 failed / 0 skipped / 0 flaky**（results.json 实测 361.80 秒） | 6.0 分钟 |
+| 字体字符集 | 重算后**仍是 3634 个字符**（无新字），字体产物未再变 | < 1 秒 |
+
+### 8.9 复现方式
 
 ```bash
 # ① 后端

@@ -62,7 +62,7 @@ pnpm run typecheck  # tsc --noEmit，零错误
 pnpm run test       # vitest run，纯数据转换逻辑与组件交互的单元测试
 ```
 
-单元测试覆盖挂载声明解析、环境变量解析、启动模板的纯逻辑（占位符替换、宽松挂载解析、表单合并语义与配置收集）、两层路由解析（含畸形百分号编码）、字节与时间格式化、终端帧协议解析、终端状态提示的口径与去重规则（纯函数，含用户主动关闭、空闲回收与服务退出兜底三种结束原因）、代理状态文案转换、主题存取、抽屉宽度的存取与换算、轮询失败计数，终端面板的会话标签与关闭会话交互（标签渲染、点标签回调、运行中与已退出的两套确认文案、确认与取消、失败提示、记录已不存在、关闭流程未走完、列表刷新失败、终态提示、同一状态反复上报不重复刷屏、轮询连续失败），工作台的列表读取失败与轮询失败反馈、停止沙箱先弹确认框，新建沙箱抽屉的镜像列表失败说明、镜像选择器的本地筛选（输入关键字只剩命中项）、列表到位后输入框不被预填、逐字符打字能命中、没命中时的空态、弹层顶部无空白块、输入框右侧的下拉箭头、键盘选中、选中后的详情行、改字即放弃选择与未选镜像时的校验红字，模板选择器的可搜可选、选中回填（含占位符替换与镜像不在宿主列表时的留空）、保存为模板的空名禁提交与成功提示，以及创建成功收口，设置抽屉的代理重启失败反馈不被状态刷新失败顶掉、模板列表渲染与空态、模板列表读取失败、行内重命名（回车提交 / Esc 取消 / 空名禁提交）与删除确认弹窗，删除沙箱确认的一次点即执行，停止沙箱确认弹窗的勾选项与忙碌锁，以及抽屉外壳的焦点管理、关闭途径、宽度拖拽把手（条子中间带竖向抓握图标）与指针拖拽路径（拖动中不落盘、松手落盘一次、按下即松手不落盘、视口宽不可用时不换算），最后是全局 toast 组件本身（类型 → 配色类映射、5 秒自动消失、关闭键提前关闭、倒计时圆环的动画类名与时长、悬停 / 点提示区 / 聚焦提示区 / 按下提示条不暂停倒计时、按 F6 不被 Base UI 接管、窗口失焦停表与回前台整体重走 5 秒、新反馈顶掉旧条并重置计时、退场竞态下圆环重建）。组件测试用 jsdom 环境（文件头部 `@vitest-environment jsdom` 注解切换），依赖 `@testing-library/react` 与 `jsdom`。
+单元测试覆盖挂载声明解析、环境变量解析、启动模板的纯逻辑（宽松挂载解析、表单合并语义与配置收集）、两层路由解析（含畸形百分号编码）、字节与时间格式化、终端帧协议解析、终端状态提示的口径与去重规则（纯函数，含用户主动关闭、空闲回收与服务退出兜底三种结束原因）、代理状态文案转换、主题存取、抽屉宽度的存取与换算、轮询失败计数，终端面板的会话标签与关闭会话交互（标签渲染、点标签回调、运行中与已退出的两套确认文案、确认与取消、失败提示、记录已不存在、关闭流程未走完、列表刷新失败、终态提示、同一状态反复上报不重复刷屏、轮询连续失败），工作台的列表读取失败与轮询失败反馈、停止沙箱先弹确认框，新建沙箱抽屉的镜像列表失败说明、镜像选择器的本地筛选（输入关键字只剩命中项）、列表到位后输入框不被预填、逐字符打字能命中、没命中时的空态、弹层顶部无空白块、输入框右侧的下拉箭头、键盘选中、选中后的详情行、改字即放弃选择与未选镜像时的校验红字，模板选择器的可搜可选、选中回填（模板声明原样回填与镜像不在宿主列表时的留空）、模板入口的位置（加载模板在抽屉最上方、保存为模板在页脚且在主按钮左侧）、保存为模板的空名禁提交与成功提示，以及创建成功收口，设置抽屉的代理重启失败反馈不被状态刷新失败顶掉、模板列表渲染与空态、模板列表读取失败、行内重命名（回车提交 / Esc 取消 / 空名禁提交）与删除确认弹窗，删除沙箱确认的一次点即执行，停止沙箱确认弹窗的勾选项与忙碌锁，以及抽屉外壳的焦点管理、关闭途径、宽度拖拽把手（条子中间带竖向抓握图标）与指针拖拽路径（拖动中不落盘、松手落盘一次、按下即松手不落盘、视口宽不可用时不换算），最后是全局 toast 组件本身（类型 → 配色类映射、5 秒自动消失、关闭键提前关闭、倒计时圆环的动画类名与时长、悬停 / 点提示区 / 聚焦提示区 / 按下提示条不暂停倒计时、按 F6 不被 Base UI 接管、窗口失焦停表与回前台整体重走 5 秒、新反馈顶掉旧条并重置计时、退场竞态下圆环重建）。组件测试用 jsdom 环境（文件头部 `@vitest-environment jsdom` 注解切换），依赖 `@testing-library/react` 与 `jsdom`。
 
 toast 挂全局 `ToastProvider`：组件测试渲染带 Provider 的片段，断言看 `page-toast-item` 与 `data-toast-kind`（必要时再加 `data-toast-source`）。
 
@@ -108,7 +108,7 @@ platform/console/
     │   ├── format.ts     字节数 / 时间戳格式化
     │   ├── mounts.ts     挂载声明解析与校验
     │   ├── env.ts        环境变量声明解析
-    │   ├── templates.ts  启动模板（占位符替换 / 挂载解析 / 表单合并与收集）
+    │   ├── templates.ts  启动模板（挂载解析 / 表单合并与收集）
     │   ├── proxy.ts      代理状态文案转换
     │   ├── terminal.ts   终端帧协议
     │   ├── sessions.ts   会话定序与标签序号登记
@@ -272,10 +272,11 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 
 ### 加载模板与保存为模板
 
-新建沙箱抽屉里镜像选择器下面就是「加载模板」块（同一个块里还有「保存为模板」按钮）：
+新建沙箱抽屉里**最上方**（沙箱名输入之前）就是「加载模板」块；「保存为模板」按钮在抽屉**页脚**，紧靠「创建沙箱」主按钮的左侧（次级按钮样式）：
 
 - **加载模板**是可搜索下拉（复用 `src/components/ui/combobox.tsx`，与镜像选择器同一套写法），候选来自 `GET /api/templates`（后端返回裸数组），**前端本地按模板名做子串筛选**，不发请求。
 - **选中即回填**：选中模板后直接按合并口径改写表单（不另设「应用」按钮）。
+- **模板声明原样回填**：模板里的字符串**不做任何占位符替换**（含 `{name}` 这样的字面量），模板里写了什么，表单里就是什么。
 - **模板里的镜像不在宿主本地镜像列表里**：镜像选择器留空（不回填一个选不上的镜像），提交时走既有的「请选择沙箱镜像」校验红字。
 - **保存为模板**走 `ModalShell` 命名弹窗（面板宽 400px）：名称输入 + 保存 / 取消，**空名禁提交**（按钮直接禁用 + 就地红字），保存成功弹一条**成功 toast**（来源 `sandbox-template`）并关掉弹窗、刷新模板列表。
 - 抽屉打开时**并行**拉镜像列表与模板列表；两个列表读不到时各自弹失败 toast，并在抽屉里留一行就地环境状态说明。
@@ -283,13 +284,13 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 
 ### 启动模板
 
-模板是一份「沙箱启动配置」：镜像、挂载声明、启动命令、工作目录、环境变量、网桥网络。口径三条：
+模板是一份「沙箱启动配置」：镜像、挂载声明、启动命令、工作目录、环境变量、网桥网络。口径四条：
 
 | 口径 | 规定 |
 |---|---|
 | **合并语义** | 模板里**出现**的字段**整体替换**表单值（挂载列表整组替换，不是逐条并入；环境变量整组替换），**没出现**的字段保持表单现状。「出现」用 `hasOwnProperty` 判——`{"image": null}`（填了空值）与缺 `image` 字段（没填过）是两回事 |
-| **`{name}` 占位符** | 模板配置的任意字符串位置（挂载路径、环境变量值、启动命令、工作目录、网桥网络名）都可以写 `{name}`，加载时替换成当前沙箱名；**沙箱名为空时保留占位符原样**（替换成空串会把配置改写成不可用的形态）。沙箱名后补时，提交前会再替换一次（挂载、网络、命令数组一并替换） |
-| **命令可以是数组** | 后端契约收 `str \| list[str] \| null`：字符串命令按 shell 引号规则切分；**数组命令前端装不进单行输入框**，加载模板时进隐藏状态原样透传（每个元素同样替换 `{name}`），命令输入框留空，提交时**隐藏的数组命令优先于表单命令** |
+| **声明原样透传** | 模板配置里的字符串**不做任何占位符替换**：加载时原样回填表单，提交时原样进创建请求（挂载路径、环境变量值、启动命令、工作目录、网桥网络名一律不替换）。模板里写了 `{name}` 这样的字面量，平台就收到这个字面量，由后端既有校验兜底（路径不存在会得到明确报错） |
+| **命令可以是数组** | 后端契约收 `str \| list[str] \| null`：字符串命令按 shell 引号规则切分；**数组命令前端装不进单行输入框**，加载模板时进隐藏状态原样透传（每个元素同样原样保留），命令输入框留空，提交时**隐藏的数组命令优先于表单命令** |
 | **`~` 口径** | 挂载声明的宿主路径允许家目录写法（`~`、`~/data`）；前端解析器放行，后端落库前把 `~` 展开成服务运行用户的家目录。`~other`（别人的家目录）不展开也不放过。**服务以 root 身份运行时 `~` 展开为 `/root`，命中敏感目录拒绝清单返回 400**——这是既有契约的自然结果，不是缺陷 |
 
 - 模板里的**网络**不在新建沙箱抽屉里渲染输入项（表单默认用平台自建网络），但模板携带的网络会**透传**进 `POST /api/sandboxes`。
@@ -353,7 +354,7 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 |---|---|---|
 | 外壳 | `layout` | `page-layout-title` / `page-layout-health`（带 `data-health-state`）/ `page-layout-settings-button` / `page-layout-theme-toggle` |
 | 沙箱列表 | `sandbox-list` | `page-sandbox-list-title` / `page-sandbox-list-item` / `page-sandbox-list-item-name` / `page-sandbox-list-item-state` / `page-sandbox-list-item-image` / `page-sandbox-list-refresh-button` / `page-sandbox-list-create-button` / `page-sandbox-list-empty` / `page-sandbox-list-loading` |
-| 新建沙箱 | `sandbox-create` | `page-sandbox-create-dialog`（抽屉容器）/ `page-sandbox-create-title` / `page-sandbox-create-name-input` / `page-sandbox-create-image-select`（**镜像选择器的输入框**，可搜索；不再是原生 `select`）/ `page-sandbox-create-image-trigger`（输入框右侧的下拉箭头按钮）/ `page-sandbox-create-image-popup`（镜像选择器的弹层）/ `page-sandbox-create-image-option`（弹层里的候选镜像，带 `data-image-reference="<引用>"`）/ `page-sandbox-create-image-no-match`（搜索没命中时的空态）/ `page-sandbox-create-image-refresh-button` / `page-sandbox-create-image-detail` / `page-sandbox-create-image-empty` / `page-sandbox-create-image-status`（镜像列表读取失败的就地环境状态说明，`role="status"`）/ `page-sandbox-create-template-select`（**模板选择器的输入框**，可搜索）/ `page-sandbox-create-template-trigger` / `page-sandbox-create-template-popup` / `page-sandbox-create-template-option`（弹层里的候选模板，带 `data-template-id` 与 `data-template-name`）/ `page-sandbox-create-template-no-match` / `page-sandbox-create-template-save-button`（「保存为模板」）/ `page-sandbox-create-template-empty` / `page-sandbox-create-template-status`（模板列表读取失败的就地环境状态说明，`role="status"`）/ `page-sandbox-create-template-dialog`（命名弹窗）/ `page-sandbox-create-template-name-input` / `page-sandbox-create-template-name-error`（空名红字）/ `page-sandbox-create-template-confirm-button` / `page-sandbox-create-template-cancel-button` / `page-sandbox-create-mount-add-button` / `page-sandbox-create-mount-empty` / `page-sandbox-create-mount-item` / `page-sandbox-create-mount-host-input` / `page-sandbox-create-mount-container-input` / `page-sandbox-create-mount-readonly-checkbox` / `page-sandbox-create-mount-remove-button` / `page-sandbox-create-command-input` / `page-sandbox-create-workdir-input` / `page-sandbox-create-env-input` / `page-sandbox-create-submit-button` / `page-sandbox-create-validation-error`（本地表单校验红字）|
+| 新建沙箱 | `sandbox-create` | `page-sandbox-create-dialog`（抽屉容器）/ `page-sandbox-create-title` / `page-sandbox-create-name-input` / `page-sandbox-create-image-select`（**镜像选择器的输入框**，可搜索；不再是原生 `select`）/ `page-sandbox-create-image-trigger`（输入框右侧的下拉箭头按钮）/ `page-sandbox-create-image-popup`（镜像选择器的弹层）/ `page-sandbox-create-image-option`（弹层里的候选镜像，带 `data-image-reference="<引用>"`）/ `page-sandbox-create-image-no-match`（搜索没命中时的空态）/ `page-sandbox-create-image-refresh-button` / `page-sandbox-create-image-detail` / `page-sandbox-create-image-empty` / `page-sandbox-create-image-status`（镜像列表读取失败的就地环境状态说明，`role="status"`）/ `page-sandbox-create-template-select`（**模板选择器的输入框**，可搜索）/ `page-sandbox-create-template-trigger` / `page-sandbox-create-template-popup` / `page-sandbox-create-template-option`（弹层里的候选模板，带 `data-template-id` 与 `data-template-name`）/ `page-sandbox-create-template-no-match` / `page-sandbox-create-template-save-button`（「保存为模板」，在抽屉页脚、「创建沙箱」主按钮左侧）/ `page-sandbox-create-template-empty` / `page-sandbox-create-template-status`（模板列表读取失败的就地环境状态说明，`role="status"`）/ `page-sandbox-create-template-dialog`（命名弹窗）/ `page-sandbox-create-template-name-input` / `page-sandbox-create-template-name-error`（空名红字）/ `page-sandbox-create-template-confirm-button` / `page-sandbox-create-template-cancel-button` / `page-sandbox-create-mount-add-button` / `page-sandbox-create-mount-empty` / `page-sandbox-create-mount-item` / `page-sandbox-create-mount-host-input` / `page-sandbox-create-mount-container-input` / `page-sandbox-create-mount-readonly-checkbox` / `page-sandbox-create-mount-remove-button` / `page-sandbox-create-command-input` / `page-sandbox-create-workdir-input` / `page-sandbox-create-env-input` / `page-sandbox-create-submit-button` / `page-sandbox-create-validation-error`（本地表单校验红字）|
 | 沙箱详情（工作区头部） | `sandbox-detail` | `page-sandbox-detail-title` / `page-sandbox-detail-state` / `page-sandbox-detail-image` / `page-sandbox-detail-refresh-button` / `page-sandbox-detail-start-button` / `page-sandbox-detail-stop-button` / `page-sandbox-detail-detail-button` / `page-sandbox-detail-delete-button` / `page-sandbox-detail-empty` |
 | 沙箱详情抽屉 | `sandbox-detail-dialog` | `page-sandbox-detail-dialog`（抽屉容器）/ `page-sandbox-detail-dialog-state` / `page-sandbox-detail-dialog-image` / `page-sandbox-detail-dialog-created-at` / `page-sandbox-detail-dialog-updated-at` / `page-sandbox-detail-image-source` / `page-sandbox-detail-system-user` / `page-sandbox-detail-container-name` / `page-sandbox-detail-network-name` / `page-sandbox-detail-socket-path` / `page-sandbox-detail-socket-mount-path` / `page-sandbox-detail-workdir` / `page-sandbox-detail-command` / `page-sandbox-detail-subid` / `page-sandbox-detail-network-owned` / `page-sandbox-detail-env` / `page-sandbox-detail-env-item` / `page-sandbox-detail-env-empty` / `page-sandbox-detail-mounts` / `page-sandbox-detail-mount-item` / `page-sandbox-detail-mounts-empty` / `page-sandbox-detail-dependencies` / `page-sandbox-detail-dependency-item` / `page-sandbox-detail-dependencies-empty` / `page-sandbox-detail-loading` / `page-sandbox-detail-unavailable`（读不到详情时的空态说明）|
 | 终端 | `sandbox-detail-terminal` | `page-sandbox-detail-terminal-panel` / `page-sandbox-detail-terminal-tabs` / `page-sandbox-detail-terminal-tab` / `page-sandbox-detail-terminal-tab-select` / `page-sandbox-detail-terminal-tab-close` / `page-sandbox-detail-terminal-new-button` / `page-sandbox-detail-terminal-status` / `page-sandbox-detail-terminal-retry-button` / `page-sandbox-detail-terminal-stopped-hint` / `page-sandbox-detail-terminal-surface` / `page-sandbox-detail-terminal-mount`（终端表面内层的测量/挂载盒，xterm 根元素的父节点）/ `page-sandbox-detail-terminal-placeholder` / `page-sandbox-detail-terminal-remove-confirm` / `page-sandbox-detail-terminal-remove-confirm-button` / `page-sandbox-detail-terminal-remove-cancel-button` |
