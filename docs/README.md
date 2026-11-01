@@ -13,6 +13,12 @@
 | 需求 (PRD) | 了解某个需求的设计 | [[prds/README.md]] |
 | 任务 | 领取 / 查看开发任务 | [[tasks/README.md]] |
 
+## 目录结构基线
+
+> **2026-11-01 目录重组**：`platform/` 已重组为 `apps/` 结构（`core`、`web/backend`、`web/frontend`、`web/e2e`、`cli`），`base-image` 上移仓库根；此前留档文档中的 `platform/` 路径均按重组前结构理解。
+
+工程目录清单与运行方式见仓库根 `README.md`；文档库只描述系统设计、约定与决策，不重复目录清单。
+
 ## 生命周期
 
 - **稳定层**（很少变）：`architecture/`、`conventions/`、`glossary`

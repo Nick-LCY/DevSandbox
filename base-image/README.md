@@ -4,6 +4,8 @@
 
 不含任何业务运行时（无 node / pnpm / python3 / psql / mc），也不内置任何 volume 挂载点。
 
+> **目录位置**：本目录 2026-11-01 由 `platform/base-image/` 上移到仓库根 `base-image/`；镜像名 `sandbox-platform/base:<版本>` 与构建口径均未变。
+
 > **0.3.0 起新增通用工具层。** 9 个通用工具包（git / openssh-client / vim / curl / ca-certificates / unzip / xz-utils / procps / less）随镜像预装，构建期联网 apt 拉取。
 > **0.2.0 起不再内置依赖镜像离线包。** 依赖镜像（Postgres / MinIO / Logto 等）与一切外部镜像
 > 统一经宿主的统一镜像代理（`rpardini/docker-registry-proxy`）缓存拉取，见 ADR 0008。
@@ -159,5 +161,5 @@ BASE_IMAGE=sandbox-platform/base:0.3.0 ./verify-rootless.sh   # 免 root 联调�
 | `entrypoint.sh` | 容器入口（纯 bash） |
 | `verify.sh` | 镜像级判定脚本 |
 | `verify-rootless.sh` | 免 root 守护进程联调脚本 |
-| `rootless/` | 免 root 守护进程引导脚本（`common.sh` / `00-create-user.sh` / `01-start-dockerd.sh` / `04-cleanup.sh`）；原在 `platform/probe/rootless/`，2026-11-01 随探针目录退役一并迁入本目录 |
+| `rootless/` | 免 root 守护进程引导脚本（`common.sh` / `00-create-user.sh` / `01-start-dockerd.sh` / `04-cleanup.sh`）；原在重组前的 `platform/probe/rootless/`（该路径已随目录重组消失），2026-11-01 随探针目录退役一并迁入本目录 |
 | `RESULTS.md` | 实测记录（体积、耗时、代理拉取对比、踩坑） |

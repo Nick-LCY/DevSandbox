@@ -14,4 +14,4 @@
 > 写法示例：`\[\[architecture/overview.md\]\]` 渲染为可见的 `[[architecture/overview.md]]`，避免在示例文本里被误判为真实链接。
 
 ## 清单
-- [[conventions/console-frontend.md]] — 网页控制台前端约定（`platform/console/`）：令牌与双主题、字体、弹窗与抽屉、路由、data-testid。
+- [[conventions/console-frontend.md]] — 网页控制台前端约定（`apps/web/frontend/`）：令牌与双主题、字体、弹窗与抽屉、路由、data-testid。
