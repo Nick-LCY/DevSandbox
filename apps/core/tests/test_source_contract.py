@@ -17,6 +17,8 @@ import re
 import sys
 from pathlib import Path
 
+import pytest
+
 import sandbox_platform
 
 # 本文件在 apps/core/tests/ 下：
@@ -52,6 +54,14 @@ def _cli_sources() -> list[Path]:
 
 
 def _server_sources() -> list[Path]:
+    """服务端源码清单。
+
+    服务端源码目录不存在时**跳过**（核心包独立检出的场景：仓库里只有
+    ``apps/core``，没有服务端包，服务端分层约束无从谈起，不该误红）。
+    目录存在但为空仍按原样断言失败。
+    """
+    if not BACKEND_DIR.is_dir():
+        pytest.skip("服务端源码目录不存在（核心包独立检出场景），跳过服务端分层约束")
     return sorted(BACKEND_DIR.rglob("*.py"))
 
 
@@ -129,15 +139,21 @@ def _loaded_cli_modules() -> list[str]:
 
 
 def test_core_import_does_not_pull_in_cli() -> None:
-    """导入核心包不会连带导入命令行模块；核心包源码也不引用服务端包。
+    """导入核心包不会连带导入命令行模块。
 
-    依赖方向单向：核心包既不认识命令行薄壳，也不认识服务端包
-    （服务端包 ``sandbox_console`` 依赖核心包 ``sandbox_platform``，
-    反向引用会把核心包拖到界面层上）。
+    依赖方向单向：核心包不认识命令行薄壳
+    （命令行调用核心包，反向引用会把核心包拖到界面层上）。
     """
     importlib.reload(sandbox_platform)
     assert _loaded_cli_modules() == []
 
+
+def test_core_does_not_reference_server_package() -> None:
+    """核心包源码不引用服务端包。
+
+    依赖方向单向：服务端包 ``sandbox_console`` 依赖核心包 ``sandbox_platform``，
+    反向引用会把核心包拖到界面层上。
+    """
     offenders = [
         str(path)
         for path in _core_sources()

@@ -5,6 +5,11 @@
  * （不经 `uv run` 的中间进程），这样拿到的进程号就是服务本体，停止时不会留下孤儿进程。
  *
  * 端口从环境变量 `CONSOLE_TEST_PORT` 取，默认 8100：宿主 8000 端口被无关进程占用。
+ *
+ * `uv run` 一律带 `--no-sync`：工作区里两个成员共用同一个虚拟环境，
+ * 按成员同步是精确对齐的（只同步服务端包会把核心包的依赖剪掉），
+ * 两个成员来回跑就互相剪。环境由
+ * `cd apps && uv sync --all-packages --all-groups` 一次性装齐，取解释器不再顺手同步。
  */
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
@@ -32,7 +37,7 @@ export interface ServerRuntime {
 export function backendPython(): string {
   const result = spawnSync(
     'uv',
-    ['run', '--project', BACKEND_PROJECT_DIR, 'python', '-c', 'import sys; print(sys.executable)'],
+    ['run', '--no-sync', '--project', BACKEND_PROJECT_DIR, 'python', '-c', 'import sys; print(sys.executable)'],
     { encoding: 'utf-8', cwd: BACKEND_PROJECT_DIR },
   );
   if (result.status !== 0) {

@@ -52,6 +52,7 @@ pnpm --dir apps/web/frontend run test:acceptance
 | 前提 | 说明 |
 |---|---|
 | Node ≥ 22 + pnpm | 前端工程同款工具链 |
+| Python 工作区已同步 | 脚本自己会先跑 `cd apps && uv sync --all-packages --all-groups`，把核心包与服务端包的依赖一次性装齐 |
 | Playwright chromium | `~/.cache/ms-playwright` 里已有 1.64.1 对应的 chromium |
 | 免密 sudo | 沙箱创建要建系统用户、写 `/etc/subuid`、起用户级 systemd |
 | 宿主 Docker | 平台控制面与免 root 守护进程都依赖它 |
@@ -69,11 +70,16 @@ CONSOLE_TEST_PORT=8200 pnpm run test:acceptance
 
 `global-setup.ts` 按固定顺序准备环境：
 
-1. `pnpm run build` 构建前端产物（后端在 `/` 路径托管同一份产物）；
-2. 现场用 `docker build` 构建一个**名字带一次性随机后缀**的测试镜像——这个名字在任何镜像仓库里都不可能存在；
-3. 清掉上一轮残留的验收沙箱（名字前缀 `acc-`，不碰别人的沙箱）；
-4. 用平台虚拟环境里的 Python 直接拉起控制台服务（不经 `uv run` 的中间进程，
+1. `cd apps && uv sync --all-packages --all-groups` 同步 Python 工作区环境（核心包与服务端包共用
+   `apps/.venv`，按成员同步是精确对齐的，只同步一边会把另一边的依赖剪掉）；
+2. `pnpm run build` 构建前端产物（后端在 `/` 路径托管同一份产物）；
+3. 现场用 `docker build` 构建一个**名字带一次性随机后缀**的测试镜像——这个名字在任何镜像仓库里都不可能存在；
+4. 清掉上一轮残留的验收沙箱（名字前缀 `acc-`，不碰别人的沙箱）；
+5. 用平台虚拟环境里的 Python 直接拉起控制台服务（不经 `uv run` 的中间进程，
    进程号就是服务本体，重启不留孤儿），监听 `127.0.0.1:<端口>`，等 `/api/health` 通过。
+
+> 取解释器的 `uv run` 一律带 `--no-sync`：验收里核心包与服务端包的解释器都要用，
+> 不让每次取解释器都顺手同步一次环境。
 
 `global-teardown.ts` 收尾：停服务 → 清残留沙箱 → 删测试镜像 → 清运行期目录。
 

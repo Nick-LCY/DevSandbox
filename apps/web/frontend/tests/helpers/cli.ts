@@ -5,6 +5,11 @@
  * 比对两边产生的状态。
  *
  * 命令行是单文件薄壳、不是工作区成员：用核心包项目（apps/core）的解释器跑它。
+ *
+ * `uv run` 一律带 `--no-sync`：工作区里两个成员共用同一个虚拟环境，
+ * 按成员同步是精确对齐的（只同步核心包会把服务端包的依赖剪掉），
+ * 两个成员来回跑就互相剪。环境由
+ * `cd apps && uv sync --all-packages --all-groups` 一次性装齐，取解释器不再顺手同步。
  */
 
 import { spawnSync } from 'node:child_process';
@@ -22,7 +27,7 @@ export interface CliResult {
 function cliPython(): string {
   const result = spawnSync(
     'uv',
-    ['run', '--project', CORE_PROJECT_DIR, 'python', '-c', 'import sys; print(sys.executable)'],
+    ['run', '--no-sync', '--project', CORE_PROJECT_DIR, 'python', '-c', 'import sys; print(sys.executable)'],
     { encoding: 'utf-8', cwd: CORE_PROJECT_DIR },
   );
   if (result.status !== 0) {

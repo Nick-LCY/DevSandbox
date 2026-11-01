@@ -81,7 +81,8 @@ CONSOLE_TEST_PORT=8200 pnpm run test:acceptance
 ```
 
 环境前提：Playwright chromium 1.64.1、免密 sudo、宿主 Docker、镜像代理在跑。
-验收脚本自己会构建前端产物、构建一个「不存在于任何仓库」的测试镜像、拉起控制台服务并在收尾时清理干净。
+验收脚本自己会先跑 `cd apps && uv sync --all-packages --all-groups` 同步 Python 工作区环境（核心包与服务端包共用同一个虚拟环境），
+再构建前端产物、构建一个「不存在于任何仓库」的测试镜像、拉起控制台服务并在收尾时清理干净。
 用例清单、断言口径与产物位置见 `apps/web/frontend/tests/README.md`；实测数据见 `apps/web/frontend/RESULTS.md`。
 
 ## 目录结构

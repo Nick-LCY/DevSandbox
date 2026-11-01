@@ -2,7 +2,7 @@
  * 路径常量。
  *
  * 验收脚本落在 `apps/web/frontend/tests/`，向上依次是前端目录、web 目录、
- * 应用工作区根（apps）、仓库根。
+ * 应用工作区根（apps）。
  */
 
 import path from 'node:path';
@@ -15,8 +15,6 @@ export const CONSOLE_DIR = path.resolve(TESTS_DIR, '..');
 export const WEB_DIR = path.resolve(CONSOLE_DIR, '..');
 /** 应用工作区根（apps）：核心包、服务端包、命令行都在这下面。 */
 export const APPS_DIR = path.resolve(WEB_DIR, '..');
-/** 仓库根。 */
-export const REPO_DIR = path.resolve(APPS_DIR, '..');
 
 /** 运行产物：截图、trace、报告。 */
 export const ARTIFACTS_DIR = path.join(TESTS_DIR, 'artifacts');

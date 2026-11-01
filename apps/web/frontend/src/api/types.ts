@@ -1,7 +1,7 @@
 /**
  * 后端接口的数据形状。
  *
- * 字段名与 `platform/src/sandbox_platform/server/schemas.py` 一一对应，
+ * 字段名与 `apps/web/backend/src/sandbox_console/schemas.py` 一一对应，
  * 后端用蛇形命名，前端不做转换（少一层映射就少一处出错的地方）。
  */
 

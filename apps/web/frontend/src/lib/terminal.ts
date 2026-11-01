@@ -1,7 +1,7 @@
 /**
  * 网页终端的帧协议。
  *
- * 与后端 `sandbox_platform/server/routes/terminal.py` 对齐：
+ * 与后端 `apps/web/backend/src/sandbox_console/routes/terminal.py` 对齐：
  *
  * - 客户端 → 服务端：二进制帧 = 终端输入字节；文本帧 = `{"type":"resize","cols":..,"rows":..}`
  * - 服务端 → 客户端：二进制帧 = 终端输出字节；文本帧 = `hello` / `exit` / `error`
