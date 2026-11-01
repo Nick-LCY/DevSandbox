@@ -93,11 +93,12 @@ CREATE_STEP_NAMES = (
 class CreateRequest:
     """创建沙箱的入参。
 
-    ``image_source`` 取 ``auto``（默认，一期行为）或 ``host``（强制从宿主注入）。
+    ``image`` **必填**：默认沙箱镜像已退役，平台不再有兜底镜像。
+    ``image_source`` 取 ``auto``（默认）或 ``host``（强制从宿主注入）。
     """
 
     name: str
-    image: str | None = None
+    image: str
     mount_declarations: tuple[str, ...] = ()
     command: tuple[str, ...] | None = None
     env: dict[str, str] = field(default_factory=dict)
@@ -189,6 +190,16 @@ def validate_image_name(image: str) -> str:
             f"镜像名非法：{image!r}，只允许字母、数字与 . _ - / : @ 字符，且以字母或数字开头"
         )
     return image
+
+
+def require_image_name(image: str | None) -> str:
+    """校验镜像名；缺失时给出明确报错。
+
+    默认沙箱镜像已退役，平台不再有兜底镜像：创建沙箱必须显式指定镜像。
+    """
+    if not image or not image.strip():
+        raise ValidationError("必须显式指定沙箱镜像（默认镜像已退役）")
+    return validate_image_name(image)
 
 
 def validate_network_name(name: str) -> str:
@@ -694,7 +705,7 @@ class SandboxService:
 
             # ⑤ 启动沙箱容器并挂载套接字与用户声明挂载
             current_step = CREATE_STEP_NAMES[4]
-            image = validate_image_name(request.image or self.config.default_image)
+            image = require_image_name(request.image)
             self.images.ensure_image_from_source(image, daemon, request.image_source)
             network_name = request.network_name or self._network_name(name)
             network_owned = request.network_name is None
@@ -889,7 +900,7 @@ class SandboxService:
 
     def _precheck(self, request: CreateRequest) -> None:
         """创建前的干跑校验：只解析不落地，避免非法输入留下宿主副作用。"""
-        validate_image_name(request.image or self.config.default_image)
+        require_image_name(request.image)
         validate_image_source(request.image_source)
         if request.network_name:
             validate_network_name(request.network_name)

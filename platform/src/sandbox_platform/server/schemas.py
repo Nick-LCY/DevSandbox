@@ -77,10 +77,10 @@ class CreateSandboxRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(description="沙箱名（小写字母、数字、连字符、下划线）")
-    image: str | None = Field(default=None, description="沙箱镜像（缺省取平台默认镜像）")
+    image: str = Field(description="沙箱镜像（必填：默认镜像已退役，必须显式指定）")
     image_source: Literal["auto", "host"] = Field(
         default=IMAGE_SOURCE_AUTO,
-        description="镜像来源：auto（默认，走代理拉取）/ host（强制从宿主注入，不经代理）",
+        description="镜像来源：auto（默认，宿主有则注入、无则经代理拉取）/ host（强制从宿主注入，不经代理）",
     )
     mounts: list[str] = Field(
         default_factory=list,
@@ -526,7 +526,7 @@ class TemplateConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    image: str | None = Field(default=None, description="沙箱镜像（缺省取平台默认镜像）")
+    image: str | None = Field(default=None, description="沙箱镜像（留空则创建时须另行指定）")
     mounts: list[str] = Field(
         default_factory=list,
         description="用户声明挂载，格式 宿主路径:容器路径[:ro]；平台不创建也不删除宿主目录",

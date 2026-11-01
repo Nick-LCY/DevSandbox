@@ -95,7 +95,7 @@ def test_create_rejects_duplicate(service: SandboxService) -> None:
 
     service.store.save(_metadata())
     with pytest.raises(AlreadyExistsError):
-        service.create(CreateRequest(name="demo"))
+        service.create(CreateRequest(name="demo", image="busybox"))
 
 
 def test_create_rejects_socket_path_conflict(service: SandboxService, tmp_path: Path) -> None:
@@ -104,7 +104,11 @@ def test_create_rejects_socket_path_conflict(service: SandboxService, tmp_path: 
     host.mkdir()
     with pytest.raises(ValidationError):
         service.create(
-            CreateRequest(name="demo", mount_declarations=(f"{host}:/var/run/docker.sock",))
+            CreateRequest(
+                name="demo",
+                image="busybox",
+                mount_declarations=(f"{host}:/var/run/docker.sock",),
+            )
         )
 
 
@@ -121,8 +125,22 @@ def test_metadata_store_is_reachable_from_service(service: SandboxService) -> No
 
 
 def test_create_request_image_source_defaults_to_auto() -> None:
-    """创建入参的镜像来源默认 auto（一期行为，命令行不传该字段）。"""
-    assert CreateRequest(name="demo").image_source == "auto"
+    """创建入参的镜像来源默认 auto。"""
+    assert CreateRequest(name="demo", image="busybox").image_source == "auto"
+
+
+def test_create_request_requires_image() -> None:
+    """镜像必填：默认镜像已退役，创建入参不再有镜像兜底。"""
+    with pytest.raises(TypeError):
+        CreateRequest(name="demo")  # type: ignore[call-arg]
+
+
+def test_create_rejects_missing_image(service: SandboxService) -> None:
+    """缺镜像直接报错（默认镜像已退役），且不落任何宿主副作用。"""
+    with pytest.raises(ValidationError) as excinfo:
+        service.create(CreateRequest(name="demo", image=""))
+    assert "必须显式指定沙箱镜像" in str(excinfo.value)
+    assert not service.store.exists("demo")
 
 
 def test_invalid_image_source_is_rejected() -> None:
@@ -138,7 +156,7 @@ def test_invalid_image_source_is_rejected() -> None:
 def test_create_rejects_invalid_image_source(service: SandboxService) -> None:
     """非法镜像来源在动宿主之前就被拒绝。"""
     with pytest.raises(ValidationError):
-        service.create(CreateRequest(name="demo", image_source="proxy"))
+        service.create(CreateRequest(name="demo", image="busybox", image_source="proxy"))
 
 
 def test_service_constructible_without_cli(config) -> None:
@@ -211,7 +229,7 @@ def test_concurrent_create_of_same_name_is_serialized(
 
     def worker() -> None:
         try:
-            service.create(CreateRequest(name="demo"))
+            service.create(CreateRequest(name="demo", image="busybox"))
             outcomes.append("created")
         except AlreadyExistsError:
             outcomes.append("exists")
@@ -241,7 +259,7 @@ def test_failed_create_releases_the_name_claim(
 
     monkeypatch.setattr(service, "_create_locked", boom)
     with pytest.raises(LifecycleError):
-        service.create(CreateRequest(name="demo"))
+        service.create(CreateRequest(name="demo", image="busybox"))
     assert not service._name_claim_path("demo").exists()
 
 

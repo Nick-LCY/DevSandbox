@@ -3,11 +3,14 @@
 统一镜像代理（ADR 0008）落地后，平台不再维护任何离线镜像包：
 
 1. 沙箱守护进程里已有该镜像 → 直接用；
-2. **平台自建镜像**（只在宿主构建出来、不存在于任何仓库）→ 宿主导出后注入；
+2. **宿主本地已有该镜像** → 宿主导出后注入沙箱守护进程；
 3. 其余镜像（仓库里存在的）→ 交给沙箱守护进程自己拉，拉取自动经统一镜像代理，
    命中代理缓存；平台不代拉、不预置离线包。
 
 代理不可达时拉取直接失败，不降级直连。
+
+镜像前缀机制已下线：平台不再按命名前缀区分「平台自建镜像」，
+任何镜像都按「宿主本地有没有」这一条事实判定。
 """
 
 from __future__ import annotations
@@ -33,7 +36,7 @@ SOURCE_REMOTE = "remote"
 INSPECT_BATCH_SIZE = 50
 
 # 镜像来源（创建入参 ``CreateRequest.image_source`` 的取值）：
-# auto —— 一期行为：守护进程已有 → 平台自建镜像由宿主导出注入 → 其余经镜像代理拉取
+# auto —— 宿主本地有该镜像则宿主导出注入；宿主没有则交由沙箱守护进程经镜像代理拉取
 # host —— 强制从宿主导出注入：宿主没有该镜像直接报错，**不经镜像代理拉取**
 IMAGE_SOURCE_AUTO = "auto"
 IMAGE_SOURCE_HOST = "host"
@@ -193,14 +196,17 @@ class ImageManager:
     def ensure_image(self, image: str, daemon: UserDaemon) -> str:
         """确保目标守护进程里可用该镜像，返回来源标记。
 
-        链条：沙箱守护进程已有 → 平台自建镜像由宿主导出注入 → 其余交给沙箱守护进程
+        链条：沙箱守护进程已有 → 宿主本地有该镜像则宿主导出注入 → 其余交给沙箱守护进程
         经统一镜像代理拉取（代理不可达时直接失败，不降级直连）。
+
+        判定只看「宿主本地有没有这个镜像」这一条事实，不再按命名前缀区分
+        「平台自建镜像」——前缀机制已下线。
         """
         if daemon.image_exists(image):
             return SOURCE_PRESENT
 
-        if self.is_platform_local(image) and self.host_image_exists(image):
-            logger.info("宿主已有平台自建镜像 %s，导出后注入沙箱守护进程", image)
+        if self.host_image_exists(image):
+            logger.info("宿主已有镜像 %s，导出后注入沙箱守护进程", image)
             try:
                 return self.inject_from_host(image, daemon)
             except ImageError as exc:
@@ -219,7 +225,8 @@ class ImageManager:
     ) -> str:
         """按镜像来源准备镜像，返回来源标记。
 
-        ``auto``（默认，一期行为）：链条同 :meth:`ensure_image`。
+        ``auto``（默认）：链条同 :meth:`ensure_image`——宿主本地有该镜像则导出注入，
+        没有则交由沙箱守护进程经镜像代理拉取。
 
         ``host``（强制从宿主注入），判定分两种路径：
 
@@ -251,10 +258,6 @@ class ImageManager:
             return SOURCE_PRESENT
         logger.info("按强制从宿主注入模式准备镜像 %s", image)
         return self.inject_from_host(image, daemon)
-
-    def is_platform_local(self, image: str) -> bool:
-        """镜像是否属于平台自建命名空间（只在宿主构建，不存在于任何仓库）。"""
-        return any(image.startswith(prefix) for prefix in self.config.local_image_prefixes)
 
     def host_image_exists(self, image: str) -> bool:
         """宿主 root 守护进程里是否已有该镜像。"""

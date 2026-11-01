@@ -17,7 +17,6 @@ from pathlib import Path
 from .errors import ConfigError
 
 DEFAULT_HOME = "/var/lib/sandbox-platform"
-DEFAULT_IMAGE = "sandbox-platform/sandbox-default"
 DEFAULT_SOCKET_MOUNT = "/var/run/docker.sock"
 
 # 统一镜像代理：镜像 tag 钉在 0.8.0（上游稳定版，多架构；digest 见 RESULTS.md）
@@ -33,21 +32,17 @@ DEFAULT_PROXY_ADDRESS = "127.0.0.1"
 DEFAULT_PROXY_REGISTRIES = ("docker.io", "ghcr.io", "quay.io", "gcr.io", "registry.k8s.io")
 # 宿主系统 CA 束（与代理 CA 合并成单个文件后注入沙箱守护进程）
 DEFAULT_SYSTEM_CA_BUNDLE = "/etc/ssl/certs/ca-certificates.crt"
-# 平台自建镜像的命名前缀：这类镜像只在宿主构建、不存在于任何仓库，由宿主导出注入
-DEFAULT_LOCAL_IMAGE_PREFIXES = ("sandbox-platform/",)
 
 ENV_HOME = "SANDBOX_PLATFORM_HOME"
 ENV_USER_PREFIX = "SANDBOX_PLATFORM_USER_PREFIX"
 ENV_SUBID_BASE = "SANDBOX_PLATFORM_SUBID_BASE"
 ENV_SUBID_LENGTH = "SANDBOX_PLATFORM_SUBID_LENGTH"
-ENV_IMAGE = "SANDBOX_PLATFORM_IMAGE"
 ENV_SOCKET_MOUNT = "SANDBOX_PLATFORM_SOCKET_MOUNT"
 ENV_PROXY_IMAGE = "SANDBOX_PLATFORM_PROXY_IMAGE"
 ENV_PROXY_PORT = "SANDBOX_PLATFORM_PROXY_PORT"
 ENV_PROXY_ADDRESS = "SANDBOX_PLATFORM_PROXY_ADDRESS"
 ENV_PROXY_REGISTRIES = "SANDBOX_PLATFORM_PROXY_REGISTRIES"
 ENV_SYSTEM_CA_BUNDLE = "SANDBOX_PLATFORM_SYSTEM_CA_BUNDLE"
-ENV_LOCAL_IMAGE_PREFIXES = "SANDBOX_PLATFORM_LOCAL_IMAGE_PREFIXES"
 
 MIN_SUBID_BASE = 100000
 MIN_SUBID_LENGTH = 65536
@@ -84,14 +79,12 @@ class PlatformConfig:
     user_prefix: str = "sandbox"
     subid_base: int = MIN_SUBID_BASE
     subid_length: int = MIN_SUBID_LENGTH
-    default_image: str = DEFAULT_IMAGE
     socket_mount_path: str = DEFAULT_SOCKET_MOUNT
     proxy_image: str = DEFAULT_PROXY_IMAGE
     proxy_port: int = DEFAULT_PROXY_PORT
     proxy_address: str = DEFAULT_PROXY_ADDRESS
     proxy_registries: tuple[str, ...] = DEFAULT_PROXY_REGISTRIES
     system_ca_bundle: Path = Path(DEFAULT_SYSTEM_CA_BUNDLE)
-    local_image_prefixes: tuple[str, ...] = DEFAULT_LOCAL_IMAGE_PREFIXES
 
     # ---------------------------------------------------------------- 构造
     @classmethod
@@ -100,7 +93,6 @@ class PlatformConfig:
         env = dict(os.environ if env is None else env)
         home = Path(env.get(ENV_HOME, "").strip() or DEFAULT_HOME)
         prefix = env.get(ENV_USER_PREFIX, "").strip() or "sandbox"
-        image = env.get(ENV_IMAGE, "").strip() or DEFAULT_IMAGE
         socket_mount = env.get(ENV_SOCKET_MOUNT, "").strip() or DEFAULT_SOCKET_MOUNT
         proxy_image = env.get(ENV_PROXY_IMAGE, "").strip() or DEFAULT_PROXY_IMAGE
         proxy_address = env.get(ENV_PROXY_ADDRESS, "").strip() or DEFAULT_PROXY_ADDRESS
@@ -110,16 +102,12 @@ class PlatformConfig:
             user_prefix=prefix,
             subid_base=_env_int(env, ENV_SUBID_BASE, MIN_SUBID_BASE),
             subid_length=_env_int(env, ENV_SUBID_LENGTH, MIN_SUBID_LENGTH),
-            default_image=image,
             socket_mount_path=socket_mount,
             proxy_image=proxy_image,
             proxy_port=_env_int(env, ENV_PROXY_PORT, DEFAULT_PROXY_PORT),
             proxy_address=proxy_address,
             proxy_registries=_env_list(env, ENV_PROXY_REGISTRIES, DEFAULT_PROXY_REGISTRIES),
             system_ca_bundle=Path(system_ca),
-            local_image_prefixes=_env_list(
-                env, ENV_LOCAL_IMAGE_PREFIXES, DEFAULT_LOCAL_IMAGE_PREFIXES
-            ),
         )
         config.validate()
         return config
@@ -138,8 +126,6 @@ class PlatformConfig:
             raise ConfigError(f"子 ID 段长度不得小于 {MIN_SUBID_LENGTH}：{self.subid_length}")
         if not self.socket_mount_path.startswith("/"):
             raise ConfigError(f"套接字容器内路径必须是绝对路径：{self.socket_mount_path}")
-        if not self.default_image.strip():
-            raise ConfigError("默认镜像名不能为空")
         if not self.proxy_image.strip():
             raise ConfigError("代理镜像名不能为空")
         if not MIN_PORT <= self.proxy_port <= MAX_PORT:

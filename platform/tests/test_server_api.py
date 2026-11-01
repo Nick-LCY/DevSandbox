@@ -159,8 +159,8 @@ def test_create_sandbox_returns_steps_and_connection(
 def test_create_sandbox_defaults_to_auto_image_source(
     client: TestClient, fake_service: FakeSandboxService
 ) -> None:
-    """不传 image_source 时按 auto（一期行为）转成核心包入参。"""
-    client.post("/api/sandboxes", json={"name": "demo"})
+    """不传 image_source 时按 auto 转成核心包入参。"""
+    client.post("/api/sandboxes", json={"name": "demo", "image": "busybox:1.37"})
     action, args = fake_service.calls[-1]
     assert action == "create"
     request: CreateRequest = args[0]
@@ -172,21 +172,40 @@ def test_create_sandbox_forwards_host_image_source(
     client: TestClient, fake_service: FakeSandboxService
 ) -> None:
     """image_source=host 原样转给核心包（强制从宿主注入，不经镜像代理）。"""
-    client.post("/api/sandboxes", json={"name": "demo", "image_source": "host"})
+    client.post(
+        "/api/sandboxes",
+        json={"name": "demo", "image": "my-local/app:dev", "image_source": "host"},
+    )
     request: CreateRequest = fake_service.calls[-1][1][0]
     assert request.image_source == "host"
 
 
+def test_create_sandbox_without_image_returns_422(client: TestClient) -> None:
+    """缺 image 字段 → 422：默认镜像已退役，镜像必须显式指定。"""
+    response = client.post("/api/sandboxes", json={"name": "demo"})
+    assert response.status_code == 422
+    body = response.json()
+    assert set(body) == {"detail"}
+    assert "image" in body["detail"]
+    assert "必须显式指定沙箱镜像" in body["detail"]
+
+
 def test_create_sandbox_rejects_unknown_image_source(client: TestClient) -> None:
     """image_source 只允许 auto / host，拼错的值直接 400。"""
-    response = client.post("/api/sandboxes", json={"name": "demo", "image_source": "proxy"})
+    response = client.post(
+        "/api/sandboxes",
+        json={"name": "demo", "image": "busybox:1.37", "image_source": "proxy"},
+    )
     assert response.status_code == 400
     assert "取值不在允许范围内" in response.json()["detail"]
 
 
 def test_create_sandbox_rejects_unknown_field(client: TestClient) -> None:
     """拼错的字段名不静默忽略，直接 400。"""
-    response = client.post("/api/sandboxes", json={"name": "demo", "images": "busybox:1.37"})
+    response = client.post(
+        "/api/sandboxes",
+        json={"name": "demo", "image": "busybox:1.37", "images": "busybox:1.37"},
+    )
     assert response.status_code == 400
     assert "不允许的字段" in response.json()["detail"]
 
@@ -199,6 +218,7 @@ def test_create_sandbox_translates_mounts_and_command(
         "/api/sandboxes",
         json={
             "name": "demo",
+            "image": "busybox:1.37",
             "mounts": ["/tmp/demo:/data:ro"],
             "command": "sleep infinity",
             "env": {"KEY": "value"},
@@ -216,7 +236,10 @@ def test_create_sandbox_translates_mounts_and_command(
 
 def test_create_sandbox_with_unbalanced_quotes_returns_400(client: TestClient) -> None:
     """命令里的引号不配对：400，不落成 500。"""
-    response = client.post("/api/sandboxes", json={"name": "demo", "command": "echo '未闭合"})
+    response = client.post(
+        "/api/sandboxes",
+        json={"name": "demo", "image": "busybox:1.37", "command": "echo '未闭合"},
+    )
     assert response.status_code == 400
     assert "引号" in response.json()["detail"]
 
@@ -236,7 +259,7 @@ def test_create_sandbox_expands_home_prefix_in_mounts(
     monkeypatch.setenv("HOME", fake_home)
     client.post(
         "/api/sandboxes",
-        json={"name": "demo", "mounts": ["~/data:/data", "~:/rootish"]},
+        json={"name": "demo", "image": "busybox:1.37", "mounts": ["~/data:/data", "~:/rootish"]},
     )
     request: CreateRequest = fake_service.calls[-1][1][0]
     assert request.mount_declarations == (f"{fake_home}/data:/data", f"{fake_home}:/rootish")
@@ -252,7 +275,7 @@ def test_create_sandbox_expands_home_prefix_with_surrounding_spaces(
     monkeypatch.setenv("HOME", fake_home)
     client.post(
         "/api/sandboxes",
-        json={"name": "demo", "mounts": ["  ~/data  :/data"]},
+        json={"name": "demo", "image": "busybox:1.37", "mounts": ["  ~/data  :/data"]},
     )
     request: CreateRequest = fake_service.calls[-1][1][0]
     assert request.mount_declarations == (f"{fake_home}/data:/data",)
@@ -262,7 +285,10 @@ def test_create_sandbox_does_not_expand_container_path(
     client: TestClient, fake_service: FakeSandboxService
 ) -> None:
     """容器路径段里的 ~ 不展开：原样交给核心包。"""
-    client.post("/api/sandboxes", json={"name": "demo", "mounts": ["/tmp/demo:~/data"]})
+    client.post(
+        "/api/sandboxes",
+        json={"name": "demo", "image": "busybox:1.37", "mounts": ["/tmp/demo:~/data"]},
+    )
     request: CreateRequest = fake_service.calls[-1][1][0]
     assert request.mount_declarations == ("/tmp/demo:~/data",)
 
@@ -271,7 +297,10 @@ def test_create_sandbox_does_not_expand_other_user_prefix(
     client: TestClient, fake_service: FakeSandboxService
 ) -> None:
     """~other 形式不展开（原样交给核心包）。"""
-    client.post("/api/sandboxes", json={"name": "demo", "mounts": ["~other/data:/data"]})
+    client.post(
+        "/api/sandboxes",
+        json={"name": "demo", "image": "busybox:1.37", "mounts": ["~other/data:/data"]},
+    )
     request: CreateRequest = fake_service.calls[-1][1][0]
     assert request.mount_declarations == ("~other/data:/data",)
 
@@ -283,7 +312,10 @@ def test_create_sandbox_expanded_mount_host_is_absolute(
 ) -> None:
     """展开后的宿主路径是绝对路径（进核心请求前已是完整路径）。"""
     monkeypatch.setenv("HOME", "/tmp/fake-service-home")
-    client.post("/api/sandboxes", json={"name": "demo", "mounts": ["~/data:/data:ro"]})
+    client.post(
+        "/api/sandboxes",
+        json={"name": "demo", "image": "busybox:1.37", "mounts": ["~/data:/data:ro"]},
+    )
     request: CreateRequest = fake_service.calls[-1][1][0]
     host = request.mount_declarations[0].split(":")[0]
     assert host.startswith("/")
@@ -299,6 +331,7 @@ def test_create_sandbox_does_not_expand_env_command_or_workdir(
         "/api/sandboxes",
         json={
             "name": "demo",
+            "image": "busybox:1.37",
             "env": {"HOME": "~"},
             "command": "echo ~",
             "workdir": "~/work",

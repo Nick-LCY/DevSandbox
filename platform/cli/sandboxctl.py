@@ -66,7 +66,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     create = subparsers.add_parser("create", help="创建沙箱")
     create.add_argument("name", help="沙箱名（小写字母、数字、连字符、下划线）")
-    create.add_argument("--image", help="沙箱镜像（默认取平台默认沙箱镜像）")
+    create.add_argument(
+        "--image",
+        required=True,
+        help="沙箱镜像（必填：默认镜像已退役，必须显式指定）",
+    )
     create.add_argument(
         "--mount",
         action="append",

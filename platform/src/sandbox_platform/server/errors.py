@@ -1,11 +1,11 @@
 """HTTP 错误映射：平台异常 → 状态码 + ``{"detail": "中文消息"}``。
 
-映射固定：入参非法 400、沙箱不存在 404、沙箱已存在 409、镜像不存在 400、
-其余平台异常 500。
+映射固定：入参非法 400、缺必填镜像字段 422、沙箱不存在 404、沙箱已存在 409、
+镜像不存在 400、其余平台异常 500。
 
 消息策略：
 
-- 400 / 404 / 409：保留平台异常原文（都是用户侧信息，不含宿主敏感路径）。
+- 400 / 404 / 409 / 422：保留平台异常原文（都是用户侧信息，不含宿主敏感路径）。
 - 500：只回固定文案「平台内部错误，请查看服务日志」。平台异常原文可能带宿主
   绝对路径与特权命令行，**只进日志**，不进 HTTP 响应。
 """
@@ -32,6 +32,11 @@ STATUS_BAD_REQUEST = 400
 STATUS_NOT_FOUND = 404
 STATUS_CONFLICT = 409
 STATUS_SERVER_ERROR = 500
+# 缺必填镜像字段：422（默认镜像退役后，镜像是硬性必填项，不是「取值不合法」）
+STATUS_UNPROCESSABLE = 422
+
+# 缺 image 字段时的固定提示
+MISSING_IMAGE_DETAIL = "请求参数不合法：image（必填：默认镜像已退役，必须显式指定沙箱镜像）"
 
 # 500 分支的固定文案：平台异常原文只进日志，不回显宿主路径与特权命令行
 INTERNAL_ERROR_MESSAGE = "平台内部错误，请查看服务日志"
@@ -72,6 +77,21 @@ def describe_validation_errors(exc: RequestValidationError) -> str:
     if not parts:
         return "请求参数不合法"
     return "请求参数不合法：" + "；".join(parts)
+
+
+def is_missing_image_error(exc: RequestValidationError) -> bool:
+    """请求体是否缺必填的 ``image`` 字段。
+
+    默认沙箱镜像已退役：镜像不再有平台兜底，缺失即 422（明确指出缺哪个字段），
+    不落成「取值不合法」那类 400。
+    """
+    for error in exc.errors():
+        if str(error.get("type", "")) != "missing":
+            continue
+        location = [str(item) for item in error.get("loc", ())]
+        if location and location[-1] == "image":
+            return True
+    return False
 
 
 def describe_http_error(exc: StarletteHTTPException, request: Request) -> str:
@@ -126,6 +146,9 @@ def install_exception_handlers(app: FastAPI) -> None:
     async def _handle_request_validation(
         request: Request, exc: RequestValidationError
     ) -> JSONResponse:
+        # 缺必填的 image 字段：422（默认镜像退役后的硬性要求）
+        if is_missing_image_error(exc):
+            return error_response(STATUS_UNPROCESSABLE, MISSING_IMAGE_DETAIL)
         return error_response(STATUS_BAD_REQUEST, describe_validation_errors(exc))
 
     @app.exception_handler(StarletteHTTPException)

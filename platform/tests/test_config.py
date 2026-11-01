@@ -52,11 +52,26 @@ def test_non_integer_env_rejected() -> None:
         PlatformConfig.from_env({"SANDBOX_PLATFORM_SUBID_BASE": "abc"})
 
 
-def test_default_image_and_socket_mount() -> None:
-    """默认镜像与套接字容器内路径符合契约。"""
+def test_socket_mount_default() -> None:
+    """套接字容器内路径符合契约。"""
     config = PlatformConfig.from_env({})
-    assert config.default_image == "sandbox-platform/sandbox-default"
     assert config.socket_mount_path == "/var/run/docker.sock"
+
+
+def test_default_image_is_retired() -> None:
+    """默认镜像已退役：配置里不再有默认镜像字段与环境变量口子。"""
+    config = PlatformConfig.from_env({})
+    assert not hasattr(config, "default_image")
+    assert not hasattr(config, "local_image_prefixes")
+    # 旧环境变量彻底失效：不再有兜底镜像，也不该被读进来
+    config = PlatformConfig.from_env(
+        {
+            "SANDBOX_PLATFORM_IMAGE": "sandbox-platform/sandbox-default",
+            "SANDBOX_PLATFORM_LOCAL_IMAGE_PREFIXES": "my-registry/",
+        }
+    )
+    assert not hasattr(config, "default_image")
+    assert not hasattr(config, "local_image_prefixes")
 
 
 def test_proxy_defaults() -> None:

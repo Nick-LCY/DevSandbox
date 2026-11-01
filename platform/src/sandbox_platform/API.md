@@ -25,14 +25,20 @@
 | `user_prefix` | `str` | `sandbox` | `SANDBOX_PLATFORM_USER_PREFIX` | 沙箱系统用户名前缀 |
 | `subid_base` | `int` | `100000` | `SANDBOX_PLATFORM_SUBID_BASE` | 子 ID 段最小起点 |
 | `subid_length` | `int` | `65536` | `SANDBOX_PLATFORM_SUBID_LENGTH` | 子 ID 段长度 |
-| `default_image` | `str` | `sandbox-platform/sandbox-default` | `SANDBOX_PLATFORM_IMAGE` | 默认沙箱镜像 |
 | `socket_mount_path` | `str` | `/var/run/docker.sock` | `SANDBOX_PLATFORM_SOCKET_MOUNT` | 套接字在容器内的路径 |
 | `proxy_image` | `str` | `rpardini/docker-registry-proxy:0.8.0` | `SANDBOX_PLATFORM_PROXY_IMAGE` | 统一镜像代理镜像 |
 | `proxy_port` | `int` | `3128` | `SANDBOX_PLATFORM_PROXY_PORT` | 代理在宿主回环上的监听端口 |
 | `proxy_address` | `str` | `127.0.0.1` | `SANDBOX_PLATFORM_PROXY_ADDRESS` | 沙箱守护进程访问代理用的地址（见下注） |
 | `proxy_registries` | `tuple[str, ...]` | `docker.io ghcr.io quay.io gcr.io registry.k8s.io` | `SANDBOX_PLATFORM_PROXY_REGISTRIES` | 代理拦截并缓存的仓库清单（空格分隔） |
 | `system_ca_bundle` | `Path` | `/etc/ssl/certs/ca-certificates.crt` | `SANDBOX_PLATFORM_SYSTEM_CA_BUNDLE` | 宿主系统 CA 束（与代理 CA 合并成单个文件） |
-| `local_image_prefixes` | `tuple[str, ...]` | `sandbox-platform/` | `SANDBOX_PLATFORM_LOCAL_IMAGE_PREFIXES` | 平台自建镜像前缀：这类镜像由宿主导出注入，不走代理 |
+
+> **默认镜像已退役**（镜像退役轮）：平台不再有默认沙箱镜像，`default_image` 字段与
+> `SANDBOX_PLATFORM_IMAGE` 环境变量已彻底删除（不留环境变量口子）。创建沙箱必须
+> 显式指定镜像；命令行的 `--image` 是必填参数，服务端缺 `image` 字段回 422。
+>
+> **镜像前缀机制已下线**：`local_image_prefixes` 字段与
+> `SANDBOX_PLATFORM_LOCAL_IMAGE_PREFIXES` 环境变量已删除。镜像来源不再按命名前缀
+> 判定，只看「宿主本地有没有这个镜像」这一条事实。
 
 > 代理地址默认为 `127.0.0.1`：`dockerd-rootless.sh` 默认启用 `--detach-netns`，
 > 免 root 守护进程进程本身留在宿主网络命名空间（只有容器在 slirp4netns 命名空间里），
@@ -162,10 +168,9 @@
 | 函数 | 签名 | 说明 |
 |---|---|---|
 | 枚举宿主镜像 | `ImageManager.list_host_images() -> list[HostImage]` | 实时枚举宿主 root 守护进程里的本地镜像（含用户自己本地构建、任何仓库都没有的镜像）；悬空镜像（`<none>:<none>`）不进列表；结果按镜像引用排序 |
-| 保证可用 | `ImageManager.ensure_image(image: str, daemon: UserDaemon) -> str` | 顺序：沙箱守护进程已有 → 平台自建镜像（`local_image_prefixes` 前缀匹配）由宿主导出注入 → 其余交给沙箱守护进程经镜像代理拉取；返回来源标记（`present` / `injected` / `remote`） |
+| 保证可用 | `ImageManager.ensure_image(image: str, daemon: UserDaemon) -> str` | 顺序：沙箱守护进程已有 → 宿主本地有该镜像则由宿主导出注入 → 其余交给沙箱守护进程经镜像代理拉取；返回来源标记（`present` / `injected` / `remote`）。**不再按命名前缀判定**（前缀机制已下线） |
 | 按来源准备 | `ImageManager.ensure_image_from_source(image: str, daemon: UserDaemon, source: str = "auto", *, require_host_image: bool = True) -> str` | `auto` 同上；`host` 强制从宿主注入（见下方「镜像来源的判定语义」）；非法来源抛 `ValidationError`，**不静默降级成 auto** |
 | 镜像引用摘要 | `image_digest(image: str) -> str` | 镜像引用的 sha256 前 16 位；注入中转归档的文件名用它（按字符替换分隔符会让 `a/b:1` 与 `a_b:1` 撞名） |
-| 平台自建判定 | `ImageManager.is_platform_local(image: str) -> bool` | 镜像是否属平台自建命名空间（只在宿主构建、不存在于任何仓库） |
 | 宿主镜像 | `ImageManager.host_image_exists(image: str) -> bool` | 宿主 root 守护进程里是否已有该镜像 |
 | 导出注入 | `ImageManager.inject_from_host(image: str, daemon: UserDaemon) -> str` | `docker save` → `docker load` 注入沙箱守护进程，失败抛 `ImageError` |
 
@@ -222,7 +227,7 @@
 
 | 名称 | 字段 | 说明 |
 |---|---|---|
-| `CreateRequest` | `name`、`image=None`、`mount_declarations=()`、`command=None`、`env={}`、`workdir=None`、`network_name=None`、`image_source="auto"` | 创建入参 |
+| `CreateRequest` | `name`、`image`（**必填**）、`mount_declarations=()`、`command=None`、`env={}`、`workdir=None`、`network_name=None`、`image_source="auto"` | 创建入参；**镜像必填**：默认镜像已退役，平台没有兜底镜像 |
 | `CreateResult` | `metadata`、`connection`、`steps` | 创建结果；`steps` 是固定 7 步名称 |
 | `ConnectionInfo` | `socket_path`、`container_name`、`exec_command`、`docker_command`、`notes` | 连接方式与命令提示（身份切换前缀与实际执行同源：非 root 是 `sudo -u`，root 是 `setpriv`） |
 | `ReclaimPlan` | `sandbox_name`、`items`、`untouched_note`、`user_mounts`、`incomplete` | 删除前的回收清单；`untouched_note` 固定为「用户挂载的宿主机目录不受影响」；依赖容器清单 = 元数据已知列表 ∪ 删除前实时扫描，探测失败时保留旧列表并置 `incomplete=True` |
@@ -290,8 +295,11 @@
 
 | 取值 | 语义 | 准备镜像的路径 |
 |---|---|---|
-| `auto`（默认） | 一期行为 | 沙箱守护进程已有 → 平台自建镜像（`sandbox-platform/` 前缀）由宿主导出注入 → 其余交给沙箱守护进程经统一镜像代理拉取 |
+| `auto`（默认） | 宿主本地有则注入、无则走代理 | 沙箱守护进程已有 → 宿主本地有该镜像则由宿主导出注入 → 宿主没有则交给沙箱守护进程经统一镜像代理拉取（代理不可达直接失败，**不降级直连**） |
 | `host` | 强制从宿主导出注入 | 创建路径：宿主没有该镜像直接报错（`ImageNotFoundError`），**不经镜像代理拉取**；宿主有则 `docker save` → `docker load` 注入沙箱守护进程（守护进程里已有时跳过重复注入）。启动路径：守护进程里已有就直接用，宿主副本只在守护进程缺失时作为注入源（见 `images.py` 章节） |
+
+> `auto` 分支的判定只看「宿主本地有没有这个镜像」，**不再按镜像命名前缀区分**
+> 「平台自建镜像」——前缀机制已下线，`sandbox-platform/` 前缀不再有任何特殊含义。
 
 `host` 模式在创建第 ⑤ 步准备镜像时执行，沙箱启动镜像因此不经镜像代理。
 该来源随沙箱元数据一起落盘（`SandboxMetadata.image_source`），
@@ -304,6 +312,7 @@
 |---|---|
 | `validate_sandbox_name(name)` | 沙箱名整串匹配（`[a-z0-9][a-z0-9_-]{0,23}`），`find` / `get` / `reclaim_plan` / `create` / `start` / `stop` / `delete` 七个入口统一先校验 |
 | `validate_image_name(image)` | 镜像名字符集限制（字母数字与 `. _ - / : @`） |
+| `require_image_name(image)` | 镜像名必填校验：缺失或空串直接抛 `ValidationError`（「必须显式指定沙箱镜像（默认镜像已退役）」），再走字符集校验 |
 | `validate_network_name(name)` | 网络名字符集限制（字母数字与 `. _ -`） |
 | `validate_env_pairs(env)` | 环境变量键白名单 `^[A-Za-z_][A-Za-z0-9_]*$` |
 | `validate_image_source(source)` | 镜像来源只允许 `auto` / `host`，创建前干跑校验（非法取值不留下宿主副作用） |
@@ -396,8 +405,8 @@
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `name` | `str` | 必填 | 沙箱名，走一期白名单校验 |
-| `image` | `str \| null` | `null` | 沙箱镜像，缺省取平台默认镜像 |
-| `image_source` | `"auto" \| "host"` | `auto` | `auto`（一期行为）/ `host`（强制从宿主注入，不经镜像代理）；只允许这两个取值 |
+| `image` | `str` | 必填 | 沙箱镜像（**必须显式指定**：默认镜像已退役，平台无兜底镜像）；缺失回 422 |
+| `image_source` | `"auto" \| "host"` | `auto` | `auto`（宿主本地有则注入、无则经代理拉取）/ `host`（强制从宿主注入，不经镜像代理）；只允许这两个取值 |
 | `mounts` | `list[str]` | `[]` | 用户声明挂载，格式 `宿主路径:容器路径[:ro]`；平台不创建也不删除宿主目录 |
 | `command` | `str \| list[str] \| null` | `null` | 容器启动命令；给字符串时按 shell 引号规则切分，与命令行一致（引号不配对 → 400） |
 | `env` | `dict[str, str]` | `{}` | 容器环境变量，键名走白名单校验 |
@@ -431,6 +440,7 @@
 
 | 场景 | 状态码 | 响应体 |
 |---|---|---|
+| 缺必填的 `image` 字段（默认镜像已退役后的硬性要求） | 422 | `{"detail": "请求参数不合法：image（必填：默认镜像已退役，必须显式指定沙箱镜像）"}` |
 | 入参非法（沙箱名、镜像名、挂载声明、镜像来源等） | 400 | `{"detail": "平台异常原文"}` |
 | 请求体不合法（缺字段、类型不对、多余字段） | 400 | `{"detail": "请求参数不合法：字段（原因）"}` |
 | 宿主与沙箱守护进程都没有该镜像（`image_source=host`） | 400 | `{"detail": "平台异常原文"}` |
@@ -635,7 +645,7 @@ TTY 负责（容器内拿到的是真实 TTY，默认 termios 生效）。
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `image` | `str \| null` | `null` | 沙箱镜像（缺省取平台默认镜像） |
+| `image` | `str \| null` | `null` | 沙箱镜像（留空则创建时须另行指定） |
 | `mounts` | `list[str]` | `[]` | 用户声明挂载，格式 `宿主路径:容器路径[:ro]`；平台不创建也不删除宿主目录 |
 | `command` | `str \| list[str] \| null` | `null` | 容器启动命令（覆盖镜像默认入口） |
 | `workdir` | `str \| null` | `null` | 容器工作目录 |

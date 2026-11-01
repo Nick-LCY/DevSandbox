@@ -142,7 +142,7 @@ def test_image_name_charset(bad_image: str) -> None:
 
 def test_image_name_accepts_normal_references() -> None:
     """常规镜像引用放行。"""
-    assert validate_image_name("sandbox-platform/sandbox-default:0.1.0")
+    assert validate_image_name("python:3.12-alpine")
     assert validate_image_name("docker:29.6.2-cli")
 
 
@@ -408,7 +408,7 @@ def test_rollback_keeps_preexisting_user(service: SandboxService, monkeypatch) -
     service.userspace = Userspace()  # type: ignore[assignment]
     monkeypatch.setattr(service, "_ensure_data_directories", lambda: None)
     with pytest.raises(LifecycleError):
-        service.create(CreateRequest(name="demo"))
+        service.create(CreateRequest(name="demo", image="busybox"))
     assert "ensure_user:sandbox-demo" in calls
     assert not any(item.startswith("remove_user:") for item in calls)
 
@@ -435,7 +435,7 @@ def test_rollback_removes_newly_created_user(service: SandboxService, monkeypatc
     service.userspace = Userspace()  # type: ignore[assignment]
     monkeypatch.setattr(service, "_ensure_data_directories", lambda: None)
     with pytest.raises(LifecycleError):
-        service.create(CreateRequest(name="demo"))
+        service.create(CreateRequest(name="demo", image="busybox"))
     assert "remove_user:sandbox-demo" in calls
 
 
