@@ -190,6 +190,30 @@ def test_create_sandbox_without_image_returns_422(client: TestClient) -> None:
     assert "必须显式指定沙箱镜像" in body["detail"]
 
 
+def test_create_sandbox_with_empty_image_returns_422(client: TestClient) -> None:
+    """image 传空串 → 422：与缺失同义（都归入「必须显式指定镜像」）。"""
+    response = client.post("/api/sandboxes", json={"name": "demo", "image": ""})
+    assert response.status_code == 422
+    assert "必须显式指定沙箱镜像" in response.json()["detail"]
+
+
+def test_create_sandbox_with_null_image_returns_422(client: TestClient) -> None:
+    """image 传 null → 422：与缺失同义（都归入「必须显式指定镜像」）。"""
+    response = client.post("/api/sandboxes", json={"name": "demo", "image": None})
+    assert response.status_code == 422
+    assert "必须显式指定沙箱镜像" in response.json()["detail"]
+
+
+def test_create_sandbox_without_name_and_image_mentions_both(client: TestClient) -> None:
+    """name 与 image 同时缺失：报错文案两个字段都讲，不只讲镜像。"""
+    response = client.post("/api/sandboxes", json={})
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert "name" in detail
+    assert "image" in detail
+    assert "必须显式指定沙箱镜像" in detail
+
+
 def test_create_sandbox_rejects_unknown_image_source(client: TestClient) -> None:
     """image_source 只允许 auto / host，拼错的值直接 400。"""
     response = client.post(

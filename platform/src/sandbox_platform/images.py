@@ -1,13 +1,15 @@
-"""镜像可用性保障：本地已有、宿主导出注入、交给代理拉取三条路径。
+"""镜像可用性保障：先经镜像代理拉取，失败再回退宿主副本注入。
 
 统一镜像代理（ADR 0008）落地后，平台不再维护任何离线镜像包：
 
 1. 沙箱守护进程里已有该镜像 → 直接用；
-2. **宿主本地已有该镜像** → 宿主导出后注入沙箱守护进程；
-3. 其余镜像（仓库里存在的）→ 交给沙箱守护进程自己拉，拉取自动经统一镜像代理，
-   命中代理缓存；平台不代拉、不预置离线包。
+2. 其余镜像 → 交由沙箱守护进程自己拉，拉取自动经统一镜像代理，
+   命中代理缓存走本地；平台不预置离线包；
+3. 代理拉取失败且**宿主本地已有该镜像** → 回退宿主导出后注入沙箱守护进程
+   （本地构建镜像不在任何仓库，代理必然拉不到，只有这条路径能拿到）。
 
-代理不可达时拉取直接失败，不降级直连。
+两条途径都拿不到时直接报错，报错文案说明两种途径均失败。
+代理不可达时拉取直接失败，**不降级直连**。
 
 镜像前缀机制已下线：平台不再按命名前缀区分「平台自建镜像」，
 任何镜像都按「宿主本地有没有」这一条事实判定。
@@ -23,7 +25,7 @@ from dataclasses import dataclass
 from .command import run
 from .config import PlatformConfig
 from .daemon import UserDaemon
-from .errors import ImageError, ImageNotFoundError, ValidationError
+from .errors import CommandError, ImageError, ImageNotFoundError, ValidationError
 from .userspace import Privilege
 
 logger = logging.getLogger(__name__)
@@ -36,7 +38,8 @@ SOURCE_REMOTE = "remote"
 INSPECT_BATCH_SIZE = 50
 
 # 镜像来源（创建入参 ``CreateRequest.image_source`` 的取值）：
-# auto —— 宿主本地有该镜像则宿主导出注入；宿主没有则交由沙箱守护进程经镜像代理拉取
+# auto —— 先经镜像代理拉取（缓存命中走本地）；代理拉取失败且宿主本地有该镜像
+#         则回退宿主导出注入；两者皆败直接报错
 # host —— 强制从宿主导出注入：宿主没有该镜像直接报错，**不经镜像代理拉取**
 IMAGE_SOURCE_AUTO = "auto"
 IMAGE_SOURCE_HOST = "host"
@@ -196,8 +199,17 @@ class ImageManager:
     def ensure_image(self, image: str, daemon: UserDaemon) -> str:
         """确保目标守护进程里可用该镜像，返回来源标记。
 
-        链条：沙箱守护进程已有 → 宿主本地有该镜像则宿主导出注入 → 其余交给沙箱守护进程
-        经统一镜像代理拉取（代理不可达时直接失败，不降级直连）。
+        链条（``auto`` 来源的唯一实现）：
+
+        1. 沙箱守护进程里已有该镜像 → 直接用；
+        2. 否则交由沙箱守护进程经统一镜像代理拉取（缓存命中走本地），
+           平台不代拉、不预置离线包；
+        3. 代理拉取失败且宿主本地有该镜像 → 回退宿主导出注入
+           （本地构建镜像不在任何仓库，代理必然拉不到，只有这条路径能拿到）；
+        4. 两条途径都失败 → 抛 :class:`ImageNotFoundError`，
+           报错文案说明两种途径均失败。
+
+        **不降级直连外网**：代理不可达即拉取失败。
 
         判定只看「宿主本地有没有这个镜像」这一条事实，不再按命名前缀区分
         「平台自建镜像」——前缀机制已下线。
@@ -205,15 +217,43 @@ class ImageManager:
         if daemon.image_exists(image):
             return SOURCE_PRESENT
 
-        if self.host_image_exists(image):
-            logger.info("宿主已有镜像 %s，导出后注入沙箱守护进程", image)
-            try:
-                return self.inject_from_host(image, daemon)
-            except ImageError as exc:
-                logger.warning("宿主镜像注入失败，交由沙箱守护进程自行拉取：%s", exc)
-
         logger.info("镜像 %s 交由沙箱守护进程经统一镜像代理拉取", image)
-        return SOURCE_REMOTE
+        pull_detail = self._pull_through_proxy(image, daemon)
+        if pull_detail is None:
+            return SOURCE_REMOTE
+
+        if not self.host_image_exists(image):
+            raise ImageNotFoundError(
+                f"镜像 {image} 不可用：经统一镜像代理拉取失败（{pull_detail}），"
+                "宿主也没有该镜像的本地副本可注入；平台不做降级直连"
+            )
+
+        logger.info("镜像 %s 经代理拉取失败，回退宿主本地副本注入", image)
+        try:
+            return self.inject_from_host(image, daemon)
+        except ImageError as exc:
+            raise ImageNotFoundError(
+                f"镜像 {image} 不可用：经统一镜像代理拉取失败（{pull_detail}），"
+                f"宿主本地副本注入也失败（{exc}）"
+            ) from exc
+
+    def _pull_through_proxy(self, image: str, daemon: UserDaemon) -> str | None:
+        """让沙箱守护进程经统一镜像代理拉取镜像。
+
+        返回 ``None`` 表示拉取成功（镜像已在守护进程里）；返回字符串表示拉取失败，
+        字符串是该次失败的简短原因（进报错文案）。
+        """
+        try:
+            pull = daemon.pull_image(image)
+        except CommandError as exc:
+            # 超时、命令不存在等也算拉取失败：交给调用方决定回退还是报错
+            logger.warning("镜像 %s 经代理拉取失败：%s", image, exc)
+            return str(exc)
+        if pull.ok:
+            if daemon.image_exists(image):
+                return None
+            return "拉取命令返回成功，但沙箱守护进程里仍没有该镜像"
+        return pull.output.strip() or f"退出码 {pull.returncode}"
 
     def ensure_image_from_source(
         self,
@@ -225,8 +265,9 @@ class ImageManager:
     ) -> str:
         """按镜像来源准备镜像，返回来源标记。
 
-        ``auto``（默认）：链条同 :meth:`ensure_image`——宿主本地有该镜像则导出注入，
-        没有则交由沙箱守护进程经镜像代理拉取。
+        ``auto``（默认）：链条同 :meth:`ensure_image`——先经统一镜像代理拉取
+        （缓存命中走本地）；代理拉取失败且宿主本地有该镜像则回退宿主导出注入；
+        两条途径都失败直接报错。
 
         ``host``（强制从宿主注入），判定分两种路径：
 

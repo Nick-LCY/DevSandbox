@@ -74,7 +74,7 @@ docker create \
   --entrypoint "" \
   -e APP_PORT="$APP_PORT" \
   "$APP_IMAGE" \
-  python /srv/www/serve.py >/dev/null
+  python3 /srv/www/serve.py >/dev/null
 
 # docker cp 不会创建缺失的父目录：整目录拷（/srv/www 由此创建），再拷两张证书
 docker cp "$E2E_DIR/fixtures/app" "${APP_CONTAINER}:/srv/www"

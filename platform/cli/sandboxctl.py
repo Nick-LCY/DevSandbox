@@ -68,7 +68,6 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("name", help="沙箱名（小写字母、数字、连字符、下划线）")
     create.add_argument(
         "--image",
-        required=True,
         help="沙箱镜像（必填：默认镜像已退役，必须显式指定）",
     )
     create.add_argument(
@@ -263,6 +262,21 @@ def command_list(service: SandboxService, args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------- 入口
+def check_required_arguments(args: argparse.Namespace) -> str:
+    """检查必填参数，返回空串表示通过。
+
+    缺 ``--image`` 时给中文提示：默认镜像已退役，创建沙箱必须显式指定镜像。
+    argparse 自身的英文报错（「the following arguments are required」）
+    对用户没有信息量，这里自己拦一道。
+    """
+    if args.action == "create" and not (args.image or "").strip():
+        return (
+            "必须显式指定沙箱镜像（默认镜像已退役）；"
+            "用法：sandboxctl create <沙箱名> --image <镜像>"
+        )
+    return ""
+
+
 def main(argv: list[str] | None = None) -> int:
     """命令行入口。"""
     logging.basicConfig(
@@ -271,6 +285,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser = build_parser()
     args = parser.parse_args(argv)
+    missing = check_required_arguments(args)
+    if missing:
+        echo_error(f"错误：{missing}")
+        return 2
     config = PlatformConfig.from_env(os.environ)
     service = SandboxService(config)
     handlers = {

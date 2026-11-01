@@ -40,7 +40,6 @@ from .daemon import (
 from .errors import (
     AlreadyExistsError,
     ConfigError,
-    ImageError,
     LifecycleError,
     NotFoundError,
     ProxyError,
@@ -729,13 +728,9 @@ class SandboxService:
                 name=name,
             )
             if not run_result.ok:
-                detail = run_result.output.strip()
-                if not daemon.image_exists(image):
-                    detail = (
-                        f"镜像 {image} 在沙箱守护进程与宿主上都不存在，"
-                        f"沙箱内经镜像代理拉取失败：{detail}"
-                    )
-                raise LifecycleError(current_step, f"启动沙箱容器失败：{detail}")
+                raise LifecycleError(
+                    current_step, f"启动沙箱容器失败：{run_result.output.strip()}"
+                )
             container_id = daemon.container_id(container_name) or ""
 
             # ⑥ 写入沙箱元数据
@@ -790,39 +785,16 @@ class SandboxService:
         workdir: str | None,
         name: str,
     ) -> CommandResult:
-        """启动沙箱容器；镜像拉取失败且宿主有本地副本时，注入后重试一次。
+        """启动沙箱容器。
 
-        常规路径：镜像不在沙箱守护进程里时，守护进程自己经统一镜像代理拉取。
-        例外：镜像只存在于宿主（用户自建镜像、不在任何仓库），代理拉不到，
-        这时把宿主副本导出注入沙箱守护进程再重试一次。
+        镜像在调用本方法前已准备好（``auto``：代理拉取或宿主副本注入；
+        ``host``：宿主副本注入），这里只负责起容器。
         """
         labels = {
             LABEL_NAME: name,
             LABEL_ROLE: ROLE_SANDBOX,
             LABEL_MANAGED: "true",
         }
-        result = daemon.run_container(
-            name=container_name,
-            image=image,
-            mounts=mounts,
-            network=network,
-            command=command,
-            env=env,
-            labels=labels,
-            workdir=workdir,
-        )
-        if result.ok or daemon.image_exists(image):
-            return result
-        if not self.images.host_image_exists(image):
-            return result
-        logger.info("镜像 %s 经代理拉取失败，改为从宿主本地副本注入后重试", image)
-        try:
-            self.images.inject_from_host(image, daemon)
-        except ImageError as exc:
-            logger.warning("宿主镜像注入失败：%s", exc)
-            return result
-        if daemon.container_exists(container_name):
-            daemon.remove_container(container_name)
         return daemon.run_container(
             name=container_name,
             image=image,

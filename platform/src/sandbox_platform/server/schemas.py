@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import os
 import shlex
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from sandbox_platform import (
     IMAGE_SOURCE_AUTO,
     ConnectionInfo,
@@ -77,10 +77,16 @@ class CreateSandboxRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(description="沙箱名（小写字母、数字、连字符、下划线）")
-    image: str = Field(description="沙箱镜像（必填：默认镜像已退役，必须显式指定）")
+    image: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1),
+    ] = Field(description="沙箱镜像（必填：默认镜像已退役，必须显式指定）")
     image_source: Literal["auto", "host"] = Field(
         default=IMAGE_SOURCE_AUTO,
-        description="镜像来源：auto（默认，宿主有则注入、无则经代理拉取）/ host（强制从宿主注入，不经代理）",
+        description=(
+            "镜像来源：auto（默认，先经镜像代理拉取，失败再回退宿主副本注入）"
+            "/ host（强制从宿主注入，不经代理）"
+        ),
     )
     mounts: list[str] = Field(
         default_factory=list,
