@@ -210,7 +210,7 @@ bash tools/assert-contracts.sh
 
 | 退役项 | 原作用 | 现状 |
 |---|---|---|
-| 全栈示例项目（重组前的 `platform/examples/` 目录） | 示例应用 + 示例迁移 + 示例种子 | 目录已删除；全栈链路的实测记录留档在仓库根 `RESULTS.md` 与本目录 `RESULTS.md`（历史留档，内容一字未改） |
+| 全栈示例项目（重组前的 `platform/examples/` 目录） | 示例应用 + 示例迁移 + 示例种子 | 目录已删除；全栈链路的实测记录留档在 `docs/tasks/sandbox-platform/RESULTS.md` 与本目录 `RESULTS.md`（历史留档，内容一字未改） |
 | 每用例独立数据库（每用例克隆一个库、迁移与种子、建库工具） | 用例间数据隔离 | 已删除；门禁只判静态页一条 |
 | 依赖三件套（Postgres / MinIO / Logto） | 全栈依赖容器 | 已删除；`config/dependencies.json` 只留静态页判据 |
 | 探索模式（探索会话目录与它的入口脚本） | 现场走查会话（退出码恒 0） | 已删除；只剩单 project 脚本模式 |

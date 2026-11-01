@@ -11,7 +11,7 @@ status: done
 >   **2 轮**循环内从红（2 failed / 4 passed）到绿（6 passed，退出码 0）；
 >   全过程命令与决策见 `platform/examples/fullstack-sample/LOOP-LOG.md`，
 >   实测数据见 `platform/examples/fullstack-sample/RESULTS.md` 第八节，
->   平台侧的一期总验收结论见仓库根目录 `RESULTS.md`。
+>   平台侧的一期总验收结论见 [[tasks/sandbox-platform/RESULTS.md|平台侧总验收结论留档]]。
 
 ## 目标
 搭建一个真实全栈示例项目（前端 + FastAPI + Postgres + MinIO + Logto），并让 agent 在一个干净沙箱中无人工介入地跑通「改码 → 起环境 → 端到端 → 看截图 → 修复 → 全绿」闭环，同时记录实测数据用于校准后续性能估算。

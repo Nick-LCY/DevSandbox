@@ -33,5 +33,5 @@ status: done
 
 **留档指引**：
 - 逐条实测记录：`platform/console/RESULTS.md`（PRD 8 条验收标准逐条结论、一期回归明细、遗留边界、复现方式）。
-- 平台侧结论：仓库根目录 `RESULTS.md`（二期分项结论与任务逐条完成情况）。
+- 平台侧结论：[[tasks/sandbox-platform/RESULTS.md|平台侧总验收结论留档]]（二期分项结论与任务逐条完成情况）。
 - 提交：commit `b72c1ec`（`test(console): 二期任务05 端到端验收与一期回归复验`）。

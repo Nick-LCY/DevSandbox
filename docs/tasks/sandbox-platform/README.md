@@ -2,7 +2,7 @@
 
 本目录是沙箱平台**一期（本地闭环）**的任务集，共 6 个任务，需求来源见 [[prds/sandbox-platform.md]]。
 
-一期 6 个任务已全部完成，任务状态汇总见 [[current-state.md]]。
+一期 6 个任务已全部完成，任务状态汇总见 [[current-state.md]]；平台侧验收结论（一期总验收 + 8 条分项 + 二期分项）留档见 [[tasks/sandbox-platform/RESULTS.md|验收结论]]。
 
 ## 清单
 
