@@ -19,6 +19,7 @@ import {
   openCreateDialog,
   openDeleteDialog,
   openImagePicker,
+  openSettingsDrawer,
   openStopDialog,
   searchImage,
   selectCreatedSandbox,
@@ -299,6 +300,42 @@ test.describe('网页控制台全流程', () => {
     await waitDrawerSettled(page, 'page-settings-dialog');
     const proxyWidth = (await page.getByTestId('page-settings-dialog').boundingBox())!.width;
     expect(Math.abs(proxyWidth - after.width)).toBeLessThan(2);
+  });
+
+  test('设置抽屉：刷新状态与重启代理两个按钮在代理设置区里', async ({ page }) => {
+    await openSettingsDrawer(page);
+
+    // 两个按钮从抽屉页脚搬进了第一区：就在代理设置区里，不再是全局页脚。
+    const section = page.locator(
+      '[data-testid="page-settings-dialog"] section[aria-label="代理设置"]',
+    );
+    const refresh = section.getByTestId('page-settings-refresh-button');
+    const restart = section.getByTestId('page-settings-restart-button');
+    await expect(refresh).toBeVisible();
+    await expect(restart).toBeVisible();
+
+    // 刷新状态：真打一次状态接口，字段照旧显示。
+    const statusResponse = page.waitForResponse(
+      (response) =>
+        response.url().includes('/api/proxy/status') && response.request().method() === 'GET',
+      { timeout: 30_000 },
+    );
+    await refresh.click();
+    await statusResponse;
+    await expect(page.getByTestId('page-settings-proxy-url')).toContainText('http://');
+
+    // 重启代理：真重启一次（要十几秒），结果面板出来、结论如实展示。
+    const restartResponse = page.waitForResponse(
+      (response) =>
+        response.url().includes('/api/proxy/restart') && response.request().method() === 'POST',
+      { timeout: 120_000 },
+    );
+    await restart.click();
+    expect((await restartResponse).ok(), '重启代理接口没有返回成功').toBe(true);
+    await expect(page.getByTestId('page-settings-restart-result')).toBeVisible({
+      timeout: 60_000,
+    });
+    await expect(page.getByTestId('page-settings-restarted')).toHaveText('已重启并恢复健康');
   });
 
   test('停止确认框取消时，后端没收到停止请求', async ({ page }) => {

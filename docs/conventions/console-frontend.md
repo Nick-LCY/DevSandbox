@@ -45,8 +45,9 @@
 - toast 条目带 `data-toast-kind`（类型）与可选的 `data-toast-source`（来源）：同一页面上可能先后出现多条失败提示，验收脚本靠来源把本用例关心的那条与前一步残留的无关那条区分开。
 - **按钮加载态统一用旋转图标**：进行中的按钮保留文字、去掉省略号，文字前放一个旋转图标（lucide `Loader2`，`size-3.5` + `animate-spin`，`aria-hidden`）；不是按钮的加载文案（段落里的「正在读取…」）保持省略号不变。
 - **可搜索选择器统一走 Base UI Combobox 原语封装**（`src/components/ui/combobox.tsx`）：**不得手搓 Popover + 自建列表**，也**不得引入其他组件库**。选中值语义、键盘导航（↑↓ / Enter）、列表的 ARIA 语义与本地筛选都由原语接管；页面只传候选集（`items`）、取值文案（`itemToStringLabel`）、相等比较（`isItemEqualToValue`）与筛选规则（`filter`），不自己维护命中列表。原生 `<select>` 不再用于候选多的场景（新建沙箱的镜像选择器已改）。
+- **可搜索选择器的展开箭头贴在输入框内部**：绝对定位在输入框右侧、垂直居中，是**纯指示器**（`pointer-events-none`、对辅助技术隐藏、不进 Tab 序列），点击穿透到输入框、开合仍由输入框触发（原语默认点输入框即展开）；弹层展开时输入组带 `data-popup-open`，箭头据此旋转 180°（带过渡）。**候选项逐项给指针光标**（`cursor-pointer`，写在组件层）；**候选为空时列表去掉内边距**（`data-[empty]:p-0`），弹层高度贴合内容，底部不留空白带。
 - 纯数据转换逻辑（路由解析、挂载声明、环境变量、格式化、终端帧协议、终端状态提示口径与去重、代理文案、主题存取、抽屉宽度的存取与换算、会话定序、轮询失败计数）收敛在 `src/lib/`，并有单元测试。
-- **交互组件的 pointer 光标由 `src/styles/globals.css` 的 base 层统一兜底**（Tailwind v4 的 preflight 把 button 等元素的默认光标改成了 `default`，v3 时代是 `pointer`）：新增交互原语不必逐个补 `cursor-pointer`；要别的光标语义就用工具类覆盖（工具类层级高于 base，下拉选项的 `cursor-default` 即是此例）。
+- **交互组件的 pointer 光标由 `src/styles/globals.css` 的 base 层统一兜底**（Tailwind v4 的 preflight 把 button 等元素的默认光标改成了 `default`，v3 时代是 `pointer`）：新增交互原语不必逐个补 `cursor-pointer`；要别的光标语义就用工具类覆盖（工具类层级高于 base）。**兜底清单里的 `[role=option]` 会被组件层的工具类盖住**：可搜索选择器的候选项渲染成 `role="option"` 的 div，组件层自己写了 `cursor-pointer`（工具类层级更高，与 base 层那条不冲突，只是它不决定最终光标）。
 
 ## 抽屉外壳
 

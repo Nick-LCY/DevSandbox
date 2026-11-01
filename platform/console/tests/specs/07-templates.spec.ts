@@ -170,6 +170,67 @@ test.describe('启动模板', () => {
     }
   });
 
+  test('模板下拉：箭头在输入框内、候选项是指针、空列表不留空白带', async ({ page }) => {
+    readFixtures();
+    await cleanupTemplates();
+
+    try {
+      // 先存一个模板：下拉里得有候选，才能验指针光标。
+      await openCreateDialog(page);
+      await page.getByTestId('page-sandbox-create-name-input').fill(SANDBOX_NAME);
+      await saveTemplateFromCreateDialog(page, TEMPLATE_NAME);
+
+      const input = page.getByTestId('page-sandbox-create-template-select');
+      const arrow = page.getByTestId('page-sandbox-create-template-trigger');
+
+      // 箭头贴在输入框**内部**右侧、垂直居中：不可点、对外隐藏。
+      await expect(arrow).toBeVisible();
+      await expect(arrow).toHaveAttribute('aria-hidden', 'true');
+      await expect(arrow).toHaveCSS('pointer-events', 'none');
+      const inputBox = (await input.boundingBox())!;
+      const arrowBox = (await arrow.boundingBox())!;
+      expect(arrowBox.x, '箭头不在输入框左侧').toBeGreaterThanOrEqual(inputBox.x);
+      expect(
+        arrowBox.x + arrowBox.width,
+        '箭头不在输入框右侧之内',
+      ).toBeLessThanOrEqual(inputBox.x + inputBox.width + 1);
+      expect(
+        Math.abs(
+          arrowBox.y + arrowBox.height / 2 - (inputBox.y + inputBox.height / 2),
+        ),
+        '箭头没有垂直居中',
+      ).toBeLessThanOrEqual(2);
+
+      // 收起时朝下；展开后转 180°。
+      await expect(arrow).toHaveCSS('rotate', 'none');
+      await input.click();
+      await expect(page.getByTestId('page-sandbox-create-template-popup')).toBeVisible();
+      await expect(arrow).toHaveCSS('rotate', '180deg');
+
+      // 候选项逐项给指针光标。
+      const option = page.locator(`[data-template-name="${TEMPLATE_NAME}"]`);
+      await expect(option).toHaveCount(1);
+      await expect(option).toHaveCSS('cursor', 'pointer');
+
+      // 搜不到时：弹层高度贴合空态提示，底部不多出空白带。
+      await input.fill('');
+      await input.fill('zzz-没有这个模板');
+      await expect(page.getByTestId('page-sandbox-create-template-no-match')).toBeVisible();
+      const popupBox = (await page
+        .getByTestId('page-sandbox-create-template-popup')
+        .boundingBox())!;
+      const emptyBox = (await page
+        .getByTestId('page-sandbox-create-template-no-match')
+        .boundingBox())!;
+      expect(
+        popupBox.height - emptyBox.height,
+        `空列表时弹层底部多出 ${popupBox.height - emptyBox.height}px 空白`,
+      ).toBeLessThanOrEqual(2);
+    } finally {
+      await cleanupTemplates();
+    }
+  });
+
   test('删除模板走确认弹窗：文案写明只删模板、不影响已创建的沙箱', async ({ page }) => {
     readFixtures();
     await cleanupTemplates();

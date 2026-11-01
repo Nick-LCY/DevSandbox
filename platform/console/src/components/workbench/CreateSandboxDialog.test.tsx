@@ -379,27 +379,62 @@ describe('新建沙箱抽屉的镜像选择器', () => {
     expect(firstVisible?.getAttribute('data-slot')).toBe('combobox-item');
   });
 
-  it('输入框右侧有下拉箭头，点它能开合弹层', async () => {
+  it('下拉箭头在输入框内部：纯指示器，点击仍落在输入框上', async () => {
     mocks.listImages.mockResolvedValue(IMAGES);
 
     renderDialog();
     await waitImageList();
 
-    const trigger = screen.getByTestId('page-sandbox-create-image-trigger');
-    expect(trigger.querySelector('svg')).not.toBeNull();
-    // 图标是装饰性的：对辅助技术隐藏。
-    expect(trigger.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');
+    const indicator = screen.getByTestId('page-sandbox-create-image-trigger');
+    // 箭头不是按钮，是贴在输入框内部右侧的装饰性指示器。
+    expect(indicator.tagName).not.toBe('BUTTON');
+    expect(indicator.getAttribute('aria-hidden')).toBe('true');
+    expect(indicator.className).toContain('pointer-events-none');
+    // 绝对定位在输入框内部：与输入框同在输入组里。
+    expect(indicator.getAttribute('data-slot')).toBe('combobox-indicator');
+    expect(indicator.parentElement?.getAttribute('data-slot')).toBe('combobox-input-group');
+    expect(indicator.parentElement?.contains(imageInput())).toBe(true);
 
-    // 点箭头：弹层开；再点一次：弹层关。
+    // 点输入框：弹层开（箭头上不可点，开合由输入框触发）。
     expect(screen.queryByTestId('page-sandbox-create-image-popup')).toBeNull();
-    fireEvent.mouseDown(trigger);
+    fireEvent.mouseDown(imageInput());
     await waitFor(() =>
       expect(screen.queryByTestId('page-sandbox-create-image-popup')).not.toBeNull(),
     );
-    fireEvent.mouseDown(trigger);
-    await waitFor(() =>
-      expect(screen.queryByTestId('page-sandbox-create-image-popup')).toBeNull(),
+    // 展开时输入组带 data-popup-open（箭头据此转向）。
+    expect(indicator.parentElement?.getAttribute('data-popup-open')).not.toBeNull();
+  });
+
+  it('候选行逐项给指针光标', async () => {
+    mocks.listImages.mockResolvedValue(IMAGES);
+
+    renderDialog();
+    await waitImageList();
+
+    openImagePicker();
+    await waitFor(() => expect(optionReferences()).toHaveLength(2));
+
+    for (const option of screen.queryAllByTestId('page-sandbox-create-image-option')) {
+      expect(option.className).toContain('cursor-pointer');
+    }
+  });
+
+  it('候选列表空时去掉内边距：弹层高度贴合内容', async () => {
+    mocks.listImages.mockResolvedValue(IMAGES);
+
+    renderDialog();
+    await waitImageList();
+
+    openImagePicker();
+    searchImage('zzz-不存在的镜像');
+    await screen.findByTestId('page-sandbox-create-image-no-match');
+
+    // 列表带 data-empty（候选为空），内边距据此去掉，底部不留空白带。
+    const list = screen.getByTestId('page-sandbox-create-image-popup').querySelector(
+      '[data-slot="combobox-list"]',
     );
+    expect(list?.getAttribute('data-empty')).not.toBeNull();
+    expect(list?.className).toContain('data-[empty]:p-0');
   });
 
   it('键盘（↓ + Enter）能选中镜像', async () => {

@@ -34,8 +34,12 @@ function Field({ label, value, testId }: { label: string; value: string; testId:
 /**
  * 设置抽屉：代理设置 + 启动模板管理。
  *
- * 第一区是代理设置（状态展示 + 重启 + CA 重装结果），内容与原「代理设置」
- * 抽屉完全一致；第二区是启动模板管理区（列表 / 行内重命名 / 删除）。
+ * 第一区是代理设置（状态展示 + 刷新状态 + 重启 + CA 重装结果），内容与原
+ * 「代理设置」抽屉完全一致；第二区是启动模板管理区（列表 / 行内重命名 / 删除）。
+ *
+ * 「刷新状态」与「重启代理」两个按钮**在第一区里**（状态字段区之后），不再挂在
+ * 整个抽屉的全局页脚：抽屉页脚只放跟整张抽屉相关的动作，这两个按钮只管代理，
+ * 放在代理设置区里更挨着它管的东西（抽屉因此没有页脚）。
  *
  * 定位标识除已退役的三个（顶部摘要、CA 可取回、状态明细）外全部保留。
  */
@@ -125,35 +129,6 @@ export function SettingsDialog({
       onOpenChange={onOpenChange}
       widthVw={widthVw}
       onWidthChange={onWidthChange}
-      footer={
-        <>
-          <button
-            type="button"
-            onClick={() => void load()}
-            disabled={loading || restarting}
-            data-testid="page-settings-refresh-button"
-            className="inline-flex h-8 items-center justify-center rounded-lg border border-border bg-background px-3 text-[13px] text-foreground transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
-          >
-            刷新状态
-          </button>
-          <button
-            type="button"
-            onClick={() => void restartProxy()}
-            disabled={restarting}
-            data-testid="page-settings-restart-button"
-            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-transparent bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/80 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
-          >
-            {restarting ? (
-              <>
-                <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-                正在重启
-              </>
-            ) : (
-              '重启代理'
-            )}
-          </button>
-        </>
-      }
     >
       <h2 className="sr-only" data-testid="page-settings-title">
         设置
@@ -192,6 +167,35 @@ export function SettingsDialog({
             </div>
           </div>
         )}
+
+        {/* 代理区的两个动作按钮：紧跟状态字段区，右对齐。 */}
+        <div className="mt-3 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => void load()}
+            disabled={loading || restarting}
+            data-testid="page-settings-refresh-button"
+            className="inline-flex h-8 items-center justify-center rounded-lg border border-border bg-background px-3 text-[13px] text-foreground transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+          >
+            刷新状态
+          </button>
+          <button
+            type="button"
+            onClick={() => void restartProxy()}
+            disabled={restarting}
+            data-testid="page-settings-restart-button"
+            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-transparent bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/80 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+          >
+            {restarting ? (
+              <>
+                <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                正在重启
+              </>
+            ) : (
+              '重启代理'
+            )}
+          </button>
+        </div>
 
         {restart && (
           <div className="mt-5 border-t border-border pt-4" data-testid="page-settings-restart-result">

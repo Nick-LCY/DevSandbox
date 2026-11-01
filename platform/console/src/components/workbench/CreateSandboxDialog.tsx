@@ -1,4 +1,4 @@
-import { ChevronDown, Loader2 } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 
 import { api } from '../../api/client';
@@ -21,7 +21,7 @@ import { useToast } from '../Toast';
 import {
   Combobox,
   ComboboxEmpty,
-  ComboboxIcon,
+  ComboboxIndicator,
   ComboboxInput,
   ComboboxInputGroup,
   ComboboxItem,
@@ -30,7 +30,6 @@ import {
   ComboboxPopup,
   ComboboxPortal,
   ComboboxPositioner,
-  ComboboxTrigger,
 } from '../ui/combobox';
 import { DrawerShell } from './DrawerShell';
 import { ModalShell } from './ModalShell';
@@ -76,10 +75,10 @@ const inputClass =
  * 镜像选择器的输入框。
  *
  * 与抽屉表单的输入框同一口径，只差宽度：它在输入组里是弹性子项
- * （右侧要给下拉箭头让位），不能写死 w-full。
+ * （输入框的右侧内边距由 Combobox 组件给，展开箭头压在输入框内部）。
  */
 const imageInputClass =
-  'h-8 w-auto min-w-0 flex-1 rounded-lg border border-input bg-transparent px-2.5 py-1 text-[13px] ' +
+  'h-8 w-auto min-w-0 flex-1 rounded-lg border border-input bg-transparent py-1 text-[13px] ' +
   'text-foreground transition-colors outline-none placeholder:text-muted-foreground ' +
   'focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 ' +
   'disabled:pointer-events-none disabled:opacity-50';
@@ -581,14 +580,8 @@ export function CreateSandboxDialog({
                 placeholder="搜索模板"
                 data-testid="page-sandbox-create-template-select"
               />
-              <ComboboxTrigger
-                aria-label="展开模板列表"
-                data-testid="page-sandbox-create-template-trigger"
-              >
-                <ComboboxIcon>
-                  <ChevronDown className="size-4" aria-hidden="true" />
-                </ComboboxIcon>
-              </ComboboxTrigger>
+              {/* 展开箭头：贴在输入框内部右侧的纯指示器，不可点击。 */}
+              <ComboboxIndicator data-testid="page-sandbox-create-template-trigger" />
             </ComboboxInputGroup>
             <ComboboxPortal>
               <ComboboxPositioner>
@@ -690,14 +683,8 @@ export function CreateSandboxDialog({
                     placeholder="搜索镜像"
                     data-testid="page-sandbox-create-image-select"
                   />
-                  <ComboboxTrigger
-                    aria-label="展开镜像列表"
-                    data-testid="page-sandbox-create-image-trigger"
-                  >
-                    <ComboboxIcon>
-                      <ChevronDown className="size-4" aria-hidden="true" />
-                    </ComboboxIcon>
-                  </ComboboxTrigger>
+                  {/* 展开箭头：贴在输入框内部右侧的纯指示器，不可点击。 */}
+                  <ComboboxIndicator data-testid="page-sandbox-create-image-trigger" />
                 </ComboboxInputGroup>
                 <ComboboxPortal>
                   <ComboboxPositioner>

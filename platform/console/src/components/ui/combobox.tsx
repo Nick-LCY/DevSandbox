@@ -30,6 +30,14 @@
  * - **Empty 常驻但不能占位**：原语要求 Empty 的容器常驻（读屏软件靠它播报），
  *   容器自带内边距就会在弹层顶部留一块空白。内边距因此挪到内层元素上：
  *   列表非空时内层被原语摘掉，容器缩成零高。
+ *
+ * 展开箭头（`ComboboxIndicator`）的约定：
+ *
+ * - **箭头在输入框内部**：绝对定位贴在输入框右侧、垂直居中，不占布局宽度
+ *   （输入框自己留出右侧内边距）。它是**纯指示器**：不可点击、对外隐藏，
+ *   点击穿透到输入框，开合仍由输入框触发（原语默认点输入框即展开）。
+ * - **朝向由原语的数据属性驱动**：输入组（InputGroup）在弹层展开时带
+ *   `data-popup-open`，箭头按它旋转 180°，带过渡。
  */
 import { Combobox as ComboboxPrimitive } from '@base-ui/react/combobox';
 import { Check, ChevronDown } from 'lucide-react';
@@ -57,7 +65,8 @@ function ComboboxInput({ className, ...props }: ComboboxPrimitive.Input.Props) {
       className={cn(
         // 与抽屉表单的输入框同一口径（13px / h-8 / rounded-lg / 焦点环）。
         // 宽度交给外层：输入框在输入组里是弹性子项，不写死 w-full。
-        'h-8 min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1 text-[13px] ' +
+        // 右侧内边距留给展开箭头（pr-8）：箭头压在输入框内部，文字不能走到它底下。
+        'h-8 min-w-0 rounded-lg border border-input bg-transparent py-1 pl-2.5 pr-8 text-[13px] ' +
           'text-foreground transition-colors outline-none placeholder:text-muted-foreground ' +
           'focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 ' +
           'disabled:pointer-events-none disabled:opacity-50',
@@ -73,35 +82,35 @@ function ComboboxInputGroup({ className, ...props }: ComboboxPrimitive.InputGrou
   return (
     <ComboboxPrimitive.InputGroup
       data-slot="combobox-input-group"
-      className={cn('relative flex items-center', className)}
+      // group 标记：展开箭头按输入组的 data-popup-open 转向。
+      className={cn('group relative flex items-center', className)}
       {...props}
     />
   );
 }
 
-/** 展开按钮（点它开合弹层）。 */
-function ComboboxTrigger({ className, ...props }: ComboboxPrimitive.Trigger.Props) {
-  return (
-    <ComboboxPrimitive.Trigger
-      data-slot="combobox-trigger"
-      className={cn(
-        // 高度与输入框一致（h-8），图标居中。
-        'inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground ' +
-          'transition-colors hover:bg-accent hover:text-accent-foreground ' +
-          'focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none',
-        className,
-      )}
-      {...props}
-    />
-  );
-}
-
-/** 展开按钮上的图标（默认一个下拉箭头）。 */
-function ComboboxIcon({ className, children, ...props }: ComboboxPrimitive.Icon.Props) {
+/**
+ * 展开指示箭头（**纯指示器，不可点击**）。
+ *
+ * - 绝对定位在输入框内部右侧、垂直居中：不占布局宽度。
+ * - `pointer-events-none`：点击穿透到输入框，开合由输入框触发（原语默认
+ *   点输入框即展开，Esc / 点外部收起）。
+ * - 装饰性：对辅助技术隐藏（原语给的 `aria-hidden`），也不进 Tab 序列。
+ * - 朝向：弹层展开时输入组带 `data-popup-open`，箭头据此旋转 180°。
+ *
+ * 必须放在 `ComboboxInputGroup` 里面（转向靠输入组上的数据属性驱动）。
+ */
+function ComboboxIndicator({ className, children, ...props }: ComboboxPrimitive.Icon.Props) {
   return (
     <ComboboxPrimitive.Icon
-      data-slot="combobox-icon"
-      className={cn('flex items-center justify-center', className)}
+      data-slot="combobox-indicator"
+      className={cn(
+        // 贴在输入框内部右侧、垂直居中；不可点击（点击落到输入框上）。
+        'pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground',
+        // 展开时转向：输入组（父级）带 data-popup-open 时生效。
+        'transition-transform duration-150 group-data-[popup-open]:rotate-180',
+        className,
+      )}
       {...props}
     >
       {children ?? <ChevronDown className="size-4" aria-hidden="true" />}
@@ -173,7 +182,10 @@ function ComboboxList({ className, ...props }: ComboboxPrimitive.List.Props) {
       data-slot="combobox-list"
       className={cn(
         // 列表自己限高并内部滚动：288px 上限，同时不超过视口可用高度。
-        'scroll-my-1 max-h-[min(18rem,var(--available-height,100vh))] overflow-y-auto p-1 outline-none',
+        // 空列表（data-empty）去掉内边距：否则列表底下一条空白带，
+        // 弹层高度不贴合内容。
+        'scroll-my-1 max-h-[min(18rem,var(--available-height,100vh))] overflow-y-auto p-1 ' +
+          'outline-none data-[empty]:p-0',
         className,
       )}
       {...props}
@@ -188,7 +200,10 @@ function ComboboxItem({ className, ...props }: ComboboxPrimitive.Item.Props) {
       data-slot="combobox-item"
       className={cn(
         // 高亮态用 data-highlighted（Combobox 是虚拟焦点，选项本身不拿焦点）。
-        'relative flex w-full cursor-default items-center gap-1.5 rounded-md py-1 pr-8 pl-1.5 ' +
+        // 指针光标逐项给：选项渲染成 role="option" 的 div，不是 button，
+        // 全局兜底清单里的 [role=option] 会被这里的工具类盖掉，因此组件层
+        // 直接写 cursor-pointer（工具类层级高于 base 层的兜底）。
+        'relative flex w-full cursor-pointer items-center gap-1.5 rounded-md py-1 pr-8 pl-1.5 ' +
           'text-[13px] outline-hidden select-none data-highlighted:bg-accent ' +
           'data-highlighted:text-accent-foreground data-disabled:pointer-events-none ' +
           'data-disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0',
@@ -240,7 +255,7 @@ function ComboboxEmpty({ className, children, ...props }: ComboboxPrimitive.Empt
 export {
   Combobox,
   ComboboxEmpty,
-  ComboboxIcon,
+  ComboboxIndicator,
   ComboboxInput,
   ComboboxInputGroup,
   ComboboxItem,
@@ -249,5 +264,4 @@ export {
   ComboboxPopup,
   ComboboxPortal,
   ComboboxPositioner,
-  ComboboxTrigger,
 };

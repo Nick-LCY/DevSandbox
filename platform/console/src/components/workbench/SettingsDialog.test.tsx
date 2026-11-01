@@ -11,7 +11,8 @@
  * - 行内重命名：回车提交、Esc 取消、空名禁提交；
  * - 删除走确认弹窗，文案写明只删模板、不影响已创建的沙箱；
  * - 删除结果说「没删掉」时提示「记录已不存在」，不谎报已删除；
- * - 模板管理区不再挂说明段（模板是什么由文档讲，界面不重复）。
+ * - 模板管理区不再挂说明段（模板是什么由文档讲，界面不重复）；
+ * - 「刷新状态」与「重启代理」两个按钮在代理设置区里（抽屉不再有全局页脚）。
  */
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -108,6 +109,22 @@ beforeEach(() => {
 });
 
 describe('代理重启反馈', () => {
+  it('刷新与重启两个按钮在代理设置区里（抽屉不再有全局页脚）', async () => {
+    renderDialog();
+
+    await screen.findByTestId('page-settings-cache-size');
+    const section = screen.getByLabelText('代理设置');
+    expect(section.contains(screen.getByTestId('page-settings-refresh-button'))).toBe(true);
+    expect(section.contains(screen.getByTestId('page-settings-restart-button'))).toBe(true);
+
+    // 抽屉页脚（按钮区）整个没了。
+    const drawer = screen.getByTestId('page-settings-dialog');
+    const footers = Array.from(drawer.querySelectorAll('div')).filter((element) =>
+      (element.getAttribute('class') ?? '').includes('bg-muted/40'),
+    );
+    expect(footers).toHaveLength(0);
+  });
+
   it('重启成功：弹成功 toast', async () => {
     mocks.proxyStatus.mockResolvedValue(makeStatus());
     mocks.restartProxy.mockResolvedValue(makeRestartResult());
