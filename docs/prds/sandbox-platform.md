@@ -1,5 +1,7 @@
 # Agent 开发沙箱平台
 
+> 注：本文为一期需求留档，其中所引 platform/probe/ 目录已于 2026-11-01 清理移除，免 root 引导脚本现居 platform/base-image/rootless/；正文保持原样。
+
 ## 背景
 
 面向 pi agent 的开发环境有三个结构性缺口，导致「agent 改完代码、验收仍要靠人」：

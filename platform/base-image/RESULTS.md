@@ -5,7 +5,7 @@
 - 执行日期：2026-10-31
 - 宿主：Ubuntu 26.04 LTS / 内核 7.0.0-38-generic / cgroup v2
 - Docker：客户端 + 服务端 **29.6.2**（宿主 root 守护进程），存储驱动 `overlayfs`（containerd 快照器）
-- 免 root 守护进程：复用 `platform/probe/rootless/` 的 00/01/04 脚本
+- 免 root 守护进程：复用 `platform/probe/rootless/` 的 00/01/04 脚本（2026-11-01 随探针目录退役迁至 platform/base-image/rootless/，脚本内容零改动）
 - 镜像：`sandbox-platform/base:0.3.0`，image id `sha256:d8167c121c69d85a525ce7b66a1665554c9a6c7385967efa1d7a9e6d6ba87102`
 - 统一镜像代理：`rpardini/docker-registry-proxy:0.8.0`（沿用现有实例，本轮未改动代理）
 
@@ -101,7 +101,7 @@
 - 执行日期：2026-10-29
 - 宿主：Ubuntu 26.04 LTS / 内核 7.0.0-38-generic / cgroup v2
 - Docker：客户端 + 服务端 **29.6.2**（宿主 root 守护进程），存储驱动 `overlayfs`（containerd 快照器）
-- 免 root 守护进程：复用 `platform/probe/rootless/` 的 00/01/04 脚本
+- 免 root 守护进程：复用 `platform/probe/rootless/` 的 00/01/04 脚本（2026-11-01 随探针目录退役迁至 platform/base-image/rootless/，脚本内容零改动）
 - 镜像：`sandbox-platform/base:0.2.0`，image id `sha256:c89ed16c11a7f8aef0514b900b1febaaeb8ce9825b3b2bb51d0ab1dfd9a50611`
 - 统一镜像代理：`rpardini/docker-registry-proxy:0.8.0`
   （digest `sha256:fe958e7a4b7ef01a646d903347a0522b6a9065b44b451c5ef87eb4b6b0f3d770`）

@@ -4,6 +4,8 @@ status: done
 ---
 # 任务：免 root 沙箱模式打样验证
 
+> 注：文中所引 platform/probe/ 目录已于 2026-11-01 清理移除，其中免 root 引导脚本现居 platform/base-image/rootless/；以下正文为历史留档，保持原样。
+
 > 实测结论：主链路成立，14 项技术判定全部通过。实测记录见 `platform/probe/rootless/RESULTS.md`，环境前置见 `platform/probe/rootless/README.md`。
 >
 > 口径修正一处：`/proc/<pid>/uid_map` 由内核按**区间**存储，恒为 2 行，不可能出现 65536 行；实测覆盖 UID 总数 65537（`0 1001 1` + `1 165536 65536`）。本文「子 ID 段判定」一项按等价的语义口径（覆盖 ≥ 65536 个 UID）判定为通过，原文措辞待后续修订。

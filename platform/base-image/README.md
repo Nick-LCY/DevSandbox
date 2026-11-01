@@ -141,7 +141,7 @@ docker build -t my-sandbox:0.1.0 -f ./Dockerfile .
 | 脚本 | 作用 | 依赖 |
 |------|------|------|
 | `verify.sh` | 镜像级判定：业务运行时缺席、**通用工具层在场**、无 volume 挂载点、`/workspace` 语义、入口脚本静态检查与入口行为、**镜像内无离线包痕迹**（共 42 项） | 宿主 docker 守护进程 |
-| `verify-rootless.sh` | 免 root 守护进程联调：入口脚本行为、客户端与服务端版本一致性、镜像内无离线包目录 | 复用 `platform/probe/rootless/` 的 00/01/04 脚本 |
+| `verify-rootless.sh` | 免 root 守护进程联调：入口脚本行为、客户端与服务端版本一致性、镜像内无离线包目录 | 复用同目录 `rootless/` 的 00/01/04 脚本 |
 
 ```bash
 cd platform/base-image
@@ -159,4 +159,5 @@ BASE_IMAGE=sandbox-platform/base:0.3.0 ./verify-rootless.sh   # 免 root 联调�
 | `entrypoint.sh` | 容器入口（纯 bash） |
 | `verify.sh` | 镜像级判定脚本 |
 | `verify-rootless.sh` | 免 root 守护进程联调脚本 |
+| `rootless/` | 免 root 守护进程引导脚本（`common.sh` / `00-create-user.sh` / `01-start-dockerd.sh` / `04-cleanup.sh`）；原在 `platform/probe/rootless/`，2026-11-01 随探针目录退役一并迁入本目录 |
 | `RESULTS.md` | 实测记录（体积、耗时、代理拉取对比、踩坑） |

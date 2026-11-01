@@ -14,7 +14,11 @@
 | `server/sandbox-console.service` | systemd 单元模板（只提供模板，不自动安装、不自动启用） |
 | `scripts/smoke-lifecycle.sh` | 端到端冒烟脚本（创建 → 关闭 → 启动 → 删除 → 回收校验） |
 | `tests/` | 单元测试与宿主级测试（宿主级测试打 `root` 标记） |
-| `probe/rootless/` | 一期任务 01 的免 root 打样脚本与实测记录 |
+| `base-image/rootless/` | 免 root 守护进程引导脚本（`common.sh` / `00-create-user.sh` / `01-start-dockerd.sh` / `04-cleanup.sh`），供 `base-image/verify-rootless.sh` 调用；建用户、起用户级守护进程、回收三步 |
+
+**目录变更**
+
+> `probe/`（一期任务 01 的打样探针目录，含 `probe/rootless/`）已于 2026-11-01 整体移除：终端探针验证的主链路已被二期网页终端覆盖；其中免 root 引导四脚本是活依赖，已迁到 `base-image/rootless/`，判定脚本 `verify-rootless.sh` 的指向同步更新，判定能力不变。
 
 ## 环境准备
 
