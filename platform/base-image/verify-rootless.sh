@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # 基础镜像在「真实免 root 守护进程」下的联调验证
-# 复用 platform/probe/rootless/ 的 00（建用户）/ 01（起守护进程）/ 04（回收）三个脚本。
+# 复用 platform/base-image/rootless/ 的 00（建用户）/ 01（起守护进程）/ 04（回收）三个脚本。
 #
 # 验证内容：
 #   1) 基础镜像可注入免 root 守护进程；
@@ -16,14 +16,14 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROBE_DIR="$SCRIPT_DIR/../probe/rootless"
+PROBE_DIR="$SCRIPT_DIR/rootless"
 
 BASE_IMAGE="${BASE_IMAGE:-sandbox-platform/base:0.3.0}"
 CONTAINER_NAME="${CONTAINER_NAME:-base-image-test}"
 KEEP=0
 [ "${1:-}" = "--keep" ] && KEEP=1
 
-# shellcheck source=../../probe/rootless/common.sh
+# shellcheck source=rootless/common.sh
 source "$PROBE_DIR/common.sh"
 
 CHECK_TOTAL=0
