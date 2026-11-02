@@ -153,9 +153,29 @@ export async function selectImage(page: Page, reference: string): Promise<void> 
 }
 
 /**
+ * 在新建沙箱抽屉里加一条文件注入声明（容器内一律只读，没有只读开关）。
+ *
+ * 声明区在挂载区之后、命令输入框之前：点「添加文件」在末尾追加一行，
+ * 再在**最后一行**的两个输入框里填宿主路径与容器路径。
+ */
+export async function addFileRow(
+  page: Page,
+  hostPath: string,
+  containerPath: string,
+): Promise<void> {
+  await page.getByTestId('page-sandbox-create-file-add-button').click();
+  const row = page.getByTestId('page-sandbox-create-file-item').last();
+  await row.getByTestId('page-sandbox-create-file-host-input').fill(hostPath);
+  await row.getByTestId('page-sandbox-create-file-container-input').fill(containerPath);
+}
+
+/**
  * 在新建抽屉里填一份完整的创建表单并提交，返回提交后等待成功提示的耗时（毫秒）。
  *
  * 创建成功后的口径：**抽屉关掉 + 右上角弹一条成功 toast**（不再有成功面板）。
+ *
+ * 文件注入声明（`fileHost` + `fileContainer`）给了就追加一行；
+ * 两个路径必须成对给（容器内路径是必填的）。
  */
 export async function fillCreateForm(
   page: Page,
@@ -167,6 +187,8 @@ export async function fillCreateForm(
     readOnly?: boolean;
     command?: string;
     env?: string;
+    fileHost?: string;
+    fileContainer?: string;
   },
 ): Promise<number> {
   await page.getByTestId('page-sandbox-create-name-input').fill(options.name);
@@ -181,6 +203,12 @@ export async function fillCreateForm(
     if (options.readOnly) {
       await row.getByTestId('page-sandbox-create-mount-readonly-checkbox').check();
     }
+  }
+  if (options.fileHost !== undefined || options.fileContainer !== undefined) {
+    if (options.fileHost === undefined || options.fileContainer === undefined) {
+      throw new Error('文件注入声明要同时给宿主路径与容器路径');
+    }
+    await addFileRow(page, options.fileHost, options.fileContainer);
   }
   if (options.command !== undefined) {
     await page.getByTestId('page-sandbox-create-command-input').fill(options.command);

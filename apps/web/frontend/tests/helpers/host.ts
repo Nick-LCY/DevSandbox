@@ -57,6 +57,34 @@ export function dirExists(path: string): boolean {
   }
 }
 
+/**
+ * 宿主文件的权限位（八进制字符串，如 `600`；取不到时返回空串）。
+ *
+ * 走 sudo 查：沙箱用户家目录是 0700，验收进程（普通用户）穿不过去，
+ * 直接 stat 会把「没有权限看」误报成「文件不存在」。
+ */
+export function fileMode(path: string): string {
+  const result = sudo(['stat', '-c', '%a', path]);
+  if (result.code !== 0) {
+    return '';
+  }
+  return result.stdout.trim();
+}
+
+/**
+ * 宿主路径是否存在。
+ *
+ * 同样走 sudo：沙箱用户家目录 0700，普通用户看不到里面的东西。
+ */
+export function pathExists(path: string): boolean {
+  return sudo(['test', '-e', path]).code === 0;
+}
+
+/** 沙箱用户的家目录。 */
+export function sandboxHome(user: string): string {
+  return `/home/${user}`;
+}
+
 /** `/etc/subuid` 或 `/etc/subgid` 里是否有该用户的条目。 */
 export function subidEntryExists(user: string, kind: 'uid' | 'gid'): boolean {
   const file = kind === 'uid' ? '/etc/subuid' : '/etc/subgid';

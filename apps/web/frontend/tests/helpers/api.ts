@@ -44,6 +44,7 @@ export interface SandboxDetailModel {
   network_owned: boolean;
   unit_path: string;
   mounts: MountModel[];
+  files: MountModel[];
   dependency_containers: string[];
   command: string[];
   workdir: string;
@@ -68,6 +69,7 @@ export interface DeleteResultModel {
 export interface TemplateConfigModel {
   image?: string | null;
   mounts?: string[];
+  files?: string[];
   command?: string | null;
   workdir?: string | null;
   env?: Record<string, string>;

@@ -19,6 +19,18 @@ export interface Workspace {
   marker: string;
 }
 
+/** 注入用的宿主文件（一份「只读秘密」）。 */
+export interface SecretFile {
+  /** 宿主文件路径。 */
+  path: string;
+  /** 宿主临时目录路径（文件就在它里面）。 */
+  dir: string;
+  /** 文件内容（随机标记串，单行、无换行）。 */
+  content: string;
+  /** 文件权限（八进制字符串，如 `600`）。 */
+  mode: string;
+}
+
 /** 目录内容指纹：文件清单 + 每个文件内容的摘要，按路径排序后取摘要。 */
 export function fingerprintDir(dir: string): string {
   const hash = crypto.createHash('sha256');
@@ -61,4 +73,26 @@ export function createWorkspace(containerPath = '/workspace'): Workspace {
 /** 删掉外部挂载目录（验收收尾清理）。 */
 export function removeWorkspace(workspace: Workspace): void {
   fs.rmSync(workspace.path, { recursive: true, force: true });
+}
+
+/**
+ * 建一个注入用的宿主文件：`/tmp` 下的 0700 目录里放一个 0600 文件。
+ *
+ * 权限刻意收紧：被注入的原件是「只读秘密」——平台只读它、复制它，
+ * 容器里拿到的是只读副本，原件本身不该被任何人改动。
+ * 文件内容是一段随机标记串：容器里读到的副本必须与它一字不差。
+ */
+export function createSecretFile(): SecretFile {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'console-acceptance-secret-'));
+  fs.chmodSync(dir, 0o700);
+  const content = `ACC_FILE_INJECT_${crypto.randomBytes(6).toString('hex')}`;
+  const file = path.join(dir, 'secret.txt');
+  fs.writeFileSync(file, content, 'utf-8');
+  fs.chmodSync(file, 0o600);
+  return { path: file, dir, content, mode: '600' };
+}
+
+/** 删掉注入用的宿主文件（连同它的临时目录，验收收尾清理）。 */
+export function removeSecretFile(secret: SecretFile): void {
+  fs.rmSync(secret.dir, { recursive: true, force: true });
 }
