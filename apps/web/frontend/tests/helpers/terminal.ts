@@ -315,6 +315,26 @@ export async function expectTerminalTextAbsent(
 }
 
 /**
+ * 断言终端屏幕上有一行**整行就是**某段文本。
+ *
+ * 比 `expectTerminalText`（整屏包含）更严：命令回显行里也含这段文本，
+ * 拿它当证据会把「命令敲进去了」误判成「命令执行了」。
+ */
+export async function expectTerminalRow(
+  page: Page,
+  sessionId: string,
+  text: string,
+  timeoutMs = 30_000,
+): Promise<void> {
+  await expect
+    .poll(
+      async () => (await terminalRows(page, sessionId)).some((row) => row.trim() === text),
+      { timeout: timeoutMs, message: `终端 ${sessionId.slice(0, 8)} 的屏幕上没有整行就是「${text}」的行` },
+    )
+    .toBe(true);
+}
+
+/**
  * 断言 Ctrl+C 真的送到了容器内的 shell。
  *
  * 两道证据：

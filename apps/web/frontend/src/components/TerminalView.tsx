@@ -12,6 +12,8 @@ import {
   terminalSocketUrl,
 } from '../lib/terminal';
 import type { TerminalState, TerminalStatus } from '../lib/terminal-feedback';
+import { classifyTerminalShortcut } from '../lib/terminal-shortcuts';
+import { useToast } from './Toast';
 
 /**
  * 终端连接状态与上报状态。
@@ -30,44 +32,8 @@ const RECONNECT_STABLE_AFTER = 5000;
 /** 连续失败上限：达到即停掉自动重连，等用户手动重试。 */
 const MAX_RECONNECT_FAILURES = 10;
 
-/**
- * 浏览器保留快捷键（豁免清单）。
- *
- * 这些键交回浏览器处理：新标签页 / 新窗口 / 关闭窗口 / 切换标签页 /
- * 刷新 / 全屏 / 开发者工具 / 打印 / 另存为。
- *
- * - Ctrl+N 与 Ctrl+Shift+N：新窗口与新隐身窗口
- * - Ctrl+T 与 Ctrl+Shift+T：新标签页与恢复标签页
- * - Ctrl+W 与 Ctrl+Shift+W：关闭标签页与窗口
- * - Ctrl+Q：退出应用
- * - Ctrl+Tab 与 Ctrl+Shift+Tab：切换浏览器标签页
- * - F5：刷新页面
- * - F11：全屏
- * - F12：开发者工具
- * - Alt+F4：关闭窗口
- * - Ctrl+P：打印
- * - Ctrl+S：另存为
- */
-const RESERVED_CTRL_KEYS = new Set(['n', 't', 'w', 'q', 'p', 's', 'tab']);
-
-/**
- * 这个按键是不是浏览器保留快捷键。
- *
- * 判定口径：带 Ctrl 或 Meta 的字母 / Tab 组合，以及 F5 / F11 / F12 与 Alt+F4。
- * 单的 Shift（Shift+Tab、Shift+N）不算保留键：终端里要能正常用。
- */
-function isBrowserReservedShortcut(event: KeyboardEvent): boolean {
-  if (event.key === 'F5' || event.key === 'F11' || event.key === 'F12') {
-    return true;
-  }
-  if (event.altKey && event.key === 'F4') {
-    return true;
-  }
-  if (!event.ctrlKey && !event.metaKey) {
-    return false;
-  }
-  return RESERVED_CTRL_KEYS.has(event.key.toLowerCase());
-}
+/** 剪贴板失败提示的来源标记（端到端脚本靠它定位这条提示）。 */
+const CLIPBOARD_TOAST_SOURCE = 'terminal-clipboard';
 
 interface TerminalViewProps {
   sessionId: string;
@@ -85,7 +51,8 @@ interface TerminalViewProps {
  *
  * 快捷键：带 Ctrl / Meta / Alt 的组合一律拦下来（不触发浏览器行为），
  * 但仍然编码后送进容器内的 shell（Ctrl+C 必须能到 pty）；
- * 浏览器保留键（见下方豁免清单）交回浏览器。
+ * 浏览器保留键（见 `src/lib/terminal-shortcuts.ts` 的豁免清单）交回浏览器；
+ * Ctrl+Shift+C / Ctrl+Shift+V 走系统剪贴板（复制选区 / 粘贴内容）。
  *
  * 重连退避的计数只在连接**真的可用**时才清零：收到服务端的 `hello` 帧，
  * 或连接稳定存活超过 5 秒。握手成功不等于连上了——服务端握手后立刻关闭时，
@@ -95,6 +62,10 @@ export function TerminalView({ sessionId, retryToken = 0, onStateChange }: Termi
   const containerRef = useRef<HTMLDivElement | null>(null);
   const stateCallbackRef = useRef(onStateChange);
   stateCallbackRef.current = onStateChange;
+  const { show } = useToast();
+  /** 反馈接口走引用：换身份时不重建终端连接。 */
+  const showRef = useRef(show);
+  showRef.current = show;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -130,18 +101,97 @@ export function TerminalView({ sessionId, retryToken = 0, onStateChange }: Termi
     term.loadAddon(fitAddon);
     term.open(container);
 
-    // 快捷键全量拦截：带 Ctrl / Meta / Alt 的组合一律不交给浏览器，
-    // 但仍然让 xterm 编码后送进容器内的 shell（Ctrl+C 必须能到 pty）。
-    // 浏览器保留键（见上方豁免清单）原样交回浏览器。
+    /** 剪贴板操作失败：弹一条失败提示（成功路径零反馈）。 */
+    const reportClipboardFailure = (text: string): void => {
+      showRef.current('error', text, { source: CLIPBOARD_TOAST_SOURCE });
+    };
+
+    /**
+     * 复制选区到系统剪贴板。
+     *
+     * - 无选区：静默不做任何事（不弹提示）；
+     * - 剪贴板 API 不可用（非安全上下文）或写入失败：弹失败提示。
+     *
+     * 写入是异步的（浏览器要弹授权、或系统剪贴板被别的进程占着），
+     * 不能在按键处理函数里等——按键处理函数必须同步返回。
+     */
+    const copySelectionToClipboard = (): void => {
+      if (!term.hasSelection()) {
+        return;
+      }
+      const selection = term.getSelection();
+      if (!selection) {
+        return;
+      }
+      const clipboard = navigator.clipboard;
+      if (!clipboard || typeof clipboard.writeText !== 'function') {
+        reportClipboardFailure('复制到系统剪贴板失败');
+        return;
+      }
+      void clipboard.writeText(selection).catch(() => {
+        reportClipboardFailure('复制到系统剪贴板失败');
+      });
+    };
+
+    /**
+     * 从系统剪贴板粘贴进终端。
+     *
+     * 走 xterm 的 `paste`：它自己做括号粘贴模式的包裹与换行归一，
+     * 不能直接往 socket 塞字节（否则会绕过终端的输入处理）。
+     */
+    const pasteFromClipboard = (): void => {
+      const clipboard = navigator.clipboard;
+      if (!clipboard || typeof clipboard.readText !== 'function') {
+        reportClipboardFailure('读取系统剪贴板失败');
+        return;
+      }
+      void clipboard
+        .readText()
+        .then((text) => {
+          if (disposed || !text) {
+            return;
+          }
+          term.paste(text);
+        })
+        .catch(() => {
+          reportClipboardFailure('读取系统剪贴板失败');
+        });
+    };
+
+    // 快捷键处置：分类规则在 `src/lib/terminal-shortcuts.ts`（纯函数，可单测）。
+    //
+    // - 保留键 / 纯按键：交回 xterm 照常处理；
+    // - 带 Ctrl / Meta / Alt 的组合：拦下浏览器行为，但仍编码后送进容器内的 shell
+    //   （Ctrl+C 必须能到 pty，Ctrl+V 仍然是字面量 0x16）；
+    // - Ctrl+Shift+C / Ctrl+Shift+V：走系统剪贴板，不进容器。
     term.attachCustomKeyEventHandler((event: KeyboardEvent): boolean => {
-      if (isBrowserReservedShortcut(event)) {
+      const action = classifyTerminalShortcut({
+        key: event.key,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        altKey: event.altKey,
+        shiftKey: event.shiftKey,
+      });
+      if (action === 'reserved' || action === 'plain') {
         return true;
       }
-      if (event.ctrlKey || event.metaKey || event.altKey) {
-        event.preventDefault();
-        event.stopPropagation();
+      event.preventDefault();
+      event.stopPropagation();
+      if (action === 'forward') {
+        // 仍然让 xterm 编码后送进容器内的 shell。
+        return true;
       }
-      return true;
+      // 复制与粘贴**只在 keydown 做一次**：xterm 在 keypress / keyup 阶段也会调这个
+      // 处理器，不收窄的话一次按键会触发多轮剪贴板操作（粘贴两遍、剪贴板被覆盖两次）。
+      if (event.type !== 'keydown') {
+        return false;
+      }
+      if (action === 'copy') {
+        copySelectionToClipboard();
+      } else {
+        pasteFromClipboard();
+      }
+      return false;
     });
 
     const report = (
