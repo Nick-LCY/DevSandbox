@@ -905,7 +905,7 @@ export function CreateSandboxDialog({
             {/*
               文件注入：与挂载区同级的第二块声明区（位置在挂载区之后、
               命令输入框之前）。容器内一律只读（平台把副本只读挂进容器），
-              所以行里没有只读开关；这一区不挂任何说明文案。
+              所以行里没有只读开关；这一区除空态提示外不挂任何说明文案。
             */}
             <div className="mb-1.5 flex items-center justify-between">
               <span className={labelClass}>文件注入</span>
@@ -918,6 +918,11 @@ export function CreateSandboxDialog({
                 添加文件
               </button>
             </div>
+            {files.length === 0 && (
+              <p className="text-[12px] text-muted-foreground" data-testid="page-sandbox-create-file-empty">
+                暂未声明注入。
+              </p>
+            )}
             <ul className="m-0 list-none space-y-2 p-0">
               {files.map((row) => (
                 <li

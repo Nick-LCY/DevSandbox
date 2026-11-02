@@ -22,7 +22,8 @@
  * - 模板声明**不做任何占位符替换**：回填与提交都原样保留字面量
  *   （挂载 / 环境变量 / 命令 / 工作目录 / 网络）；
  * - 文件注入区：添加一行并提交（原样进创建请求）、两段都空的行不进请求、
- *   声明非法与容器路径重复就地报错、区里不挂任何解释性文案；
+ *   声明非法与容器路径重复就地报错、空态占位（无文件行时显示「暂未声明注入。」）、
+ *   除这一个空态占位外不挂任何解释性文案；
  * - 文件注入的模板联动：模板里有 files 时整组替换、模板里没有 files 时保持现状、
  *   保存为模板时文件行进配置；
  * - 创建成功后不再渲染成功面板（成功面板已退役）；
@@ -1137,14 +1138,30 @@ describe('新建沙箱抽屉的文件注入区', () => {
     expect(mocks.createSandbox).not.toHaveBeenCalled();
   });
 
-  it('这一区不挂任何解释性文案（只有标题、按钮与输入框）', async () => {
+  it('空态占位：没有文件行时显示「暂未声明注入。」，有文件行时消失', async () => {
+    renderDialog();
+
+    // 没有文件行：与挂载区同形态的空态占位（元素、样式类都一样）。
+    const empty = await screen.findByTestId('page-sandbox-create-file-empty');
+    expect(empty.textContent).toBe('暂未声明注入。');
+    expect(empty.tagName).toBe('P');
+    expect(empty.className).toBe(screen.getByTestId('page-sandbox-create-mount-empty').className);
+
+    // 加一行：占位消失。
+    fireEvent.click(screen.getByTestId('page-sandbox-create-file-add-button'));
+    expect(screen.queryByTestId('page-sandbox-create-file-empty')).toBeNull();
+  });
+
+  it('这一区只留标题、按钮、输入框与那一个空态占位（无其他解释性文案）', async () => {
     renderDialog();
 
     const section = fileSection();
-    // 区里一个说明段都没有（没有副标题、没有帮助文本、没有空态提示）。
-    expect(section.querySelectorAll('p')).toHaveLength(0);
-    // 空着的时候，文字只有区标题与按钮文案两处。
-    expect(section.textContent).toBe('文件注入添加文件');
+    // 区里只允许一个说明段：空态占位（没有副标题、没有帮助文本）。
+    const paragraphs = section.querySelectorAll('p');
+    expect(paragraphs).toHaveLength(1);
+    expect(paragraphs[0].getAttribute('data-testid')).toBe('page-sandbox-create-file-empty');
+    // 空着的时候，文字只有区标题、按钮文案与空态占位三处。
+    expect(section.textContent).toBe('文件注入添加文件暂未声明注入。');
 
     // 加一行：两个输入框的占位文案就是「宿主路径」「容器路径」，
     // 行里没有只读开关（容器内一律只读）。
@@ -1152,7 +1169,7 @@ describe('新建沙箱抽屉的文件注入区', () => {
     expect(fileHostInput().placeholder).toBe('宿主路径');
     expect(fileContainerInput().placeholder).toBe('容器路径');
     expect(section.querySelectorAll('input[type="checkbox"]')).toHaveLength(0);
-    // 加了行之后仍然没有说明段（只有标题、两个按钮与输入框）。
+    // 加了行之后空态占位消失，说明段一个不剩（只有标题、两个按钮与输入框）。
     expect(section.querySelectorAll('p')).toHaveLength(0);
     expect(section.textContent).toBe('文件注入添加文件移除');
   });
