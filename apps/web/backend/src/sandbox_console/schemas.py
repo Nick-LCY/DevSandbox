@@ -194,6 +194,7 @@ class SandboxDetail(BaseModel):
     """单个沙箱的详情。
 
     ``env`` 只回键名，值固定为 ``***``：环境变量里常有凭据，不进 HTTP 响应。
+    ``files`` 是注入文件的只读副本挂载（结构同 ``mounts``，不进 ``mounts``）。
     """
 
     name: str
@@ -217,6 +218,7 @@ class SandboxDetail(BaseModel):
     network_owned: bool
     unit_path: str
     mounts: list[MountInfo]
+    files: list[MountInfo]
     dependency_containers: list[str]
     command: list[str]
     env: dict[str, str]
@@ -254,6 +256,15 @@ class SandboxDetail(BaseModel):
                     role=mount.role,
                 )
                 for mount in metadata.mounts
+            ],
+            files=[
+                MountInfo(
+                    host_path=mount.host_path,
+                    container_path=mount.container_path,
+                    read_only=mount.read_only,
+                    role=mount.role,
+                )
+                for mount in metadata.files
             ],
             dependency_containers=list(metadata.dependency_containers),
             command=list(metadata.command),

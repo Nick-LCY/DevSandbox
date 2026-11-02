@@ -22,10 +22,12 @@ from sandbox_platform import (
     CreateResult,
     DeleteResult,
     LifecycleError,
+    MountSpec,
     NotFoundError,
     PlatformConfig,
     ReclaimPlan,
     SandboxMetadata,
+    SandboxService,
     ValidationError,
     parse_file_declarations,
 )
@@ -140,6 +142,31 @@ def _file_declaration_error(declaration: str) -> ValidationError:
     except ValidationError as exc:
         return exc
     raise AssertionError(f"该声明本该被核心包拒绝：{declaration}")
+
+
+def _core_create_error(
+    *,
+    files: tuple[str, ...] = (),
+    mounts: tuple[str, ...] = (),
+) -> ValidationError:
+    """用核心包的真实创建前校验产出错误。
+
+    创建前校验在任何宿主改动之前跑（不建用户、不起容器、不跑宿主命令），
+    所以这里可以安全地借真实核心包产出错误文案。
+    """
+    service = SandboxService(PlatformConfig.from_env())
+    try:
+        service.create(
+            CreateRequest(
+                name="demo",
+                image="busybox:1.37",
+                files=files,
+                mount_declarations=mounts,
+            )
+        )
+    except ValidationError as exc:
+        return exc
+    raise AssertionError("该声明本该被核心包拒绝")
 
 
 @pytest.fixture
@@ -356,6 +383,48 @@ def test_create_sandbox_rejects_non_string_file_element_with_400(
     assert "应为字符串" in response.json()["detail"]
 
 
+def test_create_sandbox_rejects_file_container_path_conflicting_with_socket(
+    client: TestClient, fake_service: FakeSandboxService
+) -> None:
+    """注入的容器内路径撞平台固定挂载的套接字路径 → 400。"""
+    fake_service.error = _core_create_error(
+        files=("/tmp/demo/secret:/var/run/docker.sock",),
+    )
+    response = client.post(
+        "/api/sandboxes",
+        json={
+            "name": "demo",
+            "image": "busybox:1.37",
+            "files": ["/tmp/demo/secret:/var/run/docker.sock"],
+        },
+    )
+    assert response.status_code == 400
+    assert "套接字" in response.json()["detail"]
+
+
+def test_create_sandbox_rejects_file_container_path_conflicting_with_user_mount(
+    client: TestClient, fake_service: FakeSandboxService, tmp_path: Path
+) -> None:
+    """注入的容器内路径撞用户声明挂载的容器内路径 → 400。"""
+    host = tmp_path / "data"
+    host.mkdir()
+    fake_service.error = _core_create_error(
+        files=(f"{host}/secret:/data",),
+        mounts=(f"{host}:/data",),
+    )
+    response = client.post(
+        "/api/sandboxes",
+        json={
+            "name": "demo",
+            "image": "busybox:1.37",
+            "mounts": [f"{host}:/data"],
+            "files": [f"{host}/secret:/data"],
+        },
+    )
+    assert response.status_code == 400
+    assert "重复" in response.json()["detail"]
+
+
 # ---------------------------------------------------------------- 挂载宿主路径的 ~ 展开
 def test_create_sandbox_expands_home_prefix_in_mounts(
     client: TestClient,
@@ -486,6 +555,37 @@ def test_sandbox_detail_masks_environment_values(
     response = client.get("/api/sandboxes/demo")
     assert response.status_code == 200
     assert response.json()["env"] == {"TOKEN": "***", "MODE": "***"}
+
+
+def test_sandbox_detail_lists_injected_files(
+    client: TestClient, fake_service: FakeSandboxService
+) -> None:
+    """详情：注入副本清单单列在 files（结构同 mounts）。"""
+    fake_service.metadata.files = [
+        MountSpec(
+            "/home/sandbox-demo/.sandbox-files/0-secret.txt",
+            "/run/secret",
+            True,
+            "file",
+        )
+    ]
+    response = client.get("/api/sandboxes/demo")
+    assert response.status_code == 200
+    assert response.json()["files"] == [
+        {
+            "host_path": "/home/sandbox-demo/.sandbox-files/0-secret.txt",
+            "container_path": "/run/secret",
+            "read_only": True,
+            "role": "file",
+        }
+    ]
+
+
+def test_sandbox_detail_files_is_empty_list_by_default(client: TestClient) -> None:
+    """没有注入声明时 files 照常返回空列表（不省略字段）。"""
+    response = client.get("/api/sandboxes/demo")
+    assert response.status_code == 200
+    assert response.json()["files"] == []
 
 
 def test_start_sandbox(client: TestClient, fake_service: FakeSandboxService) -> None:
