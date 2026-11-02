@@ -90,24 +90,44 @@ def sensitive_host_paths(extra: Iterable[str | Path] = ()) -> tuple[str, ...]:
     return tuple(result)
 
 
-def _reject_sensitive_host_path(path: Path, forbidden: tuple[str, ...]) -> None:
-    """命中敏感清单的宿主路径直接拒绝。"""
+def reject_sensitive_host_path(
+    path: Path,
+    forbidden: tuple[str, ...],
+    *,
+    action: str = "挂载",
+) -> None:
+    """命中敏感清单的宿主路径直接拒绝。
+
+    ``action`` 是动作名（挂载 / 注入文件）：文案随动作走，默认分支与挂载
+    一字不差。
+    """
     for item in forbidden:
         base = Path(item)
         if _is_under(path, base):
             raise ValidationError(
-                f"宿主路径命中敏感清单，不允许挂载：{path}"
-                f"（{item} 及其子目录均不可挂载；平台数据根与宿主 Docker 套接字同样禁止）"
+                f"宿主路径命中敏感清单，不允许{action}：{path}"
+                f"（{item} 及其子目录均不可{action}；平台数据根与宿主 Docker 套接字同样禁止）"
             )
 
 
-def _validate_host_path(raw: str, forbidden: tuple[str, ...]) -> Path:
+def validate_host_path_shape(raw: str, forbidden: tuple[str, ...]) -> Path:
+    """只校验宿主路径的形状：绝对路径、不含逗号、不命中敏感清单。
+
+    不做存在性检查：注入文件那套流程的存在性判断走特权通道的探测命令
+    （还要一并判掉符号链接），与这里的形状校验分开。
+    """
     if not raw.startswith("/"):
         raise ValidationError(f"挂载的宿主路径必须是绝对路径：{raw}")
     if "," in raw:
         raise ValidationError(f"挂载路径不得包含逗号（Docker 挂载参数以逗号分段）：{raw}")
     path = Path(raw)
-    _reject_sensitive_host_path(path, forbidden)
+    reject_sensitive_host_path(path, forbidden)
+    return path
+
+
+def _validate_host_path(raw: str, forbidden: tuple[str, ...]) -> Path:
+    """宿主路径校验：先形状（绝对路径 / 逗号 / 敏感清单），再存在性与类型。"""
+    path = validate_host_path_shape(raw, forbidden)
     if not path.exists():
         raise ValidationError(f"挂载的宿主路径不存在（平台不会代为创建）：{raw}")
     if not (path.is_dir() or path.is_file()):

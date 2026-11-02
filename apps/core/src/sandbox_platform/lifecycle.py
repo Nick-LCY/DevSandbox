@@ -46,6 +46,13 @@ from .errors import (
     SandboxError,
     ValidationError,
 )
+from .files import (
+    FileSpec,
+    parse_file_declarations,
+    probe_host_path,
+    stage_file_copies,
+    staging_root,
+)
 from .images import (
     IMAGE_SOURCE_AUTO,
     IMAGE_SOURCE_CHOICES,
@@ -86,6 +93,10 @@ CREATE_STEP_NAMES = (
     "输出连接方式与命令提示",
 )
 
+# 注入文件副本的步骤名：它是创建流程里的一步，但**不占**上面 7 步的名额
+# （7 项步骤名保持不变，前端与文档的步骤清单不受影响）。
+FILE_STAGE_STEP = "注入文件副本"
+
 
 # ---------------------------------------------------------------- 请求与结果
 @dataclass(frozen=True)
@@ -94,11 +105,14 @@ class CreateRequest:
 
     ``image`` **必填**：默认沙箱镜像已退役，平台不再有兜底镜像。
     ``image_source`` 取 ``auto``（默认）或 ``host``（强制从宿主注入）。
+    ``files`` 是文件注入声明（``宿主路径:容器路径``）：平台把宿主文件复制到
+    沙箱用户家目录后以只读方式挂进容器，原件零接触。
     """
 
     name: str
     image: str
     mount_declarations: tuple[str, ...] = ()
+    files: tuple[str, ...] = ()
     command: tuple[str, ...] | None = None
     env: dict[str, str] = field(default_factory=dict)
     workdir: str | None = None
@@ -702,6 +716,19 @@ class SandboxService:
                     )
             all_mounts = [socket, *user_mounts]
 
+            # ④bis 注入文件副本：复制到沙箱用户家目录的暂存目录，只读挂进容器
+            # （副本不进 metadata.mounts：那一份是「平台不回收」的口径，
+            #   注入副本随沙箱家目录一起回收，单列在 metadata.files）
+            current_step = FILE_STAGE_STEP
+            file_specs = self._parse_file_declarations(request.files)
+            file_mounts = stage_file_copies(
+                file_specs,
+                user=system_user,
+                privilege=self.privilege,
+            )
+            completed.append((current_step, self._rollback_staged_files(system_user)))
+            all_mounts = [socket, *user_mounts, *file_mounts]
+
             # ⑤ 启动沙箱容器并挂载套接字与用户声明挂载
             current_step = CREATE_STEP_NAMES[4]
             image = require_image_name(request.image)
@@ -754,6 +781,7 @@ class SandboxService:
                 image_source=request.image_source,
                 network_owned=network_owned,
                 mounts=user_mounts,
+                files=file_mounts,
                 command=list(request.command or ()),
                 env=dict(request.env),
                 workdir=request.workdir or "",
@@ -870,6 +898,15 @@ class SandboxService:
             extra_forbidden=[self.config.home],
         )
 
+    def _parse_file_declarations(
+        self, declarations: tuple[str, ...] | list[str]
+    ) -> list[FileSpec]:
+        """解析文件注入声明（平台数据根等敏感路径一律拒绝）。"""
+        return parse_file_declarations(
+            list(declarations),
+            extra_forbidden=[self.config.home],
+        )
+
     def _precheck(self, request: CreateRequest) -> None:
         """创建前的干跑校验：只解析不落地，避免非法输入留下宿主副作用。"""
         require_image_name(request.image)
@@ -877,11 +914,24 @@ class SandboxService:
         if request.network_name:
             validate_network_name(request.network_name)
         validate_env_pairs(dict(request.env))
-        for mount in self._parse_user_mounts(request.mount_declarations):
+        user_mounts = self._parse_user_mounts(request.mount_declarations)
+        for mount in user_mounts:
             if mount.container_path == self.config.socket_mount_path:
                 raise ValidationError(
                     f"容器内路径 {mount.container_path} 是平台固定挂载的套接字路径，用户不能重复声明"
                 )
+        mount_container_paths = {mount.container_path for mount in user_mounts}
+        for spec in self._parse_file_declarations(request.files):
+            if spec.container_path == self.config.socket_mount_path:
+                raise ValidationError(
+                    f"容器内路径 {spec.container_path} 是平台固定挂载的套接字路径，用户不能重复声明"
+                )
+            if spec.container_path in mount_container_paths:
+                raise ValidationError(
+                    f"容器内路径 {spec.container_path} 与用户声明的挂载路径重复，用户不能重复声明"
+                )
+            # 注入路径的存在性与类型（顺带判掉符号链接）走特权探测
+            probe_host_path(self.privilege, spec.host_path)
 
     def _connection_info(self, metadata: SandboxMetadata, daemon: UserDaemon) -> ConnectionInfo:
         """组装连接方式与命令提示。"""
@@ -959,7 +1009,7 @@ class SandboxService:
             daemon.remove_container(metadata.container_name)
 
         socket = socket_mount(metadata.socket_path, metadata.socket_mount_path)
-        all_mounts = [socket, *metadata.mounts]
+        all_mounts = [socket, *metadata.mounts, *metadata.files]
         run_result = self._run_sandbox_container(
             daemon,
             container_name=metadata.container_name,
@@ -1273,5 +1323,22 @@ class SandboxService:
 
         def action() -> None:
             self.store.delete(name)
+
+        return action
+
+    def _rollback_staged_files(self, system_user: SystemUser):
+        """回滚：删除注入文件的暂存副本目录。
+
+        副本落在沙箱用户家目录里，正常路径下随家目录一起回收；这里显式删一次
+        是为了「家目录不删」（用户本来就存在）时也不留半截副本。
+        """
+
+        def action() -> None:
+            staging = staging_root(system_user.home)
+            result = run(self.privilege.wrap(["rm", "-rf", str(staging)]), check=False)
+            if not result.ok:
+                logger.error(
+                    "删除注入文件暂存目录失败：%s（%s）", staging, result.output.strip()
+                )
 
         return action

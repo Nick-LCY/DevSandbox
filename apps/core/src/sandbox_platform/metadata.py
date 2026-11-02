@@ -59,6 +59,7 @@ class SandboxMetadata:
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)
     mounts: list[MountSpec] = field(default_factory=list)
+    files: list[MountSpec] = field(default_factory=list)
     dependency_containers: list[str] = field(default_factory=list)
     labels: dict[str, str] = field(default_factory=dict)
     command: list[str] = field(default_factory=list)
@@ -78,6 +79,15 @@ class SandboxMetadata:
             }
             for mount in self.mounts
         ]
+        data["files"] = [
+            {
+                "host_path": mount.host_path,
+                "container_path": mount.container_path,
+                "read_only": mount.read_only,
+                "role": mount.role,
+            }
+            for mount in self.files
+        ]
         return data
 
     @classmethod
@@ -92,9 +102,19 @@ class SandboxMetadata:
             )
             for item in data.get("mounts", [])
         ]
+        files = [
+            MountSpec(
+                host_path=item["host_path"],
+                container_path=item["container_path"],
+                read_only=bool(item.get("read_only", False)),
+                role=item.get("role", "file"),
+            )
+            for item in data.get("files", [])
+        ]
         known = {f for f in cls.__dataclass_fields__}
         payload = {key: value for key, value in data.items() if key in known}
         payload["mounts"] = mounts
+        payload["files"] = files
         return cls(**payload)
 
     # ---------------------------------------------------------------- 便捷属性
