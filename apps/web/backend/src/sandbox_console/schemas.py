@@ -53,6 +53,14 @@ def expand_mounts_home_prefix(mounts: list[str]) -> list[str]:
     return [expand_home_prefix(item) for item in mounts]
 
 
+def expand_files_home_prefix(files: list[str]) -> list[str]:
+    """批量展开文件注入声明列表里宿主路径段的前导 ``~``。
+
+    口径与挂载声明完全一致：只展开宿主路径段，容器路径段不展开。
+    """
+    return [expand_home_prefix(item) for item in files]
+
+
 def _expand_home_segment(host: str) -> str:
     """展开单个宿主路径段的前导 ``~``（只处理 ``~`` 与 ``~/`` 两种形态）。
 
@@ -92,6 +100,13 @@ class CreateSandboxRequest(BaseModel):
         default_factory=list,
         description="用户声明挂载，格式 宿主路径:容器路径[:ro]；平台不创建也不删除宿主目录",
     )
+    files: list[str] = Field(
+        default_factory=list,
+        description=(
+            "注入文件声明，格式 宿主路径:容器路径；"
+            "平台复制到沙箱用户家目录后以只读方式挂进容器"
+        ),
+    )
     command: str | list[str] | None = Field(
         default=None, description="容器启动命令（覆盖镜像默认入口）"
     )
@@ -104,13 +119,14 @@ class CreateSandboxRequest(BaseModel):
     def to_core_request(self) -> CreateRequest:
         """转成核心包的创建入参。
 
-        挂载声明的宿主路径段在这里展开 ``~``：展开目标是服务运行用户的家目录。
+        挂载声明与文件注入声明的宿主路径段在这里展开 ``~``：展开目标是服务运行用户的家目录。
         容器路径、环境变量、命令与工作目录一律不展开。
         """
         return CreateRequest(
             name=self.name,
             image=self.image,
             mount_declarations=tuple(expand_mounts_home_prefix(self.mounts)),
+            files=tuple(expand_files_home_prefix(self.files)),
             command=self._command_tuple(),
             env=dict(self.env),
             workdir=self.workdir,
@@ -523,7 +539,7 @@ class TerminalSessionModel(BaseModel):
 
 # ---------------------------------------------------------------- 启动模板
 class TemplateConfig(BaseModel):
-    """启动模板的配置体（六项全选填）。
+    """启动模板的配置体（七项全选填）。
 
     开了 ``extra="forbid"``：多传字段直接 400，不静默吞掉。
     落盘只导出用户真正填过的字段——「字段缺失」与「字段填了空值」不混同
@@ -536,6 +552,13 @@ class TemplateConfig(BaseModel):
     mounts: list[str] = Field(
         default_factory=list,
         description="用户声明挂载，格式 宿主路径:容器路径[:ro]；平台不创建也不删除宿主目录",
+    )
+    files: list[str] = Field(
+        default_factory=list,
+        description=(
+            "注入文件声明，格式 宿主路径:容器路径；"
+            "平台复制到沙箱用户家目录后以只读方式挂进容器"
+        ),
     )
     command: str | list[str] | None = Field(
         default=None, description="容器启动命令（覆盖镜像默认入口）"

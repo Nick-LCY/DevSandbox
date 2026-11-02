@@ -27,6 +27,7 @@ from sandbox_platform import (
     ReclaimPlan,
     SandboxMetadata,
     ValidationError,
+    parse_file_declarations,
 )
 from sandbox_console import create_app
 from sandbox_console.app import default_console_dist_dir
@@ -126,6 +127,19 @@ class FakeSandboxService:
 def fake_service(platform_home: Path) -> FakeSandboxService:
     """假的生命周期服务实例（平台数据根指向临时目录）。"""
     return FakeSandboxService()
+
+
+def _file_declaration_error(declaration: str) -> ValidationError:
+    """用核心包的真实校验产出文件注入声明的错误。
+
+    文件注入声明的校验住在核心包里（服务端不重复实现），服务端只负责
+    把核心包抛出的校验错误映射成 400。
+    """
+    try:
+        parse_file_declarations([declaration])
+    except ValidationError as exc:
+        return exc
+    raise AssertionError(f"该声明本该被核心包拒绝：{declaration}")
 
 
 @pytest.fixture
@@ -267,6 +281,79 @@ def test_create_sandbox_with_unbalanced_quotes_returns_400(client: TestClient) -
     )
     assert response.status_code == 400
     assert "引号" in response.json()["detail"]
+
+
+# ---------------------------------------------------------------- 文件注入声明
+def test_create_sandbox_passes_files_to_core(
+    client: TestClient, fake_service: FakeSandboxService
+) -> None:
+    """文件注入声明原样转给核心包。"""
+    client.post(
+        "/api/sandboxes",
+        json={
+            "name": "demo",
+            "image": "busybox:1.37",
+            "files": ["/tmp/demo/secret:/run/secret"],
+        },
+    )
+    request: CreateRequest = fake_service.calls[-1][1][0]
+    assert request.files == ("/tmp/demo/secret:/run/secret",)
+
+
+def test_create_sandbox_expands_home_prefix_in_file_host_segment(
+    client: TestClient,
+    fake_service: FakeSandboxService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """文件注入声明的宿主路径段展开 ~，容器路径段不展开。
+
+    家目录口径锁死：把 HOME 指向固定假家目录，展开结果必须落在那里。
+    """
+    fake_home = "/tmp/fake-service-home"
+    monkeypatch.setenv("HOME", fake_home)
+    client.post(
+        "/api/sandboxes",
+        json={
+            "name": "demo",
+            "image": "busybox:1.37",
+            "files": ["~/secret:/run/secret", "/tmp/demo:~/other"],
+        },
+    )
+    request: CreateRequest = fake_service.calls[-1][1][0]
+    assert request.files == (f"{fake_home}/secret:/run/secret", "/tmp/demo:~/other")
+
+
+def test_create_sandbox_rejects_invalid_file_declaration_with_400(
+    client: TestClient, fake_service: FakeSandboxService
+) -> None:
+    """文件注入声明非法 → 400：平台异常原文回显。
+
+    校验在核心包里做（服务端不重复实现校验逻辑），这里用核心包的真实校验
+    产出错误，验证错误映射口径。
+    """
+    fake_service.error = _file_declaration_error("relative:/run/secret")
+    response = client.post(
+        "/api/sandboxes",
+        json={
+            "name": "demo",
+            "image": "busybox:1.37",
+            "files": ["relative:/run/secret"],
+        },
+    )
+    assert response.status_code == 400
+    assert "绝对路径" in response.json()["detail"]
+
+
+def test_create_sandbox_rejects_non_string_file_element_with_400(
+    client: TestClient,
+) -> None:
+    """files 列表里传非字符串 → 400（不落成 422：422 只服务缺镜像）。"""
+    response = client.post(
+        "/api/sandboxes",
+        json={"name": "demo", "image": "busybox:1.37", "files": [123]},
+    )
+    assert response.status_code == 400
+    assert "应为字符串" in response.json()["detail"]
 
 
 # ---------------------------------------------------------------- 挂载宿主路径的 ~ 展开

@@ -257,6 +257,37 @@ def test_template_keeps_tilde_and_placeholder_verbatim(
     assert stored["config"]["env"] == {"NAME": "{name}"}
 
 
+def test_template_config_with_files_is_persisted(
+    templates_client: TestClient, platform_home: Path
+) -> None:
+    """含 files 的模板：配置体原样落盘并回显。"""
+    response = templates_client.post(
+        "/api/templates",
+        json={
+            "name": "带文件注入",
+            "config": {"files": ["/tmp/demo/secret:/run/secret"]},
+        },
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["config"]["files"] == ["/tmp/demo/secret:/run/secret"]
+    stored = read_stored(platform_home, body["id"])
+    assert stored["config"]["files"] == ["/tmp/demo/secret:/run/secret"]
+
+
+def test_template_config_without_files_key_omits_it(
+    templates_client: TestClient, platform_home: Path
+) -> None:
+    """不传 files：落盘 JSON 里没有 files 键（``exclude_unset`` 口径）。"""
+    created = templates_client.post(
+        "/api/templates",
+        json={"name": "无文件注入", "config": {"image": "busybox:1.37"}},
+    ).json()
+    assert "files" not in created["config"]
+    stored = read_stored(platform_home, created["id"])
+    assert "files" not in stored["config"]
+
+
 # ---------------------------------------------------------------- 内置种子与墓碑
 def test_builtin_template_is_injected_on_list(
     templates_client: TestClient, monkeypatch: pytest.MonkeyPatch
