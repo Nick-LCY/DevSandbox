@@ -37,12 +37,15 @@ from .errors import (
     ValidationError,
 )
 from .files import (
+    DEFAULT_HOME_ROOT,
     FILE_MOUNT_ROLE,
     STAGING_DIRNAME,
     FileSpec,
+    SandboxHomeScope,
     parse_file_declaration,
     parse_file_declarations,
     probe_host_path,
+    reject_sandbox_user_home,
     stage_file_copies,
     staged_path,
     staging_root,
@@ -113,6 +116,7 @@ from .userspace import (
 
 __all__ = [
     "CREATE_STEP_NAMES",
+    "DEFAULT_HOME_ROOT",
     "FILE_MOUNT_ROLE",
     "IMAGE_SOURCE_AUTO",
     "IMAGE_SOURCE_CHOICES",
@@ -159,6 +163,7 @@ __all__ = [
     "ReclaimPlan",
     "RegistryProxyManager",
     "SandboxError",
+    "SandboxHomeScope",
     "SandboxMetadata",
     "SandboxService",
     "SubIdRange",
@@ -180,6 +185,7 @@ __all__ = [
     "pid_alive",
     "probe_host_path",
     "proxy_container_name",
+    "reject_sandbox_user_home",
     "require_image_name",
     "sensitive_host_paths",
     "socket_mount",

@@ -93,6 +93,27 @@ def test_mount_summary_text(config) -> None:
     assert _metadata().mount_summary == "/tmp/external → /data（只读）"
 
 
+def test_old_metadata_without_files_key_loads_with_empty_files() -> None:
+    """旧元数据（没有 files 键）反序列化后 files 是空列表。"""
+    payload = _metadata().to_dict()
+    payload.pop("files")
+    restored = SandboxMetadata.from_dict(payload)
+    assert restored.files == []
+
+
+def test_metadata_files_round_trip_preserves_role() -> None:
+    """注入副本清单存取往返：角色与只读标记不丢。"""
+    original = _metadata()
+    original.files = [
+        MountSpec("/home/sandbox-demo/.sandbox-files/0-secret", "/run/secret", True, "file")
+    ]
+    restored = SandboxMetadata.from_dict(original.to_dict())
+    assert len(restored.files) == 1
+    assert restored.files[0].role == "file"
+    assert restored.files[0].read_only is True
+    assert restored.files[0].container_path == "/run/secret"
+
+
 def test_broken_metadata_file_is_ignored(config) -> None:
     """损坏的元数据文件不会让列表整体失败。"""
     store = MetadataStore(config)

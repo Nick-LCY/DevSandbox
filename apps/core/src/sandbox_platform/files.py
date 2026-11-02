@@ -16,10 +16,19 @@
 3. **不走可读性预检**：用户声明挂载要过「宿主路径对沙箱用户可读且可穿过」那道
    预检，注入**不走**它——副本属主就是沙箱用户，那道预检对注入没有意义。
    符号链接一律拒绝（既不跟随、也不复制链接本身）。
+
+信任边界（注入源可见范围）：
+
+- 注入源由平台**以特权身份读取**（复制动作走 root 通道）：控制台 / 命令行的
+  调用者被视为平台受信主体，文件注入**不提供跨账号隔离**；
+- 注入源不得落在**其他沙箱用户家目录**内（那是别的沙箱账号的家）；
+- 命中宿主敏感清单（``/etc`` ``/proc`` ``/root`` 等、平台数据根、宿主 Docker
+  套接字）一律拒绝。
 """
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -27,8 +36,15 @@ from pathlib import Path
 
 from .command import run
 from .errors import ValidationError
-from .mounts import MountSpec, reject_sensitive_host_path, sensitive_host_paths
+from .mounts import (
+    MountSpec,
+    is_under,
+    reject_sensitive_host_path,
+    sensitive_host_paths,
+)
 from .userspace import Privilege, SystemUser
+
+logger = logging.getLogger(__name__)
 
 # 暂存目录名（落在沙箱用户家目录内，点开头：不进用户家目录的普通视图）
 STAGING_DIRNAME = ".sandbox-files"
@@ -39,6 +55,9 @@ FILE_MOUNT_ROLE = "file"
 # 副本名兜底：宿主路径末段取不到时用它
 DEFAULT_STAGED_NAME = "file"
 
+# 宿主家目录根：平台沙箱用户的家目录都落在这里（useradd 默认落点）
+DEFAULT_HOME_ROOT = "/home"
+
 
 @dataclass(frozen=True)
 class FileSpec:
@@ -48,16 +67,77 @@ class FileSpec:
     container_path: str
 
 
+@dataclass(frozen=True)
+class SandboxHomeScope:
+    """注入源的宿主范围限制（信任边界收口）。
+
+    注入源不得落在**其他**沙箱用户家目录内：那是别的沙箱账号的家，平台
+    以特权身份把它复制进沙箱，等于替别人读了文件。
+
+    - ``user_prefix``：平台沙箱用户名前缀（取自配置的 ``user_prefix``），
+      沙箱用户的家目录名形如 ``<前缀>-<沙箱名>``；
+    - ``home_root``：家目录根（缺省 ``/home``）；
+    - ``exclude_home``：本次创建流程自己新建的沙箱用户家目录——它不算
+      「其他沙箱用户家目录」，其余一律拒绝。
+    """
+
+    user_prefix: str
+    home_root: Path | None = None
+    exclude_home: Path | None = None
+
+    def homes(self) -> tuple[Path, ...]:
+        """宿主上属于平台沙箱用户的家目录。
+
+        判定规则：家目录根下名字以 ``<用户前缀>-`` 开头的**现有目录**
+        （沙箱用户的家目录名就是 ``<用户前缀>-<沙箱名>``）。
+        """
+        root = (
+            Path(self.home_root)
+            if self.home_root is not None
+            else Path(DEFAULT_HOME_ROOT)
+        )
+        prefix = f"{self.user_prefix}-"
+        try:
+            entries = sorted(root.iterdir())
+        except OSError:
+            return ()
+        return tuple(
+            entry
+            for entry in entries
+            if entry.name.startswith(prefix)
+            and entry.is_dir()
+            and not entry.is_symlink()
+        )
+
+
+def reject_sandbox_user_home(path: str | Path, scope: SandboxHomeScope) -> None:
+    """注入源落在其他沙箱用户家目录内时拒绝。"""
+    target = Path(path)
+    exclude = Path(scope.exclude_home) if scope.exclude_home is not None else None
+    for home in scope.homes():
+        if exclude is not None and home == exclude:
+            continue
+        if is_under(target, home):
+            raise ValidationError(
+                f"注入的宿主路径落在其他沙箱用户家目录内，不允许注入：{target}"
+            )
+
+
 # ---------------------------------------------------------------- 声明解析
 def parse_file_declaration(
     declaration: str,
     *,
     extra_forbidden: Iterable[str | Path] = (),
+    home_scope: SandboxHomeScope | None = None,
 ) -> FileSpec:
     """解析单条文件注入声明。
 
     合法写法固定两段：``宿主路径:容器路径``。与挂载声明的差别是没有读写标记
     段（容器内一律只读），``/ro`` 这类第三段按格式非法拒绝。
+
+    宿主路径**先归一化再校验**：敏感清单比对与家目录范围限制都用归一化后的
+    路径——``/tmp/../etc/shadow`` 词法上不在 ``/etc`` 之下，却实实在在指向
+    ``/etc/shadow``，用原始路径比会漏掉它。
     """
     if not declaration or not declaration.strip():
         raise ValidationError("文件注入声明不能为空")
@@ -86,9 +166,12 @@ def parse_file_declaration(
             f"注入路径不得包含逗号（Docker 挂载参数以逗号分段）：{declaration}"
         )
 
-    reject_sensitive_host_path(Path(host_raw), forbidden, action="注入文件")
+    host_norm = os.path.normpath(host_raw)
+    reject_sensitive_host_path(Path(host_norm), forbidden, action="注入文件")
+    if home_scope is not None:
+        reject_sandbox_user_home(host_norm, home_scope)
     return FileSpec(
-        host_path=os.path.normpath(host_raw),
+        host_path=host_norm,
         container_path=os.path.normpath(container_raw),
     )
 
@@ -97,6 +180,7 @@ def parse_file_declarations(
     declarations: Iterable[str],
     *,
     extra_forbidden: Iterable[str | Path] = (),
+    home_scope: SandboxHomeScope | None = None,
 ) -> list[FileSpec]:
     """解析多条文件注入声明并做整体校验。
 
@@ -107,7 +191,11 @@ def parse_file_declarations(
     seen_host: dict[str, str] = {}
     seen_container: dict[str, str] = {}
     for declaration in declarations or ():
-        spec = parse_file_declaration(declaration, extra_forbidden=extra_forbidden)
+        spec = parse_file_declaration(
+            declaration,
+            extra_forbidden=extra_forbidden,
+            home_scope=home_scope,
+        )
         if spec.host_path in seen_host:
             raise ValidationError(
                 f"宿主路径重复声明：{spec.host_path}"
@@ -144,13 +232,10 @@ def staged_path(home: str | Path, index: int, host_path: str | Path) -> Path:
 def probe_host_path(privilege: Privilege, path: str) -> str:
     """探测宿主路径的类型：``f``（普通文件）或 ``d``（目录）。
 
-    三条特权命令走一遍：存在性 → 类型 → 目录内的符号链接。符号链接一律拒绝：
+    先用 ``find -printf %y`` 判类型（悬空符号链接也判得出「符号链接」，
+    不误报成「不存在」），命令失败才报不存在。符号链接一律拒绝：
     跟随会带出非预期内容，复制链接本身又会留下一条断链。
     """
-    exists = run(privilege.wrap(["test", "-e", path]), check=False)
-    if not exists.ok:
-        raise ValidationError(f"注入的宿主路径不存在（平台不会代为创建）：{path}")
-
     kind = run(
         privilege.wrap(["find", path, "-maxdepth", "0", "-printf", "%y\n"]),
         check=False,
@@ -161,19 +246,42 @@ def probe_host_path(privilege: Privilege, path: str) -> str:
             f"注入的宿主路径是符号链接，文件注入不支持符号链接：{path}"
         )
     if output == "d":
-        links = run(
-            privilege.wrap(["find", path, "-type", "l", "-print", "-quit"]),
-            check=False,
-        )
-        found = links.stdout.strip() if links.ok else ""
-        if found:
-            raise ValidationError(
-                f"注入的宿主路径里有符号链接，文件注入不支持符号链接：{found}"
-            )
+        _reject_directory_content(privilege, path)
         return "d"
     if output == "f":
         return "f"
-    raise ValidationError(f"注入的宿主路径不存在或不可访问：{path}")
+    if output:
+        raise ValidationError(f"注入的宿主路径不是普通文件或目录：{path}")
+    raise ValidationError(f"注入的宿主路径不存在（平台不会代为创建）：{path}")
+
+
+def _reject_directory_content(privilege: Privilege, path: str) -> None:
+    """目录内容探测：符号链接与非常规文件一律拒绝。
+
+    - 目录里有符号链接：复制会把断链或预期外的内容带进沙箱；
+    - 目录里有 FIFO / 设备 / 套接字：它们在容器里没有意义，
+      复制时还可能阻塞（读 FIFO 会一直等下去）。
+    """
+    links = run(
+        privilege.wrap(["find", path, "-type", "l", "-print", "-quit"]),
+        check=False,
+    )
+    found = links.stdout.strip() if links.ok else ""
+    if found:
+        raise ValidationError(
+            f"注入的宿主路径里有符号链接，文件注入不支持符号链接：{found}"
+        )
+    irregular = run(
+        privilege.wrap(
+            ["find", path, "!", "-type", "f", "!", "-type", "d", "-print", "-quit"]
+        ),
+        check=False,
+    )
+    entry = irregular.stdout.strip() if irregular.ok else ""
+    if entry:
+        raise ValidationError(
+            f"注入的宿主目录里含非常规文件（FIFO/设备/套接字），不支持注入：{entry}"
+        )
 
 
 # ---------------------------------------------------------------- 副本准备
@@ -185,9 +293,13 @@ def stage_file_copies(
 ) -> list[MountSpec]:
     """把宿主文件复制成沙箱用户拥有的副本，并生成只读挂载声明。
 
-    五步：建暂存目录 → 逐条复制 → 改属主 → 目录 0700 → 文件 0600。
-    属主与主组都设成沙箱用户（``useradd --create-home`` 建出来的用户主组同名），
-    免 root 守护进程以该用户身份运行，能穿过暂存目录把副本挂进容器。
+    六步：清掉既有暂存目录 → 建暂存目录 → 逐条复探类型并复制 → 改属主
+    → 目录 0700 → 文件 0600。属主与主组都设成沙箱用户（用 uid / gid 数值，
+    不依赖「主组与用户同名」的假设），免 root 守护进程以该用户身份运行，
+    能穿过暂存目录把副本挂进容器。
+
+    每条复制前**就地复探一次**类型：预检与复制之间的时间窗里宿主文件
+    可能被换掉，不信任早期探测结果。
 
     任一步失败先删掉整个暂存目录再抛原异常：不留半截副本在宿主上。
     """
@@ -195,15 +307,17 @@ def stage_file_copies(
         return []
     staging = staging_root(user.home)
     try:
+        # 复用旧账号时先清掉既有暂存目录：不留上一轮的孤儿副本
+        run(privilege.wrap(["rm", "-rf", str(staging)]), check=False)
         run(
             privilege.wrap(
                 [
                     "install",
                     "-d",
                     "-o",
-                    user.name,
+                    str(user.uid),
                     "-g",
-                    user.name,
+                    str(user.gid),
                     "-m",
                     "0700",
                     str(staging),
@@ -212,6 +326,8 @@ def stage_file_copies(
             check=True,
         )
         for index, spec in enumerate(specs):
+            # 复制前就地复探一次：预检与复制之间宿主文件可能被换掉
+            probe_host_path(privilege, spec.host_path)
             target = staged_path(user.home, index, spec.host_path)
             # 目标位置先清干净：目录已存在时 cp 会把原件复制进目录里（多一层目录名）
             run(privilege.wrap(["rm", "-rf", str(target)]), check=False)
@@ -220,7 +336,7 @@ def stage_file_copies(
                 check=True,
             )
         run(
-            privilege.wrap(["chown", "-R", f"{user.name}:{user.name}", str(staging)]),
+            privilege.wrap(["chown", "-R", f"{user.uid}:{user.gid}", str(staging)]),
             check=True,
         )
         run(
@@ -236,7 +352,11 @@ def stage_file_copies(
             check=True,
         )
     except Exception:
-        run(privilege.wrap(["rm", "-rf", str(staging)]), check=False)
+        cleanup = run(privilege.wrap(["rm", "-rf", str(staging)]), check=False)
+        if not cleanup.ok:
+            logger.error(
+                "删除注入文件暂存目录失败：%s（%s）", staging, cleanup.output.strip()
+            )
         raise
     return [
         MountSpec(

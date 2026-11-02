@@ -11,6 +11,7 @@ import pytest
 
 from sandbox_platform import (
     FileSpec,
+    SandboxHomeScope,
     ValidationError,
     parse_file_declaration,
     parse_file_declarations,
@@ -69,6 +70,22 @@ def test_sensitive_host_path_rejected() -> None:
     assert "注入文件" in message
 
 
+def test_sensitive_host_path_bypassed_by_dotdot_rejected() -> None:
+    """``..`` 绕不过敏感清单：先归一化再比对。
+
+    ``/tmp/../etc/passwd`` 词法上不在 ``/etc`` 之下，未归一化就会漏掉它。
+    """
+    with pytest.raises(ValidationError) as excinfo:
+        parse_file_declaration("/tmp/../etc/passwd:/run/x")
+    assert "敏感清单" in str(excinfo.value)
+
+
+def test_dotdot_in_host_path_is_normalized() -> None:
+    """归一化后的宿主路径才是真正拿去复制的路径。"""
+    spec = parse_file_declaration("/tmp/./data/../data/secret:/run/secret")
+    assert spec.host_path == "/tmp/data/secret"
+
+
 def test_extra_forbidden_host_path_rejected(tmp_path: Path) -> None:
     """调用方追加的敏感项（如平台数据根）同样拒绝注入。"""
     with pytest.raises(ValidationError) as excinfo:
@@ -120,3 +137,76 @@ def test_staged_path_layout(tmp_path: Path) -> None:
     assert staged_path(home, 1, "/data/key") == home / ".sandbox-files" / "1-key"
     # 原件名取不到时兜底为 file
     assert staged_path(home, 2, "/") == home / ".sandbox-files" / "2-file"
+
+
+# ---------------------------------------------------------------- 注入源的可见范围
+def test_source_inside_other_sandbox_home_rejected(tmp_path: Path) -> None:
+    """注入源落在其他沙箱用户家目录内：拒绝。"""
+    home_root = tmp_path / "home"
+    (home_root / "sandbox-victim").mkdir(parents=True)
+    scope = SandboxHomeScope(user_prefix="sandbox", home_root=home_root)
+    with pytest.raises(ValidationError) as excinfo:
+        parse_file_declaration(
+            f"{home_root}/sandbox-victim/.ssh/id_rsa:/run/key",
+            home_scope=scope,
+        )
+    message = str(excinfo.value)
+    assert "其他沙箱用户家目录" in message
+    assert "不允许注入" in message
+
+
+def test_source_is_other_sandbox_home_itself_rejected(tmp_path: Path) -> None:
+    """家目录本身也是「其他沙箱用户家目录」：一样拒绝。"""
+    home_root = tmp_path / "home"
+    (home_root / "sandbox-victim").mkdir(parents=True)
+    scope = SandboxHomeScope(user_prefix="sandbox", home_root=home_root)
+    with pytest.raises(ValidationError) as excinfo:
+        parse_file_declaration(f"{home_root}/sandbox-victim:/run/home", home_scope=scope)
+    assert "其他沙箱用户家目录" in str(excinfo.value)
+
+
+def test_source_inside_other_sandbox_home_rejected_after_normalization(
+    tmp_path: Path,
+) -> None:
+    """归一化之后才判定：``..`` 绕不过家目录范围限制。"""
+    home_root = tmp_path / "home"
+    (home_root / "sandbox-victim").mkdir(parents=True)
+    scope = SandboxHomeScope(user_prefix="sandbox", home_root=home_root)
+    with pytest.raises(ValidationError) as excinfo:
+        parse_file_declaration(
+            f"{home_root}/sandbox-other/../sandbox-victim/key:/run/key",
+            home_scope=scope,
+        )
+    assert "其他沙箱用户家目录" in str(excinfo.value)
+
+
+def test_own_sandbox_home_is_allowed(tmp_path: Path) -> None:
+    """本次创建流程自己新建的家目录不算「其他沙箱用户家目录」。"""
+    home_root = tmp_path / "home"
+    own = home_root / "sandbox-demo"
+    own.mkdir(parents=True)
+    scope = SandboxHomeScope(
+        user_prefix="sandbox",
+        home_root=home_root,
+        exclude_home=own,
+    )
+    spec = parse_file_declaration(f"{own}/data:/run/data", home_scope=scope)
+    assert spec.host_path == f"{own}/data"
+
+
+def test_source_outside_sandbox_homes_allowed(tmp_path: Path) -> None:
+    """家目录范围之外的路径照常允许。"""
+    home_root = tmp_path / "home"
+    home_root.mkdir()
+    scope = SandboxHomeScope(user_prefix="sandbox", home_root=home_root)
+    spec = parse_file_declaration(f"{tmp_path}/data:/run/data", home_scope=scope)
+    assert spec.host_path == f"{tmp_path}/data"
+
+
+def test_home_scope_without_prefix_match_is_allowed(tmp_path: Path) -> None:
+    """不是平台沙箱用户的家目录（名字不带前缀）：不受范围限制。"""
+    home_root = tmp_path / "home"
+    (home_root / "someone").mkdir(parents=True)
+    scope = SandboxHomeScope(user_prefix="sandbox", home_root=home_root)
+    spec = parse_file_declaration(f"{home_root}/someone/data:/run/data", home_scope=scope)
+    assert spec.host_path == f"{home_root}/someone/data"

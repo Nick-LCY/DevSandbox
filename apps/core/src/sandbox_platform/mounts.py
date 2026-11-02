@@ -69,7 +69,7 @@ class MountSpec:
         return f"{self.host_path} → {self.container_path}{'（只读）' if self.read_only else ''}"
 
 
-def _is_under(path: Path, base: Path) -> bool:
+def is_under(path: Path, base: Path) -> bool:
     """判断路径是否等于 base 或落在 base 之下。"""
     try:
         path.relative_to(base)
@@ -103,7 +103,7 @@ def reject_sensitive_host_path(
     """
     for item in forbidden:
         base = Path(item)
-        if _is_under(path, base):
+        if is_under(path, base):
             raise ValidationError(
                 f"宿主路径命中敏感清单，不允许{action}：{path}"
                 f"（{item} 及其子目录均不可{action}；平台数据根与宿主 Docker 套接字同样禁止）"
@@ -115,12 +115,15 @@ def validate_host_path_shape(raw: str, forbidden: tuple[str, ...]) -> Path:
 
     不做存在性检查：注入文件那套流程的存在性判断走特权通道的探测命令
     （还要一并判掉符号链接），与这里的形状校验分开。
+
+    敏感清单比对**先归一化再比**：``/tmp/../etc/shadow`` 词法上不在 ``/etc``
+    之下，却实实在在指向 ``/etc/shadow``——用未归一化的原始路径比会漏掉它。
     """
     if not raw.startswith("/"):
         raise ValidationError(f"挂载的宿主路径必须是绝对路径：{raw}")
     if "," in raw:
         raise ValidationError(f"挂载路径不得包含逗号（Docker 挂载参数以逗号分段）：{raw}")
-    path = Path(raw)
+    path = Path(os.path.normpath(raw))
     reject_sensitive_host_path(path, forbidden)
     return path
 
@@ -168,9 +171,9 @@ def parse_mount_declaration(
     if mode not in ("", "ro", "rw"):
         raise ValidationError(f"挂载声明只支持 ro / rw 读写标记：{declaration}")
 
-    _validate_host_path(host_raw, forbidden)
+    host_path = _validate_host_path(host_raw, forbidden)
     return MountSpec(
-        host_path=os.path.normpath(host_raw),
+        host_path=str(host_path),
         container_path=os.path.normpath(container_raw),
         read_only=(mode == "ro"),
     )

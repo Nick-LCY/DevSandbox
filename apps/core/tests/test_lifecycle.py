@@ -273,3 +273,64 @@ def test_delete_releases_the_name_claim(service: SandboxService) -> None:
     service.delete("demo")
 
     assert not claim.exists()
+
+
+# ---------------------------------------------------------------- 文件注入声明的容器内路径
+def test_create_rejects_file_container_path_conflicting_with_socket(
+    service: SandboxService, tmp_path: Path
+) -> None:
+    """注入的容器内路径撞平台固定挂载的套接字路径：拒绝，不落任何宿主副作用。"""
+    host = tmp_path / "data"
+    host.mkdir()
+    with pytest.raises(ValidationError) as excinfo:
+        service.create(
+            CreateRequest(
+                name="demo",
+                image="busybox",
+                files=(f"{host}:/var/run/docker.sock",),
+            )
+        )
+    assert "套接字" in str(excinfo.value)
+
+
+def test_create_rejects_file_container_path_conflicting_with_user_mount(
+    service: SandboxService, tmp_path: Path
+) -> None:
+    """注入的容器内路径撞用户声明挂载的容器内路径：拒绝。"""
+    host = tmp_path / "data"
+    host.mkdir()
+    with pytest.raises(ValidationError) as excinfo:
+        service.create(
+            CreateRequest(
+                name="demo",
+                image="busybox",
+                mount_declarations=(f"{host}:/data",),
+                files=(f"{host}:/data",),
+            )
+        )
+    assert "重复" in str(excinfo.value)
+
+
+def test_create_rejects_file_source_inside_other_sandbox_home(
+    service: SandboxService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """注入源落在其他沙箱用户家目录内：创建直接拒绝。
+
+    注入源由平台以特权身份读取：家目录里是别的沙箱账号的家，
+    平台不能替别人把文件复制进来。
+    """
+    from sandbox_platform import files as files_module
+
+    fake_home = tmp_path / "home"
+    (fake_home / "sandbox-victim").mkdir(parents=True)
+    monkeypatch.setattr(files_module, "DEFAULT_HOME_ROOT", str(fake_home))
+
+    with pytest.raises(ValidationError) as excinfo:
+        service.create(
+            CreateRequest(
+                name="demo",
+                image="busybox",
+                files=(f"{fake_home}/sandbox-victim/key:/run/key",),
+            )
+        )
+    assert "其他沙箱用户家目录" in str(excinfo.value)

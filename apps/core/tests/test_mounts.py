@@ -126,3 +126,20 @@ def test_socket_mount_is_fixed_role() -> None:
 def test_user_mount_role_default() -> None:
     """用户声明挂载默认角色为 user。"""
     assert MountSpec("/tmp", "/data").role == "user"
+
+
+def test_sensitive_host_path_bypassed_by_dotdot_rejected() -> None:
+    """``..`` 绕不过敏感清单：先归一化再比对。
+
+    ``/tmp/../etc`` 词法上不在 ``/etc`` 之下，未归一化就会漏掉它。
+    """
+    with pytest.raises(ValidationError) as excinfo:
+        parse_mount_declaration("/tmp/../etc:/data")
+    assert "敏感清单" in str(excinfo.value)
+
+
+def test_sensitive_host_file_bypassed_by_dotdot_rejected() -> None:
+    """宿主敏感文件同样绕不过 ``..``。"""
+    with pytest.raises(ValidationError) as excinfo:
+        parse_mount_declaration("/tmp/../var/run/docker.sock:/data")
+    assert "敏感清单" in str(excinfo.value)

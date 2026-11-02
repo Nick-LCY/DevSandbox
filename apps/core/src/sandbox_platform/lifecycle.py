@@ -48,6 +48,7 @@ from .errors import (
 )
 from .files import (
     FileSpec,
+    SandboxHomeScope,
     parse_file_declarations,
     probe_host_path,
     stage_file_copies,
@@ -720,13 +721,21 @@ class SandboxService:
             # （副本不进 metadata.mounts：那一份是「平台不回收」的口径，
             #   注入副本随沙箱家目录一起回收，单列在 metadata.files）
             current_step = FILE_STAGE_STEP
-            file_specs = self._parse_file_declarations(request.files)
+            file_specs = self._parse_file_declarations(
+                request.files,
+                # 本次新建的用户家目录不算「其他沙箱用户家目录」；
+                # 复用的旧账号一律按「其他」口径拒绝
+                exclude_home=system_user.home if system_user.created else None,
+            )
             file_mounts = stage_file_copies(
                 file_specs,
                 user=system_user,
                 privilege=self.privilege,
             )
-            completed.append((current_step, self._rollback_staged_files(system_user)))
+            if file_specs:
+                # 只有真复制了副本才登记回滚：没有副本时删暂存目录会误伤
+                # 同一账号上上一轮留下的东西
+                completed.append((current_step, self._rollback_staged_files(system_user)))
             all_mounts = [socket, *user_mounts, *file_mounts]
 
             # ⑤ 启动沙箱容器并挂载套接字与用户声明挂载
@@ -899,12 +908,23 @@ class SandboxService:
         )
 
     def _parse_file_declarations(
-        self, declarations: tuple[str, ...] | list[str]
+        self,
+        declarations: tuple[str, ...] | list[str],
+        *,
+        exclude_home: str | Path | None = None,
     ) -> list[FileSpec]:
-        """解析文件注入声明（平台数据根等敏感路径一律拒绝）。"""
+        """解析文件注入声明（平台数据根等敏感路径一律拒绝）。
+
+        注入源的宿主范围限制：不得落在**其他**沙箱用户家目录内
+        （``exclude_home`` 是本次创建流程自己新建的那一个家目录，不算「其他」）。
+        """
         return parse_file_declarations(
             list(declarations),
             extra_forbidden=[self.config.home],
+            home_scope=SandboxHomeScope(
+                user_prefix=self.config.user_prefix,
+                exclude_home=Path(exclude_home) if exclude_home is not None else None,
+            ),
         )
 
     def _precheck(self, request: CreateRequest) -> None:
@@ -1009,6 +1029,7 @@ class SandboxService:
             daemon.remove_container(metadata.container_name)
 
         socket = socket_mount(metadata.socket_path, metadata.socket_mount_path)
+        self._ensure_staged_files_exist(metadata.files)
         all_mounts = [socket, *metadata.mounts, *metadata.files]
         run_result = self._run_sandbox_container(
             daemon,
@@ -1028,6 +1049,26 @@ class SandboxService:
         metadata.state = STATE_RUNNING
         self.store.save(metadata)
         return metadata
+
+    def _ensure_staged_files_exist(self, files: list[MountSpec]) -> None:
+        """启动前逐条检查注入副本还在不在。
+
+        暂存副本随沙箱用户家目录存放：家目录被清掉（手工清理、清理脚本、
+        用户自己删了家目录）之后副本就没了。这时必须明确报错，不能让
+        Docker 静默建一个空目录挂进容器——容器里看着有路径，读出来是空的。
+        """
+        for mount in files:
+            probe = run(
+                self.privilege.wrap(["test", "-e", mount.host_path]),
+                check=False,
+            )
+            if probe.ok:
+                continue
+            raise LifecycleError(
+                "启动沙箱",
+                f"注入文件副本已不存在，无法启动沙箱：{mount.host_path}"
+                "（暂存副本随沙箱用户家目录存放，可能已被清理）",
+            )
 
     def stop(self, name: str, stop_dependencies: bool = True) -> SandboxMetadata:
         """关闭沙箱：停止沙箱容器（依赖容器是否一并停止由显式参数控制，默认停）。"""

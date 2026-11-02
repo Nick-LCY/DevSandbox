@@ -1,7 +1,9 @@
 """宿主级文件注入测试（需要真实 root 权限）。
 
-覆盖：注入文件在容器内可读且只读、原件零接触、目录递归复制、符号链接拒绝、
-宿主路径不存在拒绝、停止→启动期间副本保留、删除沙箱后副本随家目录消失。
+覆盖：注入文件在容器内可读且只读、原件零接触（文件型与目录型原件）、目录递归
+复制、符号链接拒绝（路径本身 / 目录内 / 悬空链接）、非常规文件（FIFO）拒绝、
+宿主路径不存在拒绝、复制中途失败不留半截副本、停止→启动期间副本保留、
+副本被清理后启动报错、删除沙箱后副本随家目录消失。
 
 镜像一律用平台基础镜像 ``sandbox-platform/base:0.3.0``（宿主上没有就跳过），
 不依赖任何个人镜像。测试数据全部落在 ``tmp_path``，测试自带清理。
@@ -16,12 +18,18 @@ from pathlib import Path
 import pytest
 
 from sandbox_platform import (
+    CommandError,
     CreateRequest,
+    FileSpec,
+    LifecycleError,
     SandboxService,
     UserContext,
     ValidationError,
 )
+from sandbox_platform import files as files_module
+from sandbox_platform.command import CommandResult, run
 from sandbox_platform.daemon import UserDaemon
+from sandbox_platform.files import stage_file_copies, staging_root
 from sandbox_platform.userspace import SystemUser, UserSpaceManager
 
 pytestmark = pytest.mark.root
@@ -134,29 +142,59 @@ def test_injected_file_readable_in_container_and_readonly(
         _cleanup(service, name)
 
 
+def _snapshot(path: Path) -> dict[str, tuple[int, int, int, float, bytes]]:
+    """原件的完整快照：相对路径 →（权限位, 属主, 属组, mtime, 内容）。"""
+    items = sorted(path.rglob("*")) if path.is_dir() else [path]
+    result: dict[str, tuple[int, int, int, float, bytes]] = {}
+    for item in items:
+        relative = item.relative_to(path) if path.is_dir() else Path(".")
+        info = item.stat()
+        content = item.read_bytes() if item.is_file() else b""
+        result[str(relative)] = (
+            info.st_mode,
+            info.st_uid,
+            info.st_gid,
+            info.st_mtime,
+            content,
+        )
+    return result
+
+
+@pytest.mark.parametrize("kind", ["file", "directory"])
 def test_original_untouched_after_injection(
-    service: SandboxService, tmp_path: Path, require_root: None
+    service: SandboxService, tmp_path: Path, require_root: None, kind: str
 ) -> None:
-    """注入过程对原件零接触：权限位、属主、内容、mtime 全不变。"""
-    name = "sboxfile2"
-    secret = tmp_path / "keep.txt"
-    secret.write_text("原样保留", encoding="utf-8")
-    secret.chmod(0o600)
-    before = secret.stat()
+    """注入过程对原件零接触：权限位、属主、内容、mtime 全不变。
+
+    文件型与目录型原件都覆盖：目录型还要看目录本身的权限与 mtime，
+    以及里面的内容没被改动。
+    """
+    name = "sboxfile2f" if kind == "file" else "sboxfile2d"
+    if kind == "file":
+        original = tmp_path / "keep.txt"
+        original.write_text("原样保留", encoding="utf-8")
+        original.chmod(0o600)
+    else:
+        original = tmp_path / "keepdir"
+        original.mkdir()
+        (original / "inner.txt").write_text("目录内容", encoding="utf-8")
+        original.chmod(0o700)
+    before = original.stat()
+    before_tree = _snapshot(original)
 
     request = CreateRequest(
         name=name,
         image=_base_image(),
-        files=(f"{secret}:/run/keep",),
+        files=(f"{original}:/run/keep",),
     )
     service.create(request)
     try:
-        after = secret.stat()
+        after = original.stat()
         assert after.st_mode == before.st_mode
         assert after.st_uid == before.st_uid
         assert after.st_gid == before.st_gid
         assert after.st_mtime == before.st_mtime
-        assert secret.read_text(encoding="utf-8") == "原样保留"
+        assert _snapshot(original) == before_tree
     finally:
         _cleanup(service, name)
 
@@ -305,3 +343,135 @@ def test_staged_copy_removed_with_sandbox(
     assert secret.read_text(encoding="utf-8") == "原件还在"
     assert (secret.stat().st_mode & 0o777) == 0o600
     assert os.path.isfile(secret)
+
+
+def test_nested_symlink_in_source_directory_rejected(
+    service: SandboxService, tmp_path: Path, require_root: None
+) -> None:
+    """目录里含符号链接：拒绝注入（既不跟随、也不复制链接本身）。"""
+    name = "sboxfile8"
+    source = tmp_path / "bundle"
+    source.mkdir()
+    (source / "real.txt").write_text("真实内容", encoding="utf-8")
+    (source / "link.txt").symlink_to(source / "real.txt")
+    source.chmod(0o700)
+
+    with pytest.raises(ValidationError) as excinfo:
+        service.create(
+            CreateRequest(
+                name=name,
+                image=_base_image(),
+                files=(f"{source}:/run/bundle",),
+            )
+        )
+    assert "里有符号链接" in str(excinfo.value)
+    assert service.find(name) is None
+
+
+def test_stage_failure_cleans_half_baked_copies(
+    service: SandboxService, tmp_path: Path, require_root: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """复制中途失败：暂存目录被清掉，不留半截副本在宿主上。"""
+    home = tmp_path / "home"
+    home.mkdir()
+    user = SystemUser(
+        name="sandbox-stagefail",
+        uid=os.getuid(),
+        gid=os.getgid(),
+        home=home,
+    )
+    source = tmp_path / "half.txt"
+    source.write_text("半成品", encoding="utf-8")
+    real_run = files_module.run
+
+    def fake_run(argv, **kwargs):
+        argv = list(argv)
+        if "cp" in argv:
+            result = CommandResult(tuple(argv), 1, "", "cp: 复制失败（测试注入）")
+            if kwargs.get("check"):
+                result.raise_for_status()
+            return result
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(files_module, "run", fake_run)
+    with pytest.raises(CommandError):
+        stage_file_copies(
+            [FileSpec(host_path=str(source), container_path="/run/half")],
+            user=user,
+            privilege=service.privilege,
+        )
+    assert not staging_root(home).exists()
+
+
+def test_start_fails_when_staged_copy_is_gone(
+    service: SandboxService, tmp_path: Path, require_root: None
+) -> None:
+    """暂存副本被清掉后启动：明确报错，不让 Docker 静默建空目录。"""
+    name = "sboxfilea"
+    secret = tmp_path / "vanish.txt"
+    secret.write_text("会消失", encoding="utf-8")
+    secret.chmod(0o600)
+
+    service.create(
+        CreateRequest(
+            name=name,
+            image=_base_image(),
+            files=(f"{secret}:/run/vanish",),
+        )
+    )
+    try:
+        metadata = service.get(name)
+        staging = _staging_of(metadata)
+        assert _exists_as_user(_daemon_for(service, metadata), staging)
+        # 手工删掉暂存目录（模拟家目录被清理）
+        run(service.privilege.wrap(["rm", "-rf", str(staging)]), check=True)
+
+        with pytest.raises(LifecycleError) as excinfo:
+            service.start(name)
+        assert "注入文件副本已不存在" in str(excinfo.value)
+    finally:
+        _cleanup(service, name)
+
+
+def test_dangling_symlink_host_path_rejected(
+    service: SandboxService, tmp_path: Path, require_root: None
+) -> None:
+    """悬空符号链接：报「符号链接」，不误报成「不存在」。"""
+    name = "sboxfileb"
+    link = tmp_path / "dangling.txt"
+    link.symlink_to(tmp_path / "not-there.txt")
+
+    with pytest.raises(ValidationError) as excinfo:
+        service.create(
+            CreateRequest(
+                name=name,
+                image=_base_image(),
+                files=(f"{link}:/run/dangling",),
+            )
+        )
+    message = str(excinfo.value)
+    assert "符号链接" in message
+    assert "不存在" not in message
+
+
+def test_source_directory_with_fifo_rejected(
+    service: SandboxService, tmp_path: Path, require_root: None
+) -> None:
+    """目录里含 FIFO：拒绝注入（复制它会阻塞，容器里也没意义）。"""
+    name = "sboxfilec"
+    source = tmp_path / "withfifo"
+    source.mkdir()
+    (source / "ok.txt").write_text("正常文件", encoding="utf-8")
+    os.mkfifo(source / "pipe")
+    source.chmod(0o700)
+
+    with pytest.raises(ValidationError) as excinfo:
+        service.create(
+            CreateRequest(
+                name=name,
+                image=_base_image(),
+                files=(f"{source}:/run/withfifo",),
+            )
+        )
+    assert "非常规文件" in str(excinfo.value)
+    assert service.find(name) is None
