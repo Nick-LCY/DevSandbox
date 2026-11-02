@@ -96,6 +96,26 @@ describe('classifyTerminalShortcut：剪贴板组合', () => {
       'forward',
     );
   });
+
+  it('Alt+Shift+C 不误判成复制（没有 Ctrl / Meta，只是普通组合）', () => {
+    expect(classifyTerminalShortcut(press({ key: 'c', altKey: true, shiftKey: true }))).toBe(
+      'forward',
+    );
+  });
+
+  it('Ctrl+Alt+Shift+C 不误判成复制（Windows 的 AltGr 组合让给转发路径）', () => {
+    expect(
+      classifyTerminalShortcut(press({ key: 'c', ctrlKey: true, altKey: true, shiftKey: true })),
+    ).toBe('forward');
+    expect(
+      classifyTerminalShortcut(press({ key: 'v', ctrlKey: true, altKey: true, shiftKey: true })),
+    ).toBe('forward');
+  });
+
+  it('CapsLock 打开时 key 是大写但没有 Shift：Ctrl+C 仍然是转发', () => {
+    expect(classifyTerminalShortcut(press({ key: 'C', ctrlKey: true }))).toBe('forward');
+    expect(classifyTerminalShortcut(press({ key: 'V', ctrlKey: true }))).toBe('forward');
+  });
 });
 
 describe('classifyTerminalShortcut：转发给容器内的组合', () => {

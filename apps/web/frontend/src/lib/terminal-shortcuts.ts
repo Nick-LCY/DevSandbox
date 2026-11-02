@@ -79,6 +79,9 @@ function isBrowserReservedShortcut(event: TerminalShortcutEvent): boolean {
  * 2. **剪贴板组合**：`Ctrl+Shift+C` 复制、`Ctrl+Shift+V` 粘贴；
  *    `Meta`（macOS 的 Cmd）同样支持——`Cmd+Shift+C` / `Cmd+Shift+V` 也触发，
  *    与 macOS 上终端的既有习惯一致；
+ *    **带 Alt 的不算**：Windows 上 AltGr 在浏览器里报成 Ctrl+Alt 双修饰，
+ *    `Ctrl+Alt+Shift+C` 是 AltGr 组合（输入特殊字符），不能被劫持成复制——
+ *    这类组合一律留给转发路径；
  * 3. **其余带 Ctrl / Meta / Alt 的组合**：拦下浏览器行为，但仍转发给容器内的 shell；
  * 4. **纯按键**：交给 xterm 照常处理。
  *
@@ -89,7 +92,9 @@ export function classifyTerminalShortcut(event: TerminalShortcutEvent): Terminal
     return 'reserved';
   }
   const combo = event.ctrlKey || event.metaKey;
-  if (combo && event.shiftKey) {
+  // Alt 一律排除：Windows 的 AltGr 在浏览器里就是 Ctrl+Alt 双修饰，
+  // Ctrl+Alt+Shift+C 这类 AltGr 组合必须走转发路径，不能被当成复制。
+  if (combo && event.shiftKey && !event.altKey) {
     const key = event.key.toLowerCase();
     if (key === 'c') {
       return 'copy';

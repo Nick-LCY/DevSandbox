@@ -123,14 +123,19 @@ export function TerminalView({ sessionId, retryToken = 0, onStateChange }: Termi
       if (!selection) {
         return;
       }
-      const clipboard = navigator.clipboard;
-      if (!clipboard || typeof clipboard.writeText !== 'function') {
+      try {
+        const clipboard = navigator.clipboard;
+        if (!clipboard || typeof clipboard.writeText !== 'function') {
+          reportClipboardFailure('复制到系统剪贴板失败');
+          return;
+        }
+        void clipboard.writeText(selection).catch(() => {
+          reportClipboardFailure('复制到系统剪贴板失败');
+        });
+      } catch {
+        // 非标准实现可能同步抛错：归入失败分支（与异步失败同一条提示）。
         reportClipboardFailure('复制到系统剪贴板失败');
-        return;
       }
-      void clipboard.writeText(selection).catch(() => {
-        reportClipboardFailure('复制到系统剪贴板失败');
-      });
     };
 
     /**
@@ -140,22 +145,27 @@ export function TerminalView({ sessionId, retryToken = 0, onStateChange }: Termi
      * 不能直接往 socket 塞字节（否则会绕过终端的输入处理）。
      */
     const pasteFromClipboard = (): void => {
-      const clipboard = navigator.clipboard;
-      if (!clipboard || typeof clipboard.readText !== 'function') {
-        reportClipboardFailure('读取系统剪贴板失败');
-        return;
-      }
-      void clipboard
-        .readText()
-        .then((text) => {
-          if (disposed || !text) {
-            return;
-          }
-          term.paste(text);
-        })
-        .catch(() => {
+      try {
+        const clipboard = navigator.clipboard;
+        if (!clipboard || typeof clipboard.readText !== 'function') {
           reportClipboardFailure('读取系统剪贴板失败');
-        });
+          return;
+        }
+        void clipboard
+          .readText()
+          .then((text) => {
+            if (disposed || !text) {
+              return;
+            }
+            term.paste(text);
+          })
+          .catch(() => {
+            reportClipboardFailure('读取系统剪贴板失败');
+          });
+      } catch {
+        // 非标准实现可能同步抛错：归入失败分支（与异步失败同一条提示）。
+        reportClipboardFailure('读取系统剪贴板失败');
+      }
     };
 
     // 快捷键处置：分类规则在 `src/lib/terminal-shortcuts.ts`（纯函数，可单测）。
@@ -183,6 +193,12 @@ export function TerminalView({ sessionId, retryToken = 0, onStateChange }: Termi
       }
       // 复制与粘贴**只在 keydown 做一次**：xterm 在 keypress / keyup 阶段也会调这个
       // 处理器，不收窄的话一次按键会触发多轮剪贴板操作（粘贴两遍、剪贴板被覆盖两次）。
+      if (event.type === 'keyup') {
+        // keyup 必须放行：xterm 的 _keyUp 在自定义处理器返回 false 时会直接跳过
+        // focus() / updateCursorStyle() 等收尾——浏览器弹权限框抢走焦点后，
+        // 终端可能收不到后续按键。动作已由 keydown 阶段执行过，这里不会重复执行。
+        return true;
+      }
       if (event.type !== 'keydown') {
         return false;
       }
