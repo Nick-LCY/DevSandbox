@@ -8,7 +8,13 @@
  * **宿主路径允许家目录写法**（`~` / `~/data`）：网页创建专属口径，
  * 后端在落库前把 `~` 展开成服务运行用户的家目录。命令行创建仍要求
  * 绝对路径（命令行零改动）。
+ *
+ * **宿主路径先归一化再判敏感清单**：``/tmp/../etc/passwd`` 与 ``//etc/passwd``
+ * 词法上都不在 ``/etc`` 之下，归一化（折叠 ``..``、压平前导多斜杠）之后
+ * 才看得穿（与后端 `normalize_host_path` 同款逻辑）。
  */
+
+import { isUnderPath } from './host-path';
 
 /** 宿主敏感目录：命中一律拒绝（与后端固定清单一致）。 */
 export const SENSITIVE_HOST_DIRS = ['/etc', '/proc', '/sys', '/dev', '/boot', '/root'] as const;
@@ -26,12 +32,6 @@ export type MountParseResult =
   | { ok: true; declaration: MountDeclaration }
   | { ok: false; error: string };
 
-function isUnder(path: string, base: string): boolean {
-  const normalized = path.replace(/\/+$/, '') || '/';
-  const normalizedBase = base.replace(/\/+$/, '') || '/';
-  return normalized === normalizedBase || normalized.startsWith(`${normalizedBase}/`);
-}
-
 /** 判断宿主路径是否命中敏感清单。 */
 export function isSensitiveHostPath(path: string): boolean {
   // 非绝对路径（含 `~` 开头的家目录写法）一律不算敏感：
@@ -39,8 +39,9 @@ export function isSensitiveHostPath(path: string): boolean {
   if (!path.startsWith('/')) {
     return false;
   }
-  const dirs = SENSITIVE_HOST_DIRS.some((item) => isUnder(path, item));
-  const files = SENSITIVE_HOST_FILES.some((item) => isUnder(path, item));
+  // 归一化在 isUnderPath 里做：`..` 与前导多斜杠都绕不过去
+  const dirs = SENSITIVE_HOST_DIRS.some((item) => isUnderPath(path, item));
+  const files = SENSITIVE_HOST_FILES.some((item) => isUnderPath(path, item));
   return dirs || files;
 }
 

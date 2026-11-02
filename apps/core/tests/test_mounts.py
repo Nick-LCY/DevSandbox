@@ -143,3 +143,24 @@ def test_sensitive_host_file_bypassed_by_dotdot_rejected() -> None:
     with pytest.raises(ValidationError) as excinfo:
         parse_mount_declaration("/tmp/../var/run/docker.sock:/data")
     assert "敏感清单" in str(excinfo.value)
+
+
+def test_sensitive_host_path_bypassed_by_double_slash_rejected() -> None:
+    """``//`` 前缀绕不过敏感清单。
+
+    ``os.path.normpath`` 把**恰好两个**前导斜杠原样留着，``pathlib`` 又把
+    ``//etc`` 当成独立根，于是 ``//etc`` 能绕开按 ``/etc`` 根的清单比对。
+    """
+    with pytest.raises(ValidationError) as excinfo:
+        parse_mount_declaration("//etc:/data")
+    assert "敏感清单" in str(excinfo.value)
+
+
+def test_normalize_host_path_collapses_leading_slashes() -> None:
+    """归一化把前导多斜杠压成单个：``//etc`` 与 ``/etc`` 同一条路径。"""
+    from sandbox_platform import normalize_host_path
+
+    assert normalize_host_path("//etc/shadow") == "/etc/shadow"
+    assert normalize_host_path("///etc/shadow") == "/etc/shadow"
+    assert normalize_host_path("//etc/../shadow") == "/shadow"
+    assert normalize_host_path("/tmp/../etc") == "/etc"

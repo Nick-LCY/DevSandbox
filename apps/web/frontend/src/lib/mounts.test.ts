@@ -102,6 +102,22 @@ describe('parseMountDeclaration', () => {
       expect(result.error).toContain('敏感清单');
     }
   });
+
+  it('宿主路径先归一化再判敏感清单（.. 绕不过去）', () => {
+    const result = parseMountDeclaration('/tmp/../etc/passwd:/host-passwd');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('敏感清单');
+    }
+  });
+
+  it('宿主路径先归一化再判敏感清单（前导多斜杠绕不过去）', () => {
+    const result = parseMountDeclaration('//etc:/host-etc');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('敏感清单');
+    }
+  });
 });
 
 describe('isSensitiveHostPath', () => {
@@ -120,6 +136,12 @@ describe('isSensitiveHostPath', () => {
   it('非绝对路径（家目录写法）不算敏感', () => {
     expect(isSensitiveHostPath('~/data/project')).toBe(false);
     expect(isSensitiveHostPath('~')).toBe(false);
+  });
+
+  it('归一化之后才判（.. 与前导多斜杠都算命中）', () => {
+    expect(isSensitiveHostPath('/tmp/../etc/passwd')).toBe(true);
+    expect(isSensitiveHostPath('//etc/passwd')).toBe(true);
+    expect(isSensitiveHostPath('/tmp/../data/project')).toBe(false);
   });
 });
 

@@ -721,16 +721,15 @@ class SandboxService:
             # （副本不进 metadata.mounts：那一份是「平台不回收」的口径，
             #   注入副本随沙箱家目录一起回收，单列在 metadata.files）
             current_step = FILE_STAGE_STEP
-            file_specs = self._parse_file_declarations(
-                request.files,
-                # 本次新建的用户家目录不算「其他沙箱用户家目录」；
-                # 复用的旧账号一律按「其他」口径拒绝
-                exclude_home=system_user.home if system_user.created else None,
-            )
+            # 家目录范围快照：此时专属用户已建好，它自己的家目录也在受限集合里
+            home_scope = self._file_home_scope()
+            file_specs = self._parse_file_declarations(request.files, home_scope=home_scope)
             file_mounts = stage_file_copies(
                 file_specs,
                 user=system_user,
                 privilege=self.privilege,
+                extra_forbidden=[self.config.home],
+                home_scope=home_scope,
             )
             if file_specs:
                 # 只有真复制了副本才登记回滚：没有副本时删暂存目录会误伤
@@ -911,20 +910,24 @@ class SandboxService:
         self,
         declarations: tuple[str, ...] | list[str],
         *,
-        exclude_home: str | Path | None = None,
+        home_scope: SandboxHomeScope | None = None,
     ) -> list[FileSpec]:
         """解析文件注入声明（平台数据根等敏感路径一律拒绝）。
 
-        注入源的宿主范围限制：不得落在**其他**沙箱用户家目录内
-        （``exclude_home`` 是本次创建流程自己新建的那一个家目录，不算「其他」）。
+        注入源的宿主范围限制：不得落在**任何**沙箱用户家目录内（含本次目标
+        沙箱自己的家目录）。干跑与实跑走的是同一套判定（同一个方法）。
         """
         return parse_file_declarations(
             list(declarations),
             extra_forbidden=[self.config.home],
-            home_scope=SandboxHomeScope(
-                user_prefix=self.config.user_prefix,
-                exclude_home=Path(exclude_home) if exclude_home is not None else None,
-            ),
+            home_scope=home_scope if home_scope is not None else self._file_home_scope(),
+        )
+
+    def _file_home_scope(self) -> SandboxHomeScope:
+        """注入源的家目录范围限制（沙箱用户家目录，现查系统用户表）。"""
+        return SandboxHomeScope(
+            user_prefix=self.config.user_prefix,
+            privilege=self.privilege,
         )
 
     def _precheck(self, request: CreateRequest) -> None:
@@ -941,7 +944,8 @@ class SandboxService:
                     f"容器内路径 {mount.container_path} 是平台固定挂载的套接字路径，用户不能重复声明"
                 )
         mount_container_paths = {mount.container_path for mount in user_mounts}
-        for spec in self._parse_file_declarations(request.files):
+        home_scope = self._file_home_scope()
+        for spec in self._parse_file_declarations(request.files, home_scope=home_scope):
             if spec.container_path == self.config.socket_mount_path:
                 raise ValidationError(
                     f"容器内路径 {spec.container_path} 是平台固定挂载的套接字路径，用户不能重复声明"
@@ -950,8 +954,14 @@ class SandboxService:
                 raise ValidationError(
                     f"容器内路径 {spec.container_path} 与用户声明的挂载路径重复，用户不能重复声明"
                 )
-            # 注入路径的存在性与类型（顺带判掉符号链接）走特权探测
-            probe_host_path(self.privilege, spec.host_path)
+            # 注入路径的存在性与类型（顺带判掉符号链接）走特权探测；
+            # 探测末尾还会按符号链接解析出的真实路径复核一遍受限范围
+            probe_host_path(
+                self.privilege,
+                spec.host_path,
+                extra_forbidden=[self.config.home],
+                home_scope=home_scope,
+            )
 
     def _connection_info(self, metadata: SandboxMetadata, daemon: UserDaemon) -> ConnectionInfo:
         """组装连接方式与命令提示。"""

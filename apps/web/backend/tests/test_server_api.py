@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -30,6 +31,7 @@ from sandbox_platform import (
     SandboxService,
     ValidationError,
     parse_file_declarations,
+    parse_mount_declaration,
 )
 from sandbox_console import create_app
 from sandbox_console.app import default_console_dist_dir
@@ -144,7 +146,17 @@ def _file_declaration_error(declaration: str) -> ValidationError:
     raise AssertionError(f"该声明本该被核心包拒绝：{declaration}")
 
 
+def _mount_declaration_error(declaration: str) -> ValidationError:
+    """用核心包的真实校验产出挂载声明的错误（口径同注入声明）。"""
+    try:
+        parse_mount_declaration(declaration)
+    except ValidationError as exc:
+        return exc
+    raise AssertionError(f"该声明本该被核心包拒绝：{declaration}")
+
+
 def _core_create_error(
+    platform_home: Path,
     *,
     files: tuple[str, ...] = (),
     mounts: tuple[str, ...] = (),
@@ -153,12 +165,20 @@ def _core_create_error(
 
     创建前校验在任何宿主改动之前跑（不建用户、不起容器、不跑宿主命令），
     所以这里可以安全地借真实核心包产出错误文案。
+
+    两个约束：
+
+    - 平台数据根走 ``platform_home`` 夹具（临时目录）：沙箱名的占位文件落在
+      平台数据根的锁目录里，用默认根会污染真实平台目录
+      （``/var/lib/sandbox-platform``）；
+    - 沙箱名带一次性后缀：名字占位同名会互撞，固定用 ``demo`` 会与别的
+      用例撞名。
     """
     service = SandboxService(PlatformConfig.from_env())
     try:
         service.create(
             CreateRequest(
-                name="demo",
+                name=f"fileinject-{uuid4().hex[:8]}",
                 image="busybox:1.37",
                 files=files,
                 mount_declarations=mounts,
@@ -371,6 +391,44 @@ def test_create_sandbox_rejects_invalid_file_declaration_with_400(
     assert "绝对路径" in response.json()["detail"]
 
 
+def test_create_sandbox_rejects_double_slash_file_declaration_with_400(
+    client: TestClient, fake_service: FakeSandboxService
+) -> None:
+    """注入声明用 ``//`` 前缀绕敏感清单 → 400。
+
+    ``os.path.normpath`` 会把**恰好两个**前导斜杠原样留着，``//etc/shadow``
+    能绕开按 ``/etc`` 根的清单比对；核心包归一化时必须把前导多斜杠压平。
+    """
+    fake_service.error = _file_declaration_error("//etc/shadow:/run/secret")
+    response = client.post(
+        "/api/sandboxes",
+        json={
+            "name": "demo",
+            "image": "busybox:1.37",
+            "files": ["//etc/shadow:/run/secret"],
+        },
+    )
+    assert response.status_code == 400
+    assert "敏感清单" in response.json()["detail"]
+
+
+def test_create_sandbox_rejects_double_slash_mount_declaration_with_400(
+    client: TestClient, fake_service: FakeSandboxService
+) -> None:
+    """挂载声明用 ``//`` 前缀绕敏感清单 → 400（同一条归一化口径）。"""
+    fake_service.error = _mount_declaration_error("//etc:/data")
+    response = client.post(
+        "/api/sandboxes",
+        json={
+            "name": "demo",
+            "image": "busybox:1.37",
+            "mounts": ["//etc:/data"],
+        },
+    )
+    assert response.status_code == 400
+    assert "敏感清单" in response.json()["detail"]
+
+
 def test_create_sandbox_rejects_non_string_file_element_with_400(
     client: TestClient,
 ) -> None:
@@ -384,10 +442,11 @@ def test_create_sandbox_rejects_non_string_file_element_with_400(
 
 
 def test_create_sandbox_rejects_file_container_path_conflicting_with_socket(
-    client: TestClient, fake_service: FakeSandboxService
+    client: TestClient, fake_service: FakeSandboxService, platform_home: Path
 ) -> None:
     """注入的容器内路径撞平台固定挂载的套接字路径 → 400。"""
     fake_service.error = _core_create_error(
+        platform_home,
         files=("/tmp/demo/secret:/var/run/docker.sock",),
     )
     response = client.post(
@@ -403,12 +462,16 @@ def test_create_sandbox_rejects_file_container_path_conflicting_with_socket(
 
 
 def test_create_sandbox_rejects_file_container_path_conflicting_with_user_mount(
-    client: TestClient, fake_service: FakeSandboxService, tmp_path: Path
+    client: TestClient,
+    fake_service: FakeSandboxService,
+    platform_home: Path,
+    tmp_path: Path,
 ) -> None:
     """注入的容器内路径撞用户声明挂载的容器内路径 → 400。"""
     host = tmp_path / "data"
     host.mkdir()
     fake_service.error = _core_create_error(
+        platform_home,
         files=(f"{host}/secret:/data",),
         mounts=(f"{host}:/data",),
     )

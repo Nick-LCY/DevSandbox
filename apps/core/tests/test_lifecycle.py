@@ -18,9 +18,41 @@ from sandbox_platform import (
     NotFoundError,
     SandboxMetadata,
     SandboxService,
+    UserDaemon,
     ValidationError,
 )
 from sandbox_platform.lifecycle import CREATE_STEP_NAMES
+
+
+def _install_fake_passwd(
+    monkeypatch: pytest.MonkeyPatch,
+    entries: dict[str, str],
+) -> None:
+    """把系统用户表换成假数据（``用户名 -> 家目录``）。
+
+    只接管 ``getent passwd`` 与 ``test -d`` 两条命令，其余命令照常执行。
+    """
+    from sandbox_platform import files as files_module
+    from sandbox_platform.command import CommandResult
+
+    real_run = files_module.run
+
+    def fake_run(argv, **kwargs):
+        args = [str(item) for item in argv]
+        if args[:1] == ["sudo"]:
+            args = args[2:]
+        if args[:1] == ["getent"]:
+            stdout = "".join(
+                f"{name}:x:1001:1001:x:{home}:/bin/bash\n"
+                for name, home in entries.items()
+            )
+            return CommandResult(tuple(argv), 0, stdout, "")
+        if args[:2] == ["test", "-d"]:
+            ok = Path(args[2]).is_dir()
+            return CommandResult(tuple(argv), 0 if ok else 1, "", "")
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(files_module, "run", fake_run)
 
 
 def _metadata(name: str = "demo") -> SandboxMetadata:
@@ -319,18 +351,48 @@ def test_create_rejects_file_source_inside_other_sandbox_home(
     注入源由平台以特权身份读取：家目录里是别的沙箱账号的家，
     平台不能替别人把文件复制进来。
     """
-    from sandbox_platform import files as files_module
-
     fake_home = tmp_path / "home"
-    (fake_home / "sandbox-victim").mkdir(parents=True)
-    monkeypatch.setattr(files_module, "DEFAULT_HOME_ROOT", str(fake_home))
+    victim = fake_home / "sandbox-victim"
+    victim.mkdir(parents=True)
+    _install_fake_passwd(monkeypatch, {"sandbox-victim": str(victim)})
 
     with pytest.raises(ValidationError) as excinfo:
         service.create(
             CreateRequest(
                 name="demo",
                 image="busybox",
-                files=(f"{fake_home}/sandbox-victim/key:/run/key",),
+                files=(f"{victim}/key:/run/key",),
             )
         )
-    assert "其他沙箱用户家目录" in str(excinfo.value)
+    assert "沙箱用户家目录" in str(excinfo.value)
+
+
+def test_create_rejects_file_source_inside_own_sandbox_home(
+    service: SandboxService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """注入源落在本次目标沙箱自己的家目录内：创建直接拒绝，容器不创建。
+
+    口径统一：**没有**「本次新建家目录放行」这条例外。干跑与实跑走同一套
+    判定，所以拒绝发生在建用户、起容器之前。
+    """
+    home = tmp_path / "home" / "sandbox-demo"
+    home.mkdir(parents=True)
+    (home / "key").write_text("k", encoding="utf-8")
+    _install_fake_passwd(monkeypatch, {"sandbox-demo": str(home)})
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("容器不该被创建")
+
+    monkeypatch.setattr(UserDaemon, "run_container", refuse)
+
+    with pytest.raises(ValidationError) as excinfo:
+        service.create(
+            CreateRequest(
+                name="demo",
+                image="busybox",
+                files=(f"{home}/key:/run/key",),
+            )
+        )
+    assert "沙箱用户家目录" in str(excinfo.value)
+    assert service.find("demo") is None
+    assert not service._name_claim_path("demo").exists()

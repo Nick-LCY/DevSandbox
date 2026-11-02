@@ -78,13 +78,27 @@ def is_under(path: Path, base: Path) -> bool:
     return True
 
 
+def normalize_host_path(raw: str) -> str:
+    """宿主路径归一化：折叠 ``.`` / ``..``，并压平前导多斜杠。
+
+    ``os.path.normpath`` 按 POSIX 规则**保留恰好两个前导斜杠**（``//etc`` 原样
+    留着），而 ``pathlib`` 把 ``//etc`` 当成一个独立根，于是 ``//etc/shadow``
+    在词法上不落在 ``/etc`` 之下，能绕开敏感清单。这里把前导多斜杠一律压成
+    单个，与 ``..`` 折叠一起做完，保证「校验用的路径」与「实际用的路径」同一条。
+    """
+    norm = os.path.normpath(raw)
+    if norm.startswith("//"):
+        norm = "/" + norm.lstrip("/")
+    return norm
+
+
 def sensitive_host_paths(extra: Iterable[str | Path] = ()) -> tuple[str, ...]:
     """敏感宿主路径清单（固定清单 + 调用方追加项，如平台数据根）。"""
     items = [*SENSITIVE_HOST_DIRS, *SENSITIVE_HOST_FILES]
     items.extend(str(item) for item in extra if str(item))
     result: list[str] = []
     for item in items:
-        normalized = os.path.normpath(item)
+        normalized = normalize_host_path(item)
         if normalized not in result:
             result.append(normalized)
     return tuple(result)
@@ -118,12 +132,13 @@ def validate_host_path_shape(raw: str, forbidden: tuple[str, ...]) -> Path:
 
     敏感清单比对**先归一化再比**：``/tmp/../etc/shadow`` 词法上不在 ``/etc``
     之下，却实实在在指向 ``/etc/shadow``——用未归一化的原始路径比会漏掉它。
+    ``//etc/shadow`` 同理（``normpath`` 会把两个前导斜杠原样留着）。
     """
     if not raw.startswith("/"):
         raise ValidationError(f"挂载的宿主路径必须是绝对路径：{raw}")
     if "," in raw:
         raise ValidationError(f"挂载路径不得包含逗号（Docker 挂载参数以逗号分段）：{raw}")
-    path = Path(os.path.normpath(raw))
+    path = Path(normalize_host_path(raw))
     reject_sensitive_host_path(path, forbidden)
     return path
 
@@ -174,7 +189,7 @@ def parse_mount_declaration(
     host_path = _validate_host_path(host_raw, forbidden)
     return MountSpec(
         host_path=str(host_path),
-        container_path=os.path.normpath(container_raw),
+        container_path=normalize_host_path(container_raw),
         read_only=(mode == "ro"),
     )
 

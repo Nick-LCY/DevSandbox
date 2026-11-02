@@ -8,6 +8,10 @@
  *
  * **宿主路径允许家目录写法**（`~` / `~/data`）：与挂载声明同口径，
  * 后端在落库前把 `~` 展开成服务运行用户的家目录。
+ *
+ * **宿主路径先归一化再判敏感清单**：``/tmp/../etc/passwd`` 与 ``//etc/passwd``
+ * 词法上都不在 ``/etc`` 之下，归一化之后才看得穿（归一化在共享的
+ * ``host-path.ts`` 里做，与后端 ``normalize_host_path`` 同款逻辑）。
  */
 
 import { isSensitiveHostPath } from './mounts';

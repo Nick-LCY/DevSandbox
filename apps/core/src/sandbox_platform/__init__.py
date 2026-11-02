@@ -37,7 +37,6 @@ from .errors import (
     ValidationError,
 )
 from .files import (
-    DEFAULT_HOME_ROOT,
     FILE_MOUNT_ROLE,
     STAGING_DIRNAME,
     FileSpec,
@@ -46,6 +45,7 @@ from .files import (
     parse_file_declarations,
     probe_host_path,
     reject_sandbox_user_home,
+    sandbox_user_homes,
     stage_file_copies,
     staged_path,
     staging_root,
@@ -93,6 +93,7 @@ from .mounts import (
     MountSpec,
     describe_mounts,
     mounts_to_docker_args,
+    normalize_host_path,
     parse_mount_declaration,
     parse_mounts,
     sensitive_host_paths,
@@ -116,7 +117,6 @@ from .userspace import (
 
 __all__ = [
     "CREATE_STEP_NAMES",
-    "DEFAULT_HOME_ROOT",
     "FILE_MOUNT_ROLE",
     "IMAGE_SOURCE_AUTO",
     "IMAGE_SOURCE_CHOICES",
@@ -178,6 +178,7 @@ __all__ = [
     "get_pty_winsize",
     "image_digest",
     "mounts_to_docker_args",
+    "normalize_host_path",
     "parse_file_declaration",
     "parse_file_declarations",
     "parse_mount_declaration",
@@ -187,6 +188,7 @@ __all__ = [
     "proxy_container_name",
     "reject_sandbox_user_home",
     "require_image_name",
+    "sandbox_user_homes",
     "sensitive_host_paths",
     "socket_mount",
     "set_pty_winsize",

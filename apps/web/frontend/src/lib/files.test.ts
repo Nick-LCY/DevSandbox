@@ -69,6 +69,22 @@ describe('parseFileDeclaration', () => {
     }
   });
 
+  it('宿主路径先归一化再判敏感清单（.. 绕不过去）', () => {
+    const result = parseFileDeclaration('/tmp/../etc/passwd:/workspace/passwd');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('敏感清单');
+    }
+  });
+
+  it('宿主路径先归一化再判敏感清单（前导多斜杠绕不过去）', () => {
+    const result = parseFileDeclaration('//etc/passwd:/workspace/passwd');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('敏感清单');
+    }
+  });
+
   it('空声明报空', () => {
     const result = parseFileDeclaration('   ');
     expect(result.ok).toBe(false);

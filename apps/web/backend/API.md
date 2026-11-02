@@ -60,9 +60,10 @@
 
 | 函数 | 签名 | 说明 |
 |---|---|---|
-| 解析单条 | `parse_mount_declaration(declaration: str, *, extra_forbidden: Iterable[str \| Path] = ()) -> MountSpec` | 解析 `宿主路径:容器路径[:ro]`；宿主路径必须已存在且是绝对路径，平台不代为创建；路径含逗号一律拒绝；命中敏感清单（`/etc` `/proc` `/sys` `/dev` `/boot` `/root`、宿主 Docker 套接字、追加项如平台数据根）一律拒绝（**先归一化再比对**：`/tmp/../etc` 绕不过去） |
+| 解析单条 | `parse_mount_declaration(declaration: str, *, extra_forbidden: Iterable[str \| Path] = ()) -> MountSpec` | 解析 `宿主路径:容器路径[:ro]`；宿主路径必须已存在且是绝对路径，平台不代为创建；路径含逗号一律拒绝；命中敏感清单（`/etc` `/proc` `/sys` `/dev` `/boot` `/root`、宿主 Docker 套接字、追加项如平台数据根）一律拒绝（**先归一化再比对**：`/tmp/../etc` 与 `//etc` 都绕不过去） |
 | 解析多条 | `parse_mounts(declarations: list[str] \| tuple[str, ...] \| None, *, extra_forbidden: Iterable[str \| Path] = ()) -> list[MountSpec]` | 逐条解析并校验容器内路径不重复 |
 | 敏感清单 | `sensitive_host_paths(extra: Iterable[str \| Path] = ()) -> tuple[str, ...]` | 固定敏感清单 + 调用方追加项（平台数据根由调用方追加） |
+| 路径归一化 | `normalize_host_path(raw: str) -> str` | 宿主路径的**唯一**归一化口径（`mounts.py` 与 `files.py` 共用）：折叠 `.` / `..`，并把前导多斜杠压成一个。`os.path.normpath` 按 POSIX 规则把**恰好两个**前导斜杠原样留着（`//etc`），`pathlib` 又把 `//etc` 当成独立根，不额外压平就能绕开按 `/etc` 根的清单比对 |
 | 固定挂载 | `socket_mount(socket_path: str, container_path: str) -> MountSpec` | 平台唯一固定挂载（角色 `socket`） |
 | 转参数 | `MountSpec.to_docker_args() -> list[str]` | 生成 `--mount type=bind,src=…,dst=…[,readonly]` |
 | 拼参数 | `mounts_to_docker_args(mounts: list[MountSpec]) -> list[str]` | 多条挂载拼成一段参数 |
@@ -82,18 +83,19 @@
 
 - 注入源由平台**以特权身份读取**：控制台 / 命令行的调用者被视为平台受信主体，
   文件注入**不提供跨账号隔离**；
-- 源路径不得位于**其他沙箱用户家目录**内（那是别的沙箱账号的家）。
+- 源路径不得位于**任何沙箱用户家目录**内（含目标沙箱自己的家目录）。
 
 | 函数 | 签名 | 说明 |
 |---|---|---|
-| 解析单条 | `parse_file_declaration(declaration: str, *, extra_forbidden: Iterable[str \| Path] = (), home_scope: SandboxHomeScope \| None = None) -> FileSpec` | 解析 `宿主路径:容器路径`（**固定两段**，没有读写标记段）；宿主路径必须是绝对路径、不得含逗号、不得命中敏感清单（与挂载同一套清单）；容器路径必须是绝对路径。**宿主路径先归一化再校验**（`/tmp/../etc/passwd` 绕不过敏感清单） |
+| 解析单条 | `parse_file_declaration(declaration: str, *, extra_forbidden: Iterable[str \| Path] = (), home_scope: SandboxHomeScope \| None = None) -> FileSpec` | 解析 `宿主路径:容器路径`（**固定两段**，没有读写标记段）；宿主路径必须是绝对路径、不得含逗号、不得命中敏感清单（与挂载同一套清单）；容器路径必须是绝对路径。**宿主路径先归一化再校验**（`/tmp/../etc/passwd` 与 `//etc/shadow` 都绕不过敏感清单） |
 | 解析多条 | `parse_file_declarations(declarations: Iterable[str], *, extra_forbidden: Iterable[str \| Path] = (), home_scope: SandboxHomeScope \| None = None) -> list[FileSpec]` | 逐条解析并做跨声明校验：宿主路径不得重复、容器内路径不得重复 |
-| 家目录范围 | `SandboxHomeScope(user_prefix: str, home_root: Path \| None = None, exclude_home: Path \| None = None)` | 注入源的宿主范围限制：`user_prefix` 是平台沙箱用户名前缀（取自配置的 `user_prefix`），家目录名形如 `<前缀>-<沙箱名>`；`exclude_home` 是本次创建流程自己新建的那一个家目录（不算「其他」） |
-| 家目录拒绝 | `reject_sandbox_user_home(path: str \| Path, scope: SandboxHomeScope) -> None` | 注入源落在其他沙箱用户家目录内时拒绝（家目录根下以 `<前缀>-` 开头的现有目录） |
+| 家目录范围 | `SandboxHomeScope(user_prefix: str, privilege: Privilege \| None = None)` | 注入源的宿主范围限制：`user_prefix` 是平台沙箱用户名前缀（取自配置的 `user_prefix`），系统用户名形如 `<前缀>-<沙箱名>`；`privilege` 是读系统用户表的宿主命令通道（`None` 表示普通通道）。家目录集合**每次现查**，不是启动时的快照 |
+| 家目录枚举 | `sandbox_user_homes(user_prefix: str, *, privilege: Privilege \| None = None) -> tuple[Path, ...]` | 经 `getent passwd` 枚举平台沙箱用户的家目录：只认系统用户名以 `<前缀>-` 开头的条目，家目录取 passwd 的家目录字段（**不扫 `/home` 固定根**，宿主把家目录放在别处同样覆盖得到），且家目录必须真实存在（条目残留但目录已删的不算） |
+| 家目录拒绝 | `reject_sandbox_user_home(path: str \| Path, scope: SandboxHomeScope) -> None` | 注入源落在**任何**沙箱用户家目录内时拒绝（含本次目标沙箱自己的家目录） |
 | 暂存目录 | `staging_root(home: str \| Path) -> Path` | 暂存目录：`<沙箱用户家目录>/.sandbox-files` |
 | 副本路径 | `staged_path(home: str \| Path, index: int, host_path: str \| Path) -> Path` | 单个副本：`<暂存目录>/<序号>-<原件名>`（原件名取不到时兜底为 `file`） |
-| 宿主探测 | `probe_host_path(privilege: Privilege, path: str) -> str` | 特权探测宿主路径：返回 `f`（普通文件）或 `d`（目录）；先 `find -printf %y` 判类型（悬空符号链接判「符号链接」而非「不存在」），命令失败才报不存在；路径是符号链接、目录里有符号链接、目录里有 FIFO / 设备 / 套接字，一律报错 |
-| 副本准备 | `stage_file_copies(specs: list[FileSpec], *, user: SystemUser, privilege: Privilege) -> list[MountSpec]` | 清掉既有暂存目录 → 建暂存目录 → 逐条**复探类型后**复制 → 改属主（uid / gid 数值）→ 目录 0700 → 文件 0600；任一步失败先删暂存目录再抛原异常 |
+| 宿主探测 | `probe_host_path(privilege: Privilege, path: str, *, extra_forbidden: Iterable[str \| Path] = (), home_scope: SandboxHomeScope \| None = None) -> str` | 特权探测宿主路径：返回 `f`（普通文件）或 `d`（目录）；先 `find -printf %y` 判类型（悬空符号链接判「符号链接」而非「不存在」），命令失败才报不存在；路径是符号链接、目录里有符号链接、目录里有 FIFO / 设备 / 套接字，一律报错；末尾再按 `readlink -f` 解析出的**真实路径**复核一遍受限范围 |
+| 副本准备 | `stage_file_copies(specs: list[FileSpec], *, user: SystemUser, privilege: Privilege, extra_forbidden: Iterable[str \| Path] = (), home_scope: SandboxHomeScope \| None = None) -> list[MountSpec]` | 清掉既有暂存目录 → 建暂存目录 → 逐条**复探类型后**复制 → 改属主（uid / gid 数值）→ 目录 0700 → 文件 0600；任一步失败先删暂存目录再抛原异常 |
 
 `FileSpec` 字段：`host_path: str`、`container_path: str`。
 
@@ -104,13 +106,14 @@
 | 暂存目录 | 副本落在沙箱用户家目录内的 `.sandbox-files` 目录（属主沙箱用户、权限 0700），**随沙箱删除时的家目录回收一起消失**，停止 / 启动期间保留 |
 | 权限位 | 副本文件 0600、副本目录 0700，属主与主组都是沙箱用户（用 uid / gid 数值设置，不依赖「主组与用户同名」）；原件的权限位、属主、内容、mtime 一律不变（**原件零接触**） |
 | 只读挂载 | 副本以 `readonly` 方式挂进容器，容器内一律不可写，也不支持容器写回宿主 |
-| 不走可读性预检 | 用户声明挂载要过「宿主路径对沙箱用户可读且可穿过」那道预检，文件注入**不走**它——副本属主就是沙箱用户，那道预检对注入没有意义。符号链接一律拒绝（既不跟随、也不复制链接本身） |
+| 不走可读性预检 | 用户声明挂载要过「宿主路径对沙箱用户可读且可穿过」那道预检，文件注入**不走**它——副本属主就是沙箱用户，那道预检对注入没有意义。符号链接一律拒绝（既不跟随、也不复制链接本身）；**路径段上的符号链接**（中间某一段是链接）由 `readlink -f` 真实路径复核兜住 |
 
 三条边界：
 
 | 边界 | 说明 |
 |---|---|
-| 源路径范围 | 注入源不得落在**其他沙箱用户家目录**内（家目录根下以平台沙箱用户名前缀开头的现有目录）；命中即拒绝，文案为「注入的宿主路径落在其他沙箱用户家目录内，不允许注入：{路径}」 |
+| 源路径范围 | 注入源不得落在**任何沙箱用户家目录**内（含本次目标沙箱自己的家目录）；家目录集合经 `getent passwd` 现查（只认系统用户名以平台沙箱用户名前缀开头的条目，家目录取 passwd 字段，必须真实存在）；命中即拒绝，文案为「注入的宿主路径落在沙箱用户家目录内，不允许注入：{路径}（含本次沙箱自己的家目录）」 |
+| 双重校验 | 受限范围查**两遍**：① 词法归一化后比一遍（折叠 `.` / `..`、压平前导多斜杠）；② `readlink -f` 解析出符号链接指向的真实路径后再比一遍。中间路径段是符号链接的情况（`/tmp/link/secret`，`link` 指向受限目录）词法上看不出来，只有真实路径看得穿；命中即拒绝，文案为「注入的宿主路径经符号链接解析后落在受限范围：{真实路径}（声明路径 {声明路径}）」 |
 | 非常规文件 | 注入的目录里含 FIFO / 设备 / 套接字时拒绝（复制它们在容器里没有意义，读 FIFO 还会阻塞）；文案为「注入的宿主目录里含非常规文件（FIFO/设备/套接字），不支持注入：{条目}」 |
 | 启动前副本存在性 | 启动沙箱前逐条特权探测副本还在不在：副本没了（家目录被清理）直接报「注入文件副本已不存在，无法启动沙箱：{路径}」，不让 Docker 静默建一个空目录挂进容器 |
 
@@ -446,10 +449,11 @@
 
 - 注入源由平台**以特权身份读取**（复制动作走特权通道）：控制台 / 命令行的调用者
   被视为平台受信主体，**文件注入不提供跨账号隔离**；
-- 源路径不得位于**其他沙箱用户家目录**内（那是别的沙箱账号的家）：命中即 400，
-  文案为「注入的宿主路径落在其他沙箱用户家目录内，不允许注入：{路径}」；
+- 源路径不得位于**任何沙箱用户家目录**内（含目标沙箱自己的家目录）：命中即 400，
+  文案为「注入的宿主路径落在沙箱用户家目录内，不允许注入：{路径}（含本次沙箱自己的家目录）」；
 - 源路径同样不得命中宿主敏感清单（`/etc` `/proc` `/root` 等、平台数据根、宿主
-  Docker 套接字），且**先归一化再比对**（`/tmp/../etc/passwd` 绕不过去）。
+  Docker 套接字），且**词法归一化 + 解析后真实路径双重校验**
+  （`/tmp/../etc/passwd`、`//etc/shadow`、以及中间路径段是符号链接的情形都绕不过去）。
 
 
 ### 11.1 路由表
@@ -520,7 +524,7 @@
 | `image` 传空串、纯空白串或 null（与缺失同义） | 422 | 同上（都归入「必须显式指定沙箱镜像」语义） |
 | `image` 与 `name` 同时缺失 | 422 | `{"detail": "请求参数不合法：name（必填）；image（必填：默认镜像已退役，必须显式指定沙箱镜像）"}` |
 | 入参非法（沙箱名、镜像名、挂载声明、镜像来源等） | 400 | `{"detail": "平台异常原文"}` |
-| `files` 声明非法（格式错、敏感路径、符号链接、宿主路径不存在、重复声明、撞挂载点、落在其他沙箱用户家目录内） | 400 | `{"detail": "平台异常原文"}` |
+| `files` 声明非法（格式错、敏感路径、符号链接、宿主路径不存在、重复声明、撞挂载点、落在任何沙箱用户家目录内） | 400 | `{"detail": "平台异常原文"}` |
 | 请求体不合法（缺字段、类型不对、多余字段） | 400 | `{"detail": "请求参数不合法：字段（原因）"}` |
 | 宿主与沙箱守护进程都没有该镜像（`image_source=host`） | 400 | `{"detail": "平台异常原文"}` |
 | 沙箱不存在 | 404 | `{"detail": "平台异常原文"}` |
