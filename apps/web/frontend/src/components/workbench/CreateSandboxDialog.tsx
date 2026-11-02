@@ -4,6 +4,12 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from '../../api/client';
 import type { HostImage, Template } from '../../api/types';
 import { formatEnvLines, parseEnvLines } from '../../lib/env';
+import {
+  formatFileDeclaration,
+  parseFileDeclaration,
+  validateFileDeclarations,
+  type FileRow,
+} from '../../lib/files';
 import { formatBytes, formatTimestamp } from '../../lib/format';
 import {
   formatMountDeclaration,
@@ -54,6 +60,26 @@ function newMountRow(): MountRow {
   return { id: nextMountId(), hostPath: '', containerPath: '', readOnly: false };
 }
 
+/** 文件注入行（宿主路径 + 容器内路径；容器内一律只读，没有只读开关）。 */
+interface FileRowState {
+  id: string;
+  hostPath: string;
+  containerPath: string;
+}
+
+/** 文件注入行自增编号（与挂载行各自计数，不共用计数器）。 */
+let fileRowSeq = 0;
+
+/** 下一个文件注入行的标识。 */
+function nextFileId(): string {
+  fileRowSeq += 1;
+  return `file-${fileRowSeq}`;
+}
+
+function newFileRow(): FileRowState {
+  return { id: nextFileId(), hostPath: '', containerPath: '' };
+}
+
 interface CreateSandboxDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -89,7 +115,7 @@ const labelClass = 'mb-1.5 block text-[12.5px] font-medium text-foreground';
  * 新建沙箱抽屉。
  *
  * 字段与校验整体搬自旧的「新建沙箱」页：镜像选择器（可搜索、可刷新）、
- * 挂载行增删、启动命令、工作目录、环境变量。创建成功后直接关抽屉，
+ * 挂载行增删、文件注入行增删、启动命令、工作目录、环境变量。创建成功后直接关抽屉，
  * 工作台弹成功 toast 并刷新列表（不再有成功面板，也不自动选中新建的沙箱）。
  *
  * 本轮加了两块模板能力：
@@ -126,6 +152,13 @@ export function CreateSandboxDialog({
    */
   const [imagesLoaded, setImagesLoaded] = useState(false);
   const [mounts, setMounts] = useState<MountRow[]>([]);
+  /**
+   * 文件注入行（宿主路径 + 容器内路径）。
+   *
+   * 容器内一律只读（平台把副本以只读方式挂进容器），所以行里**没有**
+   * 只读开关。
+   */
+  const [files, setFiles] = useState<FileRowState[]>([]);
   const [command, setCommand] = useState('');
   /**
    * 模板带来的数组命令（隐藏状态）。
@@ -214,6 +247,9 @@ export function CreateSandboxDialog({
     }
     setName('');
     setMounts([]);
+    setFiles([]);
+    // 文件注入行的自增编号归零：抽屉每开一轮，行的标识从头开始。
+    fileRowSeq = 0;
     setCommand('');
     setCommandArray(null);
     setWorkdir('');
@@ -246,6 +282,12 @@ export function CreateSandboxDialog({
     );
   }, []);
 
+  const updateFile = useCallback((id: string, patch: Partial<FileRowState>) => {
+    setFiles((previous) =>
+      previous.map((row) => (row.id === id ? { ...row, ...patch } : row)),
+    );
+  }, []);
+
   /**
    * 当前选中的镜像（提交用的就是它）。
    *
@@ -265,6 +307,10 @@ export function CreateSandboxDialog({
         containerPath: row.containerPath,
         readOnly: row.readOnly,
       })),
+      files: files.map((row) => ({
+        hostPath: row.hostPath,
+        containerPath: row.containerPath,
+      })),
       command,
       commandArray,
       workdir,
@@ -272,7 +318,7 @@ export function CreateSandboxDialog({
       env: envResult.ok ? envResult.env : {},
       network,
     };
-  }, [image, mounts, command, commandArray, workdir, envText, network]);
+  }, [image, mounts, files, command, commandArray, workdir, envText, network]);
 
   /**
    * 加载模板：按模板配置回填表单。
@@ -302,6 +348,10 @@ export function CreateSandboxDialog({
       setMounts(
         result.form.mounts.map((row) => ({ id: nextMountId(), ...row })),
       );
+      // 文件注入行：整组替换，行的标识重新发。
+      setFiles(
+        result.form.files.map((row) => ({ id: nextFileId(), ...row })),
+      );
       setCommand(result.form.command);
       // 数组命令：表单输入框留空，数组进隐藏状态原样透传。
       setCommandArray(result.form.commandArray);
@@ -312,6 +362,14 @@ export function CreateSandboxDialog({
         show(
           'info',
           `模板里有 ${result.skippedDeclarations} 条挂载声明无法解析，已跳过`,
+          { source: 'sandbox-template' },
+        );
+      }
+      // 文件注入声明的跳过提示与挂载那条**分开弹**（文案各说各的）。
+      if (result.skippedFileDeclarations > 0) {
+        show(
+          'info',
+          `模板里有 ${result.skippedFileDeclarations} 条文件注入声明无法解析，已跳过`,
           { source: 'sandbox-template' },
         );
       }
@@ -390,6 +448,32 @@ export function CreateSandboxDialog({
       return;
     }
 
+    // 文件注入声明：逐行解析，解析不了就地报错（不发请求）。
+    // 两段路径都空的行是「点了添加但没填」，跳过。
+    const fileDeclarations: string[] = [];
+    const parsedFiles: FileRow[] = [];
+    for (const row of files) {
+      const hostPath = row.hostPath.trim();
+      const containerPath = row.containerPath.trim();
+      if (hostPath === '' && containerPath === '') {
+        continue;
+      }
+      const parsed = parseFileDeclaration(`${hostPath}:${containerPath}`);
+      if (!parsed.ok) {
+        setError(parsed.error);
+        return;
+      }
+      parsedFiles.push(parsed.declaration);
+      fileDeclarations.push(formatFileDeclaration(parsed.declaration));
+    }
+
+    // 宿主路径与容器路径重复在前端先拦一道（同挂载口径）。
+    const fileError = validateFileDeclarations(parsedFiles);
+    if (fileError) {
+      setError(fileError);
+      return;
+    }
+
     const envResult = parseEnvLines(envText);
     if (!envResult.ok) {
       setError(envResult.error);
@@ -416,6 +500,8 @@ export function CreateSandboxDialog({
         // 镜像来自宿主本地镜像列表：一律走宿主导出注入，不经镜像代理拉取
         image_source: 'host',
         mounts: declarations,
+        // 文件注入声明：两段，原样提交（模板里写了什么就是什么）。
+        files: fileDeclarations,
         command: commandPayload,
         workdir: workdir.trim() === '' ? null : workdir.trim(),
         env,
@@ -428,6 +514,7 @@ export function CreateSandboxDialog({
       onCreated(created.metadata.name);
       setName('');
       setMounts([]);
+      setFiles([]);
       setCommand('');
       setCommandArray(null);
       setWorkdir('');
@@ -445,6 +532,7 @@ export function CreateSandboxDialog({
     name,
     image,
     mounts,
+    files,
     command,
     commandArray,
     workdir,
@@ -804,6 +892,60 @@ export function CreateSandboxDialog({
                     type="button"
                     onClick={() => setMounts((previous) => previous.filter((item) => item.id !== row.id))}
                     data-testid="page-sandbox-create-mount-remove-button"
+                    className="inline-flex h-7 items-center justify-center rounded-lg border border-destructive/40 px-2 text-[12.5px] text-destructive transition-colors hover:bg-destructive-soft focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+                  >
+                    移除
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <div>
+            {/*
+              文件注入：与挂载区同级的第二块声明区（位置在挂载区之后、
+              命令输入框之前）。容器内一律只读（平台把副本只读挂进容器），
+              所以行里没有只读开关；这一区不挂任何说明文案。
+            */}
+            <div className="mb-1.5 flex items-center justify-between">
+              <span className={labelClass}>文件注入</span>
+              <button
+                type="button"
+                onClick={() => setFiles((previous) => [...previous, newFileRow()])}
+                data-testid="page-sandbox-create-file-add-button"
+                className="inline-flex h-7 items-center justify-center rounded-lg border border-border bg-card px-2 text-[12.5px] text-foreground transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+              >
+                添加文件
+              </button>
+            </div>
+            <ul className="m-0 list-none space-y-2 p-0">
+              {files.map((row) => (
+                <li
+                  key={row.id}
+                  className="flex flex-wrap items-center gap-2"
+                  data-testid="page-sandbox-create-file-item"
+                  data-file-id={row.id}
+                >
+                  <input
+                    className={inputClass}
+                    type="text"
+                    placeholder="宿主路径"
+                    value={row.hostPath}
+                    onChange={(event) => updateFile(row.id, { hostPath: event.target.value })}
+                    data-testid="page-sandbox-create-file-host-input"
+                  />
+                  <input
+                    className={inputClass}
+                    type="text"
+                    placeholder="容器路径"
+                    value={row.containerPath}
+                    onChange={(event) => updateFile(row.id, { containerPath: event.target.value })}
+                    data-testid="page-sandbox-create-file-container-input"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setFiles((previous) => previous.filter((item) => item.id !== row.id))}
+                    data-testid="page-sandbox-create-file-remove-button"
                     className="inline-flex h-7 items-center justify-center rounded-lg border border-destructive/40 px-2 text-[12.5px] text-destructive transition-colors hover:bg-destructive-soft focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
                   >
                     移除

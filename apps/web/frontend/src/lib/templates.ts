@@ -1,11 +1,12 @@
 /**
- * 启动模板的纯逻辑：挂载解析、表单合并与反向收集。
+ * 启动模板的纯逻辑：挂载解析、文件注入解析、表单合并与反向收集。
  *
- * 模板是一份「沙箱启动配置」：镜像、挂载声明、启动命令、工作目录、
- * 环境变量、网桥网络。核心口径有三条，落地都在本文件里：
+ * 模板是一份「沙箱启动配置」：镜像、挂载声明、文件注入声明、启动命令、
+ * 工作目录、环境变量、网桥网络。核心口径有三条，落地都在本文件里：
  *
  * - **合并语义**：模板里**出现**的字段整体替换表单值（挂载是整组替换，
- *   不是逐条并入；环境变量也是整组替换），**缺失**的字段保持表单现状。
+ *   不是逐条并入；文件注入声明同样是整组替换；环境变量也是整组替换），
+ *   **缺失**的字段保持表单现状。
  *   「出现」用 `hasOwnProperty` 判断——`{"image": null}`（填了空值）与
  *   缺 image 字段（没填过）是两回事，不能混同。
  * - **模板声明原样透传**：模板配置里的字符串**不做任何替换**——加载时
@@ -19,8 +20,14 @@
  */
 
 import type { TemplateConfig } from '../api/types';
+import { formatFileDeclaration, type FileRow } from './files';
 
 export type { TemplateConfig };
+
+/**
+ * 模板里的一条文件注入声明解析出来的表格行。
+ */
+export type TemplateFileRow = FileRow;
 
 /**
  * 模板里的一条挂载声明解析出来的表格行。
@@ -34,13 +41,15 @@ export interface TemplateMountRow {
 /**
  * 新建沙箱抽屉的表单状态（模板合并的落点）。
  *
- * 与界面上的表单一一对应：镜像、挂载行、启动命令、工作目录、
- * 环境变量、网桥网络。环境变量在这里是字典（不是多行文本），
+ * 与界面上的表单一一对应：镜像、挂载行、文件注入行、启动命令、
+ * 工作目录、环境变量、网桥网络。环境变量在这里是字典（不是多行文本），
  * 文本与字典之间的来回转换在 `lib/env.ts` 里做。
  */
 export interface TemplateFormState {
   image: string;
   mounts: TemplateMountRow[];
+  /** 文件注入声明行（宿主路径 + 容器内路径，没有只读标记：容器内一律只读）。 */
+  files: TemplateFileRow[];
   /** 命令输入框里的文字（字符串命令）。 */
   command: string;
   /**
@@ -64,12 +73,22 @@ export interface ParsedTemplateMounts {
   skipped: number;
 }
 
+/** 宽松解析模板里的文件注入声明的结果。 */
+export interface ParsedTemplateFiles {
+  /** 解析成功的文件注入行（按声明顺序）。 */
+  rows: TemplateFileRow[];
+  /** 解析不了、一条都没采用的声明条数。 */
+  skipped: number;
+}
+
 /** 应用模板后的结果。 */
 export interface ApplyTemplateResult {
   /** 合并后的表单状态。 */
   form: TemplateFormState;
   /** 模板里解析不了的挂载声明条数（已跳过）。 */
   skippedDeclarations: number;
+  /** 模板里解析不了的文件注入声明条数（已跳过）。 */
+  skippedFileDeclarations: number;
 }
 
 /** 判断字段在配置里「出现」了没有（区分缺失与空值）。 */
@@ -140,6 +159,52 @@ export function parseTemplateMounts(declarations: readonly string[]): ParsedTemp
   return { rows, skipped };
 }
 
+/**
+ * 宽松解析模板里的文件注入声明：`宿主路径:容器路径`（固定两段）。
+ *
+ * 与 `lib/files.ts` 的严格解析器不同，这里**不要求宿主路径已存在**、
+ * **不查宿主敏感目录**：模板是别人机器上写下的配置，本机未必有那些路径，
+ * 敏感目录与路径存在性交由提交时的既有校验与后端兜底。
+ *
+ * 解析不了的声明（段数不对、路径形态非法、路径含逗号）**整条跳过**，
+ * 条数报给调用方，不让一条畸形声明把整份模板废掉。
+ */
+export function parseTemplateFiles(declarations: readonly string[]): ParsedTemplateFiles {
+  const rows: TemplateFileRow[] = [];
+  let skipped = 0;
+
+  for (const raw of declarations) {
+    const declaration = raw.trim();
+    if (declaration === '') {
+      skipped += 1;
+      continue;
+    }
+
+    const parts = declaration.split(':');
+    if (parts.length !== 2) {
+      skipped += 1;
+      continue;
+    }
+
+    const hostPath = parts[0].trim();
+    const containerPath = parts[1].trim();
+
+    if (!isUsableHostPath(hostPath) || !containerPath.startsWith('/')) {
+      skipped += 1;
+      continue;
+    }
+    if (hostPath.includes(',')) {
+      // Docker 挂载参数以逗号分段，路径里带逗号一定挂不上。
+      skipped += 1;
+      continue;
+    }
+
+    rows.push({ hostPath, containerPath });
+  }
+
+  return { rows, skipped };
+}
+
 /** 把一条挂载行还原成后端要的声明文本。 */
 export function formatTemplateMount(row: TemplateMountRow): string {
   const suffix = row.readOnly ? ':ro' : '';
@@ -162,6 +227,7 @@ export function applyTemplateConfig(
   const next: TemplateFormState = {
     image: form.image,
     mounts: form.mounts.map((row) => ({ ...row })),
+    files: form.files.map((row) => ({ ...row })),
     command: form.command,
     commandArray: form.commandArray,
     workdir: form.workdir,
@@ -169,6 +235,7 @@ export function applyTemplateConfig(
     network: form.network,
   };
   let skippedDeclarations = 0;
+  let skippedFileDeclarations = 0;
 
   if (has(config, 'image')) {
     // 填了空值（null）也是「出现」：清掉表单里的镜像选择。
@@ -180,6 +247,13 @@ export function applyTemplateConfig(
     const parsed = parseTemplateMounts(config.mounts ?? []);
     next.mounts = parsed.rows;
     skippedDeclarations = parsed.skipped;
+  }
+
+  if (has(config, 'files')) {
+    // 文件注入声明原样解析：宿主路径与容器路径里的字面量一个都不替换。
+    const parsed = parseTemplateFiles(config.files ?? []);
+    next.files = parsed.rows;
+    skippedFileDeclarations = parsed.skipped;
   }
 
   if (has(config, 'command')) {
@@ -208,18 +282,19 @@ export function applyTemplateConfig(
       config.network === null || config.network === undefined ? null : config.network;
   }
 
-  return { form: next, skippedDeclarations };
+  return { form: next, skippedDeclarations, skippedFileDeclarations };
 }
 
 /**
  * 从表单收集一份模板配置。
  *
  * **只写有值的字段**：镜像 / 命令 / 工作目录 / 网络为空，挂载列表为空，
- * 环境变量为空，一律不进配置对象（空配置会让「出现即替换」的语义
- * 变成「清空用户填的东西」）。
+ * 文件注入列表为空，环境变量为空，一律不进配置对象（空配置会让
+ * 「出现即替换」的语义变成「清空用户填的东西」）。
  *
  * **空挂载行不进配置**：宿主路径与容器路径同时为空的行是用户点了「添加挂载」
  * 又没填的行，存进模板就是一条 `":"` 的假声明。两段路径先 trim 再判空。
+ * **空文件注入行同理**：两段路径同时为空的行不进配置。
  *
  * **数组命令优先**：隐藏的数组命令（`commandArray`）在场时按数组收集，
  * 表单里的命令输入框装不下它。
@@ -240,6 +315,18 @@ export function collectTemplateConfig(form: TemplateFormState): TemplateConfig {
     .map(formatTemplateMount);
   if (mounts.length > 0) {
     config.mounts = mounts;
+  }
+  // 文件注入行：两段路径先 trim 再判空，全空的行不进配置；
+  // 一条都没有时**不写 files 键**（写了等于「出现即替换」把用户的行清空）。
+  const files = form.files
+    .map((row) => ({
+      hostPath: row.hostPath.trim(),
+      containerPath: row.containerPath.trim(),
+    }))
+    .filter((row) => row.hostPath !== '' || row.containerPath !== '')
+    .map(formatFileDeclaration);
+  if (files.length > 0) {
+    config.files = files;
   }
   if (form.commandArray !== null && form.commandArray.length > 0) {
     config.command = [...form.commandArray];

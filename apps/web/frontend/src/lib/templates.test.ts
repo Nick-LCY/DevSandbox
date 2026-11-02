@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applyTemplateConfig,
   collectTemplateConfig,
+  parseTemplateFiles,
   parseTemplateMounts,
   type TemplateFormState,
 } from './templates';
@@ -12,6 +13,7 @@ function emptyForm(overrides: Partial<TemplateFormState> = {}): TemplateFormStat
   return {
     image: '',
     mounts: [],
+    files: [],
     command: '',
     commandArray: null,
     workdir: '',
@@ -44,6 +46,36 @@ describe('parseTemplateMounts', () => {
       '/data/b:workspace', // 容器路径不是绝对路径
       '/data/c:/workspace:xx', // 挂载模式不认识
       '/data/d:/workspace:/extra', // 段数不对
+      '', // 空声明
+    ]);
+    expect(result.skipped).toBe(5);
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0].hostPath).toBe('/data/a');
+  });
+});
+
+describe('parseTemplateFiles', () => {
+  it('解析 宿主路径:容器路径（固定两段）', () => {
+    const result = parseTemplateFiles(['/data/project/.env:/workspace/.env']);
+    expect(result.skipped).toBe(0);
+    expect(result.rows).toEqual([
+      { hostPath: '/data/project/.env', containerPath: '/workspace/.env' },
+    ]);
+  });
+
+  it('宿主路径允许家目录写法（~/data 通过）', () => {
+    const result = parseTemplateFiles(['~/.ssh/id_ed25519:/root/.ssh/id_ed25519']);
+    expect(result.skipped).toBe(0);
+    expect(result.rows[0].hostPath).toBe('~/.ssh/id_ed25519');
+  });
+
+  it('解析不了的声明跳过并计数', () => {
+    const result = parseTemplateFiles([
+      '/data/a:/workspace/a', // 正常
+      '相对路径:/workspace/a', // 宿主路径形态非法
+      '/data/b:workspace/b', // 容器路径不是绝对路径
+      '/data/c:/workspace/c:/extra', // 段数不对
+      '/data,d:/workspace/d', // 路径含逗号
       '', // 空声明
     ]);
     expect(result.skipped).toBe(5);
@@ -97,6 +129,43 @@ describe('applyTemplateConfig', () => {
     expect(result.form.mounts).toEqual([
       { hostPath: '/new/c', containerPath: '/c', readOnly: false },
     ]);
+  });
+
+  it('文件注入列表整组替换（不是逐条并入）', () => {
+    const form = emptyForm({
+      files: [
+        { hostPath: '/old/a', containerPath: '/a' },
+        { hostPath: '/old/b', containerPath: '/b' },
+      ],
+    });
+
+    const result = applyTemplateConfig(form, { files: ['/new/c:/c'] });
+
+    expect(result.form.files).toEqual([{ hostPath: '/new/c', containerPath: '/c' }]);
+  });
+
+  it('模板里没有 files 字段：表单里的文件注入行保持现状', () => {
+    const form = emptyForm({ files: [{ hostPath: '/kept/a', containerPath: '/a' }] });
+
+    const result = applyTemplateConfig(form, { image: 'new-image:1' });
+
+    expect(result.form.files).toEqual([{ hostPath: '/kept/a', containerPath: '/a' }]);
+  });
+
+  it('files 出现且是空数组：清空表单里的文件注入行', () => {
+    const form = emptyForm({ files: [{ hostPath: '/old/a', containerPath: '/a' }] });
+
+    const result = applyTemplateConfig(form, { files: [] });
+
+    expect(result.form.files).toEqual([]);
+  });
+
+  it('模板里的文件注入有解析不了的：跳过的条数报出来', () => {
+    const result = applyTemplateConfig(emptyForm(), {
+      files: ['/data/a:/workspace/a', '畸形声明'],
+    });
+    expect(result.skippedFileDeclarations).toBe(1);
+    expect(result.form.files).toHaveLength(1);
   });
 
   it('env 整组替换', () => {
@@ -244,6 +313,55 @@ describe('collectTemplateConfig', () => {
       }),
     );
     expect(config.mounts).toBeUndefined();
+  });
+
+  it('有值的文件注入行进配置', () => {
+    const config = collectTemplateConfig(
+      emptyForm({
+        files: [{ hostPath: '/data/project/.env', containerPath: '/workspace/.env' }],
+      }),
+    );
+    expect(config.files).toEqual(['/data/project/.env:/workspace/.env']);
+  });
+
+  it('空文件注入行不进配置（两段路径都空的行是假声明）', () => {
+    const config = collectTemplateConfig(
+      emptyForm({
+        files: [
+          { hostPath: '', containerPath: '' },
+          { hostPath: '   ', containerPath: '' },
+          { hostPath: '', containerPath: '  ' },
+          { hostPath: '/data/a', containerPath: '/workspace/a' },
+        ],
+      }),
+    );
+    expect(config.files).toEqual(['/data/a:/workspace/a']);
+  });
+
+  it('全是空文件注入行：files 字段不进配置', () => {
+    const config = collectTemplateConfig(
+      emptyForm({ files: [{ hostPath: '', containerPath: '' }] }),
+    );
+    expect(config.files).toBeUndefined();
+  });
+
+  it('文件注入路径先 trim 再入库', () => {
+    const config = collectTemplateConfig(
+      emptyForm({ files: [{ hostPath: '  /data/a  ', containerPath: ' /workspace/a ' }] }),
+    );
+    expect(config.files).toEqual(['/data/a:/workspace/a']);
+  });
+
+  it('收集与合并对文件注入是一对逆操作（往返一致）', () => {
+    const form = emptyForm({
+      files: [
+        { hostPath: '/data/a', containerPath: '/workspace/a' },
+        { hostPath: '~/.ssh/id_ed25519', containerPath: '/root/.ssh/id_ed25519' },
+      ],
+    });
+    const config = collectTemplateConfig(form);
+    const applied = applyTemplateConfig(emptyForm(), config);
+    expect(applied.form.files).toEqual(form.files);
   });
 
   it('隐藏的数组命令优先于表单命令（数组原样收集）', () => {

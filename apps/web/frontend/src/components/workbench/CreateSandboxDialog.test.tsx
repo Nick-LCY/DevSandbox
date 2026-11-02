@@ -21,6 +21,10 @@
  * - 模板的命令是数组：应用不崩、命令输入框留空、提交原样透传；
  * - 模板声明**不做任何占位符替换**：回填与提交都原样保留字面量
  *   （挂载 / 环境变量 / 命令 / 工作目录 / 网络）；
+ * - 文件注入区：添加一行并提交（原样进创建请求）、两段都空的行不进请求、
+ *   声明非法与容器路径重复就地报错、区里不挂任何解释性文案；
+ * - 文件注入的模板联动：模板里有 files 时整组替换、模板里没有 files 时保持现状、
+ *   保存为模板时文件行进配置；
  * - 创建成功后不再渲染成功面板（成功面板已退役）；
  * - 创建成功后触发回调并关闭抽屉。
  */
@@ -184,6 +188,30 @@ async function waitImagesSettled(): Promise<void> {
 /** 挂载行的宿主路径输入框（第几行）。 */
 function mountHostInput(index = 0): HTMLInputElement {
   return screen.getAllByTestId('page-sandbox-create-mount-host-input')[index] as HTMLInputElement;
+}
+
+/** 文件注入行的宿主路径输入框（第几行）。 */
+function fileHostInput(index = 0): HTMLInputElement {
+  return screen.getAllByTestId('page-sandbox-create-file-host-input')[index] as HTMLInputElement;
+}
+
+/** 文件注入行的容器路径输入框（第几行）。 */
+function fileContainerInput(index = 0): HTMLInputElement {
+  return screen.getAllByTestId('page-sandbox-create-file-container-input')[index] as HTMLInputElement;
+}
+
+/**
+ * 「文件注入」这一区的容器元素。
+ *
+ * 区标题是个 span：向上找两层（标题行 → 区容器）。
+ */
+function fileSection(): HTMLElement {
+  const title = screen.getByText('文件注入', { selector: 'span' });
+  const section = title.closest('div')?.parentElement;
+  if (!section) {
+    throw new Error('找不到文件注入区');
+  }
+  return section as HTMLElement;
 }
 
 /** 挂载行的容器路径输入框（第几行）。 */
@@ -1013,5 +1041,194 @@ describe('新建沙箱抽屉的精简文案', () => {
     const dialog = await screen.findByTestId('page-sandbox-create-template-dialog');
     expect(dialog.textContent).toContain('仅保存已填写内容。');
     expect(dialog.textContent).not.toContain('保存的是当前表单里的');
+  });
+});
+
+describe('新建沙箱抽屉的文件注入区', () => {
+  /** 填好沙箱名并选中镜像（不提交）。 */
+  async function prepareForm(): Promise<void> {
+    await waitImageList();
+    fireEvent.change(screen.getByTestId('page-sandbox-create-name-input'), {
+      target: { value: 'acc-demo' },
+    });
+    openImagePicker();
+    searchImage(IMAGE);
+    await waitFor(() => expect(optionReferences()).toContain(IMAGE));
+    await pickImage(IMAGE);
+  }
+
+  /** 加一行文件注入声明。 */
+  function addFileRow(hostPath: string, containerPath: string, index = 0): void {
+    fireEvent.click(screen.getByTestId('page-sandbox-create-file-add-button'));
+    fireEvent.change(fileHostInput(index), { target: { value: hostPath } });
+    fireEvent.change(fileContainerInput(index), { target: { value: containerPath } });
+  }
+
+  it('添加一行并提交：声明原样进创建请求', async () => {
+    mocks.createSandbox.mockResolvedValue({
+      metadata: { name: 'acc-demo' },
+      steps: ['第一步'],
+      connection: { exec_command: 'docker exec -it sandbox-acc-demo bash' },
+    });
+
+    renderDialog();
+    await prepareForm();
+
+    addFileRow('/data/project/.env', '/workspace/.env');
+    fireEvent.click(screen.getByTestId('page-sandbox-create-submit-button'));
+
+    await waitFor(() => expect(mocks.createSandbox).toHaveBeenCalledTimes(1));
+    const payload = mocks.createSandbox.mock.calls[0][0];
+    // 两段声明原样提交（不做任何替换）。
+    expect(payload.files).toEqual(['/data/project/.env:/workspace/.env']);
+  });
+
+  it('两段都空的行不进请求：payload.files 是空数组', async () => {
+    mocks.createSandbox.mockResolvedValue({
+      metadata: { name: 'acc-demo' },
+      steps: ['第一步'],
+      connection: { exec_command: 'docker exec -it sandbox-acc-demo bash' },
+    });
+
+    renderDialog();
+    await prepareForm();
+
+    // 点一次「添加文件」但什么都不填：这一行是假声明。
+    fireEvent.click(screen.getByTestId('page-sandbox-create-file-add-button'));
+    fireEvent.click(screen.getByTestId('page-sandbox-create-submit-button'));
+
+    await waitFor(() => expect(mocks.createSandbox).toHaveBeenCalledTimes(1));
+    const payload = mocks.createSandbox.mock.calls[0][0];
+    expect(payload.files).toEqual([]);
+  });
+
+  it('声明非法：就地报错，不发请求', async () => {
+    renderDialog();
+    await prepareForm();
+
+    // 宿主路径不是绝对路径。
+    addFileRow('relative/.env', '/workspace/.env');
+    fireEvent.click(screen.getByTestId('page-sandbox-create-submit-button'));
+
+    let error = await screen.findByTestId('page-sandbox-create-validation-error');
+    expect(error.textContent).toContain('注入文件的宿主路径必须是绝对路径');
+    expect(mocks.createSandbox).not.toHaveBeenCalled();
+
+    // 宿主路径改对、容器路径留成相对路径：另一条就地报错。
+    fireEvent.change(fileHostInput(0), { target: { value: '/data/project/.env' } });
+    fireEvent.change(fileContainerInput(0), { target: { value: 'workspace/.env' } });
+    fireEvent.click(screen.getByTestId('page-sandbox-create-submit-button'));
+
+    error = await screen.findByTestId('page-sandbox-create-validation-error');
+    expect(error.textContent).toContain('注入文件的容器内路径必须是绝对路径');
+    expect(mocks.createSandbox).not.toHaveBeenCalled();
+  });
+
+  it('容器路径重复：就地报错，不发请求', async () => {
+    renderDialog();
+    await prepareForm();
+
+    addFileRow('/data/project/.env', '/workspace/.env');
+    addFileRow('/data/other/.env', '/workspace/.env', 1);
+    fireEvent.click(screen.getByTestId('page-sandbox-create-submit-button'));
+
+    const error = await screen.findByTestId('page-sandbox-create-validation-error');
+    expect(error.textContent).toContain('容器路径重复');
+    expect(mocks.createSandbox).not.toHaveBeenCalled();
+  });
+
+  it('这一区不挂任何解释性文案（只有标题、按钮与输入框）', async () => {
+    renderDialog();
+
+    const section = fileSection();
+    // 区里一个说明段都没有（没有副标题、没有帮助文本、没有空态提示）。
+    expect(section.querySelectorAll('p')).toHaveLength(0);
+    // 空着的时候，文字只有区标题与按钮文案两处。
+    expect(section.textContent).toBe('文件注入添加文件');
+
+    // 加一行：两个输入框的占位文案就是「宿主路径」「容器路径」，
+    // 行里没有只读开关（容器内一律只读）。
+    fireEvent.click(screen.getByTestId('page-sandbox-create-file-add-button'));
+    expect(fileHostInput().placeholder).toBe('宿主路径');
+    expect(fileContainerInput().placeholder).toBe('容器路径');
+    expect(section.querySelectorAll('input[type="checkbox"]')).toHaveLength(0);
+    // 加了行之后仍然没有说明段（只有标题、两个按钮与输入框）。
+    expect(section.querySelectorAll('p')).toHaveLength(0);
+    expect(section.textContent).toBe('文件注入添加文件移除');
+  });
+});
+
+describe('新建沙箱抽屉的文件注入模板联动', () => {
+  /** 一份带文件注入声明的模板（声明里带字面量，验证原样回填）。 */
+  const FILE_TEMPLATE = {
+    ...TEMPLATES[0],
+    config: {
+      image: IMAGE,
+      mounts: ['/data/{name}:/workspace'],
+      files: ['/data/{name}/.env:/workspace/.env'],
+      command: 'sleep infinity',
+    },
+  };
+
+  /** 加一行文件注入声明。 */
+  function addFileRow(hostPath: string, containerPath: string, index = 0): void {
+    fireEvent.click(screen.getByTestId('page-sandbox-create-file-add-button'));
+    fireEvent.change(fileHostInput(index), { target: { value: hostPath } });
+    fireEvent.change(fileContainerInput(index), { target: { value: containerPath } });
+  }
+
+  it('模板里有 files：出现即整组替换', async () => {
+    mocks.listTemplates.mockResolvedValue([FILE_TEMPLATE]);
+
+    renderDialog();
+    await waitTemplateList();
+
+    // 先在表单里填一行：模板回填后这一行应当被整组替换掉。
+    addFileRow('/old/.env', '/old/.env');
+
+    openTemplatePicker();
+    await waitFor(() => expect(templateOptionNames()).toHaveLength(1));
+    await pickTemplate('开发环境');
+
+    // 只剩模板带的那一行（整组替换，不是并入）。
+    await waitFor(() => expect(fileHostInput().value).toBe('/data/{name}/.env'));
+    expect(fileContainerInput().value).toBe('/workspace/.env');
+    expect(screen.getAllByTestId('page-sandbox-create-file-item')).toHaveLength(1);
+  });
+
+  it('模板里没有 files：表单里的文件注入行保持现状', async () => {
+    mocks.listTemplates.mockResolvedValue(TEMPLATES);
+
+    renderDialog();
+    await waitTemplateList();
+
+    addFileRow('/kept/.env', '/kept/.env');
+
+    openTemplatePicker();
+    await waitFor(() => expect(templateOptionNames()).toHaveLength(2));
+    await pickTemplate('干净环境');
+
+    // 模板里没有 files 字段：表单里的行原样留着。
+    expect(fileHostInput().value).toBe('/kept/.env');
+    expect(fileContainerInput().value).toBe('/kept/.env');
+  });
+
+  it('保存为模板：文件注入行进模板配置', async () => {
+    mocks.createTemplate.mockResolvedValue({ id: 'tpl_x', name: '开发环境', config: {} });
+
+    renderDialog();
+    await waitTemplateList();
+
+    addFileRow('  /data/project/.env  ', ' /workspace/.env ');
+
+    fireEvent.click(screen.getByTestId('page-sandbox-create-template-save-button'));
+    const input = await screen.findByTestId('page-sandbox-create-template-name-input');
+    fireEvent.change(input, { target: { value: '开发环境' } });
+    fireEvent.click(screen.getByTestId('page-sandbox-create-template-confirm-button'));
+
+    await waitFor(() => expect(mocks.createTemplate).toHaveBeenCalledTimes(1));
+    const config = mocks.createTemplate.mock.calls[0][0].config;
+    // 两段路径先 trim 再入库。
+    expect(config.files).toEqual(['/data/project/.env:/workspace/.env']);
   });
 });

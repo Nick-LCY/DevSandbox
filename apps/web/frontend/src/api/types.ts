@@ -177,6 +177,12 @@ export interface CreateSandboxRequest {
   image_source?: 'auto' | 'host';
   mounts?: string[];
   /**
+   * 注入文件声明，格式 `宿主路径:容器路径`（固定两段）。
+   *
+   * 平台把宿主文件复制到沙箱用户家目录后，以只读方式挂进容器。
+   */
+  files?: string[];
+  /**
    * 容器启动命令。
    *
    * 字符串按 shell 引号规则切分；数组原样当参数元组用（后端契约两种都收）。
@@ -188,7 +194,7 @@ export interface CreateSandboxRequest {
 }
 
 /**
- * 启动模板的配置体（六项全选填）。
+ * 启动模板的配置体（七项全选填）。
  *
  * **字段缺失与字段填了空值不是一回事**：用户没填过的字段不会出现在
  * 配置体里（服务端按 `exclude_unset` 落盘），前端合并时也按「出现即
@@ -197,6 +203,12 @@ export interface CreateSandboxRequest {
 export interface TemplateConfig {
   image?: string | null;
   mounts?: string[];
+  /**
+   * 注入文件声明，格式 `宿主路径:容器路径`（固定两段）。
+   *
+   * 平台把宿主文件复制到沙箱用户家目录后，以只读方式挂进容器。
+   */
+  files?: string[];
   /**
    * 容器启动命令。
    *
