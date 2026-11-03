@@ -93,19 +93,23 @@ uv run --project apps/web/backend python -m sandbox_console   # 启动服务
 | 项 | 说明 |
 |---|---|
 | 监听地址 | 默认 `127.0.0.1:8000`；用环境变量 `SANDBOX_CONSOLE_HOST` / `SANDBOX_CONSOLE_PORT` 覆盖 |
-| **只绑回环地址** | 服务不做认证与多用户，允许改成内网地址，**不得暴露公网**；绑非回环地址时启动会打醒目告警 |
+| **访问令牌** | 三期起**全部 `/api`（含终端 WebSocket）受令牌保护**：环境变量 `SANDBOX_CONSOLE_TOKEN` 注入优先（不落盘），未注入时服务在平台数据根生成 `console-token.json`（权限 `0600`）；启动日志只打路径不打令牌。请求带 `Authorization: Bearer <令牌>`，详见 `apps/web/backend/API.md` 第 14 章 |
+| **网络边界是第二层** | 令牌是硬需求，但令牌是**单一凭据**（不做账号体系与多用户隔离）：拿到它即拥有平台的全部能力。可以改成内网地址，**仍不得暴露公网**；绑非回环地址时启动会打醒目告警 |
 | 平台数据根 | 仍走 `SANDBOX_PLATFORM_HOME`（默认 `/var/lib/sandbox-platform`），与命令行一致 |
 | 权限要求 | 与一期命令行一致：进程本身是 root 时直接执行，否则走免密 `sudo` |
 | 前端托管 | `apps/web/frontend/dist` 由同一进程在 `/` 路径托管；目录不存在时跳过静态托管并告警（`/api/health` 的 `console_mounted` 为 false），不影响服务启动；部署路径不同时用 `SANDBOX_CONSOLE_DIST` 覆盖 |
-| 网页终端 | WebSocket 端点需要 `websockets` 库（uvicorn 的 WebSocket 实现）；未安装时握手会被拒（HTTP 404），终端会话建得起来但连不上 |
+| 网页终端 | WebSocket 端点需要 `websockets` 库（uvicorn 的 WebSocket 实现）；未安装时握手会被拒（HTTP 404），终端会话建得起来但连不上。握手还要带**一次性票据**（`POST /api/auth/ticket` 换，30 秒内有效、用过即废）：浏览器 `WebSocket` 不能设自定义头，长期令牌不进 URL |
 | 接口文档 | `apps/web/backend/API.md` 的「二期 HTTP 接口」章节；运行时的交互式文档在 `/docs`，**默认关闭**，需要时用 `SANDBOX_CONSOLE_DOCS=1` 开启 |
 | 错误响应 | 统一 `{"detail": "中文消息"}`；400 / 404 / 409 保留平台异常原文，500 只回「平台内部错误，请查看服务日志」（原文只进日志，不回显宿主路径） |
 | 常驻方式 | `apps/web/backend/sandbox-console.service` 是 systemd 单元模板，只提供模板，不自动安装、不自动启用 |
 
+> **部署提醒（三期任务 02）**：这批令牌改造落地后，前端（三期任务 03 之前）不发 `Authorization` 头、也不换票据——**网页控制台在 03 合并前不可用**（`/api` 全部 401）。**02 不得单独部署到在跑的网页控制台**，必须与 03 同批发布。
+
 ```bash
-# 沙箱管理接口（示例）
-curl -s http://127.0.0.1:8000/api/sandboxes
-curl -s -X POST -H 'Content-Type: application/json' \
+# 沙箱管理接口（示例）：全部 /api 都要带 Bearer 令牌
+TOKEN=$(cat /var/lib/sandbox-platform/console-token.json | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/api/sandboxes
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
     -d '{"name":"demo","image_source":"host","image":"my-local/app:dev"}' \
     http://127.0.0.1:8000/api/sandboxes
 ```
@@ -118,13 +122,13 @@ curl -s -X POST -H 'Content-Type: application/json' \
 
 ```bash
 # 实时枚举宿主本地镜像（创建页下拉的选项来源）
-curl -s http://127.0.0.1:8000/api/images
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/api/images
 
 # 镜像代理状态（容器 / 健康 / 缓存占用 / 证书就绪 / 访问地址）
-curl -s http://127.0.0.1:8000/api/proxy/status
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/api/proxy/status
 
 # 重启镜像代理（CA 指纹变了会自动为已有沙箱用户重装合并 CA 束）
-curl -s -X POST http://127.0.0.1:8000/api/proxy/restart
+curl -s -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/api/proxy/restart
 ```
 
 | 项 | 说明 |
@@ -136,7 +140,7 @@ curl -s -X POST http://127.0.0.1:8000/api/proxy/restart
 | CA 指纹口径 | 变更前后都读得到证书才算「变了」（读不到不等于变了）；指纹对内容做空白归一化后哈希，换行差异不算变更 |
 | 缓存只增不减 | **不提供清理代理缓存的接口**，页面只展示占用大小 |
 
-> `POST /api/proxy/restart` 是**未认证的特权端点**：服务只绑回环地址，但本机任意进程都能调用它，反复重启会打断正在拉镜像的沙箱。不要把服务改成监听公网或不受控的内网地址。
+> `POST /api/proxy/restart` 能打断正在拉镜像的沙箱（代理不可达时创建 / 启动直接失败）。三期起全部 `/api` 都受令牌保护，它不再是「未认证的特权端点」；但令牌是单一凭据。**回环这一跳没有网络边界保护**（本机任意进程都能连上端口），但接口仍要求令牌；**令牌是唯一准入门槛**。
 
 ## 运行前提
 

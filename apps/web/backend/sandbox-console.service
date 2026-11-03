@@ -9,7 +9,8 @@
 # 服务以宿主特权身份运行：单元里用 root 直接跑，核心包在需要宿主特权时
 # 直接执行（进程本身是 root）；若改成非 root 用户运行，核心包会自动走免密 sudo。
 #
-# 安全边界：服务不做认证，只监听回环或内网地址，不得暴露公网。
+# 安全边界：全部 /api（含终端 WebSocket）受访问令牌保护。令牌是**单一凭据**：
+# 拿到它即拥有平台的全部能力，不做账号体系与多用户隔离。网络边界是第二层防线。
 
 [Unit]
 Description=Sandbox Platform Console（沙箱平台控制台服务）
@@ -32,6 +33,15 @@ Environment=SANDBOX_CONSOLE_HOST=127.0.0.1
 Environment=SANDBOX_CONSOLE_PORT=8000
 # 平台数据根目录（与命令行一致）
 Environment=SANDBOX_PLATFORM_HOME=/var/lib/sandbox-platform
+
+# 访问令牌（三期）：
+#   · 下面这行注释掉的写法是**注入**令牌：用环境变量提供自己的令牌，
+#     服务直接用它，且**不落盘**（磁盘上不留令牌痕迹）。
+#   · 不注入时，服务启动会在平台数据根生成令牌文件
+#     <SANDBOX_PLATFORM_HOME>/console-token.json（权限 0600），
+#     启动日志只打文件路径、不打令牌本体。
+#   · 轮换令牌：删掉令牌文件后重启服务，或改环境变量后重启。
+# Environment=SANDBOX_CONSOLE_TOKEN=换成你自己的令牌
 
 # 日志一律走标准输出，由 journald 收走
 StandardOutput=journal

@@ -365,6 +365,16 @@ class HealthResponse(BaseModel):
     console_mounted: bool
 
 
+class AuthTicketResponse(BaseModel):
+    """一次性票据。
+
+    票据 30 秒内有效、用过即废：浏览器拿它换 WebSocket 连接，连上即作废。
+    """
+
+    ticket: str
+    expires_in: int
+
+
 class HostImageModel(BaseModel):
     """宿主本地镜像的一项。"""
 

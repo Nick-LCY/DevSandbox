@@ -37,6 +37,8 @@ from sandbox_console import create_app
 from sandbox_console.app import default_console_dist_dir
 from sandbox_console.deps import get_service
 
+from conftest import auth_headers
+
 
 # ---------------------------------------------------------------- 桩件
 def make_metadata(name: str = "demo", state: str = "running") -> SandboxMetadata:
@@ -201,7 +203,7 @@ def client(
     monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     app = create_app()
     app.dependency_overrides[get_service] = lambda: fake_service
-    return TestClient(app)
+    return TestClient(app, headers=auth_headers())
 
 
 # ---------------------------------------------------------------- 沙箱管理接口
@@ -747,7 +749,7 @@ def test_platform_errors_map_to_fixed_status_codes(
     fake_service.error = error
     app = create_app()
     app.dependency_overrides[get_service] = lambda: fake_service
-    with TestClient(app) as client:
+    with TestClient(app, headers=auth_headers()) as client:
         response = client.get("/api/sandboxes/demo")
     assert response.status_code == status_code
     body = response.json()
@@ -762,7 +764,7 @@ def test_internal_error_detail_does_not_leak_host_paths(
     fake_service.error = RuntimeError("炸了 /var/lib/sandbox-platform sudo docker ps")
     app = create_app()
     app.dependency_overrides[get_service] = lambda: fake_service
-    client = TestClient(app, raise_server_exceptions=False)
+    client = TestClient(app, headers=auth_headers(), raise_server_exceptions=False)
     response = client.get("/api/sandboxes/demo")
     assert response.status_code == 500
     body = response.json()
@@ -805,7 +807,7 @@ def test_openapi_docs_can_be_enabled_by_env(
     monkeypatch.setenv("SANDBOX_CONSOLE_DOCS", "1")
     app = create_app()
     app.dependency_overrides[get_service] = lambda: fake_service
-    client = TestClient(app)
+    client = TestClient(app, headers=auth_headers())
     assert client.get("/openapi.json").status_code == 200
     assert client.get("/docs").status_code == 200
 
@@ -821,7 +823,7 @@ def test_lifespan_prepares_data_dir_and_purges_leftover_sessions(
 
     app = create_app()
     app.dependency_overrides[get_service] = lambda: fake_service
-    with TestClient(app) as client:
+    with TestClient(app, headers=auth_headers()) as client:
         assert client.get("/api/health").status_code == 200
 
     assert (platform_home / "sandboxes").is_dir()
@@ -849,12 +851,16 @@ def test_out_of_range_port_exits_with_code_2(monkeypatch: pytest.MonkeyPatch) ->
 def test_non_loopback_host_warns(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """监听非回环地址时打醒目告警（服务不做认证）。"""
+    """监听非回环地址时打醒目告警（口径：**已启用令牌认证**，但令牌是单一凭据）。"""
     from sandbox_console import __main__ as entry
 
     with caplog.at_level("WARNING"):
         entry.warn_if_not_loopback("0.0.0.0")
     assert any("不是回环地址" in record.message for record in caplog.records)
+    # 新口径：告警文案说「已启用令牌认证」，不再宣称「服务不做认证」
+    messages = "\n".join(record.message for record in caplog.records)
+    assert "已启用令牌认证" in messages
+    assert "不做认证" not in messages
 
 
 def test_loopback_host_does_not_warn(
@@ -882,7 +888,7 @@ def test_command_error_detail_does_not_leak_privileged_command_line(
     )
     app = create_app()
     app.dependency_overrides[get_service] = lambda: fake_service
-    client = TestClient(app, raise_server_exceptions=False)
+    client = TestClient(app, headers=auth_headers(), raise_server_exceptions=False)
     response = client.get("/api/sandboxes/demo")
     assert response.status_code == 500
     assert response.json()["detail"] == "平台内部错误，请查看服务日志"

@@ -39,6 +39,8 @@ from sandbox_platform import (
     terminate_pty_process,
 )
 from sandbox_console import create_app
+
+from conftest import auth_headers
 from sandbox_console.deps import get_terminal_manager, get_terminal_manager_ws
 from sandbox_console.sessions import (
     SESSION_EXIT_REASON_CLOSED_BY_USER,
@@ -269,6 +271,18 @@ def pty_winsize(session: TerminalSession) -> tuple[int, int]:
     return rows, cols
 
 
+def ticket_url(client: TestClient, path: str) -> str:
+    """带一次性票据的 WebSocket 地址。
+
+    浏览器发起的 WebSocket 不能设自定义头，握手靠 ``?ticket=`` 带一次性票据
+    （用 Bearer 换来的，30 秒内有效、用过即废）。
+    """
+    response = client.post("/api/auth/ticket")
+    assert response.status_code == 200
+    ticket = response.json()["ticket"]
+    return f"{path}?ticket={ticket}"
+
+
 @pytest.fixture
 def client(
     manager: TerminalSessionManager,
@@ -285,7 +299,7 @@ def client(
     app = create_app()
     app.dependency_overrides[get_terminal_manager] = lambda: manager
     app.dependency_overrides[get_terminal_manager_ws] = lambda: manager
-    with TestClient(app) as http_client:
+    with TestClient(app, headers=auth_headers()) as http_client:
         yield http_client
 
 
@@ -657,7 +671,7 @@ def test_http_create_fails_when_sandbox_not_running(
     app = create_app()
     app.dependency_overrides[get_terminal_manager] = lambda: manager
     app.dependency_overrides[get_terminal_manager_ws] = lambda: manager
-    with TestClient(app) as http:
+    with TestClient(app, headers=auth_headers()) as http:
         response = http.post("/api/terminal/sessions", json={"sandbox": "demo"})
     assert response.status_code == 400
     assert "沙箱未运行" in response.json()["detail"]
@@ -673,7 +687,9 @@ def test_websocket_bridges_input_and_output(
     session = manager.get(created["session_id"])
     assert session is not None
     try:
-        with client.websocket_connect(f"/api/terminal/sessions/{created['session_id']}") as ws:
+        with client.websocket_connect(
+            ticket_url(client, f"/api/terminal/sessions/{created['session_id']}")
+        ) as ws:
             hello = ws.receive_json()
             assert hello["type"] == "hello"
             assert hello["session_id"] == created["session_id"]
@@ -703,7 +719,9 @@ def test_websocket_replays_buffer_after_reconnect(
     session = manager.get(created["session_id"])
     assert session is not None
     try:
-        with client.websocket_connect(f"/api/terminal/sessions/{created['session_id']}") as ws:
+        with client.websocket_connect(
+            ticket_url(client, f"/api/terminal/sessions/{created['session_id']}")
+        ) as ws:
             ws.receive_json()
             ws.send_bytes(b"before-disconnect\n")
             assert b"before-disconnect" in ws.receive_bytes()
@@ -712,7 +730,9 @@ def test_websocket_replays_buffer_after_reconnect(
         session.write(b"while-offline\n")
         time.sleep(0.5)
 
-        with client.websocket_connect(f"/api/terminal/sessions/{created['session_id']}") as ws:
+        with client.websocket_connect(
+            ticket_url(client, f"/api/terminal/sessions/{created['session_id']}")
+        ) as ws:
             ws.receive_json()
             replayed = ws.receive_bytes()
             assert b"while-offline" in replayed
@@ -722,7 +742,7 @@ def test_websocket_replays_buffer_after_reconnect(
 
 def test_websocket_unknown_session_reports_error(client: TestClient) -> None:
     """附着到不存在的会话：回一条错误帧再断开。"""
-    with client.websocket_connect("/api/terminal/sessions/nope") as ws:
+    with client.websocket_connect(ticket_url(client, "/api/terminal/sessions/nope")) as ws:
         message = ws.receive_json()
         assert message["type"] == "error"
         assert "终端会话" in message["message"]
@@ -741,10 +761,10 @@ def test_websocket_reports_exit_code(
     app = create_app()
     app.dependency_overrides[get_terminal_manager] = lambda: manager
     app.dependency_overrides[get_terminal_manager_ws] = lambda: manager
-    with TestClient(app) as http:
+    with TestClient(app, headers=auth_headers()) as http:
         created = http.post("/api/terminal/sessions", json={"sandbox": "demo"}).json()
         with http.websocket_connect(
-            f"/api/terminal/sessions/{created['session_id']}"
+            ticket_url(http, f"/api/terminal/sessions/{created['session_id']}")
         ) as ws:
             assert ws.receive_json()["type"] == "hello"
             frames = []
@@ -1423,7 +1443,9 @@ def test_http_delete_running_session_closes_attached_connection(
     """删除运行中的会话：附着中的浏览器收到退出帧并断开，记录也没了。"""
     created = client.post("/api/terminal/sessions", json={"sandbox": "demo"}).json()
     session_id = created["session_id"]
-    with client.websocket_connect(f"/api/terminal/sessions/{session_id}") as ws:
+    with client.websocket_connect(
+            ticket_url(client, f"/api/terminal/sessions/{session_id}")
+        ) as ws:
         assert ws.receive_json()["type"] == "hello"
 
         response = client.delete(f"/api/terminal/sessions/{session_id}")
@@ -1468,7 +1490,9 @@ def test_http_delete_survives_close_failure(
 
     monkeypatch.setattr(session.pty, "terminate", boom)
     try:
-        with client.websocket_connect(f"/api/terminal/sessions/{session_id}") as ws:
+        with client.websocket_connect(
+            ticket_url(client, f"/api/terminal/sessions/{session_id}")
+        ) as ws:
             assert ws.receive_json()["type"] == "hello"
 
             response = client.delete(f"/api/terminal/sessions/{session_id}")

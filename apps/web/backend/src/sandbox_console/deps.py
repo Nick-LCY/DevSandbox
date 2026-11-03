@@ -9,6 +9,7 @@ from __future__ import annotations
 from fastapi import Request, WebSocket
 from sandbox_platform import PlatformConfig, SandboxService
 
+from .auth import TicketStore
 from .templates import TemplateStore
 from .terminal import TerminalSessionManager
 
@@ -45,6 +46,19 @@ def get_terminal_manager(request: Request) -> TerminalSessionManager:
     return _terminal_manager_of(request.app)
 
 
+def get_ticket_store(request: Request) -> TicketStore:
+    """取应用级票据存储（整个进程共用一个实例）。"""
+    return _ticket_store_of(request.app)
+
+
+def get_ticket_store_ws(websocket: WebSocket) -> TicketStore:
+    """取应用级票据存储（WebSocket 入口用）。
+
+    WebSocket 路由拿不到 HTTP 请求对象，只能从连接自己身上取应用状态。
+    """
+    return _ticket_store_of(websocket.app)
+
+
 def get_terminal_manager_ws(websocket: WebSocket) -> TerminalSessionManager:
     """取应用级终端会话管理器（WebSocket 入口用）。
 
@@ -68,3 +82,12 @@ def _terminal_manager_of(app) -> TerminalSessionManager:
         manager = TerminalSessionManager(config, service)
         app.state.terminal_manager = manager
     return manager
+
+
+def _ticket_store_of(app) -> TicketStore:
+    """按应用装配票据存储（没有就建一个并挂到应用状态上）。"""
+    store = getattr(app.state, "ticket_store", None)
+    if store is None:
+        store = TicketStore()
+        app.state.ticket_store = store
+    return store

@@ -34,6 +34,8 @@ from sandbox_platform.proxy import (
     RESTART_COMMAND_TIMEOUT,
 )
 from sandbox_console import create_app
+
+from conftest import auth_headers
 from sandbox_platform.userspace import ca_bundle_path
 
 # 测试专用代理端口（与生产实例 3128 隔离）
@@ -906,7 +908,7 @@ def api_client(
     stub_host.container_mounts = proxy_mounts(app.state.platform_config)
     # 健康探测不落真实网络
     monkeypatch.setattr(service.proxy, "probe", lambda: stub_host.probe_result)
-    return TestClient(app)
+    return TestClient(app, headers=auth_headers())
 
 
 def test_images_endpoint_returns_host_images(

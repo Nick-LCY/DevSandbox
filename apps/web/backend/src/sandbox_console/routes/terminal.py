@@ -17,7 +17,8 @@ from sandbox_platform import NotFoundError
 from starlette.concurrency import run_in_threadpool
 from starlette.websockets import WebSocketDisconnect, WebSocketDisconnected
 
-from ..deps import get_terminal_manager, get_terminal_manager_ws
+from ..auth import CLOSE_CODE_UNAUTHORIZED, TicketStore, origin_allowed
+from ..deps import get_terminal_manager, get_terminal_manager_ws, get_ticket_store_ws
 from ..schemas import (
     TerminalSessionCreateRequest,
     TerminalSessionDeleteResponse,
@@ -109,8 +110,30 @@ async def attach_terminal_session(
     websocket: WebSocket,
     session_id: str,
     manager=Depends(get_terminal_manager_ws),
+    tickets: TicketStore = Depends(get_ticket_store_ws),
 ) -> None:
-    """附着到已有终端会话：先回放缓冲再接实时流。"""
+    """附着到已有终端会话：先回放缓冲再接实时流。
+
+    握手先过两道闸，任一不过都拒握手（**不 accept**，关闭码 1008）：
+
+    1. ``Origin`` 在放行清单内（同源、白名单来源放行，其余拒绝）；
+    2. ``?ticket=`` 是一次性票据（浏览器 WebSocket 不能带自定义头，票据是用
+       Bearer 换来的短期凭据；校验即作废）。
+
+    口径提醒：握手在 ``accept`` 之前被拒时，**生产环境（uvicorn）对客户端表现为
+    HTTP 403 拒绝响应，关闭码不送达**；``TestClient`` 下表现为
+    ``WebSocketDisconnect(1008)``——那是测试语义，不是线上协议。
+    """
+    if not origin_allowed(
+        websocket.headers.get("origin"),
+        websocket.headers.get("host"),
+        websocket.scope.get("scheme"),
+    ):
+        await websocket.close(code=CLOSE_CODE_UNAUTHORIZED)
+        return
+    if not tickets.consume(websocket.query_params.get("ticket", "")):
+        await websocket.close(code=CLOSE_CODE_UNAUTHORIZED)
+        return
     await websocket.accept()
     session = manager.get(session_id)
     if session is None:

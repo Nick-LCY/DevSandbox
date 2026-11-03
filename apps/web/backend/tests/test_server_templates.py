@@ -17,6 +17,8 @@ import pytest
 from fastapi.testclient import TestClient
 from sandbox_platform import ConfigError, PlatformConfig
 from sandbox_console import create_app
+
+from conftest import auth_headers
 from sandbox_console import templates as templates_module
 from sandbox_console.templates import (
     BUILTIN_DIRNAME,
@@ -71,7 +73,7 @@ def templates_client(
     monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     monkeypatch.setattr(BUILTIN_TARGET, ())
     app = create_app()
-    return TestClient(app)
+    return TestClient(app, headers=auth_headers())
 
 
 @pytest.fixture
@@ -87,7 +89,7 @@ def builtin_seed_client(
     """
     monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     app = create_app()
-    return TestClient(app)
+    return TestClient(app, headers=auth_headers())
 
 
 @pytest.fixture
@@ -347,7 +349,7 @@ def test_builtin_template_is_injected_on_startup(
     monkeypatch.setattr(BUILTIN_TARGET, (BUILTIN_FIXTURE,))
     monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     app = create_app()
-    with TestClient(app) as client:
+    with TestClient(app, headers=auth_headers()) as client:
         items = client.get("/api/templates").json()
     assert [item["id"] for item in items] == ["tpl_builtin_demo"]
 
@@ -497,7 +499,7 @@ def test_lifespan_survives_seed_failure(
     monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     monkeypatch.setattr("sandbox_console.app.ensure_builtin_templates", raise_runtime_error)
     app = create_app()
-    with TestClient(app) as client:
+    with TestClient(app, headers=auth_headers()) as client:
         assert client.get("/api/health").status_code == 200
 
 
@@ -549,7 +551,7 @@ def test_builtin_pi_template_injection_is_idempotent(
 
     # 重建服务（走启动钩子那条注入路径）再读：仍然只有一份。
     monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
-    with TestClient(create_app()) as restarted:
+    with TestClient(create_app(), headers=auth_headers()) as restarted:
         third = restarted.get("/api/templates").json()
     assert [item["id"] for item in third].count(PI_TEMPLATE_ID) == 1
 
@@ -694,6 +696,6 @@ def test_lifespan_prepares_templates_dir(
     """启动钩子：准备模板库目录。"""
     monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     app = create_app()
-    with TestClient(app) as client:
+    with TestClient(app, headers=auth_headers()) as client:
         assert client.get("/api/templates").status_code == 200
     assert templates_dir_of(platform_home).is_dir()

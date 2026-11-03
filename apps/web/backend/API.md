@@ -434,11 +434,11 @@
 |---|---|
 | 前缀 | `/api` |
 | 启动入口 | `uv run --project apps/web/backend python -m sandbox_console` |
-| 监听地址 | 默认 `127.0.0.1:8000`，用 `SANDBOX_CONSOLE_HOST` / `SANDBOX_CONSOLE_PORT` 覆盖；非回环地址启动时打醒目告警 |
+| 监听地址 | 默认 `127.0.0.1:8000`，用 `SANDBOX_CONSOLE_HOST` / `SANDBOX_CONSOLE_PORT` 覆盖；非回环地址启动时打醒目告警（口径：**已启用令牌认证**，但令牌是单一凭据） |
 | 前端目录 | 默认 `apps/web/frontend/dist`（前端与后端同在 `apps/web/` 下），用 `SANDBOX_CONSOLE_DIST` 覆盖；目录不存在时跳过静态托管并告警（`/api/health` 的 `console_mounted` 为 false） |
-| 接口文档 | `/docs` 与 `/openapi.json` **默认关闭**；用 `SANDBOX_CONSOLE_DOCS=1` 显式开启（无认证环境不公开接口清单） |
+| 接口文档 | `/docs` 与 `/openapi.json` **默认关闭**；用 `SANDBOX_CONSOLE_DOCS=1` 显式开启（接口清单不外泄）。**开启后 `/docs` 与 `/openapi.json` 不受令牌保护**（中间件只拦 `/api` 前缀），仅限本机排查时临时开启，排查完关掉 |
 | 错误响应体 | 统一 `{"detail": "中文消息"}`；400 / 404 / 409 保留平台异常原文，500 只给固定文案（原文只进日志） |
-| 鉴权 | 无（只监听回环或内网地址，不得暴露公网） |
+| 鉴权 | **全部 `/api`（含终端 WebSocket）受访问令牌保护**；`/api/health` **不豁免**；详见第 14 章 |
 
 创建接口支持两类路径声明：**挂载**（`mounts`，平台不处置宿主目录）与
 **文件注入**（`files`，平台把宿主文件复制一份再只读挂进容器）。注入副本落在
@@ -461,6 +461,7 @@
 | 方法 | 路径 | 请求体 | 响应体 | 对应的核心接口 |
 |---|---|---|---|---|
 | GET | `/api/health` | — | 服务自检（版本、数据根是否就绪、前端是否挂载） | — |
+| POST | `/api/auth/ticket` | —（`Authorization: Bearer <令牌>`，**受令牌保护**） | `{"ticket": "...", "expires_in": 30}` | 一次性票据（见第 14 章；30 秒有效、用过即废） |
 | POST | `/api/sandboxes` | `CreateSandboxRequest` | 201 + `CreateSandboxResponse` | `SandboxService.create` |
 | GET | `/api/sandboxes` | — | `SandboxSummary[]` | `SandboxService.list` |
 | GET | `/api/sandboxes/{name}` | — | `SandboxDetail` | `SandboxService.get` |
@@ -549,7 +550,7 @@
 | 缓存只增不减 | **不提供任何清理代理缓存的接口**：缓存目录只增不减，`GET /api/proxy/status` 只展示占用字节数 |
 | 不做远程拉取 | **不提供网页拉取镜像的接口**：`GET /api/images` 只实时枚举宿主本地镜像（含用户本地构建、任何仓库都没有的镜像），创建沙箱时只从这份列表里选 |
 
-> **未认证特权端点（风险说明）**：`POST /api/proxy/restart` 是**未认证的特权端点**。服务只绑回环地址，但本机任意进程都能调用它：反复重启代理会打断正在拉镜像的沙箱（代理不可达时创建 / 启动直接失败）。不要把服务改成监听公网或不受控的内网地址；如需对外提供服务，必须先加认证。
+> **特权端点的风险说明（已收窄）**：`POST /api/proxy/restart` 能打断正在拉镜像的沙箱（代理不可达时创建 / 启动直接失败）。三期起它不再是「未认证的特权端点」——**全部 `/api` 都受令牌保护**（见第 14 章）。但令牌是**单一凭据**：拿到它即拥有平台的全部能力。回环这一跳没有网络边界保护（本机任意进程都能连上端口），但接口仍要求令牌；令牌是唯一准入门槛。
 
 
 ---
@@ -568,7 +569,7 @@
 | POST | `/api/terminal/sessions` | `TerminalSessionCreateRequest` | 201 + `TerminalSessionResponse` | 新建终端会话（沙箱内起一个交互式 shell） |
 | GET | `/api/terminal/sessions` | 查询参数 `sandbox`（可选） | `TerminalSessionModel[]` | 列出会话；给了沙箱名则只列该沙箱的会话，缺省列全部 |
 | DELETE | `/api/terminal/sessions/{session_id}` | — | `TerminalSessionDeleteResponse` | 删除会话（会话不存在或标识非法 → 404） |
-| WS | `/api/terminal/sessions/{session_id}` | 见 12.3 帧协议 | 二进制帧 + 文本帧 | 附着到已有会话（先回放缓冲再接实时流） |
+| WS | `/api/terminal/sessions/{session_id}` | 见 12.3 帧协议（**握手需带 `?ticket=` 一次性票据**） | 二进制帧 + 文本帧 | 附着到已有会话（先回放缓冲再接实时流） |
 
 ### 12.2 请求与响应字段
 
@@ -642,11 +643,17 @@
 
 握手与时序：
 
-1. 浏览器连上 `WS /api/terminal/sessions/{session_id}`；
-2. 服务端先登记附着（连接数加一），再回 `hello`；
-3. 接着把环形缓冲里的历史输出作为二进制帧**回放**（单帧不超过 64 KiB，超出就切多帧），之后接实时流；
-4. 浏览器断开：容器内进程不退出，输出继续写进环形缓冲，重连同一 `session_id` 即可恢复现场；
-5. 服务重启：全部会话失效（见 12.4），旧 `session_id` 不可再附着。
+1. 浏览器先用 `POST /api/auth/ticket`（带 `Authorization: Bearer <令牌>`）换一张
+   **一次性票据**（浏览器 `WebSocket` API 不能设自定义头，见第 14 章）；
+2. 浏览器连上 `WS /api/terminal/sessions/{session_id}?ticket=<票据>`，同时带自身
+   `Origin`（服务端校验放行清单，同源与白名单来源放行，其余拒握手）；
+3. 服务端校验票据（**校验即作废**）与 `Origin`，过了才 `accept`；任一不过都
+   **握手在 accept 前被拒**——生产环境（uvicorn）对客户端表现为 HTTP 403、
+   关闭码不送达；TestClient 下表现为 `WebSocketDisconnect(1008)`，属测试语义；
+4. 服务端先登记附着（连接数加一），再回 `hello`；
+5. 接着把环形缓冲里的历史输出作为二进制帧**回放**（单帧不超过 64 KiB，超出就切多帧），之后接实时流；
+6. 浏览器断开：容器内进程不退出，输出继续写进环形缓冲，重连同一 `session_id` 即可恢复现场；
+7. 服务重启：全部会话失效（见 12.4），旧 `session_id` 不可再附着。
 
 ### 12.4 终端会话表
 
@@ -767,7 +774,7 @@ TTY 负责（容器内拿到的是真实 TTY，默认 termios 生效）。
 | 字段 | 只落用户真正填过的字段（`exclude_unset`）：「字段缺失」与「字段填了空值」不混同——模板应用语义是「出现字段整体替换、缺失字段保持现状」 |
 | 内置种子 | 常量 `BUILTIN_TEMPLATES`：**清单一条** `tpl_pi_dev`（pi agent）——配置体**只含 `files` 一个键**，五条文件注入声明逐字原样：`~/.ssh:/root/.ssh`（ssh 整目录）、`~/.pi/agent/auth.json:/root/.pi/agent/auth.json`、`~/.pi/agent/models-store.json:/root/.pi/agent/models-store.json`、`~/.pi/agent/models.json:/root/.pi/agent/models.json`、`~/.pi/agent/settings.json:/root/.pi/agent/settings.json`（四条 pi 文件的容器侧路径同为 `/root/.pi/agent/` 下同名文件）；**启动时**按标识注入，**每次列表读取都补注入**；同标识文件已存在不覆盖；删了写墓碑、不复活。将来加一条即自动生效 |
 | 内置模板的前置条件 | `~` 展开以**控制台服务运行用户的家目录**为目标：按仓库自带的 systemd 单元（`User=root`）部署时，五条宿主路径都展开到 `/root` 之下，命中核心包的宿主敏感目录拒绝清单，创建沙箱返回 400——**该模板要求服务以持有这些凭证的非 root 用户运行**（该用户家目录里须有 `~/.ssh` 与 `~/.pi/agent/`）。这是既有 `~` 展开契约的自然结果，不是缺陷 |
-| 内置模板的信任边界 | 该模板会把宿主 ssh 私钥与 pi 凭证**复制成只读副本**注入沙箱（宿主原件零接触；副本是创建时的快照，原件之后的改动不回灌；副本以只读方式挂进容器）。控制台服务不做认证，仅适用于**本机单人部署**场景 |
+| 内置模板的信任边界 | 该模板会把宿主 ssh 私钥与 pi 凭证**复制成只读副本**注入沙箱（宿主原件零接触；副本是创建时的快照，原件之后的改动不回灌；副本以只读方式挂进容器）。控制台服务的接口受令牌保护（见第 14 章），但令牌是单一凭据，拿到它即拥有平台的全部能力——**仅适用于本机单人部署场景** |
 | 墓碑 | `templates/.builtin/state.json`，内容 `{"deleted": [...]}`；内置模板被删后写墓碑，后续启动不再注入（**删了不复活**） |
 | 墓碑目录 | 点开头的隐藏目录 `.builtin`，不参与用户模板枚举 |
 | 坏数据 | 记录文件或墓碑文件损坏时按「不存在 / 空集」处理，不炸服务（非 UTF-8 文件同样按损坏处理：坏记录跳过、坏墓碑按空集） |
@@ -784,3 +791,146 @@ TTY 负责（容器内拿到的是真实 TTY，默认 termios 生效）。
 | root 运行的后果 | 服务以 root 身份运行时 `~` 展开为 `/root`，命中核心包的宿主敏感目录拒绝清单 → 400。**这是既有契约的自然结果，不是缺陷** |
 | 适用范围 | `~` 展开是**网页创建专属口径**：命令行创建沙箱仍要求宿主路径写绝对路径（命令行零改动） |
 | 模板声明的字面量 | **模板声明中的任何字面量原样提交**：前端不做任何占位符替换，模板配置里的字符串原样回填表单、原样进创建请求（`{name}` 这样的写法也照原样提交）；服务端只原样存取——模板里的 `~` 与其他字面量都不改写 |
+
+---
+
+## 14. 认证（访问令牌 / 一次性票据 / 跨源放行）
+
+三期起，后端从「同源无认证」改成「独立 API + 令牌认证」：**全部 `/api`（含终端 WebSocket）受访问令牌保护**。
+契约依据 [[architecture/decisions/0013-三期定位改定与认证重启.md|ADR 0013]] 第 3、4 节。
+
+| 项 | 口径 |
+|---|---|
+| 令牌性质 | **单一访问凭据**：不做账号体系、不做多用户隔离、不做分级与吊销。拿到令牌即拿到平台的全部能力 |
+| 令牌来源 | 环境变量 `SANDBOX_CONSOLE_TOKEN` 注入优先（**不落盘**）；未注入时服务启动自动生成，落 `<平台数据根>/console-token.json`（权限 `0600`，原子写入） |
+| 令牌生成 | `sbx_` 前缀 + `secrets.token_urlsafe(32)` |
+| 服务起不来的情形 | 令牌解析失败（数据根不可写等）→ 服务**启动失败**，不会在没有令牌的状态下对外提供接口 |
+| 启动日志 | **只打令牌来源与文件路径，不打令牌本体** |
+| 令牌比对 | 一律 `hmac.compare_digest`（常量时间）；源码里不出现对令牌的 `==` / `in` 比较 |
+| 请求头 | `Authorization: Bearer <令牌>` |
+| 认证失败 | `401` + `{"detail": "访问令牌无效或缺失"}`；**缺失与错误不区分**，不回显令牌，不把令牌写进日志 |
+| 拦截范围 | **只拦 `/api` 前缀**：静态资源（`/`、`/assets/*`、`/fonts/*`）与 `/docs`、`/openapi.json` 不拦 |
+| `/api/health` | **不豁免**：没令牌同样 401。401 也是健康口径的一部分——前端靠它区分「后端不可达」与「令牌无效」 |
+| WebSocket 路由准入 | 中间件对 WS scope **默认拒绝**（fail-closed）：只有显式登记的终端 WS 路由放行到路由层，由路由自己再校验票据与 `Origin`。将来新增 WS 路由而忘了写鉴权时，默认被拒（不是裸奔） |
+| 票据 | `POST /api/auth/ticket` → `{"ticket": "...", "expires_in": 30}`；一次性、30 秒过期、进程内存态 |
+| 票据过期判定 | 单调时钟（`time.monotonic`），不受系统时间调整影响 |
+| CORS 白名单 | `http://tauri.localhost`、`http://localhost:5173`、`http://127.0.0.1:5173`；**不放通配符**（响应里不会出现 `Access-Control-Allow-Origin: *`） |
+| CORS 其余项 | `allow_credentials=False`；方法 `GET` / `POST` / `DELETE` / `OPTIONS`；头 `Authorization` / `Content-Type` |
+| WebSocket Origin | 见 14.4：**同源放行** + 白名单放行，其余拒握手 |
+
+### 14.1 令牌来源与落盘
+
+| 情形 | 行为 |
+|---|---|
+| 注入了 `SANDBOX_CONSOLE_TOKEN` | 用注入值；**不写令牌文件**（磁盘上不留痕迹）；启动日志写「环境变量注入」 |
+| 未注入、令牌文件已存在 | 沿用文件里的令牌（重启不变）；启动日志打文件路径 |
+| 未注入、令牌文件不存在 | 生成一个（`sbx_` + 32 字节随机），原子写入 `<平台数据根>/console-token.json`（`0600`）；启动日志打文件路径 |
+
+令牌文件格式（JSON）：
+
+```json
+{
+  "token": "sbx_xxxxxxxx",
+  "created_at": "2026-11-03T09:00:00+00:00"
+}
+```
+
+写入口径：写临时文件 → 改权限 `0600` → 原子替换（进程中断不留半截文件，权限位不受进程 umask 影响）。
+
+**轮换令牌**（本期只支持这一种）：删掉令牌文件后重启服务，或改 `SANDBOX_CONSOLE_TOKEN` 后重启。
+
+### 14.2 请求方式
+
+```bash
+# 健康自检（/api/health 同样要令牌）
+curl -s -H 'Authorization: Bearer <令牌>' http://127.0.0.1:8000/api/health
+
+# 换一张一次性票据
+curl -s -X POST -H 'Authorization: Bearer <令牌>' \
+    http://127.0.0.1:8000/api/auth/ticket
+# → {"ticket": "sbxt_xxxxxxxx", "expires_in": 30}
+```
+
+`Authorization` 头缺失、不是 `Bearer`、或令牌为空，都按认证失败处理（401）。
+
+### 14.3 票据流程（为什么浏览器 WebSocket 不能带自定义头）
+
+浏览器的 `WebSocket` API **不支持设置自定义请求头**，所以终端 WebSocket 没法直接带
+`Authorization: Bearer`。为此单开一条票据通道：
+
+```
+POST /api/auth/ticket        （带 Authorization: Bearer <令牌>）
+        ↓ 换到
+?ticket=<票据>                （WS 握手时带上，30 秒内有效）
+        ↓ 校验即作废
+WS 握手通过
+```
+
+| 口径 | 说明 |
+|---|---|
+| 一次性 | 校验通过即从存储里摘掉：同一张票据第二次握手必然失败 |
+| 有效期 | 30 秒（`expires_in` 回 30）；过期判定走单调时钟 |
+| 存放位置 | **进程内存态**：不落盘、不跨进程；服务重启后已签发的票据全部失效 |
+| 不放长期令牌进 URL | URL 会进访问日志与中间代理日志：长期令牌只走 `Authorization` 头 |
+| 票据也会进访问日志 | 票据走 `?ticket=` 查询参数，**同样会进 uvicorn 访问日志（query string 原样记录）**。靠「30 秒过期 + 用过即废」把暴露窗口压到最小：日志里那条记录很快就没用了 |
+| 终端 WS 的唯一通道 | 终端 WebSocket **只接受一次性票据**（Bearer 头不进终端 WS 的握手） |
+| 非浏览器客户端 | 桌面壳的 Rust 客户端能设请求头，走 `Authorization: Bearer` 直连（端口转发隧道用它）——**尚未实现（三期任务 05 落地）** |
+
+### 14.4 CORS 与 WebSocket Origin 口径
+
+| 场景 | 来源 | 结果 |
+|---|---|---|
+| HTTP 请求，来源在 CORS 白名单内 | `http://tauri.localhost` / `http://localhost:5173` / `http://127.0.0.1:5173` | 放行：响应带 `Access-Control-Allow-Origin: <该来源>` |
+| HTTP 请求，来源不在白名单内 | 其它任何来源 | 不放行：响应**不带** `Access-Control-Allow-Origin`（浏览器据此拦下） |
+| HTTP 预检（`OPTIONS`） | 白名单内 | 放行（预检本身不带 `Authorization` 头，令牌闸不拦预检） |
+| HTTP 预检（`OPTIONS`） | 白名单外 | 拒绝（`400`），不放行 |
+| WebSocket 握手，**与请求同源**（scheme + 主机 + 端口都一致） | 如后端托管网页时的 `http://127.0.0.1:8000` | **放行** |
+| WebSocket 握手，来源在白名单内 | 同 CORS 白名单 | 放行 |
+| WebSocket 握手，其余来源 | 其它任何来源 | **握手在 accept 前被拒**：生产环境（uvicorn）对客户端表现为 HTTP 403、关闭码不送达；TestClient 下表现为 `WebSocketDisconnect(1008)`，属测试语义 |
+| WebSocket 握手，无 `Origin` 头 | 非浏览器客户端 | 放行（浏览器发起的 WS 握手**一定**带 `Origin`；凭据照常校验） |
+| WebSocket 握手，**未登记的 WS 路由** | 任何不在豁免清单内的路径 | **握手在 accept 前被拒**（中间件 fail-closed，不进路由层） |
+
+**为什么 WS 的放行清单要额外收一条「同源」**：后端托管网页的形态下（本机回环任意端口，
+或绑内网地址时的自身 Host），浏览器发起 WS 带的正是自身 Origin（如 `http://127.0.0.1:8000`）。
+不放行同源等于把网页终端全断。
+
+**同源怎么判**：scheme + 主机 + 端口三者都要一致。默认端口按 **Origin 的 scheme** 取
+（`https` → 443、`http` → 80）：`Host` 头不带端口时按这个默认端口算，固定按 80 算会把
+https 同源误判成跨源。scheme 也要比：`http` 的 Origin 与 `https` 的连接不是同源。
+
+> **Origin 校验不是安全边界**：同源判定基于请求的 `Host` 头，**可被 DNS rebinding 绕过**
+> （攻击者让域名解析到回环地址，Host 头就跟着变成回环地址）。它只是一道减少误伤、
+> 挡住顺手发起的跨源连接的辅助闸；**真正的准入边界是令牌与票据**（见 14.2、14.3）。
+
+### 14.5 绑非回环地址时的告警口径
+
+| 旧口径（二期） | 新口径（三期） |
+|---|---|
+| 「本服务不做认证也不做多用户隔离，只能在可信内网使用，严禁暴露到公网」 | 「本服务**已启用令牌认证**（全部 `/api` 受令牌保护），但令牌是**单一凭据**，拿到它即拥有平台的全部能力；仍不得暴露到公网，且务必把令牌文件（0600）交给可信的人」 |
+
+网络边界从**第一层**降级为**第二层**：令牌是硬需求，但令牌不解决多用户问题。
+
+### 14.6 服务端模块
+
+| 模块 | 职责 |
+|---|---|
+| `sandbox_console/auth.py` | 令牌来源解析与落盘、常量时间比对、票据存储、跨源放行清单与 Origin 判定、Bearer 认证中间件（含 WS 的 fail-closed 准入） |
+| `sandbox_console/routes/auth.py` | `POST /api/auth/ticket`（票据签发；**必须是 `async def`**——票据存储仅限事件循环单线程使用） |
+| `sandbox_console/app.py` | 挂中间件（**外层跨源放行、内层令牌认证**）、启动时解析令牌并打日志 |
+| `sandbox_console/routes/terminal.py` | 终端 WS 握手校验（票据 + `Origin`） |
+
+中间件顺序要紧：跨源放行在**外层**，预检请求由它直接应答，不会落到内层的令牌闸上
+（预检本来就不带 `Authorization` 头）。
+
+令牌闸对 WebSocket 是 **fail-closed**：只有显式登记的终端 WS 路由放行到路由层，
+其余 WS 路由一律在 accept 前拒握手。新增 WS 路由要同时改两处——豁免清单
+（`auth.WEBSOCKET_EXEMPT_PATHS`）与路由自身的鉴权。
+
+### 14.7 部署口径（本批改动的边界）
+
+| 事项 | 口径 |
+|---|---|
+| 前端未跟上之前网页控制台不可用 | 本批改动（任务 02）落地后，**前端（任务 03 之前）不发 `Authorization` 头、也不换票据**：网页控制台在 03 合并前**不可用**（`/api` 全部 401，终端 WS 换不到票据）。这是令牌硬需求的必然结果，不是缺陷 |
+| 不得单独部署 | **02 不得单独部署到在跑的网页控制台**，必须与 03 **同批发布**：否则已上线的网页控制台会当场失效（拿不到数据） |
+| 直接调接口的脚本 | 后端契约已变（全部 `/api` 要令牌）：任何直调 `/api` 的脚本、监控与运维命令都要补上 `Authorization: Bearer <令牌>` |
+| 回环这一跳 | 回环这一跳**没有网络边界保护**（本机任意进程都能连上端口），但接口仍要求令牌；**令牌是唯一准入门槛** |
