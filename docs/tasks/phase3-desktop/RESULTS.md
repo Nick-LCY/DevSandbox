@@ -36,8 +36,8 @@
 - **端口发布只绑回环**：实测确认 `-p 127.0.0.1:<宿主端口>:<容器端口>` 在宿主上只出现 `127.0.0.1:<端口>` 的监听（不是 `0.0.0.0`），不出本机、不出局域网。
 - **多路复用推迟**：一条 WebSocket 对一条 TCP 连接；高并发场景每条连接多一次握手。
 - **令牌轮换无 UI**：泄漏后只能删文件重启，本期接受。
-- **前端 `base` 仍是绝对路径**：`apps/web/frontend/dist/index.html` 里资源引用形如 `/assets/xxx.js`。Tauri 自定义协议（Windows 上是 `http://tauri.localhost` 根路径）能解析，但改成 `base: './'` 是任务 03 的既定改动，届时必须重跑既有验收（PRD R12）。
-- **桌面壳本期只设 `csp: null`**：PRD 要求的「按连接配置动态设置 CSP」属任务 03/06 的范围；打样轮保持最小骨架，避免静态 CSP 误伤前端产物里的内联防闪烁脚本。
+- **前端 `base` 已改为相对路径**（03 落地）：`apps/web/frontend/vite.config.ts` 现为 `base: './'`，`apps/web/frontend/dist/index.html` 里资源引用形如 `./assets/xxx.js`。相对引用在 Tauri 自定义协议（Windows 上是 `http://tauri.localhost` 根路径）与后端 `StaticFiles` 托管两种形态下都能解析；但这是一次**全量产物变更**，既有验收需重跑（PRD R12）——当前这 9 条 spec 为红是**过渡态**（引导面板 + 后端要令牌），07 token 化后恢复。
+- **桌面壳 CSP 不再是 `csp: null`**（03 落地）：已按 [[architecture/decisions/0015-桌面壳与连接配置抽象.md|ADR 0015]] 第 6 节收敛为「配置基线 + Rust 运行期 host 级动态生成」——`tauri.conf.json` 存基线策略（`connect-src` 只留 `'self'`），Rust 侧按当前后端主机动态补 `http(s)://<host>:*` 与 `ws(s)://<host>:*`；时序契约为「保存连接配置 → 同步 Rust 状态 → 按需重载主文档」。端口转发侧（任务 06）的同款闸门仍待闭合。
 
 ---
 
@@ -240,6 +240,10 @@ $ ss -ltn | grep 18000            → （空，端口已释放）
 - **正式版构建打不开开发者工具 —— 正常现象**：开发者工具只在调试构建（`pnpm tauri dev`）下提供，正式版构建（`pnpm tauri build`）不含 DevTools 入口，不是构建失败。
 - **控制台三项待复验**：正式版拿不到 DevTools，`CSS.supports('color', 'oklch(0.7 0.15 200)')`、`window.isSecureContext`、`navigator.clipboard` 读写这三项**尚未判定**，待用户以调试构建（`pnpm tauri dev`）复验后逐项记「通过 / 不通过 + 输出」。
 - **xterm 真渲染待 03 后端连通后验**：终端真渲染依赖后端连通，而 02（连接层后端改造）尚未与 03（前端连接层改造）同批发布（前端不带 `Authorization` 头时后端全线 `401`），因此 xterm 的「渲染 / fit / 表面不溢出」判定待 03 落地、后端连通后再做。
+
+### 5.2 03 落地后的可测性变化（2026-11-03）
+
+03（连接层前端改造）已落地，桌面壳可按连接配置（后端地址 + 令牌）**连上真后端**，因此 **xterm 真渲染（渲染 / fit / 表面不溢出）与剪贴板读写现在可以在真机上做端到端验证**——不再受「前端拿不到数据」的阻塞。该复验窗口与 P2 的控制台三项**合并成一次 Windows 真机复验**（见 [[current-state.md|当前状态]] 的 TODO 条目）。
 
 ---
 
