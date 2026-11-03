@@ -4,7 +4,7 @@
 
 三期 = 桌面端打包（Tauri）+ 端口转发 + 连接层改造（后端独立 API + token 认证）。原「前后端分离部署」规划被本期吸收（后端侧并入、Cloudflare 静态托管退役），决策依据见 [[architecture/decisions/0013-三期定位改定与认证重启.md|0013 三期定位改定与认证重启]]；端口转发机制见 [[architecture/decisions/0014-端口转发机制选型.md|0014 端口转发机制选型]]；桌面壳与连接配置见 [[architecture/decisions/0015-桌面壳与连接配置抽象.md|0015 桌面壳与连接配置抽象]]。
 
-**状态：01 doing、02 done（待与 03 同批发布）、03 doing（实现完成，待真机复验），04~09 todo。** 打样轮 01 的本机部分已完成（结论见 [[tasks/phase3-desktop/RESULTS.md|三期留档]]），首轮 Windows 反馈已入档（P4 路径②可行、P2 外观初测通过；P2 控制台三项、P5 与「骨架可启动」仍待验）；02（连接层后端改造：token 认证 / CORS / WS 鉴权）与 03（连接层前端改造：基址抽象 / 连接配置 / 未配置态）**均已落地**，按部署口径**同批发布**后网页控制台恢复；03 只差第 2 条完成标准（同一份产物连同源 / 远端后端全链路可用）待用户 Windows 真机 + 真后端复验，**04 起可开工**。看板见 [[current-state.md|当前状态]]。
+**状态：01 doing、02 done（待与 03 同批发布）、03 doing（实现完成，待真机复验），04~09 todo。** 打样轮 01 的本机部分已完成（结论见 [[tasks/phase3-desktop/RESULTS.md|三期留档]]），首轮 Windows 反馈已入档（P4 路径②可行、P2 外观初测通过；P2 控制台三项、P5 与「骨架可启动」仍待验）；02（连接层后端改造：令牌 + 一次性票据鉴权 / CORS 任意来源）与 03（连接层前端改造：基址抽象 / 连接配置 / 未配置态）**均已落地**，按部署口径**同批发布**后网页控制台恢复；03 只差第 2 条完成标准（同一份产物连同源 / 远端后端全链路可用）待用户 Windows 真机 + 真后端复验，**04 起可开工**。看板见 [[current-state.md|当前状态]]。
 
 > **⚠️ 已知过渡态（勿当回归）**：既有 Playwright 验收套件（`apps/web/frontend/tests`，9 条 spec）**自 03 落地起为红**——未配置态引导面板替换了工作台，后端又要求令牌，脚本没预置令牌就进不了工作台。**07（[[tasks/phase3-desktop/07-acceptance-tokenization.md|验收套件 token 化]]）落地后恢复**。这 9 条红是已知过渡态，不是回归。
 
@@ -13,7 +13,7 @@
 | 编号 | 任务 | 状态 | 交付内容 |
 |---|---|---|---|
 | [[tasks/phase3-desktop/01-prototype-and-spike.md\|01]] | 打样轮：免 root 端口发布 / Tauri 壳 / WebView2 三项冒烟 | doing | 四项打样结论 + 失败时的备案路径裁决 + Windows 出包路径裁决 |
-| [[tasks/phase3-desktop/02-backend-token-and-cors.md\|02]] | 连接层后端改造：token 认证 / CORS / WS 鉴权 | done | 令牌生成与配置、Bearer 中间件、票据、CORS 白名单、WS Origin 校验 |
+| [[tasks/phase3-desktop/02-backend-token-and-cors.md\|02]] | 连接层后端改造：token 认证 / CORS / WS 鉴权 | done | 令牌生成与配置、Bearer 中间件、一次性票据鉴权、CORS 任意来源（WS 握手无 Origin 门禁） |
 | [[tasks/phase3-desktop/03-frontend-connection-layer.md\|03]] | 连接层前端改造：基址抽象 / 连接配置 / 未配置态 | doing | `src/lib/connection.ts`、请求基址、WS 地址推导、引导面板、设置区 |
 | [[tasks/phase3-desktop/04-port-forward-core.md\|04]] | 端口转发核心包能力 | todo | `forwarding.py`：转发容器编排、宿主端口分配、标签枚举、清理钩子 |
 | [[tasks/phase3-desktop/05-port-forward-server-api.md\|05]] | 端口转发服务端接口 | todo | `/api/forwards` 三条 REST + `/api/forward/tunnel/{id}` 隧道 WS |
@@ -60,7 +60,7 @@
 ## 任务文件
 
 - [[tasks/phase3-desktop/01-prototype-and-spike.md]] — 打样轮：免 root 端口发布 / Tauri 壳 / WebView2 三项冒烟 / Windows 出包路径。
-- [[tasks/phase3-desktop/02-backend-token-and-cors.md]] — 连接层后端改造：token 认证 / CORS / WebSocket 鉴权。
+- [[tasks/phase3-desktop/02-backend-token-and-cors.md]] — 连接层后端改造：令牌 + 一次性票据鉴权 / CORS 任意来源（WS 握手无 Origin 门禁）。
 - [[tasks/phase3-desktop/03-frontend-connection-layer.md]] — 连接层前端改造：请求基址抽象 / 连接配置 / WebSocket 地址推导 / 未配置态。
 - [[tasks/phase3-desktop/04-port-forward-core.md]] — 端口转发核心包能力：转发容器编排 / 宿主端口分配 / 生命周期与清理。
 - [[tasks/phase3-desktop/05-port-forward-server-api.md]] — 端口转发服务端接口：转发管理 REST + 隧道 WebSocket。

@@ -64,7 +64,7 @@
 
 ### 三期规划中的新模块（2026-11-03 立项；连接层前后端侧均已落地，端口转发侧未开始）
 
-- `连接层与认证` — 后端所有 `/api` 受访问令牌保护（浏览器侧 WebSocket 走一次性票据）、CORS 与 WS Origin 放行清单收窄、前端请求基址与 WebSocket 地址从「连接配置」推导。**后端侧已落地**（[[tasks/phase3-desktop/02-backend-token-and-cors.md|任务 02]]），**前端侧已落地**（[[tasks/phase3-desktop/03-frontend-connection-layer.md|任务 03]]，doing：实现完成、待真机复验）；桌面侧 CSP 按 0015 收敛为「配置基线 + Rust 运行期 host 级动态生成」。见 [[architecture/decisions/0013-三期定位改定与认证重启.md|0013]]、[[architecture/decisions/0015-桌面壳与连接配置抽象.md|0015]]。
+- `连接层与认证` — 后端所有 `/api` 受访问令牌保护（浏览器侧 WebSocket 走一次性票据）、**CORS 任意来源**（不带凭据）、**WS 握手不再设 Origin 门禁**（准入边界收敛为令牌 + 票据）、前端请求基址与 WebSocket 地址从「连接配置」推导（基址一律可选，空即同源，形态间无配置差异）。**后端侧已落地**（[[tasks/phase3-desktop/02-backend-token-and-cors.md|任务 02]]），**前端侧已落地**（[[tasks/phase3-desktop/03-frontend-connection-layer.md|任务 03]]，doing：实现完成、待真机复验）；桌面侧 CSP 按 0015 收敛为「配置基线 + Rust 运行期 host 级动态生成」。见 [[architecture/decisions/0013-三期定位改定与认证重启.md|0013]]、[[architecture/decisions/0015-桌面壳与连接配置抽象.md|0015]]。
 - `端口转发` — 转发容器（平台自建、由沙箱的免 root 守护进程起）+ 后端宿主回环 + 隧道 WebSocket + 桌面端本机回环监听；编排能力落核心包。见 [[architecture/decisions/0014-端口转发机制选型.md|0014]]。
 - `桌面端` — Tauri v2 壳，与 web 形态共用同一份前端产物；纯连接器，不拉起后端。见 [[architecture/decisions/0015-桌面壳与连接配置抽象.md|0015]]。
 
@@ -84,8 +84,8 @@
 | [[architecture/decisions/0010-启动模板收敛为控制台私有功能.md\|0010 启动模板收敛为控制台私有功能]] | 模板只落控制台服务层、核心包与命令行零改动；合并语义与网页专属口径写死，内置种子配墓碑机制 |
 | [[architecture/decisions/0011-基础镜像增加通用工具层并转联网构建.md\|0011 基础镜像增加通用工具层并转联网构建]] | base 扩为 9 个通用系统工具、构建转联网 apt 拉包，0.2.0 保留为离线可回退底座 |
 | [[architecture/decisions/0012-文件注入采用复制加改属主而非改造挂载预检.md\|0012 文件注入采用复制加改属主而非改造挂载预检]] | 文件注入走「复制 + 改属主 + 只读挂载」，不改挂载预检；注入源以特权读取，调用者视为受信主体 |
-| [[architecture/decisions/0013-三期定位改定与认证重启.md\|0013 三期定位改定与认证重启]] | 三期 = 桌面端打包 + 端口转发；token 认证本期落地并推翻 0009 的「不做认证」裁剪；「前后端分离部署」被吸收、Cloudflare 静态托管退役（2026-11-03 修订：WS 握手 Origin 放行清单新增「同源放行」） |
+| [[architecture/decisions/0013-三期定位改定与认证重启.md\|0013 三期定位改定与认证重启]] | 三期 = 桌面端打包 + 端口转发；token 认证本期落地并推翻 0009 的「不做认证」裁剪；「前后端分离部署」被吸收、Cloudflare 静态托管退役（2026-11-03 第二次修订：**CORS 任意来源 + WS 握手 Origin 门禁取消**，准入边界 = 令牌 + 票据） |
 | [[architecture/decisions/0014-端口转发机制选型.md\|0014 端口转发机制选型]] | 转发容器（平台自建、沙箱守护进程起）→ 宿主回环 → 隧道 WebSocket → 桌面本机监听；免 root `-p` 为硬前置打样项，不成立则走 Fallback B |
-| [[architecture/decisions/0015-桌面壳与连接配置抽象.md\|0015 桌面壳与连接配置抽象]] | 桌面与 web 共用同一份前端产物；连接配置（后端地址 + token）统一基址与 WebSocket 地址推导；CSP 由 Rust 侧运行时动态设置（host 级，2026-11-03 修订：打样轮的 `csp: null` 临时偏离已随 03 闭合） |
+| [[architecture/decisions/0015-桌面壳与连接配置抽象.md\|0015 桌面壳与连接配置抽象]] | 桌面与 web 共用同一份前端产物；连接配置（后端地址 + token）统一基址与 WebSocket 地址推导；CSP 由 Rust 侧运行时动态设置（host 级，2026-11-03 修订：打样轮的 `csp: null` 临时偏离已随 03 闭合；第二次修订：取消形态间的配置差异，基址一律可选、空即同源，唯一形态差异是桌面运行时的机制层） |
 
 决策背景与代价见 [[architecture/decisions/README.md|架构决策记录清单]]；术语统一见 [[glossary.md|词汇表]]。
