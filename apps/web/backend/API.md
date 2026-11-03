@@ -31,6 +31,10 @@
 | `proxy_address` | `str` | `127.0.0.1` | `SANDBOX_PLATFORM_PROXY_ADDRESS` | 沙箱守护进程访问代理用的地址（见下注） |
 | `proxy_registries` | `tuple[str, ...]` | `docker.io ghcr.io quay.io gcr.io registry.k8s.io` | `SANDBOX_PLATFORM_PROXY_REGISTRIES` | 代理拦截并缓存的仓库清单（空格分隔） |
 | `system_ca_bundle` | `Path` | `/etc/ssl/certs/ca-certificates.crt` | `SANDBOX_PLATFORM_SYSTEM_CA_BUNDLE` | 宿主系统 CA 束（与代理 CA 合并成单个文件） |
+| `forward_image` | `str` | `alpine/socat:1.8.1.3@sha256:466c8a0383e16463fabdb7df01008292fb78d07da60224a46cb5d3142ce122ed` | `SANDBOX_PLATFORM_FORWARD_IMAGE` | 端口转发的转发镜像（**钉 digest**；镜像的 ENTRYPOINT 是 `socat`） |
+| `forward_container_template` | `str` | `{sandbox}-fwd-{port}` | `SANDBOX_PLATFORM_FORWARD_CONTAINER_TEMPLATE` | 转发容器名模板；必须同时含 `{sandbox}` 与 `{port}` 占位符（其它占位符在配置校验时就报错） |
+
+> **转发侧没有端口区间配置**：链路两点化后后端宿主零端口，宿主侧不再有平台分配的转发端口（ADR 0014 第二次修订）。
 
 > **默认镜像已退役**（镜像退役轮）：平台不再有默认沙箱镜像，`default_image` 字段与
 > `SANDBOX_PLATFORM_IMAGE` 环境变量已彻底删除（不留环境变量口子）。创建沙箱必须
@@ -50,9 +54,9 @@
 | 构造 | `PlatformConfig.from_env(env: dict[str, str] \| None = None) -> PlatformConfig` | 按环境变量装配并校验 |
 | 覆盖 | `PlatformConfig.with_overrides(**kwargs) -> PlatformConfig` | 返回覆盖部分字段的新配置 |
 | 校验 | `PlatformConfig.validate() -> None` | 非法取值抛 `ConfigError` |
-| 路径 | `sandbox_root` / `lock_root` / `temp_root` / `proxy_root` / `proxy_cache_dir` / `proxy_ca_dir` / `sandbox_dir(name)` / `metadata_path(name)` | 数据目录布局 |
+| 路径 | `sandbox_root` / `lock_root` / `temp_root` / `proxy_root` / `proxy_cache_dir` / `proxy_ca_dir` / `forward_root` / `sandbox_dir(name)` / `metadata_path(name)` | 数据目录布局 |
 | 命名 | `system_user_name(sandbox_name: str) -> str` | 沙箱名 → 系统用户名 |
-| 准备 | `ensure_directories() -> None` | 创建数据目录（幂等） |
+| 准备 | `ensure_directories() -> None` | 创建数据目录（幂等）；**转发记录目录单独收紧到 `0700`** |
 
 ---
 
@@ -198,10 +202,14 @@
 | 单元动作 | `daemon_reload()` / `enable_daemon()` / `disable_daemon()` / `start_daemon()` / `stop_daemon()` / `restart_daemon()` | 返回 `CommandResult`；`start_daemon` 带 `--no-block`，就绪判定统一交给 `wait_for_socket` |
 | 镜像 | `image_exists(image) -> bool` / `pull_image(image) -> CommandResult` / `load_image(tar_path) -> CommandResult` / `image_id(image) -> str \| None` | — |
 | 容器 | `container_exists(name) -> bool` / `container_id(name) -> str \| None` / `container_running(name) -> bool` / `list_containers(all_containers=True) -> list[dict]` | — |
+| 容器标签 | `container_labels(name) -> dict[str, str]` | 取容器标签（取不到返回空字典）；转发容器的重建判定靠它比对转发标识 |
+| 按标签枚举 | `container_names_by_label(label) -> list[str]` | `docker ps -a --filter label=<label>`；枚举平台自建资源用（转发容器回收） |
 | 网络容器 | `containers_on_network(network) -> list[str] \| None` | 探测失败返回 `None`（与「确实没有容器」区分开），调用方据此判断清单是否完整 |
 | 起容器 | `run_container(*, name, image, mounts, network=None, command=None, env=None, labels=None, workdir=None) -> CommandResult` | `docker run -d -i`；给了 `command` 时用 `--entrypoint ""` 覆盖镜像入口；`-i` 保持标准输入打开，镜像入口里的交互式 shell 才不会立即退出 |
 | 停删容器 | `stop_container(name)` / `start_container(name)` / `remove_container(name, force=True)` | — |
+| 强停容器 | `kill_container(name) -> CommandResult` | `docker kill`：**不等宽限期**。转发容器的 PID 1 是 busybox `tail -f /dev/null`，不响应 SIGTERM，`docker stop` 会白等 10 秒宽限期且期间占着容器名 |
 | 容器内执行 | `exec_in_container(name, argv, *, check=False, timeout=120) -> CommandResult` | — |
+| 流式执行 | `spawn_stream(argv) -> subprocess.Popen[bytes]` | 以沙箱用户身份起**管道**子进程（不给伪终端）：字节泵场景（`docker exec -i` 的 stdin/stdout 直接搬字节）；命令行必须自带程序名；子进程**自带新会话**（`start_new_session=True`），关闭时能按进程组整体回收 |
 | 网络 | `network_exists(name) -> bool` / `create_network(name)` / `remove_network(name)` / `connect_network(name, network)` | — |
 | 路径可见性 | `can_access_path(path) -> bool` | 宿主路径对沙箱用户是否可读可穿过 |
 | 伪终端 | `exec_pty(argv, *, cols=80, rows=24) -> PtyProcess` | 以沙箱用户身份在伪终端里执行命令（复用 `user_argv` 的执行身份与环境变量） |
@@ -271,6 +279,168 @@
 
 ---
 
+## 6ter. `forwarding.py` —— 端口转发编排
+
+机制依据：ADR 0014（第二次修订，决策 C）——**链路两点化、后端宿主机零端口**。
+
+- 转发只建立在「沙箱 ⇄ 用户机」之间：后端宿主是纯中继，**既不发布端口也不监听端口**。
+- 转发容器是**平台自建资源**：由**沙箱自己的免 root 守护进程**启动、接入沙箱网络；
+  **不发布任何端口**（启动参数里没有 `-p`）、容器主进程**常驻空转**（不监听任何端口）。
+  镜像里的 `socat` 二进制**专供 exec 字节泵使用**。
+- 字节通道唯一路径：`docker exec -i <转发容器> socat - TCP:<沙箱容器>:<端口>`
+  （在沙箱守护进程下执行）；宿主特权交互全部收敛在本模块，调用方只拼参数与搬字节。
+- 转发记录落 `<平台数据根>/forwards/<id>.json`（`0600`，原子替换），
+  **没有 `host_port` 字段**（宿主侧不再有平台分配的转发端口）。
+- 容器探测是**三态**（`probe_container` → `PROBE_EXISTS` / `PROBE_MISSING` /
+  `PROBE_FAILED`）：沙箱守护进程不可达时**探测失败 ≠ 容器不存在**，不得据此宣称
+  「容器已删除」（那会把没删掉的容器说成已回收）。探测按 `docker ps` 是否成功
+  退出判定：成功退出才算探测成功。
+
+### 数据类
+
+| 名称 | 字段 | 说明 |
+|---|---|---|
+| `ForwardRecord` | `id`、`sandbox`、`container_port`、`state`、`host_pid`、`created_at`、`updated_at` | 单条转发记录；**无 `host_port`**。`state` 取 `running` / `stopped`。`host_pid` 是建这条记录的**服务进程号**（跨实例清理保护用） |
+| `ForwardOpResult` | `removed`、`failed` | 转发操作结果（回收清单式）：`removed` 是确实处理掉的条目，`failed` 是尝试过但没成功的条目（带原因，如实上报） |
+| `BytePump` | `process`、`forward_id` | 字节泵进程句柄：一条 TCP 连接对应一个 exec 进程；`close()` **立即回收**该进程（按**进程组**回收，不留僵尸 exec 进程与孤儿孙进程）；是**上下文管理器**（`with` 退出即回收，异常路径也回收） |
+
+### `PortForwardManager`
+
+| 方法 | 签名 | 说明 |
+|---|---|---|
+| 构造 | `PortForwardManager(config: PlatformConfig \| None = None, privilege: Privilege \| None = None, service: SandboxRuntime \| None = None)` | 转发编排入口；`service` 是沙箱侧能力（生命周期服务实现 `get` / `daemon_for` / `list`），缺失时只做记录层操作 |
+| 容器名 | `container_name(sandbox: str, container_port: int) -> str` | `<沙箱名>-fwd-<容器端口>`（模板取 `config.forward_container_template`） |
+| 容器标签 | `container_labels(record: ForwardRecord) -> dict[str, str]` | 见下方「容器命名与标签」 |
+| 启动参数 | `run_args(record: ForwardRecord, *, network: str) -> list[str]` | `docker run` 子命令形式（见下方「容器规格」）；**无 `-p`** |
+| exec 命令 | `exec_command(record: ForwardRecord) -> list[str]` | 字节泵命令（见下方「exec 命令构造口径」） |
+| 查询 | `find(forward_id) -> ForwardRecord \| None` / `get(forward_id) -> ForwardRecord` / `list(sandbox: str \| None = None) -> list[ForwardRecord]` | 不存在抛 `NotFoundError` |
+| 建立 | `create(sandbox: str, container_port: int) -> ForwardRecord` | **幂等**：同一沙箱同一端口已有转发则复用既有记录与容器；沙箱不存在抛 `NotFoundError`，端口非法抛 `ValidationError`，沙箱已停止抛 `ForwardError`，**容器名与非平台容器重名抛 `ForwardError`**。**并发保护**：进程内串行化（单进程假设，见 `ForwardStore`） |
+| 字节泵 | `open_byte_pump(record: ForwardRecord) -> BytePump` | 转发容器缺失则**幂等重建**（沙箱停止后不自动重建，隧道建立时才补上），随后在沙箱守护进程下起 exec 字节泵进程 |
+| 停止转发 | `stop(forward_id: str) -> ForwardOpResult` | 删转发容器（`docker rm -f`）+ 删记录；**容器未确认删掉就不删记录**（记录是唯一收口凭据，先删记录会留下孤儿容器） |
+| 沙箱停止联动 | `stop_for_sandbox(sandbox: str) -> ForwardOpResult` | 该沙箱的转发容器一并**停止**（`docker kill`，**记录保留**，状态置 `stopped`） |
+| 沙箱删除联动 | `reclaim_for_sandbox(sandbox: str) -> ForwardOpResult` | 转发容器与转发记录一并**回收**（平台自建资源）；容器删不掉时**保留记录**并报进 `failed` |
+| 遗留清理 | `purge_leftover() -> ForwardOpResult` | 清理上次遗留的转发容器与记录（**由服务层在启动时调用**）：转发容器按平台标签枚举，转发记录整目录清空，写入残留的 `.forward-*.tmp` 一并清掉；**属于另一个仍活着的服务实例的转发记录与容器不动**（见下方「跨实例保护」） |
+
+### 跨实例保护（同终端会话表语义）
+
+清理遗留转发时，**别的服务实例正在用的转发不能动**：
+
+- 转发记录里带 `host_pid`（建它的服务进程号）；
+- `host_pid` 不是本进程、且那个进程号**还活着** → 这条记录属于另一个仍在运行的
+  服务实例 → **记录与对应容器都跳过**（与 `sessions.py` 的 `purge_leftover_sessions`
+  判据一致：`host_pid` 比对 + `pid_alive`）；
+- 归属进程已经没了（服务重启过）→ 按「上次遗留」清掉。
+
+### `ForwardStore`
+
+**单进程口径**：记录目录由单个服务实例独占；同一进程内的并发访问由
+`PortForwardManager` 的锁串行化，**跨进程并发不在本期的假设范围内**
+（跨实例的遗留清理按 `host_pid` 判归属，见上方「跨实例保护」）。
+
+| 方法 | 签名 | 说明 |
+|---|---|---|
+| 目录 | `root -> Path` | `<平台数据根>/forwards` |
+| 路径 | `path_for(forward_id: str) -> Path` | 单条记录路径；转发标识非法直接抛 `ValidationError` |
+| 写入 | `save(record: ForwardRecord) -> Path` | **原子替换**（临时文件 + `os.replace`），文件权限固定 `0600`，目录权限 `0700` |
+| 读取 | `load(forward_id: str) -> ForwardRecord \| None` | 不存在返回 `None`；**文件损坏抛 `ValidationError`**（含标识/端口非法） |
+| 枚举 | `list_all() -> list[ForwardRecord]` / `list_for_sandbox(sandbox: str) -> list[ForwardRecord]` / `find_by_sandbox_port(sandbox: str, container_port: int) -> ForwardRecord \| None` | 枚举时**跳过损坏文件**（一条坏记录不拖垮整批）：JSON 解析失败、**内容不是 JSON 对象**（合法 JSON 但结构不对）、**标识或端口非法**——三种都只记告警并跳过 |
+| 删除 | `delete(forward_id: str) -> bool` | 返回是否确实删掉了东西 |
+| 文件清单 | `record_files() -> list[Path]` / `temp_files() -> list[Path]` | 全部记录文件（含损坏的）/ 写入残留的 `.forward-*.tmp` |
+
+### 容器命名与标签
+
+| 项 | 取值 |
+|---|---|
+| 容器名 | `<沙箱名>-fwd-<容器端口>`（例：`demo-fwd-8080`） |
+| 标签 | `sandbox-platform.role=forward`、`sandbox-platform.forward.id=<转发标识>`、`sandbox-platform.forward.sandbox=<沙箱名>` |
+| 标签用途 | 枚举与回收（`docker ps -a --filter label=sandbox-platform.role=forward`）；容器标签与记录不一致时按遗留处理并重建（Docker 不允许改容器标签） |
+
+> **标签命名空间（两套并存）**：转发容器用 `sandbox-platform.*`（连字符），
+> 既有沙箱容器用 `sandbox.platform/*`（斜杠，如 `sandbox.platform/role=sandbox`）。
+> 枚举平台自建资源时**两套都要看**，只按一套枚举会漏掉另一套的容器。
+
+**同名容器的处置口径**（`_ensure_container`）：
+
+| 现存容器 | 处置 |
+|---|---|
+| 标签里的转发标识与记录一致 | 就是本条转发的容器：不在跑就拉起来（幂等） |
+| 标识对不上，但带 `sandbox-platform.role=forward`（**平台自建**） | 上次中断留下的遗留容器：删掉重建（标签必须与记录一致） |
+| **不带平台标签**（用户自建） | **平台不删**：抛 `ForwardError`（文案写明「与现有非平台容器重名」），请换沙箱/端口或自行处理 |
+
+### 容器规格（无端口发布）
+
+启动参数（`run_args`）固定如下：
+
+| 参数 | 取值 | 说明 |
+|---|---|---|
+| `--name` | `<沙箱名>-fwd-<容器端口>` | — |
+| `--network` | 沙箱的网桥网络名 | 转发容器接入沙箱网络，才能按容器名解析沙箱容器 |
+| `--restart` | `no` | 生命周期由平台显式管理 |
+| `--label` | 三个平台标签 | 见上表 |
+| `--entrypoint` | `/bin/sh` | **必须显式覆盖**：转发镜像的 ENTRYPOINT 是 `socat`，不覆盖就会把 socat 当监听命令跑起来 |
+| 命令 | `-c "exec tail -f /dev/null"` | **常驻空转**：容器不监听任何端口，只提供 `socat` 二进制与沙箱网络内的一等公民身份（exec 字节泵的落点） |
+| 端口发布 | **无** | 参数里没有 `-p` / `--publish`：宿主侧零端口 |
+
+镜像：`config.forward_image`（默认 `alpine/socat:1.8.1.3@sha256:466c8a…`，**钉 digest**），
+经统一镜像代理在**沙箱守护进程内**拉取（复用 `images.py` 的 `ensure_image` 通道）。
+
+### 转发记录结构
+
+落盘路径 `<平台数据根>/forwards/<id>.json`，权限 `0600`，写入走原子替换：
+
+```json
+{
+  "container_port": 8080,
+  "created_at": "2026-11-03T10:31:00+00:00",
+  "host_pid": 4711,
+  "id": "a1b2c3d4e5f6",
+  "sandbox": "demo",
+  "state": "running",
+  "updated_at": "2026-11-03T10:31:00+00:00"
+}
+```
+
+- **转发标识（`id`）的生成规则**：`uuid4().hex` 的**前 12 位十六进制**（小写）。
+  标识只允许 `[0-9a-f]{8,32}`（记录文件名由它拼出，必须挡住路径分隔符），
+  非法标识按 `ValidationError` 拒绝；**载入时也校验**：标识非法的记录当作损坏
+  记录处理（整批枚举跳过并告警），不会流到删除路径上。
+- **`host_pid`**：建这条记录的**服务进程号**。清理遗留转发时用它判归属：
+  归属进程还活着就不是本实例的（见「跨实例保护」）。
+- **没有 `host_port`**：链路两点化后后端宿主不持有任何转发端口；
+  用户机本机端口由桌面端持有，不进平台记录。
+
+### exec 命令构造口径
+
+`exec_command(record)` 返回**完整命令行**（首元素是 `docker`）：
+
+```
+docker exec -i <转发容器> socat - TCP:<沙箱容器名>:<容器端口>
+```
+
+- 执行身份：**沙箱的免 root 守护进程**（`UserDaemon.spawn_stream`，与既有终端桥接同一条通道）。
+- 管道**非 TTY**：调用方按字节泵语义搬运（写 stdin / 读 stdout），**不加分帧协议**。
+- 目标端是**沙箱容器名**（不是宿主回环端口）：后端宿主上不产生任何转发端口。
+- 进程回收：一条 TCP 连接对应一个 exec 进程；连接断开时调用方必须
+  `BytePump.close()` ——**立即回收，不留僵尸 exec 进程**。
+- 回收按**进程组**做：字节泵子进程自带新会话（`start_new_session=True`），
+  `close()` 先给整组发 SIGTERM、超时再整组 SIGKILL——`sudo` 前缀下的 docker
+  客户端与它拉起的孙进程一并收掉，不留孤儿。`BytePump` 也是上下文管理器
+  （`with` 退出即回收）。
+
+### 生命周期语义
+
+| 场景 | 口径 |
+|---|---|
+| 建立转发 | 记录 + 起转发容器（**幂等**：同一沙箱同一端口已有转发则复用既有记录与容器；记录在而容器缺失时按记录幂等重建）。**同名非平台容器不删**，报 `ForwardError` |
+| 沙箱停止 | 该沙箱的转发容器一并**停止**（`docker kill`）；**记录保留**（状态置 `stopped`） |
+| 沙箱启动 | **不自动重建**；隧道建立时（`open_byte_pump`）若容器缺失则幂等重建 |
+| 停止转发 | 删转发容器（`docker rm -f`）+ 删记录；**容器未确认删掉就不删记录** |
+| 沙箱删除 | 转发容器与转发记录**纳入回收清单并被回收**（平台自建资源）；删不掉的容器**保留记录**并报进回收清单的 `failed` |
+| 后端服务重启 | **全部转发会话丢失**：服务层启动时调用 `purge_leftover()` 清理上次遗留的转发容器与记录（与终端会话「服务重启即丢」同款语义，但**带跨实例保护**：属于另一个仍活着的服务实例的转发记录与容器不动） |
+| 隧道连接断开 | 对应的 `docker exec` 字节泵进程**立即回收**（`BytePump.close()`，按进程组回收），不留僵尸进程与孤儿孙进程 |
+
+---
+
 ## 7. `lifecycle.py` —— 生命周期编排
 
 ### 数据类
@@ -280,7 +450,7 @@
 | `CreateRequest` | `name`、`image`（**必填**）、`mount_declarations=()`、`files=()`、`command=None`、`env={}`、`workdir=None`、`network_name=None`、`image_source="auto"` | 创建入参；**镜像必填**：默认镜像已退役，平台没有兜底镜像；`files` 是文件注入声明（`宿主路径:容器路径`） |
 | `CreateResult` | `metadata`、`connection`、`steps` | 创建结果；`steps` 是固定 7 步名称 |
 | `ConnectionInfo` | `socket_path`、`container_name`、`exec_command`、`docker_command`、`notes` | 连接方式与命令提示（身份切换前缀与实际执行同源：非 root 是 `sudo -u`，root 是 `setpriv`） |
-| `ReclaimPlan` | `sandbox_name`、`items`、`untouched_note`、`user_mounts`、`incomplete` | 删除前的回收清单；`untouched_note` 固定为「用户挂载的宿主机目录不受影响」；依赖容器清单 = 元数据已知列表 ∪ 删除前实时扫描，探测失败时保留旧列表并置 `incomplete=True` |
+| `ReclaimPlan` | `sandbox_name`、`items`、`untouched_note`、`user_mounts`、`incomplete` | 删除前的回收清单；`untouched_note` 固定为「用户挂载的宿主机目录不受影响」；依赖容器清单 = 元数据已知列表 ∪ 删除前实时扫描（**转发容器按标签剔除，不算依赖容器**），探测失败时保留旧列表并置 `incomplete=True` |
 | `DeleteResult` | `name`、`existed`、`removed`、`failed`、`plan` | 删除结果；沙箱不存在时 `existed=False` 且不抛异常；`removed` 是确实回收掉的资源，`failed` 是尝试过但没成功的条目（带原因） |
 | `ProxyRestartResult` | `success`、`ca_changed`、`message`、`reinstalled_users`、`failed_users`、`ca_reinstalled` | 重启结果；`ca_changed` 的口径见 11.5；`ca_reinstalled` 表示合并证书链**确实重装过**（CA 变了但新 CA 读不到时为 `False`，不把未修复报成已修复）；`failed_users` 是重装失败的用户（单个用户失败不阻断其余用户） |
 
@@ -289,12 +459,13 @@
 | 方法 | 签名 | 说明 |
 |---|---|---|
 | 构造 | `SandboxService(config: PlatformConfig \| None = None, privilege: Privilege \| None = None)` | 控制面服务入口 |
+| 转发编排 | `forwards -> PortForwardManager` | 端口转发编排入口（能力本体在 `forwarding.py`，见 6ter 节）：删除沙箱时回收转发容器与转发记录，沙箱停止时联动停止转发容器 |
 | 查询 | `find(name) -> SandboxMetadata \| None` | 不存在返回 `None`；先过沙箱名校验 |
 | 查询 | `get(name) -> SandboxMetadata` | 不存在抛 `NotFoundError`；先过沙箱名校验 |
 | 列表 | `list() -> list[SandboxMetadata]` | 尽力刷新运行状态（用户已删 → `deleted`） |
 | 创建 | `create(request: CreateRequest) -> CreateResult` | 固定 7 步，任一步失败回滚已完成步骤；同名创建串行化并原子占用名字 |
 | 启动 | `start(name: str) -> SandboxMetadata` | 复用同一用户、同一子 ID 段、同一守护进程单元；只恢复沙箱容器，依赖容器由使用方自行拉起 |
-| 关闭 | `stop(name: str, stop_dependencies: bool = True) -> SandboxMetadata` | 依赖容器是否一并停止由显式参数控制，默认停 |
+| 关闭 | `stop(name: str, stop_dependencies: bool = True) -> SandboxMetadata` | 依赖容器是否一并停止由显式参数控制，默认停；**该沙箱的转发容器也一并停止**（转发记录保留） |
 | 回收清单 | `reclaim_plan(name: str) -> ReclaimPlan` | 删除前展示用 |
 | 删除 | `delete(name: str) -> DeleteResult` | 按固定回收清单回收，幂等 |
 | 宿主镜像 | `list_host_images() -> list[HostImage]` | 实时枚举宿主本地镜像（创建页下拉用）；悬空镜像不进列表 |
@@ -345,8 +516,13 @@
 沙箱守护进程的 systemd 单元由此拿到三个代理环境变量与合并 CA 束路径，
 沙箱内 `docker pull` 自动经代理并命中缓存。
 
-删除的固定回收清单：沙箱容器与依赖容器 → 网桥网络（仅平台自建）→ 停止并禁用 systemd 用户单元 → 删除用户与家目录 → 回收子 UID/GID 段 → 删除平台元数据。
+删除的固定回收清单：**转发容器与转发记录**（平台自建资源，必须排在网络删除之前）→ 沙箱容器与依赖容器 → 网桥网络（仅平台自建）→ 停止并禁用 systemd 用户单元 → 删除用户与家目录 → 回收子 UID/GID 段 → 删除平台元数据。
 **用户声明挂载的宿主机目录一律不触碰**（平台不创建、不删除、不修改）。
+
+转发相关的两处兜底（转发侧出错**不中断**沙箱删除/停止）：
+
+- 沙箱停止：转发联动失败只记日志，继续走完停止流程；
+- 沙箱删除：转发回收失败进回收清单的 `failed` 列表，其余回收步骤照走。
 
 ### 镜像来源：`image_source`
 
@@ -407,6 +583,17 @@
 | `ImageNotFoundError` | `ImageError` | 宿主与沙箱守护进程都没有该镜像（用户侧错误：服务层映射成 400） |
 | `ProxyError` | `SandboxError` | 统一镜像代理不可用（CA 不可读、合并 CA 束装不上等） |
 | `LifecycleError` | `SandboxError` | 生命周期步骤失败（带 `step`、`cause`） |
+| `ForwardError` | `SandboxError` | 端口转发链路跑不起来（见下） |
+
+> **`ForwardError` 的语义**（与 `NotFoundError`「对象不存在」、`ValidationError`「入参非法」
+> 分开）：转发链路本身不成立——**沙箱已停止**（先启动沙箱）、**沙箱网络不存在**、
+> **镜像拉不到**、**转发容器起不来**、**容器名与现有非平台容器重名**（平台不删用户的
+> 同名容器）、**沙箱守护进程不可达**（探测失败）。
+>
+> 服务端将来映射提示（本期服务端未接转发路由）：这几类基本都是**冲突类**（409）
+> 或**依赖缺失**（409/503），而不是入参错误（400）——`沙箱已停止` / `网络不存在` /
+> `容器名冲突` → 409；`镜像拉不到` / `启动失败` → 502/503；`守护进程不可达` → 503。
+> 具体映射由服务端按自己的错误码口径落地。
 
 ---
 

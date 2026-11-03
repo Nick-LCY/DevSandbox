@@ -296,6 +296,34 @@ class UserDaemon:
         result = self.docker(["inspect", "--format", "{{.State.Running}}", name], check=False)
         return result.ok and result.stdout.strip() == "true"
 
+    def container_labels(self, name: str) -> dict[str, str]:
+        """取容器标签（取不到返回空字典）。"""
+        result = self.docker(
+            ["inspect", "--format", "{{json .Config.Labels}}", name], check=False
+        )
+        if not result.ok:
+            return {}
+        try:
+            data = json.loads(result.stdout.strip() or "{}")
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {str(key): str(value) for key, value in data.items()}
+
+    def container_names_by_label(self, label: str) -> list[str]:
+        """按标签过滤列出容器名（枚举平台自建资源用）。
+
+        ``label`` 是过滤表达式（``key`` 或 ``key=value``）；探测失败返回空列表。
+        """
+        result = self.docker(
+            ["ps", "-a", "--filter", f"label={label}", "--format", "{{.Names}}"],
+            check=False,
+        )
+        if not result.ok:
+            return []
+        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
     def list_containers(self, all_containers: bool = True) -> list[dict[str, str]]:
         """列出守护进程管理的容器。"""
         args = ["ps"]
@@ -370,6 +398,16 @@ class UserDaemon:
         """停止容器。"""
         return self.docker(["stop", name], check=False, timeout=timeout)
 
+    def kill_container(self, name: str, timeout: int = 120) -> CommandResult:
+        """强制停止容器（不等宽限期）。
+
+        ``docker stop`` 默认等 10 秒宽限期等容器自己退：转发容器的 PID 1 是
+        busybox 的 ``tail -f /dev/null``，不处理 SIGTERM，每次停止都要白等
+        10 秒并占着容器名。这里直接发 SIGKILL：转发容器只提供 socat 二进制，
+        没有需要保存的状态。
+        """
+        return self.docker(["kill", name], check=False, timeout=timeout)
+
     def start_container(self, name: str, timeout: int = 120) -> CommandResult:
         """启动已存在的容器。"""
         return self.docker(["start", name], check=False, timeout=timeout)
@@ -392,6 +430,29 @@ class UserDaemon:
     ) -> CommandResult:
         """在容器内执行命令。"""
         return self.docker(["exec", name, *argv], check=check, timeout=timeout)
+
+    def spawn_stream(self, argv: list[str] | tuple[str, ...]) -> "subprocess.Popen[bytes]":
+        """以沙箱用户身份起一个流式子进程（管道收发字节）。
+
+        与 :meth:`exec_pty` 的区别是**不给伪终端**：走普通管道，字节原样进出
+        （端口转发的字节泵场景：``docker exec -i`` 的 stdin/stdout 直接搬字节）。
+
+        命令行必须自带程序名（``docker`` 等）：:meth:`user_argv` 只加身份前缀，
+        只给子命令的话宿主侧会去执行一个同名的程序（不存在）。
+
+        子进程**自带新会话**（``start_new_session=True``）：它自己就是进程组组长，
+        关闭字节泵时按进程组整体回收——``sudo`` 前缀下的 docker 客户端与它拉起
+        的孙进程一并收掉，不留孤儿。
+        """
+        command = [str(item) for item in self.user_argv(argv)]
+        return subprocess.Popen(  # noqa: S603 - 参数全部来自平台内部构造，不经 shell
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+            start_new_session=True,
+        )
 
     def can_access_path(self, path: str | Path) -> bool:
         """该用户能否穿过并读取指定宿主路径。

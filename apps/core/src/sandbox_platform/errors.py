@@ -83,3 +83,15 @@ class LifecycleError(SandboxError):
         self.step = step
         self.cause = cause
         super().__init__(f"步骤「{step}」失败：{message}")
+
+
+class ForwardError(SandboxError):
+    """端口转发操作失败。
+
+    与 :class:`NotFoundError` / :class:`ValidationError` 区分：前者是「对象不存在」，
+    后者是「入参非法」，本类是「转发链路本身跑不起来」——沙箱已停止、沙箱网络不存在、
+    镜像拉不到、容器起不来、容器名与现有非平台容器重名等。
+
+    归属平台的业务异常都住在本模块：调用方（服务端）按异常类型映射 HTTP 状态码
+    （冲突类错误），不必知道转发模块的内部结构。
+    """

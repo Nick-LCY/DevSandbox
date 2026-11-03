@@ -54,6 +54,7 @@ from .files import (
     stage_file_copies,
     staging_root,
 )
+from .forwarding import LABEL_FORWARD_ROLE, ROLE_FORWARD, PortForwardManager
 from .images import (
     IMAGE_SOURCE_AUTO,
     IMAGE_SOURCE_CHOICES,
@@ -270,6 +271,9 @@ class SandboxService:
         self.images = ImageManager(self.config, self.privilege)
         self.proxy = RegistryProxyManager(self.config, self.privilege)
         self.store = MetadataStore(self.config)
+        # 端口转发编排（能力本体在 forwarding 模块）：删除沙箱时要一并回收
+        # 转发容器与转发记录，所以生命周期服务持有转发编排入口。
+        self.forwards = PortForwardManager(self.config, self.privilege, self)
         # 按沙箱名的进程内互斥锁：同名沙箱的操作必须串行
         self._name_locks: dict[str, threading.RLock] = {}
         self._name_locks_guard = threading.Lock()
@@ -1099,6 +1103,16 @@ class SandboxService:
             for container in dependencies:
                 daemon.stop_container(container)
 
+        # 端口转发联动：该沙箱的转发容器一并停止（转发记录保留）
+        # 转发侧出错不能拖垮沙箱停止：失败只记日志，继续走完停止流程
+        try:
+            forward_result = self.forwards.stop_for_sandbox(name)
+        except SandboxError as exc:
+            logger.error("停止转发容器失败：%s", exc)
+        else:
+            for item in forward_result.failed:
+                logger.error("停止转发容器失败：%s", item)
+
         metadata.dependency_containers = dependencies
         metadata.state = STATE_STOPPED
         self.store.save(metadata)
@@ -1129,6 +1143,19 @@ class SandboxService:
             dependencies.append(container)
         if dependencies:
             items.append(f"依赖容器 {', '.join(dependencies)}")
+
+        forwards = self.forwards.store.list_for_sandbox(name)
+        if forwards:
+            forward_containers = ", ".join(
+                self.forwards.container_name(item.sandbox, item.container_port)
+                for item in forwards
+            )
+            items.append(f"转发容器 {forward_containers}（平台自建，随沙箱回收）")
+            items.append(
+                f"转发记录 {', '.join(item.id for item in forwards)}"
+                f"（{self.forwards.store.root}）"
+            )
+
         if incomplete:
             items.append(RECLAIM_INCOMPLETE_NOTE)
 
@@ -1155,12 +1182,23 @@ class SandboxService:
         )
 
     def _scan_network_containers(self, metadata: SandboxMetadata) -> list[str] | None:
-        """实时扫描沙箱网络上的容器；探测失败返回 ``None``。"""
+        """实时扫描沙箱网络上的容器；探测失败返回 ``None``。
+
+        **转发容器不算依赖容器**：转发容器是平台自建资源，只在转发清单里出现
+        （带 ``sandbox-platform.role=forward`` 标签）。这里按标签把它们剔掉，
+        免得同一批容器在回收清单里出现两次。
+        """
         user = self._resolve_user(metadata)
         if user is None:
             return None
         daemon = self._daemon_for_user(user)
-        return daemon.containers_on_network(metadata.network_name)
+        scanned = daemon.containers_on_network(metadata.network_name)
+        if scanned is None:
+            return None
+        forward_containers = set(
+            daemon.container_names_by_label(f"{LABEL_FORWARD_ROLE}={ROLE_FORWARD}")
+        )
+        return [name for name in scanned if name not in forward_containers]
 
     def delete(self, name: str) -> DeleteResult:
         """删除沙箱：按固定回收清单回收平台资源，用户声明挂载的宿主机目录一律不触碰。"""
@@ -1185,6 +1223,18 @@ class SandboxService:
         plan = self.reclaim_plan(name)
         removed: list[str] = []
         failed: list[str] = []
+
+        # ①bis 回收转发容器与转发记录（平台自建资源）。
+        # 必须排在网络删除之前：转发容器接在沙箱网络上，不先撤下来网络删不掉。
+        # 转发侧出错不能中断删除：失败进回收清单的 failed 列表，其余步骤照走。
+        try:
+            forward_result = self.forwards.reclaim_for_sandbox(name)
+        except SandboxError as exc:
+            logger.error("回收转发容器与转发记录失败：%s", exc)
+            failed.append(f"回收转发容器与转发记录失败：{exc}")
+        else:
+            removed.extend(forward_result.removed)
+            failed.extend(forward_result.failed)
 
         # 用户信息现查 getent passwd：元数据里的 uid / gid / 家目录不可信
         user = self._resolve_user(metadata)

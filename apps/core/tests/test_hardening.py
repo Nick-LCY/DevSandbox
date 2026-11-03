@@ -239,6 +239,14 @@ class FakeDaemon:
     def container_exists(self, name: str) -> bool:
         return name in self.containers
 
+    def container_names_by_label(self, label: str) -> list[str]:
+        """按标签过滤列容器名。
+
+        假守护进程不记标签信息：没有平台标签的容器（转发容器等）自然不在结果里。
+        """
+        self.calls.append(("container_names_by_label", label))
+        return []
+
     def remove_container(self, name: str) -> CommandResult:
         self.calls.append(("remove_container", name))
         if not self.remove_container_ok:

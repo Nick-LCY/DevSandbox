@@ -13,6 +13,7 @@ from sandbox_platform import (
     ConnectionInfo,
     CreateRequest,
     CreateResult,
+    ForwardRecord,
     MetadataStore,
     MountSpec,
     NotFoundError,
@@ -98,6 +99,18 @@ def test_reclaim_plan_lists_platform_resources(service: SandboxService) -> None:
     assert "子 UID/GID 段 165536:65536" in joined
     assert "平台元数据" in joined
     assert plan.untouched_note == RECLAIM_UNTOUCHED_NOTE
+
+
+def test_reclaim_plan_lists_forward_resources(service: SandboxService) -> None:
+    """回收清单列出转发容器与转发记录（平台自建资源，随沙箱回收）。"""
+    service.store.save(_metadata())
+    service.forwards.store.save(
+        ForwardRecord(id="abc123def456", sandbox="demo", container_port=8080)
+    )
+    plan = service.reclaim_plan("demo")
+    joined = " ".join(plan.items)
+    assert "转发容器 demo-fwd-8080" in joined
+    assert "转发记录 abc123def456" in joined
 
 
 def test_reclaim_plan_of_missing_sandbox_is_empty(service: SandboxService) -> None:

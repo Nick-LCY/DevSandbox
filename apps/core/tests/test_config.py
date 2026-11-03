@@ -152,3 +152,44 @@ def test_from_env_reads_process_environment(monkeypatch: pytest.MonkeyPatch, tmp
     monkeypatch.setenv("SANDBOX_PLATFORM_HOME", str(tmp_path / "proc"))
     assert PlatformConfig.from_env().home == tmp_path / "proc"
     assert os.environ["SANDBOX_PLATFORM_HOME"] == str(tmp_path / "proc")
+
+
+# ---------------------------------------------------------------- 端口转发参数
+def test_forward_parameters_from_env() -> None:
+    """转发镜像与容器名模板可由环境变量调整（口径与既有 SANDBOX_PLATFORM_* 一致）。"""
+    config = PlatformConfig.from_env(
+        {
+            "SANDBOX_PLATFORM_FORWARD_IMAGE": "alpine/socat:1.8.1.3",
+            "SANDBOX_PLATFORM_FORWARD_CONTAINER_TEMPLATE": "{sandbox}-tunnel-{port}",
+        }
+    )
+    assert config.forward_image == "alpine/socat:1.8.1.3"
+    assert config.forward_container_template == "{sandbox}-tunnel-{port}"
+
+
+def test_forward_parameters_use_platform_env_prefix() -> None:
+    """转发参数的环境变量带 PLATFORM 前缀（旧的无前缀名字不生效）。"""
+    config = PlatformConfig.from_env(
+        {
+            "SANDBOX_FORWARD_IMAGE": "alpine/socat:should-not-apply",
+            "SANDBOX_FORWARD_CONTAINER_TEMPLATE": "{sandbox}-nope-{port}",
+        }
+    )
+    assert config.forward_image != "alpine/socat:should-not-apply"
+    assert config.forward_container_template != "{sandbox}-nope-{port}"
+
+
+def test_forward_container_template_with_unknown_placeholder_rejected() -> None:
+    """容器名模板含未知占位符时提前报错（探针值 format 一次就够）。"""
+    with pytest.raises(ConfigError):
+        PlatformConfig.from_env(
+            {"SANDBOX_PLATFORM_FORWARD_CONTAINER_TEMPLATE": "{sandbox}-fwd-{port}-{oops}"}
+        )
+
+
+def test_ensure_directories_creates_private_forward_root(tmp_path: Path) -> None:
+    """转发记录目录单独收紧到 0700（里面有转发元数据）。"""
+    config = PlatformConfig.from_env({"SANDBOX_PLATFORM_HOME": str(tmp_path / "home")})
+    config.ensure_directories()
+    mode = config.forward_root.stat().st_mode & 0o777
+    assert mode == 0o700

@@ -6,15 +6,22 @@
 统一镜像代理（``rpardini/docker-registry-proxy``）的相关参数也在本文件集中：
 代理镜像、监听端口、沙箱侧访问代理用的网关地址、被缓存的镜像仓库清单、
 以及合并 CA 束所用的系统 CA 束路径。
+
+端口转发（ADR 0014 第二次修订，决策 C）的相关参数同样集中在这里：
+转发镜像（钉 digest）与转发容器名模板。**不设端口区间配置**——链路两点化后
+后端宿主机零端口，宿主侧不再有平台分配的转发端口。
 """
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .errors import ConfigError
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_HOME = "/var/lib/sandbox-platform"
 DEFAULT_SOCKET_MOUNT = "/var/run/docker.sock"
@@ -33,6 +40,14 @@ DEFAULT_PROXY_REGISTRIES = ("docker.io", "ghcr.io", "quay.io", "gcr.io", "regist
 # 宿主系统 CA 束（与代理 CA 合并成单个文件后注入沙箱守护进程）
 DEFAULT_SYSTEM_CA_BUNDLE = "/etc/ssl/certs/ca-certificates.crt"
 
+# 端口转发的转发镜像：钉 digest（tag 与 digest 一并写全，保证跨机器一致）。
+# 该镜像的 ENTRYPOINT 是 socat，转发容器启动时必须显式覆盖 entrypoint。
+DEFAULT_FORWARD_IMAGE = (
+    "alpine/socat:1.8.1.3@sha256:466c8a0383e16463fabdb7df01008292fb78d07da60224a46cb5d3142ce122ed"
+)
+# 转发容器名模板：<沙箱名>-fwd-<容器端口>
+DEFAULT_FORWARD_CONTAINER_TEMPLATE = "{sandbox}-fwd-{port}"
+
 ENV_HOME = "SANDBOX_PLATFORM_HOME"
 ENV_USER_PREFIX = "SANDBOX_PLATFORM_USER_PREFIX"
 ENV_SUBID_BASE = "SANDBOX_PLATFORM_SUBID_BASE"
@@ -43,6 +58,9 @@ ENV_PROXY_PORT = "SANDBOX_PLATFORM_PROXY_PORT"
 ENV_PROXY_ADDRESS = "SANDBOX_PLATFORM_PROXY_ADDRESS"
 ENV_PROXY_REGISTRIES = "SANDBOX_PLATFORM_PROXY_REGISTRIES"
 ENV_SYSTEM_CA_BUNDLE = "SANDBOX_PLATFORM_SYSTEM_CA_BUNDLE"
+# 转发相关环境变量与既有 SANDBOX_PLATFORM_* 口径一致（平台参数一律带 PLATFORM 前缀）
+ENV_FORWARD_IMAGE = "SANDBOX_PLATFORM_FORWARD_IMAGE"
+ENV_FORWARD_CONTAINER_TEMPLATE = "SANDBOX_PLATFORM_FORWARD_CONTAINER_TEMPLATE"
 
 MIN_SUBID_BASE = 100000
 MIN_SUBID_LENGTH = 65536
@@ -85,6 +103,8 @@ class PlatformConfig:
     proxy_address: str = DEFAULT_PROXY_ADDRESS
     proxy_registries: tuple[str, ...] = DEFAULT_PROXY_REGISTRIES
     system_ca_bundle: Path = Path(DEFAULT_SYSTEM_CA_BUNDLE)
+    forward_image: str = DEFAULT_FORWARD_IMAGE
+    forward_container_template: str = DEFAULT_FORWARD_CONTAINER_TEMPLATE
 
     # ---------------------------------------------------------------- 构造
     @classmethod
@@ -97,6 +117,11 @@ class PlatformConfig:
         proxy_image = env.get(ENV_PROXY_IMAGE, "").strip() or DEFAULT_PROXY_IMAGE
         proxy_address = env.get(ENV_PROXY_ADDRESS, "").strip() or DEFAULT_PROXY_ADDRESS
         system_ca = env.get(ENV_SYSTEM_CA_BUNDLE, "").strip() or DEFAULT_SYSTEM_CA_BUNDLE
+        forward_image = env.get(ENV_FORWARD_IMAGE, "").strip() or DEFAULT_FORWARD_IMAGE
+        forward_template = (
+            env.get(ENV_FORWARD_CONTAINER_TEMPLATE, "").strip()
+            or DEFAULT_FORWARD_CONTAINER_TEMPLATE
+        )
         config = cls(
             home=home,
             user_prefix=prefix,
@@ -108,6 +133,8 @@ class PlatformConfig:
             proxy_address=proxy_address,
             proxy_registries=_env_list(env, ENV_PROXY_REGISTRIES, DEFAULT_PROXY_REGISTRIES),
             system_ca_bundle=Path(system_ca),
+            forward_image=forward_image,
+            forward_container_template=forward_template,
         )
         config.validate()
         return config
@@ -136,6 +163,23 @@ class PlatformConfig:
             raise ConfigError("代理的镜像仓库清单不能为空")
         if not str(self.system_ca_bundle).startswith("/"):
             raise ConfigError(f"系统 CA 束路径必须是绝对路径：{self.system_ca_bundle}")
+        if not self.forward_image.strip():
+            raise ConfigError("转发镜像名不能为空")
+        if "{sandbox}" not in self.forward_container_template or (
+            "{port}" not in self.forward_container_template
+        ):
+            raise ConfigError(
+                "转发容器名模板必须同时含 {sandbox} 与 {port} 占位符："
+                f"{self.forward_container_template}"
+            )
+        # 探针值先 format 一次：模板里写了别的占位符（{sandbox_id} 之类）时，
+        # 这里就报错，而不是等到第一次建转发才在拼容器名的地方炸
+        try:
+            self.forward_container_template.format(sandbox="sandbox", port=1)
+        except (KeyError, IndexError, ValueError) as exc:
+            raise ConfigError(
+                f"转发容器名模板含未知占位符：{self.forward_container_template}（{exc}）"
+            ) from exc
 
     # ---------------------------------------------------------------- 路径
     @property
@@ -168,6 +212,11 @@ class PlatformConfig:
         """代理的 CA 目录（对应容器内 ``/ca``）。"""
         return self.proxy_root / "ca"
 
+    @property
+    def forward_root(self) -> Path:
+        """端口转发记录根目录（每个转发一个 JSON 文件）。"""
+        return self.home / "forwards"
+
     def sandbox_dir(self, name: str) -> Path:
         """单个沙箱的工作目录。"""
         return self.sandbox_root / name
@@ -182,5 +231,17 @@ class PlatformConfig:
 
     def ensure_directories(self) -> None:
         """创建平台数据目录（幂等）。"""
-        for path in (self.home, self.sandbox_root, self.lock_root, self.temp_root):
+        for path in (
+            self.home,
+            self.sandbox_root,
+            self.lock_root,
+            self.temp_root,
+        ):
             path.mkdir(parents=True, exist_ok=True)
+        # 转发记录目录单独收紧权限：里面是转发元数据（沙箱名 + 容器端口），
+        # 只给属主可读写
+        self.forward_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            os.chmod(self.forward_root, 0o700)
+        except OSError:  # pragma: no cover - 权限收紧失败不影响记录读写
+            logger.warning("收紧转发记录目录权限失败：%s", self.forward_root)
