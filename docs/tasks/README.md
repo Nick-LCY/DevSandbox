@@ -51,7 +51,7 @@ status: todo        # todo | doing | done | blocked
 - [[tasks/console-templates/04-acceptance-and-docs.md]] — 控制台模板轮真机验收与文档收口：三套测试全绿、两篇架构决策记录、看板与约定同步
 - [[tasks/file-injection/README.md]] — 文件注入轮（创建沙箱时把宿主文件复制进沙箱）任务集索引，含四个工作包完成状态、验收数字与提交链
 - [[tasks/phase3-desktop/README.md]] — 三期（桌面端打包 + 端口转发）任务集索引，含 9 个任务、依赖顺序与关键前置风险
-- [[tasks/phase3-desktop/01-prototype-and-spike.md]] — 打样轮：免 root 端口发布 / Tauri 壳 / WebView2 三项冒烟 / Windows 出包路径
+- [[tasks/phase3-desktop/01-prototype-and-spike.md]] — 打样轮：免 root 端口发布 / Tauri 壳 / WebView2 三项冒烟 / Windows 出包路径（doing：本机 P1 / P3 已实测通过，Windows 实测待用户）
 - [[tasks/phase3-desktop/02-backend-token-and-cors.md]] — 连接层后端改造：token 认证 / CORS / WebSocket 鉴权
 - [[tasks/phase3-desktop/03-frontend-connection-layer.md]] — 连接层前端改造：请求基址抽象 / 连接配置 / WebSocket 地址推导 / 未配置态
 - [[tasks/phase3-desktop/04-port-forward-core.md]] — 端口转发核心包能力：转发容器编排 / 宿主端口分配 / 生命周期与清理
@@ -60,7 +60,7 @@ status: todo        # todo | doing | done | blocked
 - [[tasks/phase3-desktop/07-acceptance-tokenization.md]] — 既有验收套件 token 化改造
 - [[tasks/phase3-desktop/08-windows-package.md]] — Windows 打包产物与冒烟
 - [[tasks/phase3-desktop/09-acceptance-and-docs.md]] — 验收回归与文档收口
-- [[tasks/phase3-desktop/RESULTS.md]] — 三期打样与实测结论留档（空模板，由任务 01 / 09 填写）
+- [[tasks/phase3-desktop/RESULTS.md]] — 三期打样与实测结论留档（P1/P3 已填，P2/P4/P5 待 Windows 实测）
 
 ## 看板
 任务状态汇总见 [[current-state.md]]，由人维护。

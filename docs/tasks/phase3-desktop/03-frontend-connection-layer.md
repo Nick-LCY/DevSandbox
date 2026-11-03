@@ -52,6 +52,7 @@ status: todo
 - [ ] 不违反 [[conventions/console-frontend.md|网页控制台前端约定]] 的任何一条：只用 Base UI、颜色只走令牌、结果反馈只走 toast、标识符合 `page-<页面>-<元素>` 规范、新增标识登记进 `apps/web/frontend/README.md` 标识表。
 - [ ] 新增中文文案后字体子集已重新生成（`build-fonts.sh` 已跑，产物入库）。
 - [ ] 前端 `vitest` / `typecheck` / `typecheck:tests` / `build` 全绿。
+- [ ] `apps/desktop/src-tauri/tauri.conf.json` 的 `app.security.csp` 已收敛为动态生成值，不得为 `null`（[[architecture/decisions/0015-桌面壳与连接配置抽象.md|ADR 0015]] 打样轮临时偏离的闭合闸门）。
 
 ## 依赖
 

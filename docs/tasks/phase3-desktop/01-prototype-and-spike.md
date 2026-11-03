@@ -1,6 +1,6 @@
 ---
 prd: prds/phase3-desktop.md
-status: todo
+status: doing
 ---
 # 任务：打样轮（免 root 端口发布 / Tauri 壳 / WebView2 三项冒烟 / Windows 出包路径）
 
@@ -35,15 +35,21 @@ status: todo
 ## 完成标准
 
 - [ ] `RESULTS.md` 给出 P1~P4 四项的实测结论，每项含命令与关键输出片段、通过 / 不通过判定、失败时的备案路径。
-- [ ] P1 有明确裁决：主路径（`-p`）成立，或 Fallback B 成立并被采纳。
+- [x] P1 有明确裁决：主路径（`-p`）成立，或 Fallback B 成立并被采纳。
 - [ ] P2 三项冒烟（`oklch` / xterm.js / `navigator.clipboard`）逐项有结论，且**在真机 Windows + WebView2 上**完成，不接受「在桌面版 Chromium 里过了就算过」。
-- [ ] P3 记录转发镜像的拉取方式与代理命中情况，digest 已钉死。
+- [x] P3 记录转发镜像的拉取方式与代理命中情况，digest 已钉死。
 - [ ] P4 给出至少一条可执行的 Windows 出包路径（含所需环境、耗时、产物形态），并明确是否需要用户提供机器或远端仓库。
 - [ ] Tauri 工程骨架可启动，`frontendDist` 指向 `apps/web/frontend/dist`（同一份产物，无第二份前端）。
-- [ ] 打样过程中的临时资源（测试沙箱、探针容器、探针用户）清理干净，不留残留。
+- [x] 打样过程中的临时资源（测试沙箱、探针容器、探针用户）清理干净，不留残留。
 
 ## 依赖
 
 - 无前置任务依赖，可立即开工。
 - 结论直接决定 [[tasks/phase3-desktop/04-port-forward-core.md|04 端口转发核心包能力]]、[[tasks/phase3-desktop/08-windows-package.md|08 Windows 打包产物与冒烟]] 的实现路径，必须先于它们完成。
 - 打样前置项与风险清单见 [[prds/phase3-desktop.md|三期 PRD]]；机制依据见 [[architecture/decisions/0014-端口转发机制选型.md|0014 端口转发机制选型]]。
+
+## 进展（2026-11-03）
+
+- 本机（Linux）部分完成：P1 主路径裁决通过（rootlesskit 在宿主回环产生监听、`curl` 连通；Fallback B 备案验过成立但不采纳）、P3 转发镜像钉 digest 经代理拉取成功、Tauri v2 骨架落盘并过 `cargo check`。
+- P2（WebView2 三项冒烟）、P4（Windows 出包路径）、P5（WebView2 运行时策略）与「骨架可启动」待用户 Windows 真机实测闭合。
+- 结论与命令留档见 [[tasks/phase3-desktop/RESULTS.md|三期留档]]。

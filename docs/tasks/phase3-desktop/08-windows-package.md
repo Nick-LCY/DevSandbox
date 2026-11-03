@@ -37,3 +37,4 @@ status: todo
 - 依赖 [[tasks/phase3-desktop/01-prototype-and-spike.md|01 打样轮]] 的 P2 / P4 结论。
 - 依赖 [[tasks/phase3-desktop/03-frontend-connection-layer.md|03]] 与 [[tasks/phase3-desktop/06-port-forward-desktop.md|06]] 的功能就位。
 - 依赖 [[tasks/phase3-desktop/07-acceptance-tokenization.md|07]] 提供的令牌获取方式（冒烟时用真实令牌或测试令牌）。
+- 显式依赖 [[tasks/phase3-desktop/03-frontend-connection-layer.md|03]] 与 [[tasks/phase3-desktop/06-port-forward-desktop.md|06]] 的 CSP 闸门已闭合（`app.security.csp` 不得为 `null`，见 [[architecture/decisions/0015-桌面壳与连接配置抽象.md#7. 打样轮临时偏离（2026-11-03）|0015 打样轮临时偏离节]]）；**出包前必须核验**。

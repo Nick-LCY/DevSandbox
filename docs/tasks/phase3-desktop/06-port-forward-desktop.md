@@ -46,6 +46,7 @@ status: todo
 - [ ] web 形态下不渲染「在桌面端开启」按钮，且界面写明访问端口需要桌面应用（与已退役的 URL 代理明确区分）。
 - [ ] `src/lib/port-forward.ts` 有单元测试；前端 `vitest` / `typecheck` / `typecheck:tests` / `build` 全绿。
 - [ ] `docs/conventions/console-frontend.md` 新增「端口转发」小节，写清界面位置、按钮的形态差异、toast 来源标识与标识命名。
+- [ ] `apps/desktop/src-tauri/tauri.conf.json` 的 `app.security.csp` 已收敛为动态生成值，不得为 `null`（[[architecture/decisions/0015-桌面壳与连接配置抽象.md|ADR 0015]] 打样轮临时偏离的闭合闸门）。
 
 ## 依赖
 

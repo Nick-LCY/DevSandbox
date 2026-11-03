@@ -3,7 +3,7 @@
 > 高频变更的工作看板。**开始任何任务前先读这里。** 由团队维护。保持轻量——它是看板，不是叙事。
 
 ## 活跃需求
-- **三期：桌面端打包（Tauri）与端口转发** — 现有前端产物装进 Tauri 桌面壳（纯连接器：只装前端 + 后端地址 + token，不拉起后端）+ 后端改造成 token 认证的独立 API（浏览器侧 WS 走一次性票据）+ 用户显式指定的沙箱端口经后端隧道转发到桌面本机 `127.0.0.1`。需求见 [[prds/phase3-desktop.md|三期 PRD]]，任务集见 [[tasks/phase3-desktop/README.md|三期任务集]]，决策依据见 [[architecture/decisions/0013-三期定位改定与认证重启.md|0013]]、[[architecture/decisions/0014-端口转发机制选型.md|0014]]、[[architecture/decisions/0015-桌面壳与连接配置抽象.md|0015]]。
+- **三期：桌面端打包（Tauri）与端口转发** — 现有前端产物装进 Tauri 桌面壳（纯连接器：只装前端 + 后端地址 + token，不拉起后端）+ 后端改造成 token 认证的独立 API（浏览器侧 WS 走一次性票据）+ 用户显式指定的沙箱端口经后端隧道转发到桌面本机 `127.0.0.1`。**01 打样进行中：P1 主路径实测通过，Windows 实测待用户**；需求见 [[prds/phase3-desktop.md|三期 PRD]]，任务集见 [[tasks/phase3-desktop/README.md|三期任务集]]，决策依据见 [[architecture/decisions/0013-三期定位改定与认证重启.md|0013]]、[[architecture/decisions/0014-端口转发机制选型.md|0014]]、[[architecture/decisions/0015-桌面壳与连接配置抽象.md|0015]]。
 - 历史交付的叙事与验收留档：git 历史 + [[tasks/README.md|docs/tasks/ 各留档页]]。
 
 ## 规划
@@ -14,10 +14,11 @@
 ## 任务看板
 | 任务集 | 状态 | 入口 |
 |---|---|---|
-| 三期：桌面端打包 + 端口转发 | todo | [[tasks/phase3-desktop/README.md|三期任务集]]（9 个任务；打样轮 01 是全期前置硬门槛） |
+| 三期：桌面端打包 + 端口转发 | doing | [[tasks/phase3-desktop/README.md|三期任务集]]（9 个任务；打样轮 01 是全期前置硬门槛） |
 
 ## TODO / 阻塞
 - [ ] 统一镜像代理缓存 GC 命令待做。
 - [ ] sandboxctl 增加文件注入参数（如 `--file`）——文件注入轮核心能力已落地，待补命令行入口。
 - [ ] 文件注入降级路径收口（终审遗留，不阻断使用）：预检阶段纳入本次目标沙箱的计划家目录（消除干跑/实跑对自家目录的口径差）；getent / test -d / readlink 失败时从静默放行改为可观测（error 日志 + API.md 写明降级行为）。
+- [ ] 三期 01：P2 / P4 / P5 待用户 Windows 真机实测（出包冒烟 + 三项冒烟 + WebView2 运行时），实测回填 [[tasks/phase3-desktop/RESULTS.md|RESULTS.md]] 后闭合 [[tasks/phase3-desktop/01-prototype-and-spike.md|任务 01]]。
 - 阻塞项：无。
