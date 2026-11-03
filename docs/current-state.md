@@ -17,16 +17,20 @@
 
 ## TODO / 阻塞
 - [ ] 统一镜像代理缓存 GC 命令待做。
-- [x] ④ 个人镜像已在仓库外 `~/sandbox` 建成——镜像 `pi-sandbox:0.1.0`（pi 1.4.0 + nvm 0.40.8 + node 22.23.1，204.2 MB），23 项自检全绿，用户已手动验收；工作区含 Dockerfile / verify.sh / README。
-- [x] ⑤ 内置 pi 模板的真实内容——内置项 `tpl_pi_dev`（pi 个人开发环境）已落地，配置体只含 files 五条注入声明，镜像等其余字段一律留空（git 模板不在本轮范围，未做）。
+- [x] ④ 个人镜像已在仓库外 `~/sandbox` 建成——镜像 `pi-sandbox:0.1.0`（pi 1.5.0 + nvm 0.40.8 + node 22.23.1，预装 fd / rg / entire / codegraph，含 agent 初始设定（SYSTEM.md + pi skills），291.9 MiB），32 项自检全绿，用户已手动验收；工作区含 Dockerfile / verify.sh / README。
+- [x] ⑤ 内置 pi 模板的真实内容——内置项 `tpl_pi_dev`（pi agent）已落地，配置体只含 files 五条注入声明，镜像等其余字段一律留空（git 模板不在本轮范围，未做）。
 - [x] ⑥ 会话目录按挂载声明归类——已关闭：用户确认会话持久化经 entire 工具方案另行解决，平台侧不落地（平台不实现会话目录归类）。
 - [ ] sandboxctl 增加文件注入参数（如 `--file`）——文件注入轮核心能力已落地，待补命令行入口。
 - [ ] 文件注入降级路径收口（终审遗留，不阻断使用）：预检阶段纳入本次目标沙箱的计划家目录（消除干跑/实跑对自家目录的口径差）；getent / test -d / readlink 失败时从静默放行改为可观测（error 日志 + API.md 写明降级行为）。
 - 阻塞项：无。
 
 ## 最近变更
+- 2026-11-03：内置模板更名「pi agent」+ 仓库外个人镜像更新——模板更名走仓库提交 `800badf`；镜像 `pi-sandbox:0.1.0` 的 pi 由 1.4.0 升到 1.5.0。
+  **模板更名**：内置项 `tpl_pi_dev` 名称由「pi 个人开发环境」改为「pi agent」——常量、测试与接口文档三处同步，真实数据根经 rename 接口同步；模板 id 与 `files` 五条注入声明**一条未改**。
+  **镜像更新**：用户工作区 `~/sandbox/agent` 的初始设定（`SYSTEM.md` + `skills/communication-reporting/SKILL.md`，共 24KB、**不含凭证**）已烤进镜像 `/root/.pi/agent/`，容器开箱即用；构建上下文新增 `.dockerignore` 挡凭证类文件；镜像体积 291.4 → 291.9 MiB；自检 32/32 全绿。
+  **留档**：术语见 [[glossary.md|词汇表]]。
 - 2026-11-03：内置 pi 模板收口——内置清单从空补入一条 `tpl_pi_dev`，种子注入与墓碑口径不变。
-  **模板内容**：名称「pi 个人开发环境」，配置体**只含 `files` 一个键**（五条注入声明逐字原样）：`~/.ssh:/root/.ssh` 整目录，加 pi 的四个凭证与配置文件（`~/.pi/agent/` 下的 `auth.json`、`models-store.json`、`models.json`、`settings.json`，容器侧同为 `/root/.pi/agent/`）；镜像、挂载、工作目录、命令、环境变量、网络**一律留空**。
+  **模板内容**：名称「pi agent」，配置体**只含 `files` 一个键**（五条注入声明逐字原样）：`~/.ssh:/root/.ssh` 整目录，加 pi 的四个凭证与配置文件（`~/.pi/agent/` 下的 `auth.json`、`models-store.json`、`models.json`、`settings.json`，容器侧同为 `/root/.pi/agent/`）；镜像、挂载、工作目录、命令、环境变量、网络**一律留空**。
   **用户拍板**：镜像留空、创建时自选；工作目录留空、用镜像默认的 `/workspace`；会话持久化用户已通过 entire 工具另行解决，不进模板。
   **配套**：默认测试夹具隔离内置清单（既有用例不受新常量影响），另加 4 条**不替换常量**的用例——列表可见且逐字正确 / 注入幂等 / 删后墓碑不复活 / 常量只含 `files` 键；接口文档第 13.3 节的内置种子行同步。
   **验收**：服务端 pytest **188 项全绿**（基线 184）；ruff（E4/E7/E9/F）退出码 0；前端 vitest **343 项全绿**（本轮零改动），typecheck / typecheck:tests / build 全绿；Playwright 真机 **32 条全绿**（含模板 4 条）。内置模板已随真机测试注入真实数据根（`/var/lib/sandbox-platform/templates/tpl_pi_dev.json`）。
