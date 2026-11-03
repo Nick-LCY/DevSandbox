@@ -12,6 +12,7 @@ import {
   terminalSocketUrl,
 } from '../lib/terminal';
 import type { TerminalState, TerminalStatus } from '../lib/terminal-feedback';
+import { createFitDebouncer } from '../lib/terminal-fit';
 import { classifyTerminalShortcut } from '../lib/terminal-shortcuts';
 import { useToast } from './Toast';
 
@@ -32,6 +33,15 @@ const RECONNECT_STABLE_AFTER = 5000;
 /** 连续失败上限：达到即停掉自动重连，等用户手动重试。 */
 const MAX_RECONNECT_FAILURES = 10;
 
+/**
+ * 尺寸自适应的去抖窗口（毫秒）。
+ *
+ * 侧栏折叠 / 展开带 200 毫秒宽度过渡，过渡期间主列宽度逐帧变化，
+ * 挂载盒的 ResizeObserver 逐帧触发；不去抖的话每一帧都会 fit + sendResize，
+ * 把一串尺寸帧逐个回打到 pty。去抖后一次过渡只回打一帧。
+ */
+const FIT_DEBOUNCE_MS = 100;
+
 /** 剪贴板失败提示的来源标记（端到端脚本靠它定位这条提示）。 */
 const CLIPBOARD_TOAST_SOURCE = 'terminal-clipboard';
 
@@ -39,6 +49,16 @@ interface TerminalViewProps {
   sessionId: string;
   /** 重试令牌：值变化时重建连接（用于「重连失败」后用户手动点重试）。 */
   retryToken?: number;
+  /**
+   * 挂载之后要不要把焦点回填进终端。
+   *
+   * 会话切换会让终端**整块重挂载**（`key={activeId}`），重挂载后浏览器焦点
+   * 落到 body，新终端就成了「空心光标」——看得见、敲不进（按键没进 pty）。
+   * 门控口径在 `src/lib/terminal-focus.ts`（纯函数，可单测）：
+   * 只有「用户刚点了标签 / 终端表面 / 新建了会话」或「判定当下焦点就在终端
+   * 表面内」才回填，焦点在别处（抽屉输入框等）不抢。这里只负责执行回填。
+   */
+  autoFocus?: boolean;
   onStateChange: (state: TerminalState) => void;
 }
 
@@ -58,10 +78,23 @@ interface TerminalViewProps {
  * 或连接稳定存活超过 5 秒。握手成功不等于连上了——服务端握手后立刻关闭时，
  * 若在 `onopen` 清零计数就会变成每 500ms 一次的连接风暴。
  */
-export function TerminalView({ sessionId, retryToken = 0, onStateChange }: TerminalViewProps) {
+export function TerminalView({
+  sessionId,
+  retryToken = 0,
+  autoFocus = false,
+  onStateChange,
+}: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const stateCallbackRef = useRef(onStateChange);
   stateCallbackRef.current = onStateChange;
+  /**
+   * 焦点回填的开关：**挂载那一刻的快照**。
+   *
+   * 这一个终端实例只回填一次：改它不重建终端连接（回填只在挂载那一刻做一次），
+   * 后续重渲染（轮询、状态变化）也不改写它；重试连接（`retryToken` 变化）走的是
+   * 同一个 effect，但不会把挂载时刻的值再拿出来用一次。
+   */
+  const autoFocusRef = useRef(autoFocus);
   const { show } = useToast();
   /** 反馈接口走引用：换身份时不重建终端连接。 */
   const showRef = useRef(show);
@@ -100,6 +133,24 @@ export function TerminalView({ sessionId, retryToken = 0, onStateChange }: Termi
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     term.open(container);
+
+    /**
+     * 焦点回填：会话切换后终端整块重挂载，浏览器焦点会落到 body，
+     * 新终端就成了看得见、敲不准的空心光标。这里把焦点抢回终端。
+     *
+     * - rAF：等布局落定再聚焦（xterm 的 helper 文本框此刻才在正确的位置）；
+     * - 只做一次：挂载这一次，不重复抢（值用完就清掉，重试连接不会再来一次）；
+     * - 已卸载（disposed）就不做：别把焦点塞进一个已经拆掉的终端。
+     */
+    if (autoFocusRef.current) {
+      autoFocusRef.current = false;
+      window.requestAnimationFrame(() => {
+        if (disposed) {
+          return;
+        }
+        term.focus();
+      });
+    }
 
     /** 剪贴板操作失败：弹一条失败提示（成功路径零反馈）。 */
     const reportClipboardFailure = (text: string): void => {
@@ -252,6 +303,16 @@ export function TerminalView({ sessionId, retryToken = 0, onStateChange }: Termi
       sendResize();
     };
 
+    /**
+     * 尺寸自适应的去抖入口：窗口内的多次触发只保留最后一次。
+     *
+     * 侧栏宽度过渡（200 毫秒）期间主列逐帧变化，挂载盒的 ResizeObserver
+     * 逐帧触发；直接每次都 fit + sendResize 会把一串尺寸帧回打到 pty。
+     */
+    const fitDebouncer = createFitDebouncer(FIT_DEBOUNCE_MS, () => {
+      safeFit();
+    });
+
     function scheduleReconnect(): void {
       if (disposed || finished || gaveUp) {
         return;
@@ -378,7 +439,8 @@ export function TerminalView({ sessionId, retryToken = 0, onStateChange }: Termi
     });
 
     const observer = new ResizeObserver(() => {
-      safeFit();
+      // 去抖：过渡期间的逐帧触发合并成最后一次（只回打一帧尺寸）。
+      fitDebouncer.schedule();
     });
     observer.observe(container);
 
@@ -414,6 +476,7 @@ export function TerminalView({ sessionId, retryToken = 0, onStateChange }: Termi
       if (stableTimer !== null) {
         window.clearTimeout(stableTimer);
       }
+      fitDebouncer.cancel();
       observer.disconnect();
       dataDisposable.dispose();
       resizeDisposable.dispose();

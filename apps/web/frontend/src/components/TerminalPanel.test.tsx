@@ -48,6 +48,13 @@ const viewMocks = vi.hoisted(() => ({
    * 之前这个 mock 只在会话切换时上报一次，去重逻辑坏了也测不出来。
    */
   reportTick: 0,
+  /**
+   * 每次挂载时终端视图收到的 autoFocus 取值（会话标识 → 最近一次的值）。
+   *
+   * 焦点回填的口径在 `src/lib/terminal-focus.ts`（纯函数），面板这里只负责
+   * 把门控后的结论传给终端视图，所以组件测试盯的是「传下去的值」。
+   */
+  autoFocus: {} as Record<string, boolean>,
 }));
 
 vi.mock('../api/client', async (importOriginal) => {
@@ -71,9 +78,11 @@ vi.mock('./TerminalView', async () => {
   return {
     TerminalView: ({
       sessionId,
+      autoFocus,
       onStateChange,
     }: {
       sessionId: string;
+      autoFocus?: boolean;
       onStateChange: (state: {
         status: string;
         message: string;
@@ -84,6 +93,11 @@ vi.mock('./TerminalView', async () => {
     }) => {
       const callbackRef = useRef(onStateChange);
       callbackRef.current = onStateChange;
+      // 记下这次**挂载**时收到的焦点回填开关（重渲染不覆盖：口径看的是挂载那一刻）。
+      const autoFocusRef = useRef(autoFocus);
+      useEffect(() => {
+        viewMocks.autoFocus[sessionId] = autoFocusRef.current ?? false;
+      }, [sessionId]);
       useEffect(() => {
         const override = viewMocks.states[sessionId];
         if (override) {
@@ -99,7 +113,13 @@ vi.mock('./TerminalView', async () => {
         const status = viewMocks.bySession[sessionId] ?? viewMocks.status;
         callbackRef.current({ status, message: '模拟状态' });
       }, [sessionId, viewMocks.reportTick]);
-      return null;
+      // 渲染一个真的终端表面：焦点跟踪（focusin 冒泡到 document）要靠它。
+      return (
+        <div
+          data-testid="page-sandbox-detail-terminal-surface"
+          data-session-id={sessionId}
+        />
+      );
     },
   };
 });
@@ -185,6 +205,7 @@ afterEach(() => {
   viewMocks.status = 'connecting';
   viewMocks.bySession = {};
   viewMocks.states = {};
+  viewMocks.autoFocus = {};
 });
 
 describe('终端会话标签', () => {
@@ -718,5 +739,290 @@ describe('会话表轮询失败', () => {
     await vi.advanceTimersByTimeAsync(10_000); // 失败 1
     await vi.advanceTimersByTimeAsync(10_000); // 失败 2
     expect(screen.queryAllByTestId('page-toast-item')).toHaveLength(0);
+  });
+});
+
+describe('终端全屏', () => {
+  it('全屏开关：面板类切到覆盖整页，再点一次复原', async () => {
+    mockSessions([makeRecord({ session_id: 'sess-a' })]);
+
+    renderPanel();
+
+    const panel = screen.getByTestId('page-sandbox-detail-terminal-panel');
+    expect(panel.className).toContain('flex min-h-0 flex-1 flex-col');
+    expect(panel.className).not.toContain('fixed');
+
+    const button = screen.getByTestId('page-sandbox-detail-terminal-fullscreen-button');
+    // 全屏按钮是「动作名随状态变化」的普通按钮：不带 aria-pressed。
+    expect(button.getAttribute('aria-pressed')).toBeNull();
+    expect(button.getAttribute('aria-label')).toBe('全屏终端');
+    expect(button.getAttribute('title')).toBe('全屏终端');
+
+    fireEvent.click(button);
+
+    expect(panel.className).toContain('fixed');
+    expect(panel.className).toContain('inset-0');
+    expect(panel.className).toContain('z-40');
+    expect(panel.className).toContain('overflow-hidden');
+    // 面板内部是 flex 列（终端表面靠 flex-1 撑满剩余高度）：不能丢
+    expect(panel.className).toContain('flex');
+    expect(panel.className).toContain('flex-col');
+    expect(button.getAttribute('aria-pressed')).toBeNull();
+    expect(button.getAttribute('aria-label')).toBe('退出全屏');
+    expect(button.getAttribute('title')).toBe('退出全屏');
+
+    // 退出全屏 = 再点同一个按钮
+    fireEvent.click(button);
+
+    expect(panel.className).not.toContain('fixed');
+    expect(panel.className).toContain('flex min-h-0 flex-1 flex-col');
+    expect(button.getAttribute('aria-pressed')).toBeNull();
+    expect(button.getAttribute('aria-label')).toBe('全屏终端');
+  });
+
+  it('全屏状态不入路由也不入存储', async () => {
+    mockSessions([makeRecord({ session_id: 'sess-a' })]);
+    const hashBefore = window.location.hash;
+    const hrefBefore = window.location.href;
+
+    renderPanel();
+
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-terminal-fullscreen-button'));
+
+    // 路由一点没动
+    expect(window.location.hash).toBe(hashBefore);
+    expect(window.location.href).toBe(hrefBefore);
+    // 存储里不能有全屏相关的键：全屏只活在本地面板状态里
+    expect(
+      Object.keys(window.localStorage).filter((key) => key.includes('fullscreen')),
+      '全屏状态被写进了存储',
+    ).toEqual([]);
+  });
+  it('换沙箱：退出全屏（全屏是当前沙箱终端的局部状态）', async () => {
+    mockSessions([makeRecord({ session_id: 'sess-a' })]);
+
+    const { rerender } = renderPanel(vi.fn(), { sandboxName: 'demo-a' });
+
+    const panel = screen.getByTestId('page-sandbox-detail-terminal-panel');
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-terminal-fullscreen-button'));
+    expect(panel.className).toContain('fixed');
+
+    // 换沙箱：不能把新沙箱的终端顶在一个覆盖整页的全屏面板下面
+    rerender({ sandboxName: 'demo-b' });
+
+    await waitFor(() => expect(panel.className).not.toContain('fixed'));
+  });
+});
+
+describe('焦点回填', () => {
+  it('点标签后重挂载的终端自动聚焦', async () => {
+    mockSessions([
+      makeRecord({ session_id: 'sess-a', created_at: '2026-10-30T01:00:00+00:00' }),
+      makeRecord({ session_id: 'sess-b', created_at: '2026-10-30T01:00:05+00:00' }),
+    ]);
+    const { rerender } = renderPanel(vi.fn(), { activeSessionId: 'sess-a' });
+
+    const tabs = await screen.findAllByTestId('page-sandbox-detail-terminal-tab');
+    // 初次挂载：没有回填意图、焦点也不在终端里 → 不回填
+    // （终端视图把收到的值记在挂载那一刻的 useEffect 里：断言等它落定，
+    //  但口径一点没放宽——仍然是「必须正好是 false」。）
+    await waitFor(() => expect(viewMocks.autoFocus['sess-a']).toBe(false));
+
+    // 点标签：这是明确的操作意图（重挂载之后要把焦点还给终端）
+    fireEvent.click(
+      within(tabs[1]).getByTestId('page-sandbox-detail-terminal-tab-select'),
+    );
+    // 路由跟上（真实页面里路由变了，终端才会整块重挂载）
+    rerender({ activeSessionId: 'sess-b' });
+
+    await waitFor(() => expect(viewMocks.autoFocus['sess-b']).toBe(true));
+  });
+
+  it('焦点原本就在终端表面内：重挂载后把焦点还回终端', async () => {
+    mockSessions([
+      makeRecord({ session_id: 'sess-a', created_at: '2026-10-30T01:00:00+00:00' }),
+      makeRecord({ session_id: 'sess-b', created_at: '2026-10-30T01:00:05+00:00' }),
+    ]);
+    const { rerender } = renderPanel(vi.fn(), { activeSessionId: 'sess-a' });
+
+    await screen.findAllByTestId('page-sandbox-detail-terminal-tab');
+
+    // 焦点落在终端表面里（用户正在终端里干活）
+    const surface = screen.getByTestId('page-sandbox-detail-terminal-surface');
+    const inside = document.createElement('input');
+    surface.appendChild(inside);
+    inside.focus();
+    inside.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    expect(document.activeElement).toBe(inside);
+
+    // 会话切换（不是用户点的标签）：焦点原本就在终端里，重挂载后要还回来
+    rerender({ activeSessionId: 'sess-b' });
+
+    await waitFor(() => expect(viewMocks.autoFocus['sess-b']).toBe(true));
+    inside.remove();
+  });
+
+  it('焦点在终端表面之外时不抢：重挂载也不回填焦点', async () => {
+    mockSessions([
+      makeRecord({ session_id: 'sess-a', created_at: '2026-10-30T01:00:00+00:00' }),
+      makeRecord({ session_id: 'sess-b', created_at: '2026-10-30T01:00:05+00:00' }),
+    ]);
+    const { rerender } = renderPanel(vi.fn(), { activeSessionId: 'sess-a' });
+
+    await screen.findAllByTestId('page-sandbox-detail-terminal-tab');
+
+    // 焦点落到终端表面之外（比如抽屉里的输入框）
+    const outside = document.createElement('input');
+    document.body.appendChild(outside);
+    outside.focus();
+    outside.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    expect(document.activeElement).toBe(outside);
+
+    // 会话切换（不是用户点的标签）：重挂载时不能把焦点从别处抢回终端
+    rerender({ activeSessionId: 'sess-b' });
+
+    await waitFor(() => expect(viewMocks.autoFocus['sess-b']).toBe(false));
+    outside.remove();
+  });
+
+  it('重挂载把焦点复位到 body（且不派发 focusin）：没有用户意图就不回填', async () => {
+    mockSessions([
+      makeRecord({ session_id: 'sess-a', created_at: '2026-10-30T01:00:00+00:00' }),
+      makeRecord({ session_id: 'sess-b', created_at: '2026-10-30T01:00:05+00:00' }),
+    ]);
+    const { rerender } = renderPanel(vi.fn(), { activeSessionId: 'sess-a' });
+
+    await screen.findAllByTestId('page-sandbox-detail-terminal-tab');
+
+    // 焦点落在终端表面里（用户正在终端里干活）
+    const surface = screen.getByTestId('page-sandbox-detail-terminal-surface');
+    const inside = document.createElement('input');
+    surface.appendChild(inside);
+    inside.focus();
+    inside.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    expect(document.activeElement).toBe(inside);
+
+    // 终端重挂载：xterm 的 helper textarea 被摘出 DOM。浏览器把焦点复位到
+    // body，且**不派发 focusin**——只靠事件跟踪记下来的标志会永远停在 true，
+    // 门控退化成「永远回填」。
+    inside.remove();
+    expect(document.activeElement).toBe(document.body);
+
+    // 下一轮重挂载（不是用户点的标签，没有操作意图）：不能回填
+    rerender({ activeSessionId: 'sess-b' });
+
+    await waitFor(() => expect(viewMocks.autoFocus['sess-b']).toBe(false));
+  });
+
+  it('新建终端会话后：新建出来的终端自动聚焦（明确的用户意图）', async () => {
+    mocks.listTerminalSessions.mockResolvedValueOnce([]);
+    mocks.listTerminalSessions.mockResolvedValue([
+      makeRecord({ session_id: 'sess-new', created_at: '2026-10-30T01:00:00+00:00' }),
+    ]);
+    mocks.createTerminalSession.mockResolvedValue({
+      session_id: 'sess-new',
+      sandbox: 'demo',
+      container_name: 'sandbox-demo',
+      cols: 80,
+      rows: 24,
+      state: 'running',
+      created_at: '2026-10-30T01:00:00+00:00',
+    });
+    const onActiveSessionChange = vi.fn();
+    const { rerender } = renderPanel(onActiveSessionChange);
+
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-terminal-new-button'));
+    await waitFor(() => expect(onActiveSessionChange).toHaveBeenCalledWith('sess-new'));
+
+    // 路由跟上（真实页面里路由变了，终端才会整块重挂载）
+    rerender({ activeSessionId: 'sess-new' });
+
+    // 新建会话是明确的用户操作意图：重挂载后要把焦点还给用户
+    await waitFor(() => expect(viewMocks.autoFocus['sess-new']).toBe(true));
+  });
+});
+
+describe('选中会话的稳定性', () => {
+  it('刷新成功且路由会话真消失：回落一次到第一个标签并同步回路由', async () => {
+    mocks.listTerminalSessions.mockResolvedValueOnce([
+      makeRecord({ session_id: 'sess-a', created_at: '2026-10-30T01:00:00+00:00' }),
+      makeRecord({ session_id: 'sess-b', created_at: '2026-10-30T01:00:05+00:00' }),
+    ]);
+    // 之后的每一轮：sess-b 已经不在会话表里了
+    mocks.listTerminalSessions.mockResolvedValue([
+      makeRecord({ session_id: 'sess-a', created_at: '2026-10-30T01:00:00+00:00' }),
+    ]);
+    const onActiveSessionChange = vi.fn();
+    const { rerender } = renderPanel(onActiveSessionChange, { activeSessionId: 'sess-b' });
+
+    await screen.findAllByTestId('page-sandbox-detail-terminal-tab');
+
+    // 路由指向的会话真消失了（这一轮刷新是成功的）
+    rerender({ activeSessionId: 'sess-gone' });
+
+    // 回落一次到第一个标签，并把回落结果同步回路由（否则下一轮轮询又会跳回去）
+    await waitFor(() => expect(onActiveSessionChange).toHaveBeenCalledWith('sess-a'));
+    const tabs = screen.getAllByTestId('page-sandbox-detail-terminal-tab');
+    const active = tabs.find((tab) => tab.getAttribute('data-active') === 'true');
+    expect(active?.getAttribute('data-session-id')).toBe('sess-a');
+  });
+
+  it('会话表刷新失败：标签表不清空（沿用上一轮读到的会话与当前选中）', async () => {
+    vi.useFakeTimers();
+    mocks.listTerminalSessions.mockResolvedValueOnce([
+      makeRecord({ session_id: 'sess-a', created_at: '2026-10-30T01:00:00+00:00' }),
+      makeRecord({ session_id: 'sess-b', created_at: '2026-10-30T01:00:05+00:00' }),
+    ]);
+    mocks.listTerminalSessions.mockRejectedValue(new Error('读取终端会话列表失败'));
+
+    renderPanel(vi.fn(), { activeSessionId: 'sess-b' });
+
+    await vi.waitFor(() =>
+      expect(screen.getAllByTestId('page-sandbox-detail-terminal-tab')).toHaveLength(2),
+    );
+    // 跨过一次 10 秒轮询窗口：这一轮读取失败
+    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.waitFor(() =>
+      expect(mocks.listTerminalSessions.mock.calls.length).toBeGreaterThan(1),
+    );
+
+    // 标签还在：沿用上一轮成功的会话表，不清空
+    const tabs = screen.getAllByTestId('page-sandbox-detail-terminal-tab');
+    expect(tabs.map((tab) => tab.getAttribute('data-session-id'))).toEqual([
+      'sess-a',
+      'sess-b',
+    ]);
+    // 当前选中也没变
+    const active = tabs.find((tab) => tab.getAttribute('data-active') === 'true');
+    expect(active?.getAttribute('data-session-id')).toBe('sess-b');
+  });
+
+  it('刷新失败且路由会话不在表里：沿用上一轮选中的会话，不跳走也不改路由', async () => {
+    vi.useFakeTimers();
+    mocks.listTerminalSessions.mockResolvedValueOnce([
+      makeRecord({ session_id: 'sess-a', created_at: '2026-10-30T01:00:00+00:00' }),
+      makeRecord({ session_id: 'sess-b', created_at: '2026-10-30T01:00:05+00:00' }),
+    ]);
+    mocks.listTerminalSessions.mockRejectedValue(new Error('读取终端会话列表失败'));
+    const onActiveSessionChange = vi.fn();
+    const { rerender } = renderPanel(onActiveSessionChange, { activeSessionId: 'sess-b' });
+
+    await vi.waitFor(() =>
+      expect(screen.getAllByTestId('page-sandbox-detail-terminal-tab')).toHaveLength(2),
+    );
+    // 跨过一次轮询窗口：这一轮读取失败（表不可信）
+    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.waitFor(() =>
+      expect(mocks.listTerminalSessions.mock.calls.length).toBeGreaterThan(1),
+    );
+
+    // 路由指向一个不在会话表里的会话（别的终端关掉了它 / 链接过期）
+    rerender({ activeSessionId: 'sess-gone' });
+
+    // 刷新失败：沿用上一轮选中的会话（不跳到第一个标签，也不改路由）
+    const tabs = screen.getAllByTestId('page-sandbox-detail-terminal-tab');
+    const active = tabs.find((tab) => tab.getAttribute('data-active') === 'true');
+    expect(active?.getAttribute('data-session-id')).toBe('sess-b');
+    expect(onActiveSessionChange).not.toHaveBeenCalled();
   });
 });

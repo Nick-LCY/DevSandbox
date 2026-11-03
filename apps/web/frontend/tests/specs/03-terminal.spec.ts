@@ -3,7 +3,10 @@
  * 一、同一沙箱开两个终端并行可用，两端互不串扰；
  * 二、断开浏览器后重连，终端现场（已输出内容与仍在运行的进程）不丢；
  * 三、重启服务后旧会话失效，且页面给出明确提示；
- * 四、终端聚焦时 Ctrl+C 真的送到了容器内的 shell。
+ * 四、终端聚焦时 Ctrl+C 真的送到了容器内的 shell；
+ * 五、终端全屏：面板覆盖整屏、关会话确认弹窗浮在全屏之上、退出全屏复原；
+ * 六、切换标签后不点终端表面，命令仍然敲得进 pty（重挂载后的焦点回填）；
+ * 七、跨过一次 10 秒轮询窗口，当前会话不变、焦点不丢。
  */
 
 import { expect, test, type Page } from '@playwright/test';
@@ -271,6 +274,154 @@ test.describe('网页终端', () => {
     const body = (await detail.json()) as { system_user: string; container_name: string };
     const uid = userUid(body.system_user);
     expect(sandboxContainerState(body.system_user, uid, body.container_name)).toBe('running');
+  });
+
+  // ── 终端全屏：面板覆盖整页、弹窗浮在上面、退出后复原。
+  // 复用本沙箱既有的会话，不新建沙箱。
+  test('终端全屏：面板覆盖整屏，关会话确认弹窗浮在全屏之上，再点按钮退出复原', async ({ page }) => {
+    await gotoDetail(page, SANDBOX_NAME);
+    const sessionId = await openTerminal(page);
+    await expectTerminalConnected(page);
+
+    // 造出足够的回滚内容：全屏后终端内部那根滚动条必须还在（且只有一根）。
+    await typeInTerminal(page, sessionId, 'seq 1 300');
+    await expect
+      .poll(async () => (await terminalRows(page, sessionId)).length, { timeout: 30_000 })
+      .toBeGreaterThan(20);
+
+    const panel = page.getByTestId('page-sandbox-detail-terminal-panel');
+    const fullscreenButton = page.getByTestId('page-sandbox-detail-terminal-fullscreen-button');
+    await expect(fullscreenButton).toBeVisible();
+    await expect(panel).not.toHaveClass(/fixed/);
+
+    // 进全屏：面板切到覆盖整页
+    await fullscreenButton.click();
+    await expect(panel).toHaveClass(/fixed/);
+    await expect(panel).toHaveClass(/inset-0/);
+    const viewport = page.viewportSize()!;
+    const panelBox = (await panel.boundingBox())!;
+    expect(
+      panelBox.width,
+      `全屏面板没有铺满视口宽：${panelBox.width}px / ${viewport.width}px`,
+    ).toBeGreaterThanOrEqual(viewport.width - 1);
+    expect(
+      panelBox.height,
+      `全屏面板没有铺满视口高：${panelBox.height}px / ${viewport.height}px`,
+    ).toBeGreaterThanOrEqual(viewport.height - 1);
+
+    // 终端表面仍可见，且终端区域内只有一根内部滚动条（xterm 自己的 viewport）
+    await expect(surfaceOf(page, sessionId)).toBeVisible();
+    const layout = await terminalLayout(page, sessionId);
+    expect(layout.surfaceOverflowX).toBe('hidden');
+    expect(layout.surfaceOverflowY).toBe('hidden');
+    const extras = layout.overflowing.filter(
+      (item) => !item.className.includes('xterm-viewport'),
+    );
+    expect(
+      extras,
+      `全屏后终端区域内出现了额外的溢出元素：${JSON.stringify(extras)}`,
+    ).toEqual([]);
+    expect(
+      layout.overflowing.some((item) => item.className.includes('xterm-viewport')),
+      '全屏后 xterm 内部的滚动条不见了',
+    ).toBe(true);
+
+    // 关会话的确认弹窗必须浮在全屏面板之上（弹窗 z-50 > 面板 z-40）
+    const tab = page.locator(
+      `[data-testid="page-sandbox-detail-terminal-tab"][data-session-id="${sessionId}"]`,
+    );
+    await tab.getByTestId('page-sandbox-detail-terminal-tab-close').click();
+    const removeDialog = page.getByTestId('page-sandbox-detail-terminal-remove-confirm');
+    await expect(removeDialog).toBeVisible();
+    const panelZ = Number(
+      await panel.evaluate((element) => window.getComputedStyle(element).zIndex),
+    );
+    const dialogZ = Number(
+      await removeDialog.evaluate((element) => window.getComputedStyle(element).zIndex),
+    );
+    expect(dialogZ, '关会话确认弹窗没有浮在全屏面板之上').toBeGreaterThan(panelZ);
+    // 弹窗真的能点（没被全屏面板挡住）
+    await removeDialog.getByTestId('page-sandbox-detail-terminal-remove-cancel-button').click();
+    await expect(removeDialog).toBeHidden();
+
+    // 再点同一个按钮：退出全屏，回到常规布局
+    await fullscreenButton.click();
+    await expect(panel).not.toHaveClass(/fixed/);
+  });
+
+  // ── 会话切换 = 终端整块重挂载：不点终端表面，命令也得能敲进 pty。
+  test('切换标签后不点终端表面，命令仍然敲得进 pty（重挂载后的焦点回填）', async ({ page }) => {
+    await gotoDetail(page, SANDBOX_NAME);
+    // 复用本沙箱（不新建沙箱），开两个会话：凑够两个标签可切。
+    const first = await openTerminal(page);
+    await expectTerminalConnected(page);
+    const second = await openTerminal(page);
+    await expectTerminalConnected(page);
+
+    // 先切到第一个标签，再切到第二个（每次切换都是终端整块重挂载）
+    await selectTerminal(page, first);
+    await expectTerminalConnected(page);
+    await selectTerminal(page, second);
+    await expectTerminalConnected(page);
+
+    // 焦点已经回到终端表面里：这一段全程没有点过终端表面。
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(
+            () =>
+              document.activeElement?.closest(
+                '[data-testid="page-sandbox-detail-terminal-surface"]',
+              ) !== null,
+          ),
+        { timeout: 15_000, message: '切换标签后焦点没有回到终端表面里' },
+      )
+      .toBe(true);
+
+    // 不点终端表面，直接敲命令：必须真的进到 pty（终端屏幕上有回显与输出）。
+    await page.keyboard.type('echo AUTO_FOCUS_MARKER_42');
+    await page.keyboard.press('Enter');
+    await expectTerminalText(page, second, 'AUTO_FOCUS_MARKER_42');
+  });
+
+  // ── 会话表每 10 秒轻轮询一次：跨过一次轮询窗口，当前会话不能变、焦点不能丢。
+  test('跨过一次 10 秒轮询窗口：当前会话不变，命令仍然敲得进', async ({ page }) => {
+    await gotoDetail(page, SANDBOX_NAME);
+
+    // 复用本沙箱既有的会话（不新建沙箱、不新建会话）
+    // 标签条里至少得有一个标签。
+    // （不能对 `.last()` 断言数量：它永远只匹配一条，断言恒真。）
+    const tabs = page.getByTestId('page-sandbox-detail-terminal-tab');
+    await expect(tabs.first()).toBeVisible({ timeout: 30_000 });
+    await expect
+      .poll(async () => tabs.count(), {
+        timeout: 30_000,
+        message: '标签条里一个会话标签都没有',
+      })
+      .toBeGreaterThan(0);
+    const sessionId = (await tabs.last().getAttribute('data-session-id'))!;
+    await selectTerminal(page, sessionId);
+    await expectTerminalConnected(page);
+
+    // 先把焦点放进终端（模拟用户正在终端里干活）
+    await typeInTerminal(page, sessionId, 'echo POLL_BEFORE_MARKER_11');
+    await expectTerminalText(page, sessionId, 'POLL_BEFORE_MARKER_11');
+
+    // 跨过一次 10 秒轮询窗口：会话表会被重新拉一次
+    await page.waitForTimeout(11_000);
+
+    // 当前会话没变：标签仍是激活态，地址栏还带着会话标识
+    await expect(
+      page.locator(
+        `[data-testid="page-sandbox-detail-terminal-tab"][data-session-id="${sessionId}"]`,
+      ),
+    ).toHaveAttribute('data-active', 'true');
+    expect(page.url()).toContain(encodeURIComponent(sessionId));
+
+    // 不点终端表面，直接敲命令：焦点没丢
+    await page.keyboard.type('echo POLL_AFTER_MARKER_22');
+    await page.keyboard.press('Enter');
+    await expectTerminalText(page, sessionId, 'POLL_AFTER_MARKER_22');
   });
 
   // 放在最后一条：每个沙箱的终端会话数有上限（5 个），

@@ -1,4 +1,4 @@
-import { Plus, X } from 'lucide-react';
+import { Maximize, Minimize, Plus, X } from 'lucide-react';
 
 import { cn } from '../../lib/cn';
 
@@ -25,9 +25,13 @@ interface TerminalTabsProps {
   busy: boolean;
   /** 沙箱是否在运行：停止的沙箱起不了终端会话。 */
   sandboxRunning: boolean;
+  /** 终端是否处于全屏（面板覆盖整页）。 */
+  fullscreen: boolean;
   onSelect: (sessionId: string) => void;
   onClose: (sessionId: string) => void;
   onNew: () => void;
+  /** 切换全屏：退出全屏就是再点同一个按钮。 */
+  onToggleFullscreen: () => void;
 }
 
 /** 状态点的颜色：运行=绿，已退出=灰，已失效=红。 */
@@ -53,9 +57,11 @@ export function TerminalTabs({
   statusLabel,
   busy,
   sandboxRunning,
+  fullscreen,
   onSelect,
   onClose,
   onNew,
+  onToggleFullscreen,
 }: TerminalTabsProps) {
   return (
     <div className="flex h-[42px] items-center justify-between gap-4 border-b border-border bg-card px-6">
@@ -65,11 +71,15 @@ export function TerminalTabs({
         data-testid="page-sandbox-detail-terminal-tabs"
       >
         {tabs.length === 0 && (
-          <span               className={cn(
-                'group inline-flex h-8 shrink-0 items-center gap-1.5 rounded-t-lg px-2.5 text-[13px]',
-                'border-b-2 transition-colors',
-                  'border-transparent text-muted-foreground hover:bg-muted hover:text-foreground',
-              )}>暂无终端会话</span>
+          <span
+            className={cn(
+              'group inline-flex h-8 shrink-0 items-center gap-1.5 rounded-t-lg px-2.5 text-[13px]',
+              'border-b-2 transition-colors',
+              'border-transparent text-muted-foreground hover:bg-muted hover:text-foreground',
+            )}
+          >
+            暂无终端会话
+          </span>
         )}
         {tabs.map((tab) => {
           const active = tab.id === activeId;
@@ -137,6 +147,32 @@ export function TerminalTabs({
 
       <div className="flex shrink-0 items-center gap-2 text-[11.5px] text-muted-foreground">
         <span data-testid="page-sandbox-detail-terminal-status">{statusLabel}</span>
+        {/*
+          全屏开关：面板覆盖整页 / 回到常规布局。
+          状态文案一个字不动，全屏按钮另起一个图标按钮（不占状态文案的位置）。
+
+          ARIA 语义是「动作名随状态变化的普通按钮」：**不带 `aria-pressed`**
+          （它不是开关，是两个动作），可访问名与 `title` 随状态切换
+          （「全屏终端」↔「退出全屏」）。
+        */}
+        <button
+          type="button"
+          onClick={onToggleFullscreen}
+          aria-label={fullscreen ? '退出全屏' : '全屏终端'}
+          title={fullscreen ? '退出全屏' : '全屏终端'}
+          data-testid="page-sandbox-detail-terminal-fullscreen-button"
+          className={cn(
+            'grid size-6 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors',
+            'hover:bg-muted hover:text-foreground',
+            'focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none',
+          )}
+        >
+          {fullscreen ? (
+            <Minimize className="size-3.5" aria-hidden="true" />
+          ) : (
+            <Maximize className="size-3.5" aria-hidden="true" />
+          )}
+        </button>
       </div>
     </div>
   );
