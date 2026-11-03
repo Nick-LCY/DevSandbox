@@ -6,16 +6,17 @@
  * - 非法值回落默认（不是对象 / 字段类型不对 / JSON 坏掉）；
  * - 读取失败回落（存储句柄抛异常）；
  * - 存储不可用不抛异常（隐私模式：读回落默认、写静默忽略）；
- * - 基址推导（空基址 = 同源、尾部斜杠归一、补 scheme、ws/wss 映射）；
+ * - 基址推导（**基址恒非空**：空值归一为默认地址、尾部斜杠归一、补 scheme）；
  * - 形态探测（`window.__TAURI_INTERNALS__` 特性探测）与未配置判定。
  *
- * **2026-11-03 起两种形态在连接配置上不再有差别**：基址可空可填，
- * 未配置只看令牌（不再看形态，也不再看基址）。
+ * **决策 D：基址恒非空**——默认值 `http://127.0.0.1:8000`，允许编辑、不允许置空；
+ * 「空 = 同源」语义废除（请求恒为绝对地址），未配置只看令牌（两种形态一个口径）。
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   CONNECTION_STORAGE_KEY,
+  DEFAULT_BACKEND_BASE_URL,
   DEFAULT_CONNECTION_CONFIG,
   PENDING_CONNECTION_STORAGE_KEY,
   cacheConnectionConfig,
@@ -128,21 +129,45 @@ describe('连接配置的存取', () => {
       token: 'sbx_abc',
     });
   });
+
+  it('存量配置里的空基址：读到时归一为默认地址', () => {
+    // 决策 D 之前允许基址为空（同源）：那些存量数据读到时归一为默认地址，
+    // 不会因为「存储里基址是空串」而连不上后端。
+    const store = memoryStorage({
+      [CONNECTION_STORAGE_KEY]: JSON.stringify({ backendBaseUrl: '', token: 'sbx_abc' }),
+    });
+
+    expect(readStoredConnection(store)).toEqual({
+      backendBaseUrl: DEFAULT_BACKEND_BASE_URL,
+      token: 'sbx_abc',
+    });
+    // 基址字段整个缺失：同样落回默认地址。
+    expect(
+      readStoredConnection(
+        memoryStorage({ [CONNECTION_STORAGE_KEY]: JSON.stringify({ token: 'sbx_abc' }) }),
+      ),
+    ).toEqual({ backendBaseUrl: DEFAULT_BACKEND_BASE_URL, token: 'sbx_abc' });
+  });
+
+  it('默认配置与默认地址常量：基址恒非空', () => {
+    expect(DEFAULT_BACKEND_BASE_URL).toBe('http://127.0.0.1:8000');
+    expect(DEFAULT_CONNECTION_CONFIG).toEqual({
+      backendBaseUrl: DEFAULT_BACKEND_BASE_URL,
+      token: '',
+    });
+  });
 });
 
 describe('基址推导', () => {
-  it('空基址 = 同源（返回空串，调用方拼相对路径）', () => {
-    expect(resolveApiBaseUrl({ backendBaseUrl: '', token: 't' })).toBe('');
-    expect(resolveApiBaseUrl({ backendBaseUrl: '   ', token: 't' })).toBe('');
+  it('基址恒非空：空值归一为默认地址（不再是「同源」的空串）', () => {
+    expect(resolveApiBaseUrl('')).toBe(DEFAULT_BACKEND_BASE_URL);
+    expect(resolveApiBaseUrl('   ')).toBe(DEFAULT_BACKEND_BASE_URL);
+    expect(normalizeBaseUrl('')).toBe(DEFAULT_BACKEND_BASE_URL);
   });
 
   it('尾部斜杠归一：基址后面直接拼 /api/... 不出双斜杠', () => {
-    expect(resolveApiBaseUrl({ backendBaseUrl: 'http://127.0.0.1:8000/', token: 't' })).toBe(
-      'http://127.0.0.1:8000',
-    );
-    expect(resolveApiBaseUrl({ backendBaseUrl: 'http://127.0.0.1:8000///', token: 't' })).toBe(
-      'http://127.0.0.1:8000',
-    );
+    expect(resolveApiBaseUrl('http://127.0.0.1:8000/')).toBe('http://127.0.0.1:8000');
+    expect(resolveApiBaseUrl('http://127.0.0.1:8000///')).toBe('http://127.0.0.1:8000');
     expect(normalizeBaseUrl('https://sandbox.example:8443/console/')).toBe(
       'https://sandbox.example:8443/console',
     );
@@ -153,8 +178,9 @@ describe('基址推导', () => {
     expect(normalizeBaseUrl('https://sandbox.example')).toBe('https://sandbox.example');
   });
 
-  it('基址校验：空串合法，非法地址给出中文原因', () => {
-    expect(validateBaseUrl('')).toBe('');
+  it('基址校验：空串非法（必填），非法地址给出中文原因', () => {
+    expect(validateBaseUrl('')).toBe('请填写后端地址');
+    expect(validateBaseUrl('   ')).toBe('请填写后端地址');
     expect(validateBaseUrl('http://127.0.0.1:8000')).toBe('');
     expect(validateBaseUrl('127.0.0.1:8000')).toBe('');
     expect(validateBaseUrl('ftp://host')).toContain('只支持 http 与 https');
@@ -186,14 +212,19 @@ describe('两种形态在连接配置上不再有差别', () => {
       backendBaseUrl: 'http://10.0.0.5:8000',
       token: 'sbx',
     });
-    expect(resolveApiBaseUrl(getConnectionConfig())).toBe('http://10.0.0.5:8000');
+    expect(resolveApiBaseUrl(getConnectionConfig().backendBaseUrl)).toBe('http://10.0.0.5:8000');
   });
 
-  it('基址可空：空串保持空串（= 同源）', () => {
+  it('基址为空：归一为默认地址（不再有「空 = 同源」）', () => {
     cacheConnectionConfig({ backendBaseUrl: '', token: 'sbx' });
 
-    expect(getConnectionConfig()).toEqual({ backendBaseUrl: '', token: 'sbx' });
-    expect(resolveApiBaseUrl(getConnectionConfig())).toBe('');
+    expect(getConnectionConfig()).toEqual({
+      backendBaseUrl: DEFAULT_BACKEND_BASE_URL,
+      token: 'sbx',
+    });
+    expect(resolveApiBaseUrl(getConnectionConfig().backendBaseUrl)).toBe(
+      DEFAULT_BACKEND_BASE_URL,
+    );
   });
 
   it('配置归一：基址补 scheme / 去尾部斜杠，令牌去空白', () => {
@@ -293,6 +324,47 @@ describe('桌面侧的动态 CSP 同步', () => {
     expect(invoke).toHaveBeenCalledTimes(2);
   });
 
+  it('送出去的基址恒为「非空且已归一」：存量空基址归一为默认地址', async () => {
+    // 决策 D 之前允许基址为空（同源）：那些存量数据归一为默认地址再送出去。
+    // Rust 侧拿它 `Url::parse`——送空串会解析不出主机，CSP 静默拦死那台主机。
+    const invoke = vi.fn().mockResolvedValueOnce(undefined).mockResolvedValueOnce(false);
+    vi.stubGlobal('window', {
+      location: { protocol: 'http:', host: 'h:1' },
+      __TAURI_INTERNALS__: { invoke },
+    });
+
+    await expect(syncDesktopBackend('')).resolves.toBe('synced');
+    expect(invoke.mock.calls[0][0]).toBe('set_backend_base_url');
+    expect(invoke.mock.calls[0][1]).toEqual({ backendBaseUrl: 'http://127.0.0.1:8000' });
+  });
+
+  it('漏了 scheme 的基址：送出去的是补好 scheme 的地址', async () => {
+    // 用户填 `10.0.0.5:8000`：原串送进 Rust 侧的 `Url::parse` 会解析失败 →
+    // `connect-src` 少掉那台主机 → 跨主机请求全被 CSP 拦死（界面上看不出原因）。
+    const invoke = vi.fn().mockResolvedValueOnce(undefined).mockResolvedValueOnce(false);
+    vi.stubGlobal('window', {
+      location: { protocol: 'http:', host: 'h:1' },
+      __TAURI_INTERNALS__: { invoke },
+    });
+
+    await expect(syncDesktopBackend('10.0.0.5:8000')).resolves.toBe('synced');
+    expect(invoke.mock.calls[0][1]).toEqual({ backendBaseUrl: 'http://10.0.0.5:8000' });
+  });
+
+  it('去重按归一值比较：写法不同但同一个基址只送一次', async () => {
+    const invoke = vi.fn().mockResolvedValueOnce(undefined).mockResolvedValueOnce(false);
+    vi.stubGlobal('window', {
+      location: { protocol: 'http:', host: 'h:1' },
+      __TAURI_INTERNALS__: { invoke },
+    });
+
+    await syncDesktopBackend('10.0.0.5:8000');
+    await syncDesktopBackend('http://10.0.0.5:8000/');
+
+    // 只有第一轮的两步（送基址 + 问要不要重载）。
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
+
   it('桌面壳没有这些命令：静默忽略，不抛异常', async () => {
     vi.stubGlobal('window', {
       location: { protocol: 'http:', host: 'h:1' },
@@ -338,7 +410,7 @@ describe('形态探测与未配置判定', () => {
   it('未配置判定：只看令牌（基址不参与，两种形态一个口径）', () => {
     expect(isConnectionConfigured({ backendBaseUrl: '', token: '' })).toBe(false);
     expect(isConnectionConfigured({ backendBaseUrl: 'http://h:1', token: '' })).toBe(false);
-    // 基址空 = 同源，也是合法配置。
+    // 基址恒有默认值，不影响「已配置」的判定。
     expect(isConnectionConfigured({ backendBaseUrl: '', token: 'sbx' })).toBe(true);
     expect(isConnectionConfigured({ backendBaseUrl: 'http://h:1', token: 'sbx' })).toBe(true);
   });

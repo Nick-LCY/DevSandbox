@@ -201,6 +201,11 @@ Tailwind v4 的整套色板以 `oklch()` 为底座，Chromium < 111 会整页掉
 - **谁触发重载**：前端（它要知道「状态已更新」才能重载）。Rust 侧不主动 reload，只提供
   `csp_needs_reload` 这个判定。
 - **重载不丢配置**：连接配置存在 localStorage 里，重载后前端直接进工作台。
+- **基址恒非空后，桌面端每次启动会同步一次 CSP 并重载一次主文档**：前端启动时把后端基址
+  （**恒非空、恒归一**：`normalizeBaseUrl` 补 scheme、空值落回默认地址）经 `set_backend_base_url` 送来，
+  `desired` 从 `None` 变成那个基址；而这一版主文档的 CSP 还是启动时生成的（`loaded` 仍是 `None`），
+  `loaded != desired` → **重载一次主文档**。重载后主文档按 `desired` 重新生成 CSP（`loaded == desired`），
+  **不再重载**——这是**预期行为，不是死循环**。
 - **桌面形态首次配置**：跨主机的健康检查会被 CSP 拦死（这一版主文档的 CSP 里还没有后端主机），
   所以引导面板的「保存并连接」先走「写待验证配置 → 同步 CSP → 重载」，重载回来时再体检，
   **体检通过才提升为生效配置**（口径见 `apps/web/frontend/README.md` 的「连接配置」一节）。

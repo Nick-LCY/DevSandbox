@@ -411,14 +411,11 @@ export function TerminalView({
 
       let next: WebSocket;
       try {
-        // 连接地址从连接配置推导（同源时按页面位置推导，web 形态行为不变）。
+        // 连接地址从连接配置推导（恒从基址推导：http→ws / https→wss）。
         // 推导不出来（例如基址填成了别的协议）：**不猜一个地址**，进「连接地址非法」。
         const url = terminalSocketUrl(
           sessionId,
-          {
-            baseUrl: getConnectionConfig().backendBaseUrl,
-            origin: window.location,
-          },
+          { baseUrl: getConnectionConfig().backendBaseUrl },
           ticket,
         );
         if (url === null) {

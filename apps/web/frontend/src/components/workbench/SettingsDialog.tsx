@@ -5,8 +5,9 @@ import { api } from '../../api/client';
 import type { ProxyRestartResult, ProxyStatus } from '../../api/types';
 import { formatBytes, formatTimestamp } from '../../lib/format';
 import {
-  DESKTOP_BASE_URL_REQUIRED_ERROR,
+  DEFAULT_BACKEND_BASE_URL,
   isDesktopRuntime,
+  normalizeBaseUrl,
   syncDesktopBackend,
   validateBaseUrl,
   type ConnectionConfig,
@@ -80,7 +81,9 @@ export function SettingsDialog({
   /* ------------------------------------------------------- 连接配置（第三区） */
 
   /** 连接配置的草稿值：没保存前不动生效中的配置。 */
-  const [baseUrl, setBaseUrl] = useState(connection.backendBaseUrl);
+  // 基址恒非空：配置里是空串（存量数据）时归一为默认地址（归一规则只有
+  // `normalizeBaseUrl` 这一处，草稿初值与 `DEFAULT_CONNECTION_CONFIG` 一致）。
+  const [baseUrl, setBaseUrl] = useState(normalizeBaseUrl(connection.backendBaseUrl));
   const [token, setToken] = useState(connection.token);
   /** 连接配置的本地校验红字（就地展示，不走 toast）。 */
   const [connectionError, setConnectionError] = useState('');
@@ -94,13 +97,14 @@ export function SettingsDialog({
     if (!open) {
       return;
     }
-    setBaseUrl(connection.backendBaseUrl);
+    setBaseUrl(normalizeBaseUrl(connection.backendBaseUrl));
     setToken(connection.token);
     setConnectionError('');
   }, [open, connection]);
 
   /** 校验草稿：返回空串表示合法。 */
   const validateDraft = useCallback((): string => {
+    // 基址必填 + 形状合法（通用必填校验，网页形态与桌面形态一个口径）。
     const baseError = validateBaseUrl(baseUrl);
     if (baseError) {
       return baseError;
@@ -111,7 +115,7 @@ export function SettingsDialog({
     return '';
   }, [baseUrl, token]);
 
-  /** 草稿值 → 连接配置（基址可空：空串 = 与本页面同源）。 */
+  /** 草稿值 → 连接配置（基址恒非空：空值在配置层归一为默认地址）。 */
   const draftConfig = useCallback(
     (): ConnectionConfig => ({
       backendBaseUrl: baseUrl.trim(),
@@ -149,15 +153,10 @@ export function SettingsDialog({
    * 顺序是硬要求：**先落盘，再同步**——同步可能要重载主文档（桌面壳的主文档
    * CSP 里要带上后端主机），重载后配置得还在。
    *
-   * **桌面形态下基址必填**：桌面壳与后端不同源，基址留空 = 请求打到桌面壳自己
-   * （后端根本不在那儿），这时保存只会把一份连不上的配置落盘——就地红字拦下，
-   * 不落盘、不同步 CSP。
+   * 基址**恒非空**（决策 D）：留空由通用必填校验就地红字拦下（网页形态与桌面
+   * 形态一个口径），不进保存流程。
    */
   const saveConnection = useCallback(async () => {
-    if (desktop && baseUrl.trim() === '') {
-      setConnectionError(DESKTOP_BASE_URL_REQUIRED_ERROR);
-      return;
-    }
     const error = validateDraft();
     if (error) {
       setConnectionError(error);
@@ -167,14 +166,16 @@ export function SettingsDialog({
     const next = draftConfig();
     onConnectionChange(next);
     if (desktop) {
-      const outcome = await syncDesktopBackend(next.backendBaseUrl);
+      // 同步的基址恒为「非空且已归一」：用户可能填了漏 scheme 的 `10.0.0.5:8000`，
+      // 原串送进 Rust 侧的 `Url::parse` 会解析失败 → CSP 静默拦死那台主机。
+      const outcome = await syncDesktopBackend(normalizeBaseUrl(next.backendBaseUrl));
       if (outcome === 'reloading') {
         // 主文档重载中：提示会随页面一起消失，不再补一条。
         return;
       }
     }
     show('success', '连接配置已保存', { source: 'connection' });
-  }, [baseUrl, desktop, draftConfig, onConnectionChange, show, validateDraft]);
+  }, [desktop, draftConfig, onConnectionChange, show, validateDraft]);
 
   const load = useCallback(
     async (options?: { quiet?: boolean }) => {
@@ -370,7 +371,7 @@ export function SettingsDialog({
               value={baseUrl}
               autoComplete="off"
               spellCheck={false}
-              placeholder="http://127.0.0.1:8000（留空 = 与本页面同源）"
+              placeholder={DEFAULT_BACKEND_BASE_URL}
               onChange={(event) => setBaseUrl(event.target.value)}
               data-testid="page-settings-connection-base-url-input"
             />

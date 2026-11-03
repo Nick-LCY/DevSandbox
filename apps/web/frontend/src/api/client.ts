@@ -2,6 +2,9 @@
  * 后端接口调用。请求基址由连接配置决定（见 `src/lib/connection.ts`），
  * 每个请求都带 `Authorization: Bearer <token>`。
  *
+ * **请求恒为绝对地址**：基址恒非空（默认 `http://127.0.0.1:8000`），
+ * 请求一律是 `<基址>/api/...`——不再有「空基址 = 同源 = 相对路径」的分支。
+ *
  * 错误消息直接取后端 `{"detail": "中文消息"}` 里的 `detail`，页面原样展示。
  */
 
@@ -76,7 +79,7 @@ async function readDetail(response: Response): Promise<string> {
 /**
  * 发一次请求。
  *
- * - 基址：连接配置里的后端基址（空串 = 同源，走相对路径）。
+ * - 基址：连接配置里的后端基址（**恒非空**，恒拼绝对地址）。
  * - 凭据：**每个请求都带 `Authorization: Bearer <token>`**（后端对全部 `/api` 生效）。
  * - 令牌缺失时**一个请求都不发**，抛 `ConnectionNotConfiguredError` 交给上层进引导态。
  * - `connection` 可以覆盖当前配置（设置抽屉的「测试连接」用还没保存的草稿值试）。
@@ -98,7 +101,7 @@ async function request<T>(
     headers.set('Content-Type', 'application/json');
   }
 
-  const url = `${resolveApiBaseUrl(config)}${path}`;
+  const url = `${resolveApiBaseUrl(config.backendBaseUrl)}${path}`;
 
   let response: Response;
   try {

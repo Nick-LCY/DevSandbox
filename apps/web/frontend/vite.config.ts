@@ -4,7 +4,11 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
-// 开发时前端跑 5173，接口与 WebSocket 一起反向代理到后端 8000。
+// 开发时前端跑 5173。**开发代理只是兜底**：请求恒为绝对地址直连后端 8000
+// （后端已放开 CORS，跨源直连可用），只有当连接配置里的基址指向 Vite 自己
+// （`http://127.0.0.1:5173`）时代理才生效——此时代理的目标由 `BACKEND_URL`
+// 决定（默认 `http://127.0.0.1:8000`）。换后端的正确做法是在界面里改
+// 「连接配置」的后端地址，不是改这个环境变量。
 // 生产构建产物由后端服务在 `/` 路径直接托管（单端口对外，无跨域）。
 const backend = process.env.BACKEND_URL ?? 'http://127.0.0.1:8000';
 

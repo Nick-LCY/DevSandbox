@@ -18,6 +18,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { DEFAULT_BACKEND_BASE_URL, type ConnectionConfig } from '../../lib/connection';
 import { ToastProvider } from '../Toast';
 import { SettingsDialog } from './SettingsDialog';
 
@@ -77,7 +78,7 @@ function makeRestartResult() {
 const onConnectionChange = vi.fn();
 
 /** 渲染带 Provider 的设置抽屉。 */
-function renderDialog(): void {
+function renderDialog(options?: { connection?: ConnectionConfig }): void {
   render(
     <ToastProvider>
       <SettingsDialog
@@ -85,7 +86,9 @@ function renderDialog(): void {
         onOpenChange={vi.fn()}
         widthVw={40}
         onWidthChange={vi.fn()}
-        connection={{ backendBaseUrl: '', token: 'sbx_test' }}
+        connection={
+          options?.connection ?? { backendBaseUrl: DEFAULT_BACKEND_BASE_URL, token: 'sbx_test' }
+        }
         onConnectionChange={onConnectionChange}
       />
     </ToastProvider>,
@@ -353,6 +356,15 @@ describe('设置抽屉的连接配置区', () => {
     expect(baseUrl.readOnly).toBe(false);
   });
 
+  it('地址框预填默认地址（基址恒非空）', async () => {
+    renderDialog();
+
+    const baseUrl = await screen.findByTestId(
+      'page-settings-connection-base-url-input',
+    ) as HTMLInputElement;
+    expect(baseUrl.value).toBe(DEFAULT_BACKEND_BASE_URL);
+  });
+
   it('「测试连接」成功：弹成功 toast（来源 connection）', async () => {
     renderDialog();
 
@@ -389,7 +401,7 @@ describe('设置抽屉的连接配置区', () => {
 
     await waitFor(() => expect(onConnectionChange).toHaveBeenCalledTimes(1));
     expect(onConnectionChange.mock.calls[0][0]).toEqual({
-      backendBaseUrl: '',
+      backendBaseUrl: DEFAULT_BACKEND_BASE_URL,
       token: 'sbx_new',
     });
     const toast = await screen.findByTestId('page-toast-item');
@@ -452,19 +464,19 @@ describe('设置抽屉的连接配置区', () => {
     expect(error.getAttribute('role')).toBe('alert');
   });
 
-  it('桌面形态：后端地址留空 → 就地红字，不保存（桌面壳与后端不同源）', async () => {
-    // 桌面形态：基址留空 = 请求打到桌面壳自己（后端根本不在那儿），
-    // 保存只会把一份连不上的配置落盘——就地红字拦下。
+  it('桌面形态：后端地址留空 → 同样就地红字（通用必填校验，桌面网页一个口径）', async () => {
+    // 基址恒非空：留空由通用必填校验拦下，不再有桌面特判的专属文案。
     const { invoke } = injectDesktopRuntime();
 
     renderDialog();
 
+    const base = await screen.findByTestId('page-settings-connection-base-url-input');
+    fireEvent.change(base, { target: { value: '' } });
     await screen.findByTestId('page-settings-connection-save-button');
     fireEvent.click(screen.getByTestId('page-settings-connection-save-button'));
 
     const error = await screen.findByTestId('page-settings-connection-error');
-    expect(error.textContent).toContain('桌面形态必须填写后端地址');
-    expect(error.textContent).toContain('桌面壳与后端不同源');
+    expect(error.textContent).toContain('请填写后端地址');
     expect(error.getAttribute('role')).toBe('alert');
     // 不落盘、不弹成功 toast、不同步 CSP（那一步会重载主文档）。
     expect(onConnectionChange).not.toHaveBeenCalled();
@@ -472,17 +484,53 @@ describe('设置抽屉的连接配置区', () => {
     expect(screen.queryByTestId('page-toast-item')).toBeNull();
   });
 
-  it('网页形态：后端地址留空 = 同源，可保存（与桌面形态不同口径）', async () => {
+  it('网页形态：后端地址留空 → 同样就地红字，不保存（基址必填）', async () => {
     renderDialog();
 
+    const base = await screen.findByTestId('page-settings-connection-base-url-input');
+    fireEvent.change(base, { target: { value: '   ' } });
     await screen.findByTestId('page-settings-connection-save-button');
     fireEvent.click(screen.getByTestId('page-settings-connection-save-button'));
 
-    await waitFor(() => expect(onConnectionChange).toHaveBeenCalledTimes(1));
-    expect(onConnectionChange.mock.calls[0][0]).toEqual({
-      backendBaseUrl: '',
-      token: 'sbx_test',
-    });
-    expect(screen.queryByTestId('page-settings-connection-error')).toBeNull();
+    const error = await screen.findByTestId('page-settings-connection-error');
+    expect(error.textContent).toContain('请填写后端地址');
+    expect(onConnectionChange).not.toHaveBeenCalled();
+  });
+
+  it('桌面形态：填了漏 scheme 的地址 → 同步给桌面壳的是补好 scheme 的地址', async () => {
+    // 用户填 `10.0.0.5:8000`：原串送进 Rust 侧的 `Url::parse` 会解析失败 →
+    // `connect-src` 少掉那台主机 → 跨主机请求全被 CSP 拦死（界面上看不出原因）。
+    const { invoke } = injectDesktopRuntime();
+    invoke.mockResolvedValue(undefined);
+    invoke.mockResolvedValueOnce(undefined);
+    invoke.mockResolvedValueOnce(false);
+
+    renderDialog();
+
+    const base = await screen.findByTestId('page-settings-connection-base-url-input');
+    fireEvent.change(base, { target: { value: '10.0.0.5:8000' } });
+    fireEvent.click(screen.getByTestId('page-settings-connection-save-button'));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalled());
+    expect(invoke.mock.calls[0][0]).toBe('set_backend_base_url');
+    expect(invoke.mock.calls[0][1]).toEqual({ backendBaseUrl: 'http://10.0.0.5:8000' });
+  });
+
+  it('桌面形态：存量空基址 → 表单回填与同步都是归一后的默认地址', async () => {
+    // 决策 D 之前允许基址为空（同源）：那些存量数据归一为默认地址再送出去。
+    const { invoke } = injectDesktopRuntime();
+    invoke.mockResolvedValue(undefined);
+    invoke.mockResolvedValueOnce(undefined);
+    invoke.mockResolvedValueOnce(false);
+
+    renderDialog({ connection: { backendBaseUrl: '', token: 'sbx_test' } });
+
+    const base = await screen.findByTestId('page-settings-connection-base-url-input');
+    expect((base as HTMLInputElement).value).toBe('http://127.0.0.1:8000');
+    fireEvent.click(screen.getByTestId('page-settings-connection-save-button'));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalled());
+    expect(invoke.mock.calls[0][0]).toBe('set_backend_base_url');
+    expect(invoke.mock.calls[0][1]).toEqual({ backendBaseUrl: 'http://127.0.0.1:8000' });
   });
 });

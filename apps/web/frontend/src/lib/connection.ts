@@ -1,22 +1,25 @@
 /**
  * 连接配置：后端在哪 + 用什么令牌。
  *
- * 口径（见 ADR 0015 第 2 节；**2026-11-03 起两种形态在配置上不再有差别**）：
- * - 模型 `{ backendBaseUrl, token }`；`backendBaseUrl` 空串 = **同源**，
- *   非空 = 连这台主机。**两种形态都能填**：网页端也可以指向远端后端。
+ * 口径（见 ADR 0015 第 2 节；**决策 D：基址恒非空**）：
+ * - 模型 `{ backendBaseUrl, token }`；`backendBaseUrl` **恒非空**：
+ *   默认 `http://127.0.0.1:8000`（`DEFAULT_BACKEND_BASE_URL`），允许编辑，
+ *   **不允许置空**（网页形态与桌面形态一个口径）。
+ * - **「空 = 同源」语义已废除**：请求恒为 `<基址>/api/...` 的绝对地址，
+ *   不再拼相对路径；终端 WebSocket 地址恒从基址推导（`http→ws` / `https→wss`），
+ *   不再按页面位置（`window.location`）回退。
  * - 存储：localStorage，键 `sandbox-console-connection`。
  * - 存取口径与 `src/lib/theme.ts`、`src/lib/sidebar-collapsed.ts` 同款：
  *   只认「用户明确写过的值」，非法值 / 读取失败一律回落默认（= 未配置），
  *   存储不可用（隐私模式）时静默忽略，不打断交互。
  * - **挂载时不写存储**：只有用户主动保存连接配置才落盘。
  *
- * 未配置判定：**令牌为空**（不再看运行形态，也不再看基址——基址可空 = 同源）。
+ * 未配置判定：**令牌为空**（基址恒有默认值，不参与判定）。
  * 未配置时不渲染工作台，改渲染引导面板（页面状态，不是路由）。
  *
- * **桌面形态的表单层要求（与「未配置判定」是两件事）**：桌面壳与后端**不同源**
- * （`tauri://` / `http://tauri.localhost` vs 后端主机），基址留空 = 请求打到桌面壳
- * 自己，后端根本不在那儿——桌面形态下**保存前必须填基址**
- * （文案见 `DESKTOP_BASE_URL_REQUIRED_ERROR`）。网页形态留空仍合法（= 同源）。
+ * **旧存储的兼容**：决策 D 之前允许基址为空（同源）。那些配置读到时**归一为
+ * 默认地址**（`readStoredConnection` 里经 `normalizeBaseUrl` 处理），存量用户
+ * 不会因为「存储里基址是空串」而连不上后端。
  *
  * 桌面形态还有一层「动态 CSP」的同步（`syncDesktopBackend`）：后端主机是运行期
  * 才知道的，桌面壳按它生成主文档的 `connect-src`——那是**桌面运行时的机制**，
@@ -30,8 +33,8 @@ export interface ConnectionConfig {
   /**
    * 后端基址（如 `http://127.0.0.1:8000`）。
    *
-   * 空串 = 同源（请求走相对路径）。两种形态都能填：非空 = 连这台主机。
-   * **桌面形态下保存前必填**（表单层要求，见 `DESKTOP_BASE_URL_REQUIRED_ERROR`）。
+   * **恒非空**：默认值 `DEFAULT_BACKEND_BASE_URL`，允许编辑，**不允许置空**
+   * （两种形态一个口径）。空值在归一层（`normalizeBaseUrl`）一律落回默认值。
    */
   backendBaseUrl: string;
   /** 访问令牌（`Authorization: Bearer <token>`）。空串 = 未配置。 */
@@ -51,9 +54,12 @@ export const CONNECTION_STORAGE_KEY = 'sandbox-console-connection';
  */
 export const PENDING_CONNECTION_STORAGE_KEY = 'sandbox-console-connection-pending';
 
-/** 默认配置：空基址（= 同源）+ 空令牌（= 未配置）。 */
+/** 默认后端地址（基址恒非空时的兜底值）。 */
+export const DEFAULT_BACKEND_BASE_URL = 'http://127.0.0.1:8000';
+
+/** 默认配置：默认基址 + 空令牌（= 未配置）。 */
 export const DEFAULT_CONNECTION_CONFIG: ConnectionConfig = {
-  backendBaseUrl: '',
+  backendBaseUrl: DEFAULT_BACKEND_BASE_URL,
   token: '',
 };
 
@@ -76,16 +82,17 @@ function resolveStorage(storage?: Storage | null): Storage | null {
 }
 
 /**
- * 归一化后端基址：去空白、补 scheme、去尾部斜杠。
+ * 归一化后端基址：去空白、补 scheme、去尾部斜杠，**空值落回默认地址**。
  *
  * - 补 scheme：用户填 `127.0.0.1:8000` 时按 `http://127.0.0.1:8000` 处理（省一次心智负担）。
  * - 去尾部斜杠：基址后面要直接拼 `/api/...`，多一个斜杠会出现 `//`。
- * - 空串保持空串：空串 = 同源。
+ * - **空值 → 默认地址**：基址恒非空（决策 D），空串不再表示「同源」，
+ *   一律归一为 `DEFAULT_BACKEND_BASE_URL`（存量存储里的空基址也走这条）。
  */
 export function normalizeBaseUrl(raw: string): string {
   const text = raw.trim();
   if (text === '') {
-    return '';
+    return DEFAULT_BACKEND_BASE_URL;
   }
   const withScheme = SCHEME_PATTERN.test(text) ? text : `http://${text}`;
   const trimmed = withScheme.replace(/\/+$/, '');
@@ -97,7 +104,7 @@ export function normalizeBaseUrl(raw: string): string {
 /**
  * 校验后端地址。返回空串表示合法，否则返回中文原因（就地展示的红字）。
  *
- * 空串合法：空基址 = 同源（默认口径，两种形态一样）。
+ * **必填**：基址恒非空（决策 D），空值直接判非法（两种形态一个口径）。
  *
  * **不带路径 / 查询 / 片段**：基址只表示「后端在哪个主机的哪个端口」，
  * 路径、参数与 `#` 一律拒绝（后端的接口都在根路径下，填了路径反而对不上）。
@@ -105,7 +112,7 @@ export function normalizeBaseUrl(raw: string): string {
 export function validateBaseUrl(raw: string): string {
   const text = raw.trim();
   if (text === '') {
-    return '';
+    return '请填写后端地址';
   }
   let url: URL;
   try {
@@ -126,19 +133,13 @@ export function validateBaseUrl(raw: string): string {
 }
 
 /**
- * 桌面形态下基址为空的本地校验文案（引导面板与设置抽屉共用一句）。
- *
- * 桌面壳与后端不同源：基址留空 = 请求走页面同源 = 打到桌面壳自己，
- * 后端不可达是必然结果（重载后必然 404）。网页形态留空合法（= 同源）。
- */
-export const DESKTOP_BASE_URL_REQUIRED_ERROR =
-  '桌面形态必须填写后端地址（桌面壳与后端不同源，留空无法访问）';
-
-/**
  * 读已存连接配置。
  *
  * 没存过、值非法（不是对象 / 字段不是字符串）或读取失败，一律回落默认
- * （= 空基址 + 空令牌 = 未配置）。
+ * （= 默认基址 + 空令牌 = 未配置）。
+ *
+ * **存量配置里的空基址归一为默认地址**（决策 D 之前「空 = 同源」留下的数据）：
+ * 走 `normalizeBaseUrl`，空串落回 `DEFAULT_BACKEND_BASE_URL`，存量用户不受影响。
  */
 export function readStoredConnection(storage?: Storage | null): ConnectionConfig {
   const store = resolveStorage(storage);
@@ -260,10 +261,12 @@ export function clearPendingConnection(storage?: Storage | null): void {
 }
 
 /**
- * 请求基址：空基址 = 同源（返回空串，调用方拼相对路径）；否则去掉尾部斜杠。
+ * 请求基址：**恒为绝对地址**（决策 D：不再有「空 = 同源」的相对路径分支）。
+ *
+ * 入参是基址本身（不是整份配置）：令牌与基址推导无关。
  */
-export function resolveApiBaseUrl(config: ConnectionConfig): string {
-  return normalizeBaseUrl(config.backendBaseUrl);
+export function resolveApiBaseUrl(baseUrl: string): string {
+  return normalizeBaseUrl(baseUrl);
 }
 
 /**
@@ -285,8 +288,7 @@ export function isDesktopRuntime(): boolean {
  *
  * **未配置 = 令牌为空**：后端对全部 `/api` 生效，没有令牌就换不到数据。
  *
- * 基址**不参与判定**：空基址 = 同源（合法），非空基址 = 连远端后端（也合法），
- * 两种运行形态一个口径。
+ * 基址**不参与判定**：基址恒有默认值（恒非空），两种运行形态一个口径。
  */
 export function isConnectionConfigured(config: ConnectionConfig): boolean {
   return config.token.trim() !== '';
@@ -332,10 +334,13 @@ export type DesktopSyncOutcome =
   | 'unavailable';
 
 /**
- * 本次页面会话里已经送给桌面壳的后端基址。
+ * 本次页面会话里已经送给桌面壳的后端基址（**归一后的值**）。
  *
  * 同一个基址只送一次：桌面壳的状态已经是它了，重复送没有意义
  * （省掉「保存一次 = 两次 IPC」的往返）。
+ *
+ * 去重按**归一值**比较：`10.0.0.5:8000` 与 `http://10.0.0.5:8000` 是同一个基址，
+ * 只送一次。
  */
 let lastSyncedBaseUrl: string | null = null;
 
@@ -360,6 +365,11 @@ export function resetDesktopSyncState(): void {
  * 3. 不一致 → 主文档重载（`location.reload()`）：重载后主文档重新被请求，
  *    这一版 CSP 才带上后端主机。**顺序不能反**：先更新状态，再重载。
  *
+ * **送出去的基址恒为「非空且已归一」**：用户可能填 `10.0.0.5:8000`（漏 scheme），
+ * 原串送进 Rust 侧的 `Url::parse` 会解析失败 → `connect-src` 静默少掉那台主机
+ * → 跨主机请求全被 CSP 拦死（界面上看不出原因）。归一走 `normalizeBaseUrl`
+ * （补 scheme、去尾部斜杠、空值落回默认地址）。
+ *
  * 调用失败（老版本桌面壳没有这些命令）时静默忽略：不能因为 CSP 同步失败
  * 就把用户的配置保存也带崩。
  */
@@ -378,7 +388,8 @@ export async function syncDesktopBackend(baseUrl: string): Promise<DesktopSyncOu
   if (typeof invoke !== 'function') {
     return 'unavailable';
   }
-  const target = baseUrl.trim();
+  // 恒送「非空且已归一」的基址（归一规则在 `normalizeBaseUrl`，单一真相源）。
+  const target = normalizeBaseUrl(baseUrl);
   if (lastSyncedBaseUrl !== null && lastSyncedBaseUrl === target) {
     // 同一个后端主机已经送过了：桌面壳的状态已经是它，不用再送一次。
     return 'synced';
@@ -445,7 +456,7 @@ function statusOf(exc: unknown): number | null {
 export interface ConnectionApi {
   /** 当前配置。 */
   config: ConnectionConfig;
-  /** 改配置并落盘（基址与令牌统一归一：基址可空 = 同源）。 */
+  /** 改配置并落盘（基址与令牌统一归一：基址恒非空，空值落回默认地址）。 */
   setConfig: (next: ConnectionConfig) => void;
   /** 当前是否已配置（未配置时不渲染工作台，改渲染引导面板）。 */
   configured: boolean;
@@ -460,7 +471,8 @@ export interface ConnectionApi {
  * - 初始化时**同步**写内存缓存（不靠 effect 的执行顺序）：接口层与终端地址
  *   推导在首次渲染时就能拿到同一份配置。
  * - 只有用户主动保存（引导面板的「保存并连接」/ 设置抽屉的「保存配置」）才落盘。
- * - **不再按运行形态收敛**：两种形态都能配后端地址，未配置只看令牌。
+ * - **不再按运行形态收敛**：两种形态都能配后端地址，未配置只看令牌；
+ *   基址恒非空（空值归一为默认地址）。
  */
 export function useConnection(): ConnectionApi {
   const desktop = useMemo(() => isDesktopRuntime(), []);

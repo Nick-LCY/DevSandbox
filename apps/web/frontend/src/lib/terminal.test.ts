@@ -52,47 +52,41 @@ describe('encodeResize', () => {
 });
 
 describe('terminalSocketUrl', () => {
-  /** 同源推导的输入（web 形态）。 */
-  const sameOrigin = {
-    baseUrl: '',
-    origin: { protocol: 'http:', host: '127.0.0.1:8000' },
-  };
+  /** 默认基址（连接配置的默认值）。 */
+  const defaultBase = { baseUrl: 'http://127.0.0.1:8000' };
 
-  it('http 页面走 ws', () => {
-    expect(terminalSocketUrl('sid', sameOrigin)).toBe(
+  it('默认基址：http→ws', () => {
+    expect(terminalSocketUrl('sid', defaultBase)).toBe(
       'ws://127.0.0.1:8000/api/terminal/sessions/sid',
     );
   });
 
-  it('https 页面走 wss', () => {
+  it('https 基址：https→wss', () => {
     expect(
       terminalSocketUrl('sid', {
-        baseUrl: '',
-        origin: { protocol: 'https:', host: 'sandbox.example:8443' },
+        baseUrl: 'https://sandbox.example:8443',
       }),
     ).toBe('wss://sandbox.example:8443/api/terminal/sessions/sid');
   });
 
   it('会话标识做百分号编码', () => {
-    expect(terminalSocketUrl('a b', sameOrigin)).toBe(
+    expect(terminalSocketUrl('a b', defaultBase)).toBe(
       'ws://127.0.0.1:8000/api/terminal/sessions/a%20b',
     );
   });
 
-  it('基址非空时从基址推导：http→ws', () => {
+  it('从基址推导：http→ws', () => {
     expect(
       terminalSocketUrl('sid', {
         baseUrl: 'http://10.0.0.5:8000',
-        origin: { protocol: 'http:', host: 'tauri.localhost' },
       }),
     ).toBe('ws://10.0.0.5:8000/api/terminal/sessions/sid');
   });
 
-  it('基址非空时从基址推导：https→wss', () => {
+  it('从基址推导：https→wss', () => {
     expect(
       terminalSocketUrl('sid', {
         baseUrl: 'https://sandbox.example',
-        origin: { protocol: 'http:', host: 'tauri.localhost' },
       }),
     ).toBe('wss://sandbox.example/api/terminal/sessions/sid');
   });
@@ -101,46 +95,45 @@ describe('terminalSocketUrl', () => {
     expect(
       terminalSocketUrl('sid', {
         baseUrl: 'http://10.0.0.5:8000/',
-        origin: { protocol: 'http:', host: 'tauri.localhost' },
       }),
     ).toBe('ws://10.0.0.5:8000/api/terminal/sessions/sid');
   });
 
-  it('基址非空但推导不出来：不回落同源，直接给 null（连错地址不能猜）', () => {
-    // ftp:// 推不出 ws/wss：宁可报「连接地址非法」，也不要连到页面同源去。
+  it('基址为空或推导不出来：不猜地址，直接给 null（连错地址不能猜）', () => {
+    // 基址为空：恒从基址推导，没有「回落到页面同源」的分支。
+    expect(terminalSocketUrl('sid', { baseUrl: '' })).toBeNull();
+    // ftp:// 推不出 ws/wss：宁可报「连接地址非法」，也不要连到别处去。
     expect(
       terminalSocketUrl('sid', {
         baseUrl: 'ftp://10.0.0.5',
-        origin: { protocol: 'http:', host: 'tauri.localhost' },
       }),
     ).toBeNull();
     expect(
       terminalSocketUrl('sid', {
         baseUrl: '不是地址',
-        origin: { protocol: 'http:', host: 'tauri.localhost' },
       }),
     ).toBeNull();
   });
 
   it('票据拼在 URL 上（?ticket=）', () => {
-    expect(terminalSocketUrl('sid', sameOrigin, 'sbxt_abc')).toBe(
+    expect(terminalSocketUrl('sid', defaultBase, 'sbxt_abc')).toBe(
       'ws://127.0.0.1:8000/api/terminal/sessions/sid?ticket=sbxt_abc',
     );
   });
 
   it('票据做百分号编码', () => {
-    expect(terminalSocketUrl('sid', sameOrigin, 'a b')).toBe(
+    expect(terminalSocketUrl('sid', defaultBase, 'a b')).toBe(
       'ws://127.0.0.1:8000/api/terminal/sessions/sid?ticket=a%20b',
     );
   });
 
   it('没有票据时不带查询串', () => {
-    expect(terminalSocketUrl('sid', sameOrigin)).not.toContain('?');
+    expect(terminalSocketUrl('sid', defaultBase)).not.toContain('?');
   });
 });
 
 describe('toWebSocketBase', () => {
-  it('空基址返回 null（调用方回落到同源推导）', () => {
+  it('空基址返回 null（地址非法，不回落别处）', () => {
     expect(toWebSocketBase('')).toBeNull();
     expect(toWebSocketBase('   ')).toBeNull();
   });
@@ -164,39 +157,34 @@ describe('toWebSocketBase', () => {
     expect(toWebSocketBase('不是地址')).toBeNull();
     expect(toWebSocketBase('ftp://h')).toBeNull();
   });
+
+  it('漏了 scheme 的基址：归一后照样推导出 WS 地址（与 HTTP 侧一个口径）', () => {
+    // 用户填 `10.0.0.5:8000`：归一层补上 scheme 才推得出来。
+    expect(toWebSocketBase('10.0.0.5:8000')).toBe('ws://10.0.0.5:8000');
+    expect(toWebSocketBase('127.0.0.1:8000/')).toBe('ws://127.0.0.1:8000');
+  });
+
+  it('主机名带非 ASCII 字符：不猜那个 punycode 地址（返回 null）', () => {
+    // `http://不是地址` 会被 IDNA 编成 `http://xn--ihqq6tnb086g`——
+    // 那是用户没写过的地址，不猜（与 HTTP 侧的口径差异写在这里）。
+    expect(toWebSocketBase('不是地址')).toBeNull();
+  });
 });
 
 describe('resolveTerminalSocketBase', () => {
-  it('基址为空：按页面位置推导（同源）', () => {
-    const resolved = resolveTerminalSocketBase({
-      baseUrl: '',
-      origin: { protocol: 'https:', host: 'h:1' },
-    });
-    expect(resolved).toEqual({ ok: true, base: 'wss://h:1' });
-  });
-
-  it('基址非空：按基址推导', () => {
-    const resolved = resolveTerminalSocketBase({
-      baseUrl: 'http://10.0.0.5:8000',
-      origin: { protocol: 'http:', host: 'tauri.localhost' },
-    });
-    expect(resolved).toEqual({ ok: true, base: 'ws://10.0.0.5:8000' });
-  });
-
-  it('基址非空但推导失败：明确报「基址非法」，不回落同源', () => {
-    const resolved = resolveTerminalSocketBase({
-      baseUrl: 'ftp://10.0.0.5',
-      origin: { protocol: 'http:', host: 'tauri.localhost' },
-    });
+  it('基址为空：明确报「基址非法」，不回落页面同源', () => {
+    const resolved = resolveTerminalSocketBase({ baseUrl: '' });
     expect(resolved).toEqual({ ok: false, reason: 'invalid-base' });
   });
 
-  it('页面位置不可用（同源推导不出来）：明确报「页面位置不可用」', () => {
-    const resolved = resolveTerminalSocketBase({
-      baseUrl: '',
-      origin: { protocol: '', host: '' },
-    });
-    expect(resolved).toEqual({ ok: false, reason: 'invalid-origin' });
+  it('从基址推导', () => {
+    const resolved = resolveTerminalSocketBase({ baseUrl: 'http://10.0.0.5:8000' });
+    expect(resolved).toEqual({ ok: true, base: 'ws://10.0.0.5:8000' });
+  });
+
+  it('基址推导失败：明确报「基址非法」，不回落同源', () => {
+    const resolved = resolveTerminalSocketBase({ baseUrl: 'ftp://10.0.0.5' });
+    expect(resolved).toEqual({ ok: false, reason: 'invalid-base' });
   });
 });
 

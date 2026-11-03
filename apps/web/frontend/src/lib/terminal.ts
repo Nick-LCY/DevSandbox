@@ -7,6 +7,8 @@
  * - 服务端 → 客户端：二进制帧 = 终端输出字节；文本帧 = `hello` / `exit` / `error`
  */
 
+import { normalizeBaseUrl } from './connection';
+
 /** 服务端发来的文本帧。 */
 export type TerminalFrame =
   | { type: 'hello'; sessionId: string; sandbox: string; cols: number; rows: number }
@@ -23,22 +25,33 @@ export const SESSION_INVALID_MESSAGE = '终端会话已失效（后端服务已�
 /**
  * 终端连接的地址推导输入。
  *
- * - `baseUrl`：连接配置里的后端基址。**空串 = 同源**（web 形态：后端托管前端，
- *   终端与页面同源）。
- * - `origin`：页面自身的位置（基址为空时用它推导协议与主机，web 形态行为不变）。
+ * - `baseUrl`：连接配置里的后端基址。**恒非空**（默认 `http://127.0.0.1:8000`）。
+ *
+ * **不再有页面位置（`window.location`）回退**：决策 D 之后「空 = 同源」语义废除，
+ * WS 地址恒从基址推导（`http→ws` / `https→wss`）。
  */
 export interface TerminalSocketTarget {
-  /** 后端基址（空串 = 同源）。 */
+  /** 后端基址（恒非空；空值视为非法地址）。 */
   baseUrl: string;
-  /** 页面自身位置。 */
-  origin: { protocol: string; host: string };
 }
+
+/**
+ * 主机名里的非 ASCII 字符（如中文）。
+ *
+ * URL 解析会按 IDNA 把它们编成 punycode（`http://不是地址` →
+ * `http://xn--ihqq6tnb086g`）——那是**用户没写过的地址**，不猜。
+ */
+const NON_ASCII_PATTERN = /[^\x00-\x7F]/;
 
 /**
  * 把后端基址换成 WebSocket 基址：`http→ws` / `https→wss`。
  *
  * 解析不了（空串 / 非法地址 / 不认识的 scheme）时返回 null，由调用方决定
- * 怎么办（**不许静默回落到同源**：那会把「连错了地址」变成「连到了别的地方」）。
+ * 怎么办（**不许静默回落到别处**：那会把「连错了地址」变成「连到了别的地方」）。
+ *
+ * **入参先过归一层**（`normalizeBaseUrl`，连接层的单一真相源）：补 scheme、
+ * 去尾部斜杠。用户填 `10.0.0.5:8000`（漏了 scheme）也能推导出 WS 地址——
+ * 与 HTTP 侧（`resolveApiBaseUrl`）一个口径。
  *
  * **不保留基址里的路径**：基址只表示「主机 + 端口」（带路径的基址由
  * `validateBaseUrl` 拦掉），与 HTTP 侧的口径一致。
@@ -46,11 +59,17 @@ export interface TerminalSocketTarget {
 export function toWebSocketBase(baseUrl: string): string | null {
   const text = baseUrl.trim();
   if (text === '') {
+    // 空串按非法处理：**不猜默认地址**（猜了就等于「连到了别的地方」）。
     return null;
   }
+  if (NON_ASCII_PATTERN.test(text)) {
+    // 主机名带非 ASCII 字符：归一后会变成 punycode 主机（用户没写的地址），不猜。
+    return null;
+  }
+  const normalized = normalizeBaseUrl(text);
   let parsed: URL;
   try {
-    parsed = new URL(text);
+    parsed = new URL(normalized);
   } catch {
     return null;
   }
@@ -70,41 +89,30 @@ export function toWebSocketBase(baseUrl: string): string | null {
 /** 终端 WS 基址的推导结果。 */
 export type TerminalSocketBase =
   | { ok: true; base: string }
-  /** 推导不出来（原因：基址非法 / 页面位置不可用）。 */
-  | { ok: false; reason: 'invalid-base' | 'invalid-origin' };
+  /** 推导不出来（原因：基址非法 / 为空）。 */
+  | { ok: false; reason: 'invalid-base' };
 
 /**
- * 终端连接的 WS 基址。
+ * 终端连接的 WS 基址：**恒从后端基址推导**。
  *
- * - 基址非空：按基址推导（`http→ws` / `https→wss`），桌面形态连远端后端走这条。
- *   **推导不出来就说推导不出来**（`ok: false`），不回落页面同源——回落会把
+ * - 按基址推导（`http→ws` / `https→wss`），网页形态与桌面形态一个口径。
+ * - **推导不出来就说推导不出来**（`ok: false`），不回落页面同源——回落会把
  *   「连错了地址」变成「连到了别的地方」，用户看到的现象是「连上了但不是那台后端」。
- * - 基址为空：按页面位置推导（同源），**web 形态行为零变化**。
  */
 export function resolveTerminalSocketBase(target: TerminalSocketTarget): TerminalSocketBase {
-  const base = target.baseUrl.trim();
-  if (base !== '') {
-    const derived = toWebSocketBase(base);
-    if (derived === null) {
-      return { ok: false, reason: 'invalid-base' };
-    }
-    return { ok: true, base: derived };
+  const derived = toWebSocketBase(target.baseUrl);
+  if (derived === null) {
+    return { ok: false, reason: 'invalid-base' };
   }
-  const protocol = target.origin.protocol;
-  const host = target.origin.host;
-  if (!protocol || !host) {
-    return { ok: false, reason: 'invalid-origin' };
-  }
-  return { ok: true, base: `${protocol === 'https:' ? 'wss:' : 'ws:'}//${host}` };
+  return { ok: true, base: derived };
 }
 
 /**
  * 终端连接的地址。
  *
- * - 基址非空：按基址推导（`http→ws` / `https→wss`），桌面形态连远端后端走这条；
- * - 基址为空：按页面位置推导（同源），**web 形态行为零变化**；
- * - 推导不出来（基址非法等）：返回 **null**，由调用方进「连接地址非法」状态
- *   （不猜一个地址连上去）；
+ * - **恒从基址推导**（`http→ws` / `https→wss`），不再按页面位置回退；
+ * - 推导不出来（基址为空 / 非法等）：返回 **null**，由调用方进「连接地址非法」
+ *   状态（不猜一个地址连上去）；
  * - 票据：浏览器发起的 WebSocket 不能设请求头，握手靠 `?ticket=`（一次性票据，
  *   每次连接 / 重连前现取，不缓存）。
  */

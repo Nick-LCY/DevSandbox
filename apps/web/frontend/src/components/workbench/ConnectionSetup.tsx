@@ -4,8 +4,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../../api/client';
 import {
   clearPendingConnection,
-  DESKTOP_BASE_URL_REQUIRED_ERROR,
+  DEFAULT_BACKEND_BASE_URL,
   describeHealthFailure,
+  normalizeBaseUrl,
   readPendingConnection,
   syncDesktopBackend,
   validateBaseUrl,
@@ -21,8 +22,8 @@ interface ConnectionSetupProps {
   /**
    * 是否运行在桌面壳里。
    *
-   * 只管**桌面运行时的那一套**（CSP 同步与待验证配置的体检流程）与
-   * 「基址必填」这一条（桌面壳与后端不同源）——两种形态都能填后端地址。
+   * 只管**桌面运行时的那一套**（CSP 同步与待验证配置的体检流程）——配置层
+   * **没有形态差异**：后端地址两种形态都能填，基址恒非空（默认值同款）。
    */
   desktop: boolean;
   /** 保存配置（保存后工作台才挂载）。 */
@@ -34,9 +35,9 @@ interface ConnectionSetupProps {
  *
  * **这是页面状态，不是路由**：地址栏仍然是 `#/`，刷新页面回到这里。
  *
- * 配置口径（2026-11-03 起两种形态不再有差别）：
- * - 后端地址**两种形态都能填**：留空 = 与本页面同源，填了就连那台主机
- *   （**桌面形态例外**：桌面壳与后端不同源，基址必填，见本段末尾）；
+ * 配置口径（决策 D：**基址恒非空**）：
+ * - 后端地址**默认值 `http://127.0.0.1:8000`**（`DEFAULT_BACKEND_BASE_URL`），
+ *   允许编辑，**不允许置空**（网页形态与桌面形态一个口径）；
  * - 访问令牌必填（后端对全部 `/api` 生效，没有令牌就换不到数据）。
  *
  * 「保存并连接」的动作口径：**先体检再保存**——只有健康检查通过才保存配置、
@@ -47,15 +48,12 @@ interface ConnectionSetupProps {
  * 生成主文档的 `connect-src`；主文档的 CSP 变了就得重载主文档，重载后才谈得上
  * 跨主机的健康检查。草稿先落在「待验证配置」里，重载回来时用它体检——
  * 时序契约见 `apps/desktop/README.md` 的「CSP」一节。
- *
- * **桌面形态下基址必填**：桌面壳与后端不同源，基址留空 = 请求打到桌面壳自己
- * （重载后必然 404，体检只会报一句误导人的「后端不可达」）。所以留空时**就地红字**
- * 拦下，不进「写 pending → 同步 CSP → 重载 → 体检」那套流程。网页形态留空照旧
- * （= 同源，直接体检）。
  */
 export function ConnectionSetup({ config, desktop, onSave }: ConnectionSetupProps) {
   const { show } = useToast();
-  const [baseUrl, setBaseUrl] = useState(config.backendBaseUrl);
+  // 基址恒非空：配置里是空串（存量数据）时归一为默认地址（归一规则只有
+  // `normalizeBaseUrl` 这一处，草稿初值与 `DEFAULT_CONNECTION_CONFIG` 一致）。
+  const [baseUrl, setBaseUrl] = useState(normalizeBaseUrl(config.backendBaseUrl));
   const [token, setToken] = useState(config.token);
   /** 本地表单校验红字（就地展示，不走 toast）。 */
   const [error, setError] = useState('');
@@ -102,13 +100,7 @@ export function ConnectionSetup({ config, desktop, onSave }: ConnectionSetupProp
   }, [desktop, onSave, show]);
 
   const save = useCallback(async () => {
-    // 桌面形态：基址留空 = 请求打到桌面壳自己（桌面壳与后端不同源）。
-    // 这时进「写 pending → 同步 CSP → 重载 → 体检」只会得到一句误导人的
-    // 「后端不可达」（重载后必然 404）——就地红字，要求先填基址。
-    if (desktop && baseUrl.trim() === '') {
-      setError(DESKTOP_BASE_URL_REQUIRED_ERROR);
-      return;
-    }
+    // 基址必填 + 形状合法（通用必填校验，网页形态与桌面形态一个口径）。
     const baseError = validateBaseUrl(baseUrl);
     if (baseError) {
       setError(baseError);
@@ -128,7 +120,9 @@ export function ConnectionSetup({ config, desktop, onSave }: ConnectionSetupProp
       // 桌面形态：先把后端主机告诉桌面壳（动态 CSP 跟着连接配置走）。
       // 草稿先落盘：主文档重载会清掉内存状态，重载回来时靠它体检。
       writePendingConnection(next);
-      const outcome = await syncDesktopBackend(next.backendBaseUrl);
+      // 同步的基址恒为「非空且已归一」：用户可能填了漏 scheme 的 `10.0.0.5:8000`，
+      // 原串送进 Rust 侧的 `Url::parse` 会解析失败 → CSP 静默拦死那台主机。
+      const outcome = await syncDesktopBackend(normalizeBaseUrl(next.backendBaseUrl));
       if (outcome === 'reloading') {
         // 主文档正在重载：这一轮到此为止（重载后体检，通过才保存）。
         return;
@@ -175,7 +169,7 @@ export function ConnectionSetup({ config, desktop, onSave }: ConnectionSetupProp
               value={baseUrl}
               autoComplete="off"
               spellCheck={false}
-              placeholder="http://127.0.0.1:8000（留空 = 与本页面同源）"
+              placeholder={DEFAULT_BACKEND_BASE_URL}
               onChange={(event) => setBaseUrl(event.target.value)}
               data-testid="page-connection-base-url-input"
             />

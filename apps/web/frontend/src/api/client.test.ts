@@ -2,10 +2,15 @@
  * 接口层：请求基址拼接、`Authorization` 头、票据获取与「未配置不发请求」。
  *
  * 这是连接层的硬要求所在：每个请求都带 Bearer；令牌缺失时一个请求都不发。
+ * **请求恒为绝对地址**（决策 D：基址恒非空，不再有「同源 = 相对路径」的分支）。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { cacheConnectionConfig, setConnectionConfig } from '../lib/connection';
+import {
+  DEFAULT_BACKEND_BASE_URL,
+  cacheConnectionConfig,
+  setConnectionConfig,
+} from '../lib/connection';
 import { ApiError, ConnectionNotConfiguredError, api, fetchAuthTicket } from './client';
 
 /** fetch 的替身。 */
@@ -23,12 +28,12 @@ function jsonResponse(body: unknown, status = 200): Response {
 beforeEach(() => {
   fetchMock.mockReset();
   vi.stubGlobal('fetch', fetchMock);
-  // 默认：同源 + 有令牌。
-  setConnectionConfig({ backendBaseUrl: '', token: 'sbx_test' });
+  // 默认：默认后端地址 + 有令牌。
+  setConnectionConfig({ backendBaseUrl: DEFAULT_BACKEND_BASE_URL, token: 'sbx_test' });
 });
 
 afterEach(() => {
-  cacheConnectionConfig({ backendBaseUrl: '', token: '' });
+  cacheConnectionConfig({ backendBaseUrl: DEFAULT_BACKEND_BASE_URL, token: '' });
   vi.unstubAllGlobals();
 });
 
@@ -40,17 +45,18 @@ describe('请求基址与凭据', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('/api/sandboxes');
+    expect(url).toBe(`${DEFAULT_BACKEND_BASE_URL}/api/sandboxes`);
     const headers = init.headers as Headers;
     expect(headers.get('Authorization')).toBe('Bearer sbx_test');
   });
 
-  it('基址为空 = 同源：请求走相对路径', async () => {
-    fetchMock.mockResolvedValue(jsonResponse([]));
+  it('基址为空：归一为默认地址，请求走绝对地址（不再拼相对路径）', async () => {
+    setConnectionConfig({ backendBaseUrl: '', token: 'sbx_test' });
+    fetchMock.mockResolvedValue(jsonResponse({ version: '0.2.0', console_mounted: true }));
 
     await api.health();
 
-    expect(fetchMock.mock.calls[0][0]).toBe('/api/health');
+    expect(fetchMock.mock.calls[0][0]).toBe(`${DEFAULT_BACKEND_BASE_URL}/api/health`);
   });
 
   it('基址非空：请求走绝对地址（连远端后端）', async () => {
@@ -127,7 +133,7 @@ describe('一次性票据', () => {
 
     expect(ticket).toBe('sbxt_abc');
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('/api/auth/ticket');
+    expect(url).toBe(`${DEFAULT_BACKEND_BASE_URL}/api/auth/ticket`);
     expect(init.method).toBe('POST');
     expect((init.headers as Headers).get('Authorization')).toBe('Bearer sbx_test');
   });

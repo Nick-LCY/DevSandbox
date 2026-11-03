@@ -19,7 +19,11 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError, ConnectionNotConfiguredError } from '../../api/client';
-import { CONNECTION_STORAGE_KEY, resetDesktopSyncState } from '../../lib/connection';
+import {
+  CONNECTION_STORAGE_KEY,
+  DEFAULT_BACKEND_BASE_URL,
+  resetDesktopSyncState,
+} from '../../lib/connection';
 import { ToastProvider } from '../Toast';
 import { Workbench } from './Workbench';
 
@@ -96,7 +100,7 @@ afterEach(() => {
 beforeEach(() => {
   window.localStorage.setItem(
     CONNECTION_STORAGE_KEY,
-    JSON.stringify({ backendBaseUrl: '', token: 'sbx_test' }),
+    JSON.stringify({ backendBaseUrl: DEFAULT_BACKEND_BASE_URL, token: 'sbx_test' }),
   );
 });
 
@@ -321,9 +325,9 @@ describe('未配置态', () => {
     expect(screen.queryByTestId('page-connection-setup')).toBeNull();
   });
 
-  it('桌面形态：未配置只看令牌——基址为空但有令牌 → 已配置，工作台直接挂载', async () => {
-    // 鉴别力在这里：**旧口径**（桌面形态基址为空 = 未配置）会渲染引导面板；
-    // **新口径**（未配置只看令牌）直接挂载工作台。
+  it('桌面形态：存量配置里基址为空 → 归一为默认地址，有令牌即已配置，工作台直接挂载', async () => {
+    // 鉴别力在这里：**旧口径**（基址为空 = 未配置）会渲染引导面板；
+    // **新口径**（基址恒非空、空值归一为默认地址 + 未配置只看令牌）直接挂载工作台。
     // （网页形态的同款场景两套口径都判「已配置」，不具鉴别力，故取桌面形态。）
     const invoke = vi.fn();
     invoke.mockResolvedValue(undefined);
@@ -351,7 +355,7 @@ describe('未配置态', () => {
     }
   });
 
-  it('网页形态：后端地址可填，填了就按它体检（不再强制同源）', async () => {
+  it('网页形态：后端地址可填，填了就按它体检（基址恒非空，但可改）', async () => {
     window.localStorage.clear();
     mocks.health.mockResolvedValue({ version: '0.2.0', console_mounted: true });
     mocks.listSandboxes.mockResolvedValue([]);
