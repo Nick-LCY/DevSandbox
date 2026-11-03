@@ -63,6 +63,8 @@ pnpm run test       # vitest run，纯数据转换逻辑与组件交互的单元
 
 单元测试覆盖挂载声明解析、文件注入声明解析（两段格式、家目录写法、敏感清单、宿主与容器路径重复）、环境变量解析、启动模板的纯逻辑（宽松挂载解析、宽松文件注入解析、表单合并语义与配置收集）、两层路由解析（含畸形百分号编码）、字节与时间格式化、终端帧协议解析、终端状态提示的口径与去重规则（纯函数，含用户主动关闭、空闲回收与服务退出兜底三种结束原因）、终端快捷键的分类（纯函数：浏览器保留键、Ctrl+Shift+C 复制、Ctrl+Shift+V 粘贴、其余带 Ctrl/Meta/Alt 的组合转发、纯键普通处理，Meta+Shift+C/V 同样触发）、代理状态文案转换、主题存取、抽屉宽度的存取与换算、轮询失败计数，终端面板的会话标签与关闭会话交互（标签渲染、点标签回调、运行中与已退出的两套确认文案、确认与取消、失败提示、记录已不存在、关闭流程未走完、列表刷新失败、终态提示、同一状态反复上报不重复刷屏、轮询连续失败），工作台的列表读取失败与轮询失败反馈、停止沙箱先弹确认框，新建沙箱抽屉的镜像列表失败说明、镜像选择器的本地筛选（输入关键字只剩命中项）、列表到位后输入框不被预填、逐字符打字能命中、没命中时的空态、弹层顶部无空白块、输入框内部的下拉箭头（纯指示器、点击落在输入框上）、候选项的指针光标、空列表不留空白带、键盘选中、选中后的详情行、改字即放弃选择与未选镜像时的校验红字、挂载空态的精简文案，文件注入区的声明入请求与就地校验红字（格式非法、容器路径重复）、空态占位（一行都没声明时显示「暂未声明注入。」）、除该空态占位外无解释性文案，以及文件注入的模板联动（出现即整组替换、没有则保持现状）与保存为模板时的文件行入库，模板选择器的可搜可选、选中回填（模板声明原样回填与镜像不在宿主列表时的留空）、模板下拉下不再挂说明段、模板入口的位置（加载模板在抽屉最上方、保存为模板在页脚且在主按钮左侧）、保存为模板的空名禁提交与成功提示、保存弹窗的精简文案，以及创建成功收口，设置抽屉的代理重启失败反馈不被状态刷新失败顶掉、刷新与重启两个按钮在代理设置区里（抽屉没有全局页脚）、模板列表渲染与空态、管理区不再挂说明段、模板列表读取失败、行内重命名（回车提交 / Esc 取消 / 空名禁提交）与删除确认弹窗，删除沙箱确认的一次点即执行，停止沙箱确认弹窗的勾选项与忙碌锁，以及抽屉外壳的焦点管理、关闭途径、宽度拖拽把手（条子中间带竖向抓握图标）与指针拖拽路径（拖动中不落盘、松手落盘一次、按下即松手不落盘、视口宽不可用时不换算），最后是全局 toast 组件本身（类型 → 配色类映射、5 秒自动消失、关闭键提前关闭、倒计时圆环的动画类名与时长、悬停 / 点提示区 / 聚焦提示区 / 按下提示条不暂停倒计时、按 F6 不被 Base UI 接管、窗口失焦停表与回前台整体重走 5 秒、新反馈顶掉旧条并重置计时、退场竞态下圆环重建）。组件测试用 jsdom 环境（文件头部 `@vitest-environment jsdom` 注解切换），依赖 `@testing-library/react` 与 `jsdom`。
 
+本轮新增：侧栏折叠（默认展开、收窄到 56px、可访问名随状态切换、**底部工具区的贴底约束类**、健康状态的可访问名跟随健康文案）、终端焦点回填门控（有意图回填、原位回填、焦点在终端外不抢、**重挂载把焦点复位到 body 后没有意图就不回填**、新建会话后回填）、终端尺寸自适应的尾沿去抖（**连续多次触发只发一次 resize**）。
+
 toast 挂全局 `ToastProvider`：组件测试渲染带 Provider 的片段，断言看 `page-toast-item` 与 `data-toast-kind`（必要时再加 `data-toast-source`）。
 
 ## 端到端验收
@@ -116,6 +118,10 @@ apps/web/frontend/
     │   ├── poll.ts       后台轮询的连续失败计数（到阈值弹一条 toast）
     │   ├── toast.ts      操作反馈（toast）的类型与配色口径
     │   ├── theme.ts      亮 / 暗主题切换
+    │   ├── sidebar-collapsed.ts 侧栏折叠状态的存取（默认展开，挂载不写）
+    │   ├── terminal-active.ts   终端面板「当前选中会话」的解析口径
+    │   ├── terminal-focus.ts    终端焦点回填的门控与焦点位置判定
+    │   ├── terminal-fit.ts      终端尺寸自适应的尾沿去抖
     │   ├── drawer-width.ts 抽屉宽度的存取、钳位与视口换算（三个抽屉共用）
     │   ├── cn.ts         类名合并（clsx + tailwind-merge）
     │   └── validate.ts   沙箱名 / 镜像选择校验
@@ -184,6 +190,40 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 ## 后端健康自检
 
 侧栏底部常驻一条健康自检（`GET /api/health`，每 15 秒一次）：后端不可达时直接提示「后端服务不可达」并给出原因；后端可用但前端产物未挂载时提示「前端产物未挂载」。
+
+健康自检在折叠态只留一个状态点（文字用 `sr-only` 收起来：视觉隐藏，**仍留在可访问树里**），可访问名也不会丢——容器带 `aria-label="后端健康：<健康文案>"`，跟随健康状态变化。
+
+## 侧栏折叠
+
+侧栏可折叠成一个只留图标的窄条（56px），状态自持（`src/lib/sidebar-collapsed.ts`），不入路由、不入 URL。
+
+| 口径 | 规定 |
+|---|---|
+| 宽度 | 展开 264px（`w-[264px]`）↔ 折叠 56px（`w-14`），宽度变化带 200ms 过渡 |
+| 存储 | 存储键 `sandbox-console-sidebar-collapsed`，存 `'1'`（折叠）/ `'0'`（展开）；**默认展开**，非法值与读取失败一律回落展开 |
+| 落盘时机 | **只有用户主动点折叠按钮才写存储**；挂载时不写（读到什么就是什么） |
+| 隐藏方式 | **只切样式不卸 DOM**（`hidden` / `sr-only`）：「新建沙箱」按钮始终挂载，**页面上恒有两个 `page-sandbox-list-create-button`**（侧栏顶部 + 右侧空态引导块），验收脚本取第一个即可 |
+| 底部工具 | 健康状态点 / 设置 / 主题切换 / 折叠按钮**永远贴在侧边栏底部**（容器带 `mt-auto`）：它不依赖列表撑高——列表折叠收起后，底部工具也不会浮到顶部去 |
+| 开关语义 | 折叠按钮是「动作名随状态变化」的普通按钮：可访问名与 `title` 在「收起侧栏 / 展开侧栏」之间切换，**不带 `aria-expanded`**（它不是开关，是两个动作） |
+
+## 终端全屏与焦点回填
+
+终端面板右上角有一个全屏开关（`page-sandbox-detail-terminal-fullscreen-button`）。
+
+**全屏口径**：
+
+- **纯 CSS 覆盖**：面板切到 `fixed inset-0 z-40`，盖住整页；**不用 `requestFullscreen`**（那会进浏览器全屏态，退出得靠 Esc / F11，与「再点按钮退出」的口径不合）。
+- **层高必须低于浮层**：全屏层 `z-40`，弹窗 / 抽屉是 `z-50`，toast 是 `z-[100]`——弹窗与提示永远浮在全屏面板之上。
+- **状态不入存储、不入路由**：只活在本地面板状态里，刷新页面回到常规布局；换沙箱时自动退出全屏。
+- **退出 = 再点同一个按钮**：不绑 Esc、不绑 F11（Esc 归容器 shell 管）。
+- **不接管浏览器保留键**：全屏不改变键盘口径，`Ctrl+N` / `Ctrl+W` / `F5` 等仍然是浏览器保留键（见下方「快捷键全量拦截」）。
+
+**焦点回填口径**（会话切换会让终端**整块重挂载**，重挂载后浏览器焦点落到 body，新终端就成了看得见、敲不进 pty 的「空心光标」）：
+
+- **回填只在两种情况下发生**：① 用户刚点了标签 / 点了终端表面 / 新建了会话（明确的操作意图）；② 判定当下焦点就在终端表面内（重挂载把焦点弄丢了，要恢复）。
+- **绝不抢别处的焦点**：焦点在抽屉输入框等终端表面之外时，一律不回填。
+- **判定活读 `document.activeElement`**（口径在 `src/lib/terminal-focus.ts`）：终端重挂载会把 xterm 的 helper textarea 从 DOM 摘掉，浏览器把焦点复位到 body 且**不派发 `focusin`**——只靠事件跟踪记下来的标志会永远停在 true，门控会退化成「永远回填」。
+- 一个终端实例**只回填一次**：重试连接（重建 WebSocket）不会把挂载时刻的值再拿出来用一次。
 
 ## 操作反馈（toast）
 
@@ -312,6 +352,9 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 - **终端表面分两层**：外层是视觉层（圆角、边框、内边距、深色底，`overflow-hidden` 不滚动），内层是测量/挂载盒（`page-sandbox-detail-terminal-mount`，无内边距无边框，xterm 根元素挂在这里）。fit 插件量的是父容器的**边框盒**且只减终端元素自身的 padding，所以测量盒必须单独一层：放在带 padding 与 border 的表面上，那 26 像素（padding 24 + border 2）会被漏算，终端恒定溢出、外层长出原生滚动条。
 - **终端区域只有一根滚动条**：xterm 内部那根（`.xterm-viewport`，承载 5000 行回滚），暗色定制样式在 `src/styles/globals.css`（8 像素宽、半透明滑块、悬停加深；Firefox 走标准属性兜底）。外层任何容器都不滚动，字符不会越过暗色面边缘。
 - 自托管字体 swap 晚到会让列数失配（fit 用的是量出来的字符宽度），字体就绪后补一次 fit。
+- **尺寸自适应带去抖**：侧栏宽度过渡（200 毫秒）期间主列宽度逐帧变化，挂载盒的 `ResizeObserver` 逐帧触发；不去抖的话每一帧都会 fit + sendResize，把一串尺寸帧逐个回打到 pty。去抖窗口 100 毫秒，窗口内只保留最后一次（口径在 `src/lib/terminal-fit.ts`）。
+- **终端全屏**：面板**纯 CSS 覆盖**整页（`fixed inset-0 z-40`，层高低于弹窗 / 抽屉的 `z-50` 与 toast 的 `z-[100]`）；状态不入存储、不入路由，刷新页面复原；退出全屏 = 再点同一个按钮（不绑 Esc / F11）；**不接管浏览器保留键**。详见「终端全屏与焦点回填」。
+- **焦点回填**：会话切换后终端整块重挂载，浏览器焦点落到 body（看得见、敲不进 pty）。只在「用户刚点了标签 / 点了终端表面 / 新建了会话」或「判定当下焦点就在终端表面内」时回填，**绝不抢抽屉输入框的焦点**。详见「终端全屏与焦点回填」。
 - **标签 = 会话**：标签条的数据源就是后端的会话表（`GET /api/terminal/sessions?sandbox=<名>`），一个标签一个会话；点标签即附着到该会话（服务端回放现场缓冲），标签尾的 `×` 是**关闭会话**（会终止容器内该会话的进程树），先弹确认。
 - 终端配色与字体固定（两套主题恒定）：`Geist Mono` 12.5px，背景 `#152019`、前景 `#e3ebe5`、光标 `#a7d8af`、选区 `#2b3d31`。
 - **快捷键全量拦截**：带 Ctrl / Meta / Alt 的组合一律 `preventDefault`（不让浏览器抢走），但仍然编码后送进容器内的 shell（`Ctrl+C` 必须能到 pty）。浏览器保留键交回浏览器：`Ctrl+N`/`Ctrl+Shift+N`、`Ctrl+T`/`Ctrl+Shift+T`、`Ctrl+W`/`Ctrl+Shift+W`、`Ctrl+Q`、`Ctrl+Tab`/`Ctrl+Shift+Tab`、`F5`、`F11`、`F12`、`Alt+F4`、`Ctrl+P`、`Ctrl+S`。
@@ -357,12 +400,12 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 
 | 页面 | 页面段 | 主要标识 |
 |---|---|---|
-| 外壳 | `layout` | `page-layout-title` / `page-layout-health`（带 `data-health-state`）/ `page-layout-settings-button` / `page-layout-theme-toggle` |
+| 外壳 | `layout` | `page-layout-title` / `page-layout-sidebar`（侧栏容器，带 `data-collapsed="true\|false"`）/ `page-layout-health`（带 `data-health-state`，另带 `aria-label` 说明健康文案）/ `page-layout-settings-button` / `page-layout-theme-toggle` / `page-layout-sidebar-collapse-button`（侧栏折叠开关；可访问名随状态在「收起侧栏 / 展开侧栏」之间切换，**不带 `aria-expanded`**）|
 | 沙箱列表 | `sandbox-list` | `page-sandbox-list-title` / `page-sandbox-list-item` / `page-sandbox-list-item-name` / `page-sandbox-list-item-state` / `page-sandbox-list-item-image` / `page-sandbox-list-refresh-button` / `page-sandbox-list-create-button` / `page-sandbox-list-empty` / `page-sandbox-list-loading` |
 | 新建沙箱 | `sandbox-create` | `page-sandbox-create-dialog`（抽屉容器）/ `page-sandbox-create-title` / `page-sandbox-create-name-input` / `page-sandbox-create-image-select`（**镜像选择器的输入框**，可搜索；不再是原生 `select`）/ `page-sandbox-create-image-trigger`（输入框**内部右侧**的下拉箭头指示器，装饰性不可点）/ `page-sandbox-create-image-popup`（镜像选择器的弹层）/ `page-sandbox-create-image-option`（弹层里的候选镜像，带 `data-image-reference="<引用>"`）/ `page-sandbox-create-image-no-match`（搜索没命中时的空态）/ `page-sandbox-create-image-refresh-button` / `page-sandbox-create-image-detail` / `page-sandbox-create-image-empty` / `page-sandbox-create-image-status`（镜像列表读取失败的就地环境状态说明，`role="status"`）/ `page-sandbox-create-template-select`（**模板选择器的输入框**，可搜索）/ `page-sandbox-create-template-trigger`（输入框**内部右侧**的下拉箭头指示器，装饰性不可点）/ `page-sandbox-create-template-popup` / `page-sandbox-create-template-option`（弹层里的候选模板，带 `data-template-id` 与 `data-template-name`）/ `page-sandbox-create-template-no-match` / `page-sandbox-create-template-save-button`（「保存为模板」，在抽屉页脚、「创建沙箱」主按钮左侧）/ `page-sandbox-create-template-empty` / `page-sandbox-create-template-status`（模板列表读取失败的就地环境状态说明，`role="status"`）/ `page-sandbox-create-template-dialog`（命名弹窗）/ `page-sandbox-create-template-name-input` / `page-sandbox-create-template-name-error`（空名红字）/ `page-sandbox-create-template-confirm-button` / `page-sandbox-create-template-cancel-button` / `page-sandbox-create-mount-add-button` / `page-sandbox-create-mount-empty` / `page-sandbox-create-mount-item` / `page-sandbox-create-mount-host-input` / `page-sandbox-create-mount-container-input` / `page-sandbox-create-mount-readonly-checkbox` / `page-sandbox-create-mount-remove-button` / `page-sandbox-create-file-add-button`（「添加文件」）/ `page-sandbox-create-file-empty`（一行都没声明时的空态占位）/ `page-sandbox-create-file-item` / `page-sandbox-create-file-host-input` / `page-sandbox-create-file-container-input` / `page-sandbox-create-file-remove-button`（「文件注入」区：只有标题、按钮与两个输入框，除空态占位外无说明文案）/ `page-sandbox-create-command-input` / `page-sandbox-create-workdir-input` / `page-sandbox-create-env-input` / `page-sandbox-create-submit-button` / `page-sandbox-create-validation-error`（本地表单校验红字）|
 | 沙箱详情（工作区头部） | `sandbox-detail` | `page-sandbox-detail-title` / `page-sandbox-detail-state` / `page-sandbox-detail-image` / `page-sandbox-detail-refresh-button` / `page-sandbox-detail-start-button` / `page-sandbox-detail-stop-button` / `page-sandbox-detail-detail-button` / `page-sandbox-detail-delete-button` / `page-sandbox-detail-empty` |
 | 沙箱详情抽屉 | `sandbox-detail-dialog` | `page-sandbox-detail-dialog`（抽屉容器）/ `page-sandbox-detail-dialog-state` / `page-sandbox-detail-dialog-image` / `page-sandbox-detail-dialog-created-at` / `page-sandbox-detail-dialog-updated-at` / `page-sandbox-detail-image-source` / `page-sandbox-detail-system-user` / `page-sandbox-detail-container-name` / `page-sandbox-detail-network-name` / `page-sandbox-detail-socket-path` / `page-sandbox-detail-socket-mount-path` / `page-sandbox-detail-workdir` / `page-sandbox-detail-command` / `page-sandbox-detail-subid` / `page-sandbox-detail-network-owned` / `page-sandbox-detail-env` / `page-sandbox-detail-env-item` / `page-sandbox-detail-env-empty` / `page-sandbox-detail-mounts` / `page-sandbox-detail-mount-item` / `page-sandbox-detail-mounts-empty` / `page-sandbox-detail-dependencies` / `page-sandbox-detail-dependency-item` / `page-sandbox-detail-dependencies-empty` / `page-sandbox-detail-loading` / `page-sandbox-detail-unavailable`（读不到详情时的空态说明）|
-| 终端 | `sandbox-detail-terminal` | `page-sandbox-detail-terminal-panel` / `page-sandbox-detail-terminal-tabs` / `page-sandbox-detail-terminal-tab` / `page-sandbox-detail-terminal-tab-select` / `page-sandbox-detail-terminal-tab-close` / `page-sandbox-detail-terminal-new-button` / `page-sandbox-detail-terminal-status` / `page-sandbox-detail-terminal-retry-button` / `page-sandbox-detail-terminal-stopped-hint` / `page-sandbox-detail-terminal-surface` / `page-sandbox-detail-terminal-mount`（终端表面内层的测量/挂载盒，xterm 根元素的父节点）/ `page-sandbox-detail-terminal-placeholder` / `page-sandbox-detail-terminal-remove-confirm` / `page-sandbox-detail-terminal-remove-confirm-button` / `page-sandbox-detail-terminal-remove-cancel-button` |
+| 终端 | `sandbox-detail-terminal` | `page-sandbox-detail-terminal-panel` / `page-sandbox-detail-terminal-tabs` / `page-sandbox-detail-terminal-tab` / `page-sandbox-detail-terminal-tab-select` / `page-sandbox-detail-terminal-tab-close` / `page-sandbox-detail-terminal-new-button` / `page-sandbox-detail-terminal-status` / `page-sandbox-detail-terminal-fullscreen-button`（全屏开关；可访问名随状态在「全屏终端 / 退出全屏」之间切换，**不带 `aria-pressed`**）/ `page-sandbox-detail-terminal-retry-button` / `page-sandbox-detail-terminal-stopped-hint` / `page-sandbox-detail-terminal-surface` / `page-sandbox-detail-terminal-mount`（终端表面内层的测量/挂载盒，xterm 根元素的父节点）/ `page-sandbox-detail-terminal-placeholder` / `page-sandbox-detail-terminal-remove-confirm` / `page-sandbox-detail-terminal-remove-confirm-button` / `page-sandbox-detail-terminal-remove-cancel-button` |
 | 设置 | `settings` | `page-settings-dialog`（抽屉容器）/ `page-settings-title` / `page-settings-container-running` / `page-settings-healthy` / `page-settings-tcp-ok` / `page-settings-cache-size` / `page-settings-certificate-ready` / `page-settings-proxy-url` / `page-settings-refresh-button` / `page-settings-restart-button` / `page-settings-restart-result` / `page-settings-restarted` / `page-settings-restart-message` / `page-settings-ca-changed` / `page-settings-ca-reinstalled` / `page-settings-ca-conclusion` / `page-settings-reinstalled-users` / `page-settings-failed-users` / `page-settings-loading` |
 | 启动模板 | `settings-template` | `page-settings-template-section` / `page-settings-template-list` / `page-settings-template-item`（带 `data-template-id` 与 `data-template-name`）/ `page-settings-template-name` / `page-settings-template-updated-at` / `page-settings-template-rename-button` / `page-settings-template-rename-input` / `page-settings-template-rename-save-button` / `page-settings-template-rename-cancel-button` / `page-settings-template-rename-error` / `page-settings-template-delete-button` / `page-settings-template-delete-dialog` / `page-settings-template-delete-untouched-note`（「只删模板，不影响已创建的沙箱」）/ `page-settings-template-delete-confirm-button` / `page-settings-template-delete-cancel-button` / `page-settings-template-empty` / `page-settings-template-loading` / `page-settings-template-status`（模板列表读取失败的就地环境状态说明，`role="status"`）/ `page-settings-template-refresh-button` |
 | 删除沙箱 | `sandbox-detail-delete` | `page-sandbox-detail-delete-dialog` / `page-sandbox-detail-delete-title` / `page-sandbox-detail-delete-untouched-note` / `page-sandbox-detail-delete-confirm-button` / `page-sandbox-detail-delete-cancel-button` |
