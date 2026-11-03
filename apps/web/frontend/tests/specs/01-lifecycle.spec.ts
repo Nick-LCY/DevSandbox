@@ -235,6 +235,53 @@ test.describe('网页控制台全流程', () => {
     await expect(page.getByTestId('page-sandbox-list-create-button')).toHaveCount(2);
   });
 
+  test('折叠侧栏：底部工具贴底、新建按钮仍在，展开恢复原状', async ({ page }) => {
+    await gotoWorkbench(page);
+
+    const sidebar = page.getByTestId('page-layout-sidebar');
+    const collapseButton = page.getByTestId('page-layout-sidebar-collapse-button');
+    const createButtons = page.getByTestId('page-sandbox-list-create-button');
+
+    // 展开态：侧栏 + 空态引导块各一个「新建沙箱」按钮
+    await expect(sidebar).toHaveAttribute('data-collapsed', 'false');
+    await expect(createButtons).toHaveCount(2);
+
+    // 折叠：只切样式，不卸 DOM
+    await collapseButton.click();
+    await expect(sidebar).toHaveAttribute('data-collapsed', 'true');
+    // 页面恒有两个「新建沙箱」标识（折叠不卸 DOM）
+    await expect(createButtons).toHaveCount(2);
+    const sidebarCreate = createButtons.first();
+    await expect(sidebarCreate).toBeVisible();
+    await expect(sidebarCreate).toBeEnabled();
+
+    // 折叠态的底部工具贴底：折叠按钮的 y 坐标明显在新建按钮之下，
+    // 且落在视口的下半部分（不是浮到顶部去了）。
+    const viewport = page.viewportSize()!;
+    await expect
+      .poll(
+        async () => (await collapseButton.boundingBox())!.y,
+        { timeout: 10_000, message: '折叠后底部工具没有落到侧栏底部' },
+      )
+      .toBeGreaterThan(viewport.height * 0.6);
+    const collapseBox = (await collapseButton.boundingBox())!;
+    const createBox = (await sidebarCreate.boundingBox())!;
+    expect(
+      collapseBox.y,
+      `折叠按钮（y=${Math.round(collapseBox.y)}）没有在新建按钮（y=${Math.round(createBox.y)}）之下`,
+    ).toBeGreaterThan(createBox.y);
+
+    // 展开恢复原状：宽度回到 264px，底部工具仍在底部
+    await collapseButton.click();
+    await expect(sidebar).toHaveAttribute('data-collapsed', 'false');
+    await expect(createButtons).toHaveCount(2);
+    const expandedBox = (await collapseButton.boundingBox())!;
+    expect(
+      expandedBox.y,
+      '展开后折叠按钮没有回到侧栏底部',
+    ).toBeGreaterThan((await sidebarCreate.boundingBox())!.y);
+  });
+
   test('抽屉宽度可拖拽，刷新后保持，三个抽屉共用一份宽度', async ({ page }) => {
     await openCreateDialog(page);
     const drawer = page.getByTestId('page-sandbox-create-dialog');
