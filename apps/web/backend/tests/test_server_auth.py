@@ -21,6 +21,7 @@ import os
 import stat
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -37,6 +38,7 @@ from sandbox_console.auth import (
     TOKEN_ENV_VAR,
     TOKEN_FILENAME,
     TOKEN_MIN_LENGTH,
+    WEBSOCKET_BEARER_PATHS,
     WEBSOCKET_EXEMPT_PATHS,
     BearerAuthMiddleware,
     TicketStore,
@@ -47,7 +49,7 @@ from sandbox_console.auth import (
 )
 from sandbox_console.deps import get_service
 
-from conftest import auth_headers
+from conftest import TEST_TOKEN, auth_headers
 
 # 服务端源码目录（令牌比较契约用）
 BACKEND_SRC = Path(__file__).resolve().parents[1] / "src" / "sandbox_console"
@@ -635,6 +637,8 @@ def _run_middleware(
     scope: dict,
     *,
     websocket_exempt_paths: tuple[str, ...] = (),
+    websocket_bearer_paths: tuple[str, ...] = (),
+    app: object | None = None,
 ) -> tuple[list[str], list[dict]]:
     """把中间件跑一遍：返回（到达下游的路径列表, 发出的消息列表）。"""
     reached: list[str] = []
@@ -653,9 +657,51 @@ def _run_middleware(
         downstream,
         api_prefix="/api",
         websocket_exempt_paths=websocket_exempt_paths,
+        websocket_bearer_paths=websocket_bearer_paths,
     )
+    if app is not None:
+        # 中间件从 scope 里取应用状态（令牌在 app.state 上）
+        scope = {**scope, "app": app}
     asyncio.run(middleware(scope, receive, send))
     return reached, sent
+
+
+def _stub_app(token: str) -> SimpleNamespace:
+    """带令牌的假应用（中间件只从 ``app.state`` 取当前令牌）。"""
+    return SimpleNamespace(state=SimpleNamespace(console_token=token))
+
+
+def _bearer_websocket_scope(path: str, token: str) -> dict:
+    """构造一个带 Bearer 头的 WebSocket scope。"""
+    return {
+        "type": "websocket",
+        "path": path,
+        "headers": [(b"authorization", f"Bearer {token}".encode())],
+    }
+
+
+def test_bearer_websocket_scope_with_a_valid_token_reaches_the_route() -> None:
+    """Bearer 清单里的 WS 路由（隧道 WS）+ **有效令牌**：放行到路由层。"""
+    reached, sent = _run_middleware(
+        _bearer_websocket_scope("/api/forward/tunnel/a1b2c3d4e5f6", TEST_TOKEN),
+        websocket_bearer_paths=WEBSOCKET_BEARER_PATHS,
+        app=_stub_app(TEST_TOKEN),
+    )
+    assert reached == ["/api/forward/tunnel/a1b2c3d4e5f6"]
+    assert sent == []
+
+
+def test_bearer_websocket_scope_with_an_invalid_token_is_closed_with_1008() -> None:
+    """Bearer 清单里的 WS 路由 + **无效令牌**：握手被拒（1008），不进路由层。"""
+    reached, sent = _run_middleware(
+        _bearer_websocket_scope("/api/forward/tunnel/a1b2c3d4e5f6", "sbx_wrong_token"),
+        websocket_bearer_paths=WEBSOCKET_BEARER_PATHS,
+        app=_stub_app(TEST_TOKEN),
+    )
+    assert reached == []
+    assert sent == [
+        {"type": "websocket.close", "code": CLOSE_CODE_UNAUTHORIZED, "reason": ""}
+    ]
 
 
 def test_api_prefix_check_ignores_the_asgi_root_path() -> None:

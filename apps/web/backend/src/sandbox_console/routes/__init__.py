@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from .auth import router as auth_router
+from .forwards import router as forwards_router
 from .health import router as health_router
 from .images import router as images_router
 from .proxy import router as proxy_router
@@ -20,5 +21,6 @@ api_router.include_router(images_router)
 api_router.include_router(proxy_router)
 api_router.include_router(templates_router)
 api_router.include_router(terminal_router)
+api_router.include_router(forwards_router)
 
 __all__ = ["api_router"]

@@ -1,13 +1,16 @@
 """HTTP 错误映射：平台异常 → 状态码 + ``{"detail": "中文消息"}``。
 
 映射固定：入参非法 400、缺必填镜像字段 422、沙箱不存在 404、沙箱已存在 409、
-镜像不存在 400、其余平台异常 500。
+镜像不存在 400、转发链路异常 409 / 502 / 503、其余平台异常 500。
 
 消息策略：
 
 - 400 / 404 / 409 / 422：保留平台异常原文（都是用户侧信息，不含宿主敏感路径）。
 - 500：只回固定文案「平台内部错误，请查看服务日志」。平台异常原文可能带宿主
   绝对路径与特权命令行，**只进日志**，不进 HTTP 响应。
+- **转发链路（409 / 502 / 503）**：只回**固定主干文案**（按情形给定，不从异常
+  原文里截取）。核心异常原文（容器客户端输出、宿主绝对路径、探测细节）
+  **只进日志**，不进 HTTP 响应，也不进隧道错误帧。
 
 镜像字段的 422 口径：镜像缺失、传 null、传空串或纯空白串，一律归入
 「必须显式指定沙箱镜像」语义（422）；镜像传错类型（如数字）仍算取值非法（400）。
@@ -22,6 +25,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sandbox_platform import (
     AlreadyExistsError,
+    ForwardError,
     ImageNotFoundError,
     NotFoundError,
     SandboxError,
@@ -35,6 +39,10 @@ STATUS_BAD_REQUEST = 400
 STATUS_NOT_FOUND = 404
 STATUS_CONFLICT = 409
 STATUS_SERVER_ERROR = 500
+# 上游依赖缺失（转发链路的依赖侧故障）
+STATUS_BAD_GATEWAY = 502
+# 服务依赖不可用（转发链路的依赖侧故障）
+STATUS_SERVICE_UNAVAILABLE = 503
 # 缺必填镜像字段：422（默认镜像退役后，镜像是硬性必填项，不是「取值不合法」）
 STATUS_UNPROCESSABLE = 422
 
@@ -43,6 +51,23 @@ MISSING_IMAGE_DETAIL = "image（必填：默认镜像已退役，必须显式指
 
 # 500 分支的固定文案：平台异常原文只进日志，不回显宿主路径与特权命令行
 INTERNAL_ERROR_MESSAGE = "平台内部错误，请查看服务日志"
+
+# ---------------------------------------------------------------- 转发链路固定文案
+# 转发链路的响应与隧道错误帧**只出现下面这些固定串**：核心异常原文（容器
+# 客户端输出、宿主绝对路径、探测细节）只进日志。
+FORWARD_CONFLICT_SANDBOX_STOPPED = "沙箱已停止，无法建立端口转发（请先启动沙箱）"
+FORWARD_CONFLICT_CONTAINER_TAKEN = (
+    "容器名已被占用：与现有非平台容器重名（请换一个沙箱或端口，或自行处理同名容器）"
+)
+FORWARD_BAD_GATEWAY_NETWORK = "沙箱网络不存在，无法建立端口转发"
+FORWARD_UNAVAILABLE_IMAGE = "转发镜像不可用（镜像拉不到）"
+FORWARD_UNAVAILABLE_CONTAINER = "启动转发容器失败"
+FORWARD_UNAVAILABLE_PROBE = "转发链路探测失败（沙箱守护进程不可达）"
+# 兜底文案（异常原文为空时用）
+FORWARD_UNAVAILABLE_MESSAGE = "端口转发链路不可用，请查看服务日志"
+# 沙箱已删（记录在、容器删不掉时记录会留下）与记录损坏：固定文案，不回显宿主路径
+FORWARD_SANDBOX_MISSING = "沙箱不存在或已删除，端口转发已失效"
+FORWARD_RECORD_INVALID = "端口转发记录已损坏"
 
 # 请求体校验失败的常见类型 → 中文提示
 _VALIDATION_MESSAGES = {
@@ -150,6 +175,79 @@ def describe_http_error(exc: StarletteHTTPException, request: Request) -> str:
     return str(detail) if detail else f"请求失败（{exc.status_code}）"
 
 
+# ---------------------------------------------------------------- 转发链路错误
+# ``ForwardError`` 的语义是「转发链路本身跑不起来」（与「对象不存在」、
+# 「入参非法」分开）。核心包用固定措辞构造这些消息，服务层按措辞判定状态码，
+# 并给出**固定主干文案**：
+#
+# | 情形 | 状态码 | detail（固定文案） |
+# |---|---|---|
+# | 沙箱已停止 | 409 | 沙箱已停止，无法建立端口转发（请先启动沙箱） |
+# | 容器名与现有非平台容器重名 | 409 | 容器名已被占用：与现有非平台容器重名（请换一个沙箱或端口…） |
+# | 沙箱网络不存在 | 502 | 沙箱网络不存在，无法建立端口转发 |
+# | 镜像拉不到 | 503 | 转发镜像不可用（镜像拉不到） |
+# | 转发容器起不来 | 503 | 启动转发容器失败 |
+# | 沙箱守护进程不可达（探测失败） | 503 | 转发链路探测失败（沙箱守护进程不可达） |
+# | 转发编排未装配 | 500 | 平台内部错误，请查看服务日志 |
+#
+# **响应与隧道错误帧里只出现上表的固定文案**：核心异常原文（容器客户端输出、
+# 宿主绝对路径、探测细节）**只进日志**。服务端**不再按措辞截取原文**——
+# 截取对没有括号的原文（容器客户端多行输出）完全失效，会把整段原文回显出去。
+#
+# 措辞变更时**必须同步本表**（核心包与服务层的唯一耦合点）。
+def classify_forward_error(exc: BaseException | str) -> tuple[int, str]:
+    """把转发链路异常映射成（状态码, 固定主干文案）。
+
+    ``exc`` 可以是异常本身（按类型先判：镜像拉不到是 ``ImageNotFoundError``），
+    也可以是异常消息（按措辞判情形）。
+
+    **返回值里的文案是固定串**：不含任何核心异常原文。
+    """
+    if isinstance(exc, ImageNotFoundError):
+        # 转发链路的镜像拉不到：语义是「转发服务暂不可用」（503），
+        # 不是请求参数错误（400 只留给真正的入参非法）。
+        return STATUS_SERVICE_UNAVAILABLE, FORWARD_UNAVAILABLE_IMAGE
+    text = exc if isinstance(exc, str) else str(exc)
+    text = text or ""
+    if not text:
+        # 异常原文为空：给兜底文案（不臆测具体情形）
+        return STATUS_SERVICE_UNAVAILABLE, FORWARD_UNAVAILABLE_MESSAGE
+    if "未装配" in text:
+        # 服务端装配问题（转发编排没接上沙箱侧能力）：不是用户侧错误
+        return STATUS_SERVER_ERROR, INTERNAL_ERROR_MESSAGE
+    if "沙箱已停止" in text:
+        # 用户侧可处理：先启动沙箱
+        return STATUS_CONFLICT, FORWARD_CONFLICT_SANDBOX_STOPPED
+    if "已被占用" in text or "重名" in text:
+        # 用户侧可处理：换个沙箱或端口
+        return STATUS_CONFLICT, FORWARD_CONFLICT_CONTAINER_TAKEN
+    if "网络不存在" in text:
+        # 上游依赖缺失（沙箱的网络没了）
+        return STATUS_BAD_GATEWAY, FORWARD_BAD_GATEWAY_NETWORK
+    if "探测" in text:
+        # 沙箱守护进程不可达（探测失败）
+        return STATUS_SERVICE_UNAVAILABLE, FORWARD_UNAVAILABLE_PROBE
+    # 其余：转发容器起不来等
+    return STATUS_SERVICE_UNAVAILABLE, FORWARD_UNAVAILABLE_CONTAINER
+
+
+def forward_tunnel_error_detail(exc: SandboxError) -> str:
+    """隧道错误帧的固定文案（与 REST 同一口径）。
+
+    - ``ForwardError`` / ``ImageNotFoundError``：走 :func:`classify_forward_error`
+      的固定文案；
+    - ``NotFoundError``：沙箱已删（记录在、容器删不掉时记录会留下）；
+    - 其它（``ValidationError`` 等，记录损坏）：固定文案，**不回显宿主路径**。
+
+    核心异常原文只进日志，不进错误帧。
+    """
+    if isinstance(exc, (ForwardError, ImageNotFoundError)):
+        return classify_forward_error(exc)[1]
+    if isinstance(exc, NotFoundError):
+        return FORWARD_SANDBOX_MISSING
+    return FORWARD_RECORD_INVALID
+
+
 def install_exception_handlers(app: FastAPI) -> None:
     """注册异常处理器（应用工厂调用）。"""
 
@@ -175,6 +273,24 @@ def install_exception_handlers(app: FastAPI) -> None:
     ) -> JSONResponse:
         """宿主与沙箱守护进程都没有该镜像：用户侧错误（400），不是服务端故障。"""
         return error_response(STATUS_BAD_REQUEST, str(exc))
+
+    @app.exception_handler(ForwardError)
+    async def _handle_forward_error(request: Request, exc: ForwardError) -> JSONResponse:
+        """转发链路跑不起来：按固定措辞映射成 409 / 502 / 503（见上表）。
+
+        **响应只给固定主干文案**：核心异常原文（含容器客户端输出与宿主路径）
+        只进日志（带日志键，便于排查）。
+        """
+        status_code, detail = classify_forward_error(exc)
+        if status_code >= STATUS_SERVER_ERROR:
+            logger.error(
+                "转发链路异常[forward-error]：%s %s：%s",
+                request.method,
+                request.url.path,
+                exc,
+                exc_info=exc,
+            )
+        return error_response(status_code, detail)
 
     @app.exception_handler(SandboxError)
     async def _handle_platform_error(request: Request, exc: SandboxError) -> JSONResponse:

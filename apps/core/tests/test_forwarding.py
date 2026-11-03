@@ -36,6 +36,7 @@ from sandbox_platform.forwarding import (
     LABEL_FORWARD_ROLE,
     LABEL_FORWARD_SANDBOX,
     ROLE_FORWARD,
+    STDERR_TAIL_BYTES,
 )
 
 # 钉版转发镜像（统一镜像代理拉取用的引用）
@@ -825,3 +826,93 @@ def test_spawn_stream_starts_new_session(monkeypatch: pytest.MonkeyPatch) -> Non
     )
     user_daemon.spawn_stream(["docker", "exec", "-i", "demo-fwd-8080", "socat", "-", "TCP:x:1"])
     assert captured["start_new_session"] is True
+
+
+# ---------------------------------------------------------------- 字节泵：stderr 排空
+def _spawn_stderr_writer(payload: str, *, sleep_seconds: float = 0.0) -> "subprocess.Popen[bytes]":
+    """起一个把 ``payload`` 写到 stderr 的子进程（字节泵的 stderr 排空用例用）。
+
+    内容走 stdin 传（不进命令行：太长会报「参数列表过长」）。
+    """
+    code = (
+        "import sys, time\n"
+        "data = sys.stdin.buffer.read()\n"
+        "sys.stderr.buffer.write(data)\n"
+        "sys.stderr.flush()\n"
+        "sys.stdout.write('done')\n"
+        "sys.stdout.flush()\n"
+        + (f"time.sleep({sleep_seconds})\n" if sleep_seconds else "")
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", code],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        bufsize=0,
+        start_new_session=True,
+    )
+    assert process.stdin is not None
+    process.stdin.write(payload.encode())
+    process.stdin.close()
+    return process
+
+
+def test_byte_pump_drains_stderr_so_the_child_never_blocks() -> None:
+    """stderr 有人排空：子进程写满管道（远超 64KB）也不卡死。
+
+    没人排空时，子进程写满 stderr 管道就卡住——exec 失败时隧道表现为
+    「静默 hang」（既没有字节，也没有任何报错）。
+    """
+    payload = "0123456789" * 20_000  # 200KB，远超管道缓冲
+    process = _spawn_stderr_writer(payload)
+    pump = BytePump(process=process, forward_id="abc123def456")
+    try:
+        # 子进程能写完并正常退出（没人排空时这里会超时）
+        assert process.wait(timeout=30) == 0
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and len(pump.stderr_tail) < STDERR_TAIL_BYTES:
+            time.sleep(0.05)
+        tail = pump.stderr_tail
+        # 只保留尾部（最后 8KB），且是**最后**那一段
+        assert len(tail) == STDERR_TAIL_BYTES
+        assert tail == payload[-STDERR_TAIL_BYTES:]
+    finally:
+        pump.close()
+
+
+def test_byte_pump_stderr_tail_keeps_only_the_last_bytes() -> None:
+    """尾部保留：超过 8KB 的 stderr 只留最后一段（前面的丢掉）。"""
+    payload = "abcdefghij" * 5_000  # 50KB
+    process = _spawn_stderr_writer(payload)
+    pump = BytePump(process=process, forward_id="abc123def456")
+    try:
+        assert process.wait(timeout=30) == 0
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and len(pump.stderr_tail) < STDERR_TAIL_BYTES:
+            time.sleep(0.05)
+        assert pump.stderr_tail == payload[-STDERR_TAIL_BYTES:]
+    finally:
+        pump.close()
+
+
+def test_byte_pump_stderr_drain_thread_exits_after_close() -> None:
+    """close 之后排空线程退出（不留常驻后台线程）。"""
+    process = _spawn_stderr_writer("boom\n", sleep_seconds=30)
+    pump = BytePump(process=process, forward_id="abc123def456")
+    assert pump.stderr_drain_alive is True
+    pump.close()
+    assert pump.stderr_drain_alive is False
+
+
+def test_byte_pump_reports_the_exec_failure_reason() -> None:
+    """exec 失败的原因（只在 stderr 里）能被取到：供调用方排查。"""
+    process = _spawn_stderr_writer("exec failed: no such container\n")
+    pump = BytePump(process=process, forward_id="abc123def456")
+    try:
+        assert process.wait(timeout=30) == 0
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and "no such container" not in pump.stderr_tail:
+            time.sleep(0.05)
+        assert "exec failed: no such container" in pump.stderr_tail
+    finally:
+        pump.close()

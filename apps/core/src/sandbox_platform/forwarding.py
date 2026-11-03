@@ -72,6 +72,16 @@ FORWARD_STATE_STOPPED = "stopped"
 FORWARD_ID_LENGTH = 12
 FORWARD_ID_PATTERN = re.compile(r"[0-9a-f]{8,32}")
 
+# ---------------------------------------------------------------- 字节泵 stderr
+# exec 的失败原因（镜像拉不到、容器起不来等）**只在 stderr 里**。
+# stderr 管道缓冲有限（通常 64KB）：**没人排空时写满就把子进程卡死**——
+# 隧道表现为「静默 hang」（既没有字节，也没有任何报错，客户端只看到连接被关）。
+# 字节泵因此起一个**后台守护线程**持续排空 stderr，只保留**尾部**
+# （最后 8KB，见 :attr:`BytePump.stderr_tail`）供调用方排查。
+STDERR_TAIL_BYTES = 8192
+# 排空线程每次读的块大小
+STDERR_READ_CHUNK = 4096
+
 # ---------------------------------------------------------------- 容器探测三态
 # 「容器存不存在」不能只用布尔值表达：守护进程不可达时探测同样拿不到容器，
 # 当成「不存在」就会把没删掉的容器说成已删除（记录也跟着删掉，容器成孤儿）。
@@ -212,6 +222,11 @@ class BytePump:
     连接断开时调用 :meth:`close`：**立即回收**该 exec 进程，不留僵尸进程。
     回收按**进程组**做：exec 客户端（``sudo`` 前缀下的 docker）拉起的孙进程
     一并收掉，不留孤儿。
+
+    **stderr 排空**：exec 的失败原因只在 stderr 里，而 stderr 管道缓冲有限
+    （通常 64KB）——没人排空时写满就把子进程卡死，隧道表现为「静默 hang」。
+    因此字节泵起一个**后台守护线程**持续排空 stderr，只保留**尾部**
+    （最后 8KB，见 :attr:`stderr_tail`）供调用方排查。
     """
 
     def __init__(self, process: "subprocess.Popen[bytes]", forward_id: str = "") -> None:
@@ -221,6 +236,11 @@ class BytePump:
         # 进程组号在建进程时就记下：字节泵退出后进程号会被系统复用，
         # 到回收时再取可能拿到别人的进程组
         self._pgid = self._current_pgid()
+        # stderr 排空：后台守护线程持续读走 stderr，只保留尾部
+        self._stderr_tail = bytearray()
+        self._stderr_lock = threading.Lock()
+        self._stderr_thread: threading.Thread | None = None
+        self._start_stderr_drain()
 
     def _current_pgid(self) -> int | None:
         """取当前进程组号（取不到返回 ``None``）。"""
@@ -229,6 +249,94 @@ class BytePump:
         except OSError:
             return None
 
+    # ---------------------------------------------------------------- stderr 排空
+    def _start_stderr_drain(self) -> None:
+        """起后台守护线程排空 stderr（没有 stderr 就不起线程）。"""
+        stream = self.process.stderr
+        if stream is None:
+            return
+        thread = threading.Thread(
+            target=self._drain_stderr,
+            args=(stream,),
+            name=f"byte-pump-stderr-{self.process.pid}",
+            daemon=True,
+        )
+        self._stderr_thread = thread
+        thread.start()
+
+    def _drain_stderr(self, stream: Any) -> None:
+        """持续读走 stderr（守护线程）：读到 EOF 即退出。
+
+        线程是**守护线程**：即便异常残留也不挡进程退出。流由本线程自己关
+        （别在 :meth:`close` 里抢着关：读线程正阻塞在读上，抢关会让内核把
+        阻塞的读留在一个已复用的 fd 上）。
+        """
+        try:
+            while True:
+                chunk = self._read_stderr_chunk(stream)
+                if not chunk:
+                    break
+                self._append_stderr_tail(chunk)
+        except (OSError, ValueError):
+            # 流被关掉（收尾路径）：正常退出
+            pass
+        except Exception:  # pragma: no cover - 读出错不影响主流程
+            logger.debug(
+                "字节泵 %s 的 stderr 排空线程异常退出", self.forward_id, exc_info=True
+            )
+        finally:
+            try:
+                stream.close()
+            except OSError:
+                pass
+
+    @staticmethod
+    def _read_stderr_chunk(stream: Any) -> bytes:
+        """读一段 stderr。
+
+        有 ``read1`` 就用它（**不等满缓冲**：``BufferedReader.read(n)`` 会等到
+        n 字节或 EOF 才返回，尾部会迟到）；没有就退回 ``read``。
+        """
+        read1 = getattr(stream, "read1", None)
+        if read1 is not None:
+            return read1(STDERR_READ_CHUNK)
+        return stream.read(STDERR_READ_CHUNK)
+
+    def _append_stderr_tail(self, chunk: bytes) -> None:
+        """把 stderr 片段并进尾部缓冲（只留最后 :data:`STDERR_TAIL_BYTES` 字节）。"""
+        with self._stderr_lock:
+            self._stderr_tail.extend(chunk)
+            overflow = len(self._stderr_tail) - STDERR_TAIL_BYTES
+            if overflow > 0:
+                del self._stderr_tail[:overflow]
+
+    @property
+    def stderr_tail(self) -> str:
+        """stderr 尾部（最后 8KB，解码后；非法字节用替代符）。
+
+        **只给排查用**：里面有容器客户端原文与宿主绝对路径，调用方**只进日志**，
+        不回显到客户端。
+        """
+        with self._stderr_lock:
+            data = bytes(self._stderr_tail)
+        return data.decode("utf-8", errors="replace")
+
+    @property
+    def stderr_drain_alive(self) -> bool:
+        """stderr 排空线程是否还在跑（:meth:`close` 之后应当退出）。"""
+        thread = self._stderr_thread
+        return thread is not None and thread.is_alive()
+
+    def _join_stderr_drain(self, timeout: float = 2.0) -> None:
+        """等排空线程退出（最多 timeout 秒；没退出只告警，不挡收尾）。"""
+        thread = self._stderr_thread
+        if thread is None:
+            return
+        thread.join(timeout)
+        if thread.is_alive():  # pragma: no cover - 进程赖着不退时的兜底
+            logger.warning("字节泵 %s 的 stderr 排空线程未退出", self.forward_id)
+
+    # ---------------------------------------------------------------- 读写
     def write(self, data: bytes) -> int:
         """往字节泵写字节，返回实际写入长度。"""
         if self._closed or self.process.stdin is None:
@@ -260,14 +368,16 @@ class BytePump:
         if self._closed:
             return
         self._closed = True
-        for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
+        for stream in (self.process.stdin, self.process.stdout):
             if stream is None:
                 continue
             try:
                 stream.close()
             except OSError:
                 pass
+        # stderr 由排空线程自己关（见 :meth:`_drain_stderr` 的说明）
         self._reap_process_group()
+        self._join_stderr_drain()
 
     def _reap_process_group(self) -> None:
         """按进程组回收字节泵进程。

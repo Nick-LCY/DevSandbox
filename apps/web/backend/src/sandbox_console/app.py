@@ -17,6 +17,7 @@ from .auth import (
     CORS_ALLOWED_HEADERS,
     CORS_ALLOWED_METHODS,
     TOKEN_ENV_VAR,
+    WEBSOCKET_BEARER_PATHS,
     WEBSOCKET_EXEMPT_PATHS,
     BearerAuthMiddleware,
     TicketStore,
@@ -24,6 +25,7 @@ from .auth import (
     token_file_path,
 )
 from .errors import install_exception_handlers
+from .forwards import TunnelRegistry
 from .routes import api_router
 from .sessions import prepare_sessions_dir, purge_leftover_sessions
 from .templates import ensure_builtin_templates, prepare_templates_dir
@@ -83,7 +85,7 @@ def docs_enabled() -> bool:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """服务生命周期钩子：准备数据目录，清理上次遗留的终端会话记录。"""
+    """服务生命周期钩子：准备数据目录，清理上次遗留的终端会话与端口转发。"""
     config: PlatformConfig = app.state.platform_config
     try:
         config.ensure_directories()
@@ -135,13 +137,39 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     logger.info("已清理上次遗留的终端会话记录：%d 条", len(removed))
 
+    # 清理上次遗留的端口转发：转发容器与转发记录（与终端会话的遗留清理同处、
+    # 同款语义）。核心包自带跨实例保护——属于另一个仍在运行的服务实例的转发
+    # 不会被误清。清理失败不阻断服务启动（转发链路起不来只是不能用转发）。
+    _purge_leftover_forwards(service)
+
     manager = TerminalSessionManager(config, service)
     app.state.terminal_manager = manager
     try:
         yield
     finally:
+        # 服务退出：活动隧道全部关掉（对应的字节泵进程一并回收，不留僵尸进程）
+        registry = getattr(app.state, "tunnel_registry", None)
+        if registry is not None:
+            await registry.close_all()
         # 服务重启则会话全部失效：容器内进程一并收掉
         manager.close_all()
+
+
+def _purge_leftover_forwards(service: SandboxService) -> None:
+    """启动时清理上次遗留的端口转发（转发容器与转发记录）。
+
+    转发编排入口由生命周期服务持有（不另建实例）；清理失败只记日志，
+    不阻断服务启动。
+    """
+    forwards = getattr(service, "forwards", None)
+    if forwards is None:
+        return
+    try:
+        result = forwards.purge_leftover()
+    except Exception as exc:
+        logger.warning("清理上次遗留的端口转发失败（不阻断服务启动）：%s", exc)
+        return
+    logger.info("已清理上次遗留的端口转发：%d 条", len(result.removed))
 
 
 def _container_session_killer(service: SandboxService):
@@ -182,6 +210,8 @@ def create_app(config: PlatformConfig | None = None) -> FastAPI:
     )
     app.state.platform_config = config or PlatformConfig.from_env()
     app.state.ticket_store = TicketStore()
+    # 活动转发隧道登记表：服务退出时统一关掉（字节泵进程一并回收）
+    app.state.tunnel_registry = TunnelRegistry()
     install_exception_handlers(app)
     app.include_router(api_router, prefix=API_PREFIX)
     _install_connection_middleware(app)
@@ -199,15 +229,15 @@ def _install_connection_middleware(app: FastAPI) -> None:
     跨源放行只管来源（**任意来源都放行**，2026-11-03 用户决策：来源不是安全
     边界，准入边界只有令牌与票据）。
 
-    令牌闸对 WebSocket 是 **fail-closed**：只有 ``WEBSOCKET_EXEMPT_PATHS`` 里
-    显式登记的 WS 路由（当前只有终端 WS）才放行到路由层，由路由自己再做票据
-    校验；其余 WS 路由一律拒握手——将来新增 WS 路由忘了写鉴权时，
-    默认被拒而不是裸奔。
+    令牌闸对 WebSocket 是 **fail-closed**：两份清单（豁免清单 = 路由自己鉴权；
+    Bearer 清单 = 中间件校验令牌）里显式登记的 WS 路由才放行到路由层，
+    其余一律拒握手——将来新增 WS 路由忘了写鉴权时，默认被拒而不是裸奔。
     """
     app.add_middleware(
         BearerAuthMiddleware,
         api_prefix=API_PREFIX,
         websocket_exempt_paths=WEBSOCKET_EXEMPT_PATHS,
+        websocket_bearer_paths=WEBSOCKET_BEARER_PATHS,
     )
     app.add_middleware(
         CORSMiddleware,

@@ -7,9 +7,10 @@
 from __future__ import annotations
 
 from fastapi import Request, WebSocket
-from sandbox_platform import PlatformConfig, SandboxService
+from sandbox_platform import PlatformConfig, PortForwardManager, SandboxService
 
 from .auth import TicketStore
+from .forwards import TunnelRegistry
 from .templates import TemplateStore
 from .terminal import TerminalSessionManager
 
@@ -59,6 +60,25 @@ def get_ticket_store_ws(websocket: WebSocket) -> TicketStore:
     return _ticket_store_of(websocket.app)
 
 
+def get_forward_manager(request: Request) -> PortForwardManager:
+    """取应用级端口转发编排入口（整个进程共用一个实例）。"""
+    return _forward_manager_of(request.app)
+
+
+def get_forward_manager_ws(websocket: WebSocket) -> PortForwardManager:
+    """取应用级端口转发编排入口（WebSocket 入口用）。"""
+    return _forward_manager_of(websocket.app)
+
+
+def get_tunnel_registry_ws(websocket: WebSocket) -> TunnelRegistry:
+    """取应用级活动隧道登记表（WebSocket 入口用）。
+
+    只有隧道 WS 需要它（WS 路由拿不到 HTTP 请求对象，只能从连接自己身上
+    取应用状态）——**不提供 Request 版**：REST 侧用不到活动隧道登记表。
+    """
+    return _tunnel_registry_of(websocket.app)
+
+
 def get_terminal_manager_ws(websocket: WebSocket) -> TerminalSessionManager:
     """取应用级终端会话管理器（WebSocket 入口用）。
 
@@ -91,3 +111,33 @@ def _ticket_store_of(app) -> TicketStore:
         store = TicketStore()
         app.state.ticket_store = store
     return store
+
+
+def _forward_manager_of(app) -> PortForwardManager:
+    """按应用装配端口转发编排入口。
+
+    **不另建实例**：转发编排入口由生命周期服务持有（它要在删沙箱时一并回收
+    转发容器与记录），服务端只取引用。测试用 ``dependency_overrides`` 替换。
+    """
+    manager = getattr(app.state, "forward_manager", None)
+    if manager is None:
+        service = getattr(app.state, "sandbox_service", None)
+        if service is None:
+            config = getattr(app.state, "platform_config", None)
+            if config is None:
+                config = PlatformConfig.from_env()
+                app.state.platform_config = config
+            service = SandboxService(config)
+            app.state.sandbox_service = service
+        manager = service.forwards
+        app.state.forward_manager = manager
+    return manager
+
+
+def _tunnel_registry_of(app) -> TunnelRegistry:
+    """按应用装配活动隧道登记表（没有就建一个并挂到应用状态上）。"""
+    registry = getattr(app.state, "tunnel_registry", None)
+    if registry is None:
+        registry = TunnelRegistry()
+        app.state.tunnel_registry = registry
+    return registry

@@ -458,6 +458,58 @@ class ProxyRestartModel(ProxyStatusModel):
         )
 
 
+class ForwardCreateRequest(BaseModel):
+    """建立端口转发的请求体。
+
+    ``extra="forbid"``：多传字段直接 400，不静默吞掉。
+    ``port`` 是**容器端口**（转发目标）；用户机本机的监听端口由桌面端持有，
+    不进平台记录（后端宿主零端口）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    sandbox: str = Field(description="沙箱名（转发挂在哪个沙箱上）")
+    port: int = Field(description="容器端口（转发目标端口）")
+
+
+class ForwardModel(BaseModel):
+    """一条端口转发记录。
+
+    **没有宿主端口字段**：链路两点化后后端宿主不持有任何转发端口。
+    """
+
+    id: str
+    sandbox: str
+    container_port: int
+    state: str = Field(description="转发状态：running（可用）/ stopped（已随沙箱停止）")
+    created_at: str
+    updated_at: str
+
+    @classmethod
+    def from_record(cls, record: Any) -> ForwardModel:
+        """由核心包的转发记录生成。"""
+        return cls(
+            id=record.id,
+            sandbox=record.sandbox,
+            container_port=record.container_port,
+            state=record.state,
+            created_at=record.created_at,
+            updated_at=record.updated_at,
+        )
+
+
+class ForwardDeleteResponse(BaseModel):
+    """停止端口转发的结果。
+
+    ``removed`` 是确实处理掉的条目，``failed`` 是尝试过但没成功的条目
+    （带原因，如实上报，不吞掉）。
+    """
+
+    id: str
+    removed: list[str]
+    failed: list[str]
+
+
 class TerminalSessionCreateRequest(BaseModel):
     """新建终端会话的请求体。"""
 

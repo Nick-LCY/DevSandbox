@@ -12,6 +12,11 @@
 - **跨源放行**（2026-11-03 用户决策）：**CORS 放行任意来源**，WebSocket 握手的
   ``Origin`` **不再校验**。理由：``Origin`` 不是安全边界（同源判定基于可伪造的
   ``Host`` 头，可被 DNS rebinding 绕过），真正的准入边界是**令牌与票据**。
+- **WebSocket 准入**（fail-closed）：中间件对 WS scope 默认**拒握手**；只有显式
+  登记的 WS 路由才放行——终端 WS 登记在豁免清单里（票据闸在路由侧），
+  隧道 WS 登记在 Bearer 清单里（中间件校验 ``Authorization: Bearer``，
+  桌面端 Rust 客户端能设请求头，不必绕票据）。两份清单都没登记的 WS 路由
+  一律拒握手：新增 WS 路由而忘了写鉴权时，默认被拒，不是裸奔。
 
 服务**不会在没有令牌的状态下对外提供接口**：令牌解析失败就让服务起不来。
 **请求期不兜底生成令牌**：令牌只在启动路径（生命周期钩子）解析一次；请求期只读，
@@ -87,6 +92,23 @@ CORS_ALLOWED_HEADERS = ("Authorization", "Content-Type")
 # 新增 WS 路由要改两处：① 在这里登记路径；② 在路由里自己完成鉴权。
 # 漏了① → 默认被拒（不是裸奔）；漏了② → 登记了但没鉴权（所以登记与鉴权要一起改）。
 WEBSOCKET_EXEMPT_PATHS = ("/api/terminal/sessions",)
+
+# ---------------------------------------------------------------- WebSocket Bearer 清单
+# 走 **Bearer 令牌**的 WS 路由（桌面端 Rust 客户端能设自定义头，不必绕票据）：
+# 中间件在**握手之前**校验 ``Authorization: Bearer``，通过才放行到路由层，
+# 不通过就拒握手（与未登记路由同款：accept 之前拒）。
+#
+# 两份清单的分工（缺一不可）：
+#
+# - 豁免清单（``WEBSOCKET_EXEMPT_PATHS``）：中间件**不校验**，鉴权由路由自己做
+#   ——浏览器侧的终端 WS 走一次性票据（浏览器不能设自定义头）；
+# - Bearer 清单（``WEBSOCKET_BEARER_PATHS``）：中间件**校验 Bearer**，
+#   路由再核一次（纵深防御）。
+#
+# **两份清单都没登记的 WS 路由：一律拒握手**（fail-closed 默认）——
+# 新增 WS 路由而忘了登记时，默认被拒，不是裸奔；登记了却漏写路由内鉴权时，
+# 至少还有中间件这道 Bearer 闸。
+WEBSOCKET_BEARER_PATHS = ("/api/forward/tunnel",)
 
 # ---------------------------------------------------------------- 认证失败口径
 # 缺失与错误**不区分**：同一句文案、同一状态码，不给攻击者区分两种情况的线索
@@ -282,6 +304,19 @@ def extract_bearer(header: str | None) -> str | None:
     return token
 
 
+def bearer_authorized(headers: Headers, app) -> bool:
+    """校验 ``Authorization: Bearer`` 令牌（HTTP 与 WebSocket 共用一条判定）。
+
+    缺失与错误**不区分**：一律按「未通过」处理（调用方据此回 401 或拒握手）。
+    比对走 :func:`token_matches`（常量时间）。
+    """
+    candidate = extract_bearer(headers.get("authorization"))
+    expected = console_token(app)
+    if not candidate or not expected:
+        return False
+    return token_matches(candidate, expected)
+
+
 def console_token(app) -> str | None:
     """取应用当前生效的访问令牌（**只读**：不生成、不落盘）。
 
@@ -396,9 +431,11 @@ class BearerAuthMiddleware:
       ``/docs``、``/openapi.json`` 不拦。
     - ``/api/health`` **不豁免**：401 也是健康口径的一部分，前端靠它区分
       「后端不可达」与「令牌无效」。
-    - **WebSocket scope 默认拒绝**（fail-closed）：只有 ``websocket_exempt_paths``
-      里显式登记的 WS 路由才放行到路由层（路由自己再做票据校验）。
-      将来新增 WS 路由而忘了写鉴权时，默认被拒，而不是裸奔。
+    - **WebSocket scope 默认拒绝**（fail-closed）：``websocket_exempt_paths``
+      里的 WS 路由（终端 WS，票据闸在路由里）放行到路由层；
+      ``websocket_bearer_paths`` 里的 WS 路由（隧道 WS）由**中间件校验
+      Bearer**，通过才放行；**两份清单都没登记的 WS 路由一律拒握手**
+      （将来新增 WS 路由而忘了登记鉴权时，默认被拒，不是裸奔）。
     - 缺失与错误不区分：同一句文案、同一状态码；不回显令牌，也不把令牌写进日志。
     """
 
@@ -408,10 +445,12 @@ class BearerAuthMiddleware:
         *,
         api_prefix: str = "/api",
         websocket_exempt_paths: tuple[str, ...] = (),
+        websocket_bearer_paths: tuple[str, ...] = (),
     ) -> None:
         self.app = app
         self.api_prefix = api_prefix
         self.websocket_exempt_paths = tuple(websocket_exempt_paths)
+        self.websocket_bearer_paths = tuple(websocket_bearer_paths)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         scope_type = scope.get("type")
@@ -425,9 +464,7 @@ class BearerAuthMiddleware:
             await self.app(scope, receive, send)
             return
         headers = Headers(scope=scope)
-        candidate = extract_bearer(headers.get("authorization"))
-        expected = console_token(scope.get("app"))
-        if not candidate or not expected or not token_matches(candidate, expected):
+        if not bearer_authorized(headers, scope.get("app")):
             response = JSONResponse(
                 status_code=401,
                 content={"detail": AUTH_FAILED_DETAIL},
@@ -438,7 +475,13 @@ class BearerAuthMiddleware:
         await self.app(scope, receive, send)
 
     async def _handle_websocket(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """WebSocket scope 的准入：只放行显式登记的 WS 路由，其余一律拒握手。
+        """WebSocket scope 的准入：按登记的鉴权方式放行，其余一律拒握手。
+
+        三种口径：
+
+        1. 豁免清单里的路径 → 放行到路由层（路由自己校验票据）；
+        2. Bearer 清单里的路径 → **中间件校验 Bearer**，通过才放行；
+        3. 两份清单都没登记 → 拒握手（fail-closed 默认）。
 
         拒握手的方式与路由层的拒握手一致：**在 accept 之前**发关闭消息。
         生产环境（uvicorn）对客户端表现为 HTTP 403 拒绝响应（关闭码不送达），
@@ -448,7 +491,14 @@ class BearerAuthMiddleware:
         if any(is_api_path(path, prefix) for prefix in self.websocket_exempt_paths):
             await self.app(scope, receive, send)
             return
-        logger.warning("未登记的 WebSocket 路由被拒握手（fail-closed）：%s", path)
+        if any(is_api_path(path, prefix) for prefix in self.websocket_bearer_paths):
+            headers = Headers(scope=scope)
+            if bearer_authorized(headers, scope.get("app")):
+                await self.app(scope, receive, send)
+                return
+            logger.warning("WebSocket 握手的 Bearer 令牌无效或缺失：%s", path)
+        else:
+            logger.warning("未登记的 WebSocket 路由被拒握手（fail-closed）：%s", path)
         await send(
             {
                 "type": "websocket.close",
