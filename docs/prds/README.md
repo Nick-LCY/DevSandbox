@@ -28,3 +28,4 @@
 - [[prds/phase2-console.md]] — 二期：控制面服务化与网页控制台（FastAPI 服务 + 网页控制台 + 网页终端）
 - [[prds/console-templates.md]] — 控制台模板轮：基础镜像 0.3.0 通用工具层 + 网页控制台启动模板（存一套沙箱启动配置，下次一键回填）
 - [[prds/file-injection.md]] — 文件注入轮：创建沙箱时把宿主文件复制进沙箱（复制 + chown，敏感凭证不经权限放开即可进容器）
+- [[prds/phase3-desktop.md]] — 三期：桌面端打包（Tauri）与端口转发（桌面壳 + token 认证连接层 + 沙箱端口转发，决策依据见 ADR 0013 / 0014 / 0015）
