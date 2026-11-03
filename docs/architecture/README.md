@@ -21,6 +21,7 @@
 | 0009 | [[architecture/decisions/0009-二期控制台服务化与范围裁剪.md\|二期控制台服务化与范围裁剪]] | 已接受 |
 | 0010 | [[architecture/decisions/0010-启动模板收敛为控制台私有功能.md\|启动模板收敛为控制台私有功能]] | 已接受 |
 | 0011 | [[architecture/decisions/0011-基础镜像增加通用工具层并转联网构建.md\|基础镜像增加通用工具层并转联网构建]] | 已接受 |
+| 0012 | [[architecture/decisions/0012-文件注入采用复制加改属主而非改造挂载预检.md\|文件注入采用复制加改属主而非改造挂载预检]] | 已接受 |
 
 结论摘要见 [[architecture/overview.md#关键决策]]，决策背景与代价见 [[architecture/decisions/README.md|ADR 清单]]。
 

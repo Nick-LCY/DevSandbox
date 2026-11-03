@@ -24,7 +24,7 @@
 ```
 
 ## 清单
-- [[prds/sandbox-platform.md]] — Agent 开发沙箱平台：一期本地闭环 / 二期控制面服务化 / 三期代理与多沙箱运营
+- [[prds/sandbox-platform.md]] — Agent 开发沙箱平台：一期本地闭环 / 二期控制面服务化 / 三期代理与多沙箱运营（原三期已完整退役，三期现指桌面端打包轮，见 [[architecture/decisions/0001-项目定位与三期路线.md|ADR 0001 修订行]]）
 - [[prds/phase2-console.md]] — 二期：控制面服务化与网页控制台（FastAPI 服务 + 网页控制台 + 网页终端）
 - [[prds/console-templates.md]] — 控制台模板轮：基础镜像 0.3.0 通用工具层 + 网页控制台启动模板（存一套沙箱启动配置，下次一键回填）
 - [[prds/file-injection.md]] — 文件注入轮：创建沙箱时把宿主文件复制进沙箱（复制 + chown，敏感凭证不经权限放开即可进容器）
