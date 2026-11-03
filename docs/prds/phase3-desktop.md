@@ -171,10 +171,10 @@
   - 关闭：任一侧 EOF 即关另一侧；转发不存在或已停止 → 关闭码 `1008`；正常关闭 `1000`。
 - **转发管理 REST**：
   - `GET /api/forwards` → 裸数组。
-  - `POST /api/forwards` → `{sandbox, port}`，返回转发记录（**记录字段：id / sandbox / container_port / state / created_at / updated_at，无 `host_port`**）。
+  - `POST /api/forwards` → `{sandbox, port}`，返回转发记录（**记录字段：id / sandbox / container_port / state / created_at / updated_at，无 `host_port`**；**落地另补 `host_pid`**（服务进程号，跨实例清理保护用，见 [[tasks/phase3-desktop/04-port-forward-core.md|任务 04]] 文末「进展」））。
   - `DELETE /api/forwards/{id}` → 停止转发（停并删转发容器、删记录；**不释放任何端口**——宿主侧无端口）。
 - **生命周期与清理语义**：
-  - 转发记录落 `<数据根>/forwards/<id>.json`（`0600`）。
+  - 转发记录落 `<数据根>/forwards/<id>.json`（`0600`）；**记录另带 `host_pid`**（建它的服务进程号，用于清理遗留转发时判归属：归属进程仍存活的转发——别的服务实例正在用——不删）。
   - **沙箱停止** → 该沙箱的转发容器一并停止（记录保留）。
   - **沙箱启动** → 不自动重建；隧道建立时若容器缺失则幂等重建。
   - **沙箱删除** → 转发容器与转发记录纳入回收清单（`reclaim_plan` 增列、删除流程增回收），符合「平台只回收自建资源」。

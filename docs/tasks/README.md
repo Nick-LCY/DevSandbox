@@ -54,7 +54,7 @@ status: todo        # todo | doing | done | blocked
 - [[tasks/phase3-desktop/01-prototype-and-spike.md]] — 打样轮：免 root 端口发布 / Tauri 壳 / WebView2 三项冒烟 / Windows 出包路径（doing：本机 P1 / P3 已实测通过；P1 结论仍成立但按 2026-11-03 决策 C **不采用** `-p` 路径；首轮 Windows 反馈——P4 路径②可行、P2 外观初测通过，控制台三项待调试构建复验）
 - [[tasks/phase3-desktop/02-backend-token-and-cors.md]] — 连接层后端改造：令牌 + 一次性票据鉴权 / CORS 任意来源（done：后端侧已落地，准入边界 = 令牌 + 票据；按部署口径须与 03 同批发布）
 - [[tasks/phase3-desktop/03-frontend-connection-layer.md]] — 连接层前端改造：请求基址抽象 / 连接配置 / WebSocket 地址推导 / 未配置态（doing：前端侧已落地，CSP 闸门闭合；只差「同一份产物连本机 / 远端后端」待真机复验；**2026-11-03 决策 D「基址不可空」已落地（2026-11-03，前端改造完成）**）
-- [[tasks/phase3-desktop/04-port-forward-core.md]] — 端口转发核心包能力：转发容器编排（**不发布端口**）/ 生命周期与清理（todo：已按 2026-11-03 决策 C 重写，无宿主端口分配）
+- [[tasks/phase3-desktop/04-port-forward-core.md]] — 端口转发核心包能力：转发容器编排（**不发布端口**）/ exec 字节泵 / 转发记录原子读写 / 生命周期与清理（**无宿主端口分配**）（done：`forwarding.py` 已落地并通过审查修复轮；门禁 pytest 288 passed / ruff 0 / CLI 零改动；两处既定偏差见任务文件文末「进展」）
 - [[tasks/phase3-desktop/05-port-forward-server-api.md]] — 端口转发服务端接口：转发管理 REST + 隧道 WebSocket（**exec 字节泵**，todo：已按 2026-11-03 决策 C 改写）
 - [[tasks/phase3-desktop/06-port-forward-desktop.md]] — 端口转发桌面侧：Rust 本机 TCP 监听 + 隧道桥接 + 端口转发界面（todo：已按 2026-11-03 决策 C 重写界面部分）
 - [[tasks/phase3-desktop/07-acceptance-tokenization.md]] — 既有验收套件 token 化改造

@@ -22,7 +22,7 @@ status: todo
 
 1. **固定测试令牌**：`helpers/auth.ts` 导出 `TEST_TOKEN`（常量字符串）与 `authHeaders()`。
 2. **后端启动**：`helpers/server.ts` 的 `startConsoleServer()` 在子进程环境里加 `SANDBOX_CONSOLE_TOKEN=<TEST_TOKEN>`；`healthOk()` / `waitForHealth()` 的 `fetch` 带上 `Authorization` 头（否则服务会被 401 挡住，健康等待永远超时）。
-3. **页面侧令牌**：Playwright 的 `use.storageState` 预置 `http://127.0.0.1:<port>` origin 下的 `localStorage['sandbox-console-connection'] = {backendBaseUrl: "", token: "<TEST_TOKEN>"}`；这样页面一打开就处于「已配置」态，直接进工作台。
+3. **页面侧令牌**：Playwright 的 `use.storageState` 预置 `http://127.0.0.1:<port>` origin 下的 `localStorage['sandbox-console-connection'] = {backendBaseUrl: "http://127.0.0.1:<port>", token: "<TEST_TOKEN>"}`；这样页面一打开就处于「已配置」态，直接进工作台。**基址必须非空**（2026-11-03 决策 D：基址不可为空，「空 = 同源」逻辑链已删除）——旧存储里空基址读取时虽会归一为默认值，但**预置值与文档都不写空串**。`<port>` 取**测试服务的实际端口**（默认 `8100`，见 `tests/helpers/server.ts` 的 `CONSOLE_TEST_PORT`；宿主 `8000` 被无关进程占用，不能写死）；产品默认基址是 `http://127.0.0.1:8000`（见 [[architecture/decisions/0015-桌面壳与连接配置抽象.md|ADR 0015]]）。
 4. **REST 直调**：`helpers/api.ts` 的 `request()` 统一带上认证头。
 5. **终端 WS**：终端用例走页面内的 WebSocket，前端自动取票据，用例本身不改；只需确认断线重连路径也带票据。
 6. **负向 / 正向用例**（新 `10-auth.spec.ts`）：
