@@ -8,16 +8,17 @@
 缺失字段保持现状」，因此落盘只导出用户真正填过的字段（``exclude_unset=True``），
 不做全量默认导出——否则「没填」与「填了空值」无法区分。
 
-内置模板以常量形式声明（:data:`BUILTIN_TEMPLATES`），服务启动时按标识注入：
-同标识文件已存在不覆盖、命中墓碑的标识不复活。墓碑落在
-``templates/.builtin/state.json``，记录被用户删掉的内置模板标识。
-``.builtin`` 是点开头的隐藏目录，不参与用户模板枚举。
+内置模板以常量形式声明（:data:`BUILTIN_TEMPLATES`），**服务启动时**与
+**每次列表读取时**都按标识补注入一次：同标识文件已存在不覆盖、命中墓碑的
+标识不复活。墓碑落在 ``templates/.builtin/state.json``，记录被用户删掉的
+内置模板标识。``.builtin`` 是点开头的隐藏目录，不参与用户模板枚举。
 
 本模块只管落盘与种子，不碰宿主与容器：模板是一份配置文本而已。
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -49,11 +50,27 @@ TEMPLATE_ID_PREFIX = "tpl_"
 # 必须串行，否则后写的会覆盖先写的条目（漏记墓碑 → 被删的内置模板又被复活）
 _BUILTIN_STATE_LOCK = threading.Lock()
 
-# 内置模板种子：常量元组，**本期为空**（只落地机制，不预置真实模板内容）。
+# 内置模板种子：常量元组，**清单一条**（pi 个人开发环境）。
 # 每条的形状：``{"id": ..., "name": ..., "config": {...}}``。
+# 配置体是**原样拷贝**的字典：不走请求模型，多写的键会被前端当「出现字段」
+# 整组替换表单——所以只写真正要注入的字段（这条只写文件注入声明）。
 # 将来加一条内置模板即自动生效：启动注入与列表读取都会补上
 # （同标识已存在不覆盖、命中墓碑的不复活）。
-BUILTIN_TEMPLATES: tuple[dict[str, Any], ...] = ()
+BUILTIN_TEMPLATES: tuple[dict[str, Any], ...] = (
+    {
+        "id": "tpl_pi_dev",
+        "name": "pi 个人开发环境",
+        "config": {
+            "files": [
+                "~/.ssh:/root/.ssh",
+                "~/.pi/agent/auth.json:/root/.pi/agent/auth.json",
+                "~/.pi/agent/models-store.json:/root/.pi/agent/models-store.json",
+                "~/.pi/agent/models.json:/root/.pi/agent/models.json",
+                "~/.pi/agent/settings.json:/root/.pi/agent/settings.json",
+            ]
+        },
+    },
+)
 
 
 def templates_dir(config: PlatformConfig) -> Path:
@@ -273,7 +290,8 @@ def ensure_builtin_templates(config: PlatformConfig) -> list[str]:
         record = TemplateRecord(
             id=template_id,
             name=_as_text(item.get("name")),
-            config=dict(raw_config) if isinstance(raw_config, dict) else {},
+            # 深拷贝：注入记录不能与常量里的列表对象共享引用（否则改一处会连带改另一处）
+            config=copy.deepcopy(raw_config) if isinstance(raw_config, dict) else {},
             created_at=now,
             updated_at=now,
         )

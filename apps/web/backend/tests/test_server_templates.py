@@ -40,6 +40,18 @@ BUILTIN_FIXTURE = {
 # 内置种子常量的模块内路径（monkeypatch 用）
 BUILTIN_TARGET = "sandbox_console.templates.BUILTIN_TEMPLATES"
 
+# 真实内置模板清单第一条（常量里的内容，不替换常量）：pi 个人开发环境
+PI_TEMPLATE_ID = "tpl_pi_dev"
+PI_TEMPLATE_NAME = "pi 个人开发环境"
+# 真实内置模板的文件注入声明（五条，逐字）：ssh 整目录 + pi 的四个凭证/配置文件
+PI_TEMPLATE_FILES = [
+    "~/.ssh:/root/.ssh",
+    "~/.pi/agent/auth.json:/root/.pi/agent/auth.json",
+    "~/.pi/agent/models-store.json:/root/.pi/agent/models-store.json",
+    "~/.pi/agent/models.json:/root/.pi/agent/models.json",
+    "~/.pi/agent/settings.json:/root/.pi/agent/settings.json",
+]
+
 
 # ---------------------------------------------------------------- 夹具
 @pytest.fixture
@@ -48,8 +60,31 @@ def templates_client(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> TestClient:
-    """测试客户端（模板库落在临时平台数据根里）。"""
+    """测试客户端（模板库落在临时平台数据根里）。
+
+    **内置种子按空清单隔离**：本文件里的既有用例断言的是「用户模板」的行为
+    （列表恰好两条、删完恰好为空），真实内置清单一旦非空，这些断言就会被
+    环境里多出来的那条内置模板顶掉。把内置清单常量替成空元组，既有用例的
+    断言一字不动；真实清单由 ``builtin_seed_client`` 那组用例单独验。
+    """
     # 前端目录指向不存在的路径：静态托管是否挂载的断言才稳定
+    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
+    monkeypatch.setattr(BUILTIN_TARGET, ())
+    app = create_app()
+    return TestClient(app)
+
+
+@pytest.fixture
+def builtin_seed_client(
+    platform_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> TestClient:
+    """测试客户端（**不替换内置清单常量**：真实内置模板照常注入）。
+
+    数据根仍是临时目录（``platform_home`` 夹具）：注入、墓碑都落在临时目录里，
+    不碰真实环境的数据根。
+    """
     monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     app = create_app()
     return TestClient(app)
@@ -464,6 +499,91 @@ def test_lifespan_survives_seed_failure(
     app = create_app()
     with TestClient(app) as client:
         assert client.get("/api/health").status_code == 200
+
+
+# ---------------------------------------------------------------- 真实内置模板
+def test_builtin_pi_template_constant_declares_files_only() -> None:
+    """真实内置清单：pi 个人开发环境的配置体**只含 files 一个键**。
+
+    内置种子是原样拷贝配置体字典的：多写的键会被前端当「出现字段」整组替换
+    表单（镜像、挂载、命令……），所以这里钉死「只有文件注入声明」。
+    """
+    items = [
+        item
+        for item in templates_module.BUILTIN_TEMPLATES
+        if item.get("id") == PI_TEMPLATE_ID
+    ]
+    assert len(items) == 1
+    assert items[0]["name"] == PI_TEMPLATE_NAME
+    assert items[0]["config"] == {"files": PI_TEMPLATE_FILES}
+    assert list(items[0]["config"].keys()) == ["files"]
+
+
+def test_builtin_pi_template_is_listed(builtin_seed_client: TestClient) -> None:
+    """真实内置模板（不替换常量）：列表里看得到它，名称与配置体逐字正确。"""
+    response = builtin_seed_client.get("/api/templates")
+    assert response.status_code == 200
+    items = response.json()
+    matched = [item for item in items if item["id"] == PI_TEMPLATE_ID]
+    assert len(matched) == 1
+    assert matched[0]["name"] == PI_TEMPLATE_NAME
+    assert matched[0]["config"] == {"files": PI_TEMPLATE_FILES}
+    assert matched[0]["created_at"]
+    assert matched[0]["updated_at"]
+
+
+def test_builtin_pi_template_injection_is_idempotent(
+    builtin_seed_client: TestClient,
+    platform_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """注入幂等：连读两次列表、重建服务再读，都只出现一份。
+
+    落盘也只留一个记录文件（种子注入不覆盖已有文件、不重复写入）。
+    """
+    first = builtin_seed_client.get("/api/templates").json()
+    second = builtin_seed_client.get("/api/templates").json()
+    assert [item["id"] for item in first].count(PI_TEMPLATE_ID) == 1
+    assert [item["id"] for item in second].count(PI_TEMPLATE_ID) == 1
+
+    # 重建服务（走启动钩子那条注入路径）再读：仍然只有一份。
+    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
+    with TestClient(create_app()) as restarted:
+        third = restarted.get("/api/templates").json()
+    assert [item["id"] for item in third].count(PI_TEMPLATE_ID) == 1
+
+    record = templates_dir_of(platform_home) / f"{PI_TEMPLATE_ID}.json"
+    assert record.is_file()
+    assert json.loads(record.read_text(encoding="utf-8"))["config"] == {
+        "files": PI_TEMPLATE_FILES
+    }
+
+
+def test_delete_builtin_pi_template_writes_tombstone_and_does_not_revive(
+    builtin_seed_client: TestClient, platform_home: Path
+) -> None:
+    """删真实内置模板：写墓碑，后续注入与列表都不复活它。
+
+    墓碑落在临时平台数据根里（``platform_home`` 夹具），不碰真实环境。
+    """
+    assert builtin_seed_client.get("/api/templates").status_code == 200
+    response = builtin_seed_client.delete(f"/api/templates/{PI_TEMPLATE_ID}")
+    assert response.status_code == 200
+    assert response.json() == {"id": PI_TEMPLATE_ID, "deleted": True}
+
+    tombstone = tombstone_path_of(platform_home)
+    assert tombstone.is_file()
+    assert json.loads(tombstone.read_text(encoding="utf-8"))["deleted"] == [
+        PI_TEMPLATE_ID
+    ]
+
+    # 再读列表、再跑一次注入：都不复活。
+    # 断言「列表里没有 tpl_pi_dev」而不是「列表恰好为空」：内置清单将来再加条目时本用例不会误红
+    listed = builtin_seed_client.get("/api/templates").json()
+    assert all(item["id"] != PI_TEMPLATE_ID for item in listed)
+    assert ensure_builtin_templates(PlatformConfig.from_env()) == []
+    assert not (templates_dir_of(platform_home) / f"{PI_TEMPLATE_ID}.json").exists()
 
 
 # ---------------------------------------------------------------- 模板库落盘
