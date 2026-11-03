@@ -3,6 +3,7 @@
 > **留档说明**
 > - 本文件是三期（桌面端打包 + 端口转发）的**打样与实测结论**留档，由 [[tasks/phase3-desktop/01-prototype-and-spike.md|任务 01]] 打样轮与 [[tasks/phase3-desktop/09-acceptance-and-docs.md|任务 09]] 收口轮填写。
 > - **当前状态（2026-11-03）**：打样轮已在本机（Linux）完成 **P1 / P3** 两项实测并成文；**P2 / P4 / P5** 三项依赖 Windows 真机，留「待 Windows 实测」占位（判定标准已写死，见第五、七、八节）。
+> - **首轮用户反馈（2026-11-03）已入档**：P4 的路径②部分闭合、P2 外观初测通过（详见第五、七、八节的「首轮反馈」小段）；P2 的三项控制台判定与 xterm 真渲染、P5 均未闭合。
 > - 打样轮的产物：Tauri v2 工程骨架在 [[architecture/decisions/0015-桌面壳与连接配置抽象.md|ADR 0015]] 约定的位置 `apps/desktop/`；操作指引见 `apps/desktop/README.md`。
 > - 关联页面：[[tasks/phase3-desktop/README.md|三期任务集]]、[[prds/phase3-desktop.md|三期 PRD]]、[[architecture/decisions/0014-端口转发机制选型.md|0014 端口转发机制选型]]、[[current-state.md|当前状态]]。
 
@@ -231,6 +232,15 @@ $ ss -ltn | grep 18000            → （空，端口已释放）
 
 打样轮已为本项准备好的东西：Tauri v2 工程骨架（`apps/desktop/`）、Windows 构建指引（`apps/desktop/README.md`「Windows 构建指引」）、`pnpm tauri dev` 冒烟路径。
 
+### 5.1 首轮反馈（2026-11-03）
+
+> 本节只追加用户首轮实测反馈，不改上文判定标准。**本项尚未闭合**：外观初测通过，三项控制台判定与 xterm 真渲染仍待验。
+
+- **外观初测通过**：配色正常，未见 `oklch` 掉色（界面有颜色，不是整页灰白/黑）。
+- **正式版构建打不开开发者工具 —— 正常现象**：开发者工具只在调试构建（`pnpm tauri dev`）下提供，正式版构建（`pnpm tauri build`）不含 DevTools 入口，不是构建失败。
+- **控制台三项待复验**：正式版拿不到 DevTools，`CSS.supports('color', 'oklch(0.7 0.15 200)')`、`window.isSecureContext`、`navigator.clipboard` 读写这三项**尚未判定**，待用户以调试构建（`pnpm tauri dev`）复验后逐项记「通过 / 不通过 + 输出」。
+- **xterm 真渲染待 03 后端连通后验**：终端真渲染依赖后端连通，而 02（连接层后端改造）尚未与 03（前端连接层改造）同批发布（前端不带 `Authorization` 头时后端全线 `401`），因此 xterm 的「渲染 / fit / 表面不溢出」判定待 03 落地、后端连通后再做。
+
 ---
 
 ## 六、P3 实测留档：转发镜像钉版与代理拉取（本机实测，通过）
@@ -376,6 +386,14 @@ Size=4405810
 - 产物形态：`apps\desktop\src-tauri\target\release\bundle\nsis\沙箱控制台_<版本>_x64-setup.exe`（NSIS 安装包）+ cargo 原始产物 `apps\desktop\src-tauri\target\release\sandbox-console-desktop.exe`（**按 Cargo 包名 `sandbox-console-desktop` 命名，不是中文**；只有 NSIS 安装完成后的「开始菜单 / 桌面快捷方式」指向的 `沙箱控制台.exe` 才用中文名）；
 - 结论：选哪条路径、另一条是否保留。
 
+### 7.1 首轮反馈（2026-11-03）
+
+> 本节只追加用户首轮实测反馈，不改上文记录模板。**路径②已部分闭合**，模板里的细节待正式补记。
+
+- **路径②（用户自有 Windows 机器本地构建）可行**：用户在自有 Windows 机器上本地构建**通过**——「至少一条路径可重复执行」这条判定**已闭合**。
+- **待正式记录**：上文「记录模板」的三项细节——环境（Windows / Rust / Node / pnpm / Build Tools / WebView2 运行时版本）、耗时（`pnpm install` / 前端 `pnpm build` / `pnpm tauri build` 各自墙钟耗时）、产物形态（NSIS 安装包与 cargo 原始产物的实际文件名与路径）——首轮反馈未给出数值，待补记。
+- **路径①（GitHub Actions `windows-latest`）本轮未验**：仓库当前无远端、无 `.github`，是否保留为备份路径待定。
+
 ---
 
 ## 八、P5 待 Windows 实测：WebView2 运行时策略
@@ -401,6 +419,10 @@ Tauri v2 的 `bundle.windows.webviewInstallMode` 取值与 PRD 的三选一对�
 3. 安装后首次启动能正常打开界面（不报「WebView2 运行时缺失」）；
 4. 若选离线随包分发：断网状态下重跑一遍上述 1~3；
 5. 无论选哪条，README 与安装引导都要写明**最低 WebView2 版本**。
+
+### 8.1 首轮反馈（2026-11-03）
+
+- **无新信息**：本轮用户反馈未涉及 WebView2 运行时策略（未装运行时的机器上的安装行为），P5 维持「待 Windows 实测」，上文的取值表与判定标准照旧。
 
 ---
 

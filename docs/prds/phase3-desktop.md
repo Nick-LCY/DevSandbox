@@ -108,7 +108,7 @@
   - **不采用 `Sec-WebSocket-Protocol` 夹带令牌**：可行但非标准用法，部分代理 / 中间件会改写子协议列表；票据方案更通用。
   - **Rust 侧不需要票据**：桌面 Rust 核心用 `tokio-tungstenite` 打开隧道 WebSocket，可以直接设 `Authorization` 头，走标准 Bearer 通道。
 - **CORS**：只放行 `http://tauri.localhost`（Windows WebView2 的来源）、`http://localhost:5173` 与 `http://127.0.0.1:5173`（本地开发）；**不放行任何通配符**，不带凭据（`allow_credentials=False`）。同源部署（后端托管前端）不需要 CORS。
-- **WebSocket 的 Origin 校验**：CORS 管不到 WebSocket 握手，所有 WS 端点必须独立校验 `Origin` 头在放行清单内；不在清单内直接拒握手。
+- **WebSocket 的 Origin 校验**：CORS 管不到 WebSocket 握手，所有 WS 端点必须独立校验 `Origin` 头在放行清单内；不在清单内直接拒握手。（2026-11-03 修订：放行清单含「同源」——浏览器 Origin 与本次请求同源即放行，判定含 scheme 与按 Origin scheme 取默认端口；**Origin 校验不是安全边界**，真正的准入边界是令牌与票据。见 [[architecture/decisions/0013-三期定位改定与认证重启.md|ADR 0013]] 第 4 节的修订说明。）
 - **`/api/health` 不豁免**：保持「所有 `/api` 受保护」的口径一致。好处是前端能区分「后端不可达」（连接失败）与「令牌无效」（401）两种状态；代价是外部监控探活必须带令牌（可用 socket 层探活替代）。
 - **非回环监听的告警改写**：ADR 0009 的「绑非回环 = 完全信任」前提已被令牌推翻，因此 `apps/web/backend/src/sandbox_console/__main__.py` 的 `warn_if_not_loopback()` 改为：已配置令牌时打「已启用令牌认证」的提示；未配置令牌时**不可能发生**（启动必生成），但代码路径仍保留兜底告警。
 - **代理重启端点的口径更新**：`POST /api/proxy/restart` 原是「未认证的特权端点」，本期起受令牌保护，README 与 API.md 的相关说明同步改写。
