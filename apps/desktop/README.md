@@ -15,10 +15,11 @@ apps/desktop/
 ├── scripts/
 │   └── probe_rootless_port_forward.py   # 三期打样探针（P1 / P3），不属于运行时依赖
 └── src-tauri/
-    ├── Cargo.toml            # tauri = "2" + tauri-build
+    ├── Cargo.toml            # tauri = "2"（开 config-json5：tauri.conf.json 能写注释）+ tauri-build
     ├── build.rs
-    ├── tauri.conf.json       # productName / identifier / frontendDist / bundle.targets
-    ├── src/main.rs           # 最小骨架：tauri::Builder
+    ├── tauri.conf.json       # productName / identifier / frontendDist / bundle.targets / app.security.csp
+    ├── src/main.rs           # 窗口与 webview 创建（在这里注入运行期 CSP）+ 连接配置命令
+    ├── src/csp.rs            # CSP 基线策略与运行期改写（纯函数 + 单元测试）
     └── icons/                # 图标（source.png 是源图，其余由 `pnpm tauri icon` 生成）
 ```
 
@@ -107,7 +108,7 @@ pnpm tauri dev
 
 冒烟路径（**当前打样壳只能验到前两步**）：**窗口能打开 → 页面正常渲染 →（样式 / 终端表面看起来正常）**。
 
-> 连接配置与后端连通**本轮不可验**：连接配置 / 令牌入口属**任务 03**（前端连接层），当前前端产物走的是相对路径下的接口请求，没有连接配置界面；「填后端地址与令牌 → 沙箱列表能拉到 → 能开终端」这一段要等任务 03 落地后才能验。
+> 连接配置与后端连通**本轮（打样轮）不可验**：任务 03（前端连接层）已落地引导面板与连接配置区，但真机上的「填后端地址与令牌 → 沙箱列表能拉到 → 能开终端」要等真机（Windows + WebView2）复验；且令牌与票据需要后端 02 的服务真跑起来。
 
 > 开发模式下前端跑在 `http://localhost:5173`，生产模式跑在 Tauri 自定义协议下（Windows 上是 `http://tauri.localhost`）。两者的资源路径解析差异由前端 `base` 决定，见「已知边界」。
 
@@ -163,8 +164,78 @@ Tailwind v4 的整套色板以 `oklch()` 为底座，Chromium < 111 会整页掉
 
 无论选哪条，README 与安装包引导里都要写明**最低 WebView2 版本**。
 
+## CSP（内容安全策略）
+
+**CSP 不再是 `null`**：`tauri.conf.json` 的 `app.security.csp` 写的是基线策略，
+**Rust 侧在主文档被请求时再动态改写一次**（`src/main.rs` 的 `on_web_resource_request`）。
+
+三条设计要点（依据：ADR 0015 第 6 节）：
+
+| 要点 | 口径 | 理由 |
+|---|---|---|
+| `connect-src` | **host 级**：基线只有 `'self'`，运行期把**当前后端主机**补进去（`http(s)://<后端host>:*` 与 `ws(s)://<后端host>:*`）。**不放行 `http:` / `https:` / `ws:` / `wss:` 这类 scheme 通配** | 后端地址是**用户运行期可配的主机**，静态策略枚举不完运行期才出现的地址——但枚举不完不等于「全放行」：scheme 通配等于「页面能往任意主机连」，CSP 就失去意义了。host 级放行只开用户**真填的那台主机**；端口用 `:*` 是因为端口也是用户填的。真正的准入边界是**令牌与一次性票据**（后端侧校验），CSP 只管「页面能往哪台主机连」 |
+| `script-src` | **不放行 `unsafe-inline`**；配置里只写 `script-src 'self'` | 前端产物里的内联防闪烁脚本靠**内容 hash**（`'sha256-...'`）放行：hash 由 Tauri 在**构建期**按产物 `index.html` 里的内联脚本内容算出来并注入策略（tauri-codegen 的 `inject_script_hashes`）。hash 跟着产物走，改了脚本重新构建即可，不会失效 |
+| `style-src` | 放行 `'unsafe-inline'` | **如实放行**：xterm.js 与 React 都会写行内样式（xterm 的终端表面定位、toast 的倒计时圆环变量），行内 `style` 属性在 CSP 下归 `style-src` 管，不放行就整片样式失效 |
+| `style-src-attr` | **不单独收紧**（本轮保持现状） | Chromium / WebView2 支持这个指令，收紧成 `'none'` 在技术上可行；但 xterm.js 与 React 都写行内 `style` 属性（行内 `style` 属性归 `style-src-attr` 管，不受 `style-src` 的 `'unsafe-inline'` 覆盖），收紧后要先确认这些样式全部能改成 class / CSS 变量，否则终端表面会整片错位。**这是个需要真机（WebView2）复验的改动**，本轮不冒险；要收紧的前提是先在 CSS 层消除行内样式 |
+
+### 时序契约（CSP 与主文档重载）
+
+**主文档的 CSP 只在主文档被请求时生成**（`on_web_resource_request` 挂在 webview 创建时，
+运行期没有「给已有 webview 换 CSP」的接口）。因此「知道后端主机」与「这一版主文档的 CSP 带上它」
+之间有一个时间窗，**必须用重载补上**：
+
+```
+前端                                        桌面壳（Rust）
+────                                        ─────────────
+保存连接配置
+  └ await invoke('set_backend_base_url', 后端基址)
+                                              └ 更新状态 desired（幂等）
+  └ await invoke('csp_needs_reload')
+                                              └ 比对 loaded（这一版主文档用的基址）与 desired
+  └ 不一致 → location.reload()
+                                              ┌ 主文档重新被请求
+                                              └ 按 desired 生成这一版 CSP（connect-src 带上后端主机）
+```
+
+- **顺序是硬要求**：先更新状态（`set_backend_base_url` 返回），再重载主文档。反了就拿到旧 CSP。
+- **谁触发重载**：前端（它要知道「状态已更新」才能重载）。Rust 侧不主动 reload，只提供
+  `csp_needs_reload` 这个判定。
+- **重载不丢配置**：连接配置存在 localStorage 里，重载后前端直接进工作台。
+- **桌面形态首次配置**：跨主机的健康检查会被 CSP 拦死（这一版主文档的 CSP 里还没有后端主机），
+  所以引导面板的「保存并连接」先走「写待验证配置 → 同步 CSP → 重载」，重载回来时再体检，
+  **体检通过才提升为生效配置**（口径见 `apps/web/frontend/README.md` 的「连接配置」一节）。
+- **Rust 侧只存基址，不存令牌**：`CspState` 里只有 `desired` 与 `loaded` 两个基址字符串。
+
+其它说明：
+
+- **窗口在 Rust 侧建**（`src/main.rs` 的 `WebviewWindowBuilder`，**不走 `tauri.conf.json` 的 `app.windows`**）：
+  `on_web_resource_request` 只能在 webview 创建时挂上，运行期没有「给已有 webview 换 CSP」的接口。
+  窗口参数（标题、1280×800、最小 1024×640、可缩放）与原配置一致。
+  `tauri.conf.json` 里 `app.windows` 的位置留了一行注释指向 `main.rs`（**别加回去**：会开出第二个窗口）。
+- **`tauri.conf.json` 能写注释**：`Cargo.toml` 里给 `tauri` 与 `tauri-build` 都开了 `config-json5`
+  特性（与 tauri-cli 的解析口径一致——CLI 恒开这个特性），因此配置里可以用 `//` 注释。
+- **命令的 ACL**：`set_backend_base_url` 与 `csp_needs_reload` 都是应用自带命令，当前工程**没有 `capabilities/` 目录**
+  （没有 ACL 清单），应用命令不被 ACL 拦截；将来若新增 capabilities，要显式放行这两条命令。
+- 策略改写是**幂等**的：重复改写不会把来源加两遍（`src/csp.rs` 有单元测试）。
+- **IPv6 主机**：`url::Url::host_str()` 返回的主机**已经带方括号**（`[::1]`），拼来源时不再包一层
+  （否则会变成 `[[::1]]`，那条来源在 CSP 里不合法）。
+- **响应上没有 CSP 头的兜底分支**：正常路径走不到（Tauri 总会给主文档写 CSP 头）。真走到时补一条基线策略，
+  **它不含 script 内容 hash**（hash 是构建期算出来注入响应头的，这里算不出来）——后果是内联防闪烁脚本被拦
+  （首帧可能闪一下白），连接不会被拦死。该分支会打一行提示（`eprintln!`；发布版 Windows 没有控制台，只在开发态可见）。
+
+### `style-src-attr` 收紧（未做，附论证）
+
+见上表的 `style-src-attr` 行：技术上可行（Chromium / WebView2 支持），但要先在 CSS 层消除行内样式、
+并经真机复验，本轮不做。
+
+```bash
+cd src-tauri && cargo check      # Rust 侧编译校验
+cd src-tauri && cargo test       # CSP 纯函数的单元测试
+```
+
 ## 已知边界
 
-- **前端 `base` 仍是绝对路径**：`apps/web/frontend/dist/index.html` 里资源引用形如 `/assets/xxx.js`。这在 Tauri 自定义协议（Windows 上是 `http://tauri.localhost` 根路径）下能解析，但改成相对路径（`base: './'`）是三期前端连接层任务的既定改动，届时必须重跑既有验收。
-- **端口转发尚未接入**：Rust 侧的「本机监听 + 隧道桥接」在后续任务（[[tasks/phase3-desktop/06-port-forward-desktop.md|任务 06]]）里补；本轮只有最小骨架。
+- **前端 `base` 已是相对路径**：`vite.config.ts` 的 `base: './'`（三期任务 03 落地），产物里的资源引用形如 `./assets/xxx.js`；网页形态（后端 `StaticFiles` 挂在 `/`）与桌面形态（Tauri 自定义协议）都能解析。改基址会动全量产物，必须重跑既有验收。
+- **桌面形态启动时会重载一次主文档**：Rust 进程是新的，还不知道后端主机（这一版主文档的 CSP 里只有 `'self'`），前端启动同步后会重载主文档（重载后这一版 CSP 才带上后端主机）。这是**预期行为**，不是故障。
+- **端口转发尚未接入**：Rust 侧的「本机监听 + 隧道桥接」在后续任务（[[tasks/phase3-desktop/06-port-forward-desktop.md|任务 06]]）里补；本轮只有连接层。
 - **Linux 只保证源码层面可构建**，不承诺出包；Windows 安装包见上文「Windows 构建指引」。

@@ -10,19 +10,13 @@
     "beforeBuildCommand": "pnpm --dir ../web/frontend build"
   },
   "app": {
-    "windows": [
-      {
-        "title": "沙箱控制台",
-        "width": 1280,
-        "height": 800,
-        "minWidth": 1024,
-        "minHeight": 640,
-        "resizable": true,
-        "fullscreen": false
-      }
-    ],
+    // 主窗口**不在这里配**：窗口由 src/main.rs 的 WebviewWindowBuilder 创建
+    // （on_web_resource_request 只能在 webview 创建时挂上，运行期换不了 CSP）。
+    // **不要在这里加回 app.windows**：会开出第二个窗口。
     "security": {
-      "csp": null
+      // 基线策略；connect-src 只有 'self'——后端主机是运行期才知道的，
+      // 由 Rust 侧在主文档被请求时按当前后端主机补进去（见 src/csp.rs）。
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
     }
   },
   "bundle": {

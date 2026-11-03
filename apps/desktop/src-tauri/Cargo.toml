@@ -10,10 +10,13 @@ rust-version = "1.90"
 # 桌面壳只做三件事：装载前端静态产物、按连接配置设定 CSP、维护端口转发的本机监听与隧道桥接。
 # 本期（打样轮）只保留最小骨架：端口转发相关的 Rust 侧能力在后续任务里补。
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+# config-json5：让 tauri.conf.json 能带注释（窗口在 Rust 侧建，注释指向 main.rs）。
+# 与 tauri-cli 的解析口径一致（CLI 恒开 config-json5）。
+tauri-build = { version = "2", features = ["config-json5"] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# config-json5：同上（generate_context! 宏在编译期读 tauri.conf.json）。
+tauri = { version = "2", features = ["config-json5"] }
 # serde / serde_json 当前未被 src/main.rs 使用：连接配置与端口转发桥接（任务 06）
 # 要读写配置，先把依赖留着，避免那轮再动依赖表。
 serde = { version = "1", features = ["derive"] }
