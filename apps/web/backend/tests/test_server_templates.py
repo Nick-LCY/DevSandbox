@@ -40,9 +40,9 @@ BUILTIN_FIXTURE = {
 # 内置种子常量的模块内路径（monkeypatch 用）
 BUILTIN_TARGET = "sandbox_console.templates.BUILTIN_TEMPLATES"
 
-# 真实内置模板清单第一条（常量里的内容，不替换常量）：pi 个人开发环境
+# 真实内置模板清单第一条（常量里的内容，不替换常量）：pi agent
 PI_TEMPLATE_ID = "tpl_pi_dev"
-PI_TEMPLATE_NAME = "pi 个人开发环境"
+PI_TEMPLATE_NAME = "pi agent"
 # 真实内置模板的文件注入声明（五条，逐字）：ssh 整目录 + pi 的四个凭证/配置文件
 PI_TEMPLATE_FILES = [
     "~/.ssh:/root/.ssh",
@@ -503,7 +503,7 @@ def test_lifespan_survives_seed_failure(
 
 # ---------------------------------------------------------------- 真实内置模板
 def test_builtin_pi_template_constant_declares_files_only() -> None:
-    """真实内置清单：pi 个人开发环境的配置体**只含 files 一个键**。
+    """真实内置清单：pi agent 的配置体**只含 files 一个键**。
 
     内置种子是原样拷贝配置体字典的：多写的键会被前端当「出现字段」整组替换
     表单（镜像、挂载、命令……），所以这里钉死「只有文件注入声明」。

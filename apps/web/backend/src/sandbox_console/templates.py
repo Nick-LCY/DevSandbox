@@ -50,7 +50,7 @@ TEMPLATE_ID_PREFIX = "tpl_"
 # 必须串行，否则后写的会覆盖先写的条目（漏记墓碑 → 被删的内置模板又被复活）
 _BUILTIN_STATE_LOCK = threading.Lock()
 
-# 内置模板种子：常量元组，**清单一条**（pi 个人开发环境）。
+# 内置模板种子：常量元组，**清单一条**（pi agent）。
 # 每条的形状：``{"id": ..., "name": ..., "config": {...}}``。
 # 配置体是**原样拷贝**的字典：不走请求模型，多写的键会被前端当「出现字段」
 # 整组替换表单——所以只写真正要注入的字段（这条只写文件注入声明）。
@@ -59,7 +59,7 @@ _BUILTIN_STATE_LOCK = threading.Lock()
 BUILTIN_TEMPLATES: tuple[dict[str, Any], ...] = (
     {
         "id": "tpl_pi_dev",
-        "name": "pi 个人开发环境",
+        "name": "pi agent",
         "config": {
             "files": [
                 "~/.ssh:/root/.ssh",

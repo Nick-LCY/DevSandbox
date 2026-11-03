@@ -765,7 +765,7 @@ TTY 负责（容器内拿到的是真实 TTY，默认 termios 生效）。
 | 权限 | 文件权限 0600，与平台其他元数据一致 |
 | 枚举 | 只扫 `templates/` 顶层的 `*.json`，**不递归子目录**；按标识排序 |
 | 字段 | 只落用户真正填过的字段（`exclude_unset`）：「字段缺失」与「字段填了空值」不混同——模板应用语义是「出现字段整体替换、缺失字段保持现状」 |
-| 内置种子 | 常量 `BUILTIN_TEMPLATES`：**清单一条** `tpl_pi_dev`（pi 个人开发环境）——配置体**只含 `files` 一个键**，五条文件注入声明逐字原样：`~/.ssh:/root/.ssh`（ssh 整目录）、`~/.pi/agent/auth.json:/root/.pi/agent/auth.json`、`~/.pi/agent/models-store.json:/root/.pi/agent/models-store.json`、`~/.pi/agent/models.json:/root/.pi/agent/models.json`、`~/.pi/agent/settings.json:/root/.pi/agent/settings.json`（四条 pi 文件的容器侧路径同为 `/root/.pi/agent/` 下同名文件）；**启动时**按标识注入，**每次列表读取都补注入**；同标识文件已存在不覆盖；删了写墓碑、不复活。将来加一条即自动生效 |
+| 内置种子 | 常量 `BUILTIN_TEMPLATES`：**清单一条** `tpl_pi_dev`（pi agent）——配置体**只含 `files` 一个键**，五条文件注入声明逐字原样：`~/.ssh:/root/.ssh`（ssh 整目录）、`~/.pi/agent/auth.json:/root/.pi/agent/auth.json`、`~/.pi/agent/models-store.json:/root/.pi/agent/models-store.json`、`~/.pi/agent/models.json:/root/.pi/agent/models.json`、`~/.pi/agent/settings.json:/root/.pi/agent/settings.json`（四条 pi 文件的容器侧路径同为 `/root/.pi/agent/` 下同名文件）；**启动时**按标识注入，**每次列表读取都补注入**；同标识文件已存在不覆盖；删了写墓碑、不复活。将来加一条即自动生效 |
 | 内置模板的前置条件 | `~` 展开以**控制台服务运行用户的家目录**为目标：按仓库自带的 systemd 单元（`User=root`）部署时，五条宿主路径都展开到 `/root` 之下，命中核心包的宿主敏感目录拒绝清单，创建沙箱返回 400——**该模板要求服务以持有这些凭证的非 root 用户运行**（该用户家目录里须有 `~/.ssh` 与 `~/.pi/agent/`）。这是既有 `~` 展开契约的自然结果，不是缺陷 |
 | 内置模板的信任边界 | 该模板会把宿主 ssh 私钥与 pi 凭证**复制成只读副本**注入沙箱（宿主原件零接触；副本是创建时的快照，原件之后的改动不回灌；副本以只读方式挂进容器）。控制台服务不做认证，仅适用于**本机单人部署**场景 |
 | 墓碑 | `templates/.builtin/state.json`，内容 `{"deleted": [...]}`；内置模板被删后写墓碑，后续启动不再注入（**删了不复活**） |
