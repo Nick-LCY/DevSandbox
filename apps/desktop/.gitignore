@@ -1,0 +1,7 @@
+# 依赖与构建产物
+node_modules/
+src-tauri/target/
+src-tauri/gen/
+
+# Python 探针脚本的缓存
+__pycache__/

@@ -1,0 +1,27 @@
+[package]
+name = "sandbox-console-desktop"
+version = "0.1.0"
+description = "沙箱平台控制台桌面端（Tauri v2 壳）"
+authors = ["sandbox-platform"]
+edition = "2021"
+# tauri 2.12.5（见 Cargo.lock）要求 rustc ≥ 1.90，这里与之保持一致
+rust-version = "1.90"
+
+# 桌面壳只做三件事：装载前端静态产物、按连接配置设定 CSP、维护端口转发的本机监听与隧道桥接。
+# 本期（打样轮）只保留最小骨架：端口转发相关的 Rust 侧能力在后续任务里补。
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+# serde / serde_json 当前未被 src/main.rs 使用：连接配置与端口转发桥接（任务 06）
+# 要读写配置，先把依赖留着，避免那轮再动依赖表。
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

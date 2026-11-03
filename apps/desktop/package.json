@@ -1,0 +1,21 @@
+{
+  "name": "@sandbox-platform/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "沙箱平台桌面控制台（Tauri v2 壳）：与网页控制台共用同一份前端产物",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.32.1",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "build:frontend": "pnpm --dir ../web/frontend build",
+    "icons": "tauri icon src-tauri/icons/source.png"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
