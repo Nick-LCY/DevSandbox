@@ -1,11 +1,11 @@
-"""连接层准入测试：令牌三态、票据、CORS 放行清单、WebSocket 鉴权与 Origin。
+"""连接层准入测试：令牌三态、票据、CORS 放行口径、WebSocket 鉴权。
 
 覆盖三块：
 
 - **访问令牌**：缺 / 错 / 对三态；令牌文件的生成、权限与落盘口径；启动日志只打路径。
 - **一次性票据**：受 Bearer 保护、30 秒过期、用过即废。
-- **跨源放行**：CORS 白名单内外、预检与实际请求；WebSocket 的 Origin 放行规则
-  （同源放行、白名单外拒绝）与握手鉴权。
+- **跨源放行**：CORS 任意来源放行（预检与实际请求）、预检免令牌；WebSocket 握手的
+  ``Origin`` **不再校验**（任意来源 + 有效票据即连上），握手仍由票据把门。
 
 分层契约（服务层不直接碰宿主）由 ``test_source_contract.py`` 统一检测，
 本文件不重复。
@@ -25,12 +25,14 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from sandbox_platform import ConfigError, PlatformConfig
+from starlette.middleware.cors import SAFELISTED_HEADERS
 from starlette.websockets import WebSocket, WebSocketDisconnect
 from sandbox_console import create_app
 from sandbox_console.auth import (
     AUTH_FAILED_DETAIL,
     CLOSE_CODE_UNAUTHORIZED,
-    CORS_ALLOWED_ORIGINS,
+    CORS_ALLOWED_HEADERS,
+    CORS_ALLOWED_METHODS,
     TICKET_TTL_SECONDS,
     TOKEN_ENV_VAR,
     TOKEN_FILENAME,
@@ -40,7 +42,6 @@ from sandbox_console.auth import (
     TicketStore,
     TokenSource,
     is_api_path,
-    origin_allowed,
     read_token_file,
     resolve_token,
 )
@@ -408,40 +409,40 @@ def test_websocket_with_valid_ticket_is_accepted(auth_client: TestClient) -> Non
         assert "终端会话" in message["message"]
 
 
-def test_websocket_rejects_origin_outside_allowlist(auth_client: TestClient) -> None:
-    """Origin 不在放行清单内：握手被拒（1008）。
+def test_websocket_accepts_any_origin_with_a_valid_ticket(auth_client: TestClient) -> None:
+    """Origin 门禁已取消（2026-11-03 用户决策）：任意 Origin + 有效票据 → 连上。
+
+    口径提醒：``Origin`` 不是安全边界（同源判定基于可伪造的 ``Host`` 头），
+    真正的准入边界是票据（这里换来的短期凭据）。
+    """
+    ticket = issue_ticket(auth_client)
+    with auth_client.websocket_connect(
+        f"/api/terminal/sessions/x?ticket={ticket}",
+        headers={"Origin": "http://evil.example"},
+    ) as ws:
+        assert ws.receive_json()["type"] == "error"
+
+
+def test_websocket_accepts_missing_origin_with_a_valid_ticket(auth_client: TestClient) -> None:
+    """不带 Origin（非浏览器客户端）：一样连上（凭据照常校验）。"""
+    ticket = issue_ticket(auth_client)
+    with auth_client.websocket_connect(f"/api/terminal/sessions/x?ticket={ticket}") as ws:
+        assert ws.receive_json()["type"] == "error"
+
+
+def test_websocket_rejects_any_origin_without_a_valid_ticket(auth_client: TestClient) -> None:
+    """Origin 放开了，票据仍是硬闸：无效票据 + 任意 Origin → 握手被拒（1008）。
 
     口径同上：accept 之前被拒，生产环境（uvicorn）表现为 HTTP 403，
     TestClient 下才是 ``WebSocketDisconnect(1008)``。
     """
-    ticket = issue_ticket(auth_client)
     with pytest.raises(WebSocketDisconnect) as failure:
         with auth_client.websocket_connect(
-            f"/api/terminal/sessions/x?ticket={ticket}",
+            "/api/terminal/sessions/x?ticket=not-a-ticket",
             headers={"Origin": "http://evil.example"},
         ):
             pass
     assert failure.value.code == 1008
-
-
-def test_websocket_allows_same_origin(auth_client: TestClient) -> None:
-    """Origin 与请求 Host 同源：放行（后端托管网页的形态）。"""
-    ticket = issue_ticket(auth_client)
-    with auth_client.websocket_connect(
-        f"/api/terminal/sessions/x?ticket={ticket}",
-        headers={"Origin": "http://testserver"},
-    ) as ws:
-        assert ws.receive_json()["type"] == "error"
-
-
-def test_websocket_allows_whitelisted_origin(auth_client: TestClient) -> None:
-    """Origin 在放行清单内：放行（桌面 WebView 来源）。"""
-    ticket = issue_ticket(auth_client)
-    with auth_client.websocket_connect(
-        f"/api/terminal/sessions/x?ticket={ticket}",
-        headers={"Origin": "http://tauri.localhost"},
-    ) as ws:
-        assert ws.receive_json()["type"] == "error"
 
 
 def test_unregistered_websocket_route_is_rejected_by_default(
@@ -449,7 +450,7 @@ def test_unregistered_websocket_route_is_rejected_by_default(
 ) -> None:
     """中间件对 WebSocket 是 fail-closed：没登记的 WS 路由一律拒握手。
 
-    新增一个**裸奔**的测试用 WS 路由（自己不校验票据与 Origin），
+    新增一个**裸奔**的测试用 WS 路由（自己不校验票据），
     验证它被令牌闸在 accept 之前就拒掉——将来新增 WS 路由漏写鉴权时，
     默认是被拒，而不是裸奔。
     """
@@ -486,11 +487,23 @@ def test_registered_websocket_route_is_exempt_from_the_middleware(
 
 
 # ---------------------------------------------------------------- CORS
-@pytest.mark.parametrize("origin", list(CORS_ALLOWED_ORIGINS))
-def test_cors_preflight_allows_whitelisted_origin(
-    auth_client: TestClient, origin: str
-) -> None:
-    """预检请求：白名单来源放行，且回显具体来源（不是通配符）。"""
+# CORS 口径（2026-11-03 用户决策）：**任意来源放行**，响应头是
+# ``Access-Control-Allow-Origin: *``。
+#
+# 说明：任务 02 的完成标准里「响应里没有 ``Access-Control-Allow-Origin: *``」
+# 一条已被本次决策推翻——白名单不是安全边界，真正的准入边界是令牌与票据。
+# 下面几条用例把新口径钉死：任意来源放行、且响应头就是通配符。
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://tauri.localhost",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://evil.example",
+    ],
+)
+def test_cors_preflight_allows_any_origin(auth_client: TestClient, origin: str) -> None:
+    """预检请求：任意来源放行（含此前被拒的来源），且回的是通配符。"""
     response = auth_client.options(
         "/api/sandboxes",
         headers={
@@ -500,44 +513,32 @@ def test_cors_preflight_allows_whitelisted_origin(
         },
     )
     assert response.status_code == 200
-    assert response.headers["access-control-allow-origin"] == origin
-    assert response.headers["access-control-allow-origin"] != "*"
+    assert response.headers["access-control-allow-origin"] == "*"
 
 
-def test_cors_preflight_rejects_origin_outside_allowlist(auth_client: TestClient) -> None:
-    """预检请求：白名单外的来源被拒（不放行）。"""
-    response = auth_client.options(
-        "/api/sandboxes",
-        headers={
-            "Origin": "http://evil.example",
-            "Access-Control-Request-Method": "GET",
-        },
-    )
-    assert response.status_code == 400
-    assert "access-control-allow-origin" not in response.headers
-
-
-def test_cors_actual_request_from_allowed_origin(auth_client: TestClient) -> None:
-    """实际请求：白名单来源回具体的 allow-origin 头。"""
+def test_cors_actual_request_from_any_origin(auth_client: TestClient) -> None:
+    """实际请求：任意来源都拿到 allow-origin 头。"""
     response = auth_client.get("/api/health", headers={"Origin": "http://localhost:5173"})
     assert response.status_code == 200
-    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert response.headers["access-control-allow-origin"] == "*"
 
 
-def test_cors_actual_request_from_other_origin_has_no_allow_origin(
-    auth_client: TestClient,
-) -> None:
-    """实际请求：白名单外的来源拿不到 allow-origin 头（浏览器据此拦下）。"""
+def test_cors_actual_request_from_previously_rejected_origin(auth_client: TestClient) -> None:
+    """实际请求：此前被白名单拒掉的来源，现在照样放行。"""
     response = auth_client.get("/api/health", headers={"Origin": "http://evil.example"})
     assert response.status_code == 200
-    assert "access-control-allow-origin" not in response.headers
+    assert response.headers["access-control-allow-origin"] == "*"
 
 
-def test_cors_never_emits_wildcard_allow_origin(auth_client: TestClient) -> None:
-    """任何来源都不许拿到 Access-Control-Allow-Origin: *。"""
-    for origin in (*CORS_ALLOWED_ORIGINS, "http://evil.example"):
+def test_cors_emits_wildcard_allow_origin(auth_client: TestClient) -> None:
+    """响应头就是 ``Access-Control-Allow-Origin: *``（新口径，不再回避通配符）。
+
+    旧口径（白名单）要求「任何来源都拿不到 ``*``」，已被 2026-11-03 的用户决策
+    推翻：来源不是安全边界，令牌与票据才是。
+    """
+    for origin in ("http://tauri.localhost", "http://evil.example"):
         response = auth_client.get("/api/health", headers={"Origin": origin})
-        assert response.headers.get("access-control-allow-origin") != "*"
+        assert response.headers.get("access-control-allow-origin") == "*"
 
 
 def test_cors_headers_are_present_on_auth_failure(auth_client: TestClient) -> None:
@@ -550,7 +551,7 @@ def test_cors_headers_are_present_on_auth_failure(auth_client: TestClient) -> No
         headers={"Origin": "http://tauri.localhost", "Authorization": ""},
     )
     assert response.status_code == 401
-    assert response.headers["access-control-allow-origin"] == "http://tauri.localhost"
+    assert response.headers["access-control-allow-origin"] == "*"
     assert response.json() == {"detail": AUTH_FAILED_DETAIL}
 
 
@@ -567,43 +568,45 @@ def test_cors_preflight_does_not_require_token(auth_client: TestClient) -> None:
     assert response.status_code == 200
 
 
-# ---------------------------------------------------------------- 同源判定
-def test_same_origin_allows_https_origin_with_port_less_host() -> None:
-    """https 的 Origin + 不带端口的 Host：同源。
+def test_cors_method_and_header_allowlists_are_unchanged(auth_client: TestClient) -> None:
+    """方法与请求头的白名单不变（放行来源放宽了，但这两项没动）。
 
-    默认端口按 **Origin 的 scheme** 取（https → 443）：固定按 80 算会把
-    https 同源误判成跨源。
+    **双向断言**：一是把清单的**字面值**钉死（配置里改了方法 / 头，这条用例红），
+    二是把**响应头**与清单对齐（两边都断言成相等的集合，而不是单向的「包含」——
+    少一个（浏览器预检被拒，接口在浏览器里直接调不通）或多一个（多出来的方法 /
+    请求头没被人审过）都要能看出来）。
     """
-    assert origin_allowed("https://console.example.com", "console.example.com", "https") is True
-    # 连接 scheme 未知时：只比主机与端口
-    assert origin_allowed("https://console.example.com", "console.example.com") is True
+    # 一、清单的字面值（改配置即红）。
+    assert set(CORS_ALLOWED_METHODS) == {"GET", "POST", "DELETE", "OPTIONS"}
+    assert set(CORS_ALLOWED_HEADERS) == {"Authorization", "Content-Type"}
 
-
-def test_same_origin_rejects_scheme_mismatch() -> None:
-    """scheme 也要比：http 的 Origin 与 https 的连接不是同源。"""
-    assert origin_allowed("http://a.com", "a.com", "https") is False
-    assert origin_allowed("http://a.com", "a.com", "wss") is False
-    assert origin_allowed("https://a.com", "a.com", "http") is False
-
-
-def test_same_origin_rejects_mismatched_explicit_ports() -> None:
-    """显式端口不一致：跨源。"""
-    assert origin_allowed("https://a.com:8443", "a.com:9443", "https") is False
-    assert origin_allowed("http://a.com:8080", "a.com", "http") is False
-    assert origin_allowed("http://a.com", "a.com:8080", "http") is False
-
-
-def test_same_origin_allows_matching_host_and_port() -> None:
-    """主机与端口都对得上：同源。"""
-    assert origin_allowed("http://127.0.0.1:8000", "127.0.0.1:8000", "ws") is True
-    assert origin_allowed("http://console.example.com", "console.example.com", "ws") is True
-
-
-def test_same_origin_handles_a_host_that_carries_a_scheme() -> None:
-    """Host 带 scheme 的内部表示也能正确判同源 / 跨源。"""
-    assert origin_allowed("https://a.com", "https://a.com", "https") is True
-    assert origin_allowed("http://a.com", "https://a.com", "https") is False
-    assert origin_allowed("https://a.com", "http://a.com", "https") is False
+    response = auth_client.options(
+        "/api/sandboxes",
+        headers={
+            "Origin": "http://evil.example",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        },
+    )
+    assert response.status_code == 200
+    # 二、响应头与清单**完全相等**（不多不少）。
+    allowed_methods = {
+        item.strip()
+        for item in response.headers["access-control-allow-methods"].split(",")
+        if item.strip()
+    }
+    assert allowed_methods == set(CORS_ALLOWED_METHODS)
+    # 请求头：Starlette 的 CORS 中间件会把 **CORS 安全列表头**
+    # （Accept / Accept-Language / Content-Language / Content-Type）并进响应头，
+    # 所以期望值 = 配置清单 ∪ 安全列表头；同样要求不多不少。
+    allowed_headers = {
+        item.strip().lower()
+        for item in response.headers["access-control-allow-headers"].split(",")
+        if item.strip()
+    }
+    assert allowed_headers == {item.lower() for item in CORS_ALLOWED_HEADERS} | {
+        item.lower() for item in SAFELISTED_HEADERS
+    }
 
 
 # ---------------------------------------------------------------- 路径前缀边界

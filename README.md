@@ -95,6 +95,7 @@ uv run --project apps/web/backend python -m sandbox_console   # 启动服务
 | 监听地址 | 默认 `127.0.0.1:8000`；用环境变量 `SANDBOX_CONSOLE_HOST` / `SANDBOX_CONSOLE_PORT` 覆盖 |
 | **访问令牌** | 三期起**全部 `/api`（含终端 WebSocket）受令牌保护**：环境变量 `SANDBOX_CONSOLE_TOKEN` 注入优先（不落盘），未注入时服务在平台数据根生成 `console-token.json`（权限 `0600`）；启动日志只打路径不打令牌。请求带 `Authorization: Bearer <令牌>`，详见 `apps/web/backend/API.md` 第 14 章 |
 | **网络边界是第二层** | 令牌是硬需求，但令牌是**单一凭据**（不做账号体系与多用户隔离）：拿到它即拥有平台的全部能力。可以改成内网地址，**仍不得暴露公网**；绑非回环地址时启动会打醒目告警 |
+| **跨源口径** | **CORS 放行任意来源**（响应头 `Access-Control-Allow-Origin: *`）；终端 WebSocket 握手**不再校验 `Origin`**。来源不是安全边界（同源判定基于可伪造的 `Host` 头），**准入边界只有令牌与票据**（2026-11-03 用户决策，详见 `apps/web/backend/API.md` 14.4） |
 | 平台数据根 | 仍走 `SANDBOX_PLATFORM_HOME`（默认 `/var/lib/sandbox-platform`），与命令行一致 |
 | 权限要求 | 与一期命令行一致：进程本身是 root 时直接执行，否则走免密 `sudo` |
 | 前端托管 | `apps/web/frontend/dist` 由同一进程在 `/` 路径托管；目录不存在时跳过静态托管并告警（`/api/health` 的 `console_mounted` 为 false），不影响服务启动；部署路径不同时用 `SANDBOX_CONSOLE_DIST` 覆盖 |

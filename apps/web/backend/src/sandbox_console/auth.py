@@ -1,4 +1,4 @@
-"""连接层准入：访问令牌、一次性票据、跨源放行清单。
+"""连接层准入：访问令牌、一次性票据、跨源放行。
 
 三块内容，配套 [[architecture/decisions/0013-三期定位改定与认证重启.md|ADR 0013]] 第 3、4 节：
 
@@ -9,8 +9,9 @@
 - **一次性票据**（短期凭据）：浏览器发起的 WebSocket 不能设自定义头，
   先用 Bearer 换一张 30 秒有效、用过即废的票据，再以 ``?ticket=`` 带上。
   票据只活在进程内存里，过期判定用单调时钟（不受系统时间调整影响）。
-- **跨源放行清单**：CORS 白名单与 WebSocket 的 Origin 放行规则共用一份来源清单，
-  任何通配符都不放。
+- **跨源放行**（2026-11-03 用户决策）：**CORS 放行任意来源**，WebSocket 握手的
+  ``Origin`` **不再校验**。理由：``Origin`` 不是安全边界（同源判定基于可伪造的
+  ``Host`` 头，可被 DNS rebinding 绕过），真正的准入边界是**令牌与票据**。
 
 服务**不会在没有令牌的状态下对外提供接口**：令牌解析失败就让服务起不来。
 **请求期不兜底生成令牌**：令牌只在启动路径（生命周期钩子）解析一次；请求期只读，
@@ -28,7 +29,6 @@ import stat
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from sandbox_platform import PlatformConfig
 from sandbox_platform.metadata import utc_now
@@ -60,14 +60,17 @@ TICKET_PREFIX = "sbxt_"
 # 票据随机部分字节数
 TICKET_SECRET_BYTES = 24
 
-# ---------------------------------------------------------------- 跨源放行清单
-# CORS 与 WebSocket Origin 共用的来源清单：桌面 WebView + 本地开发来源。
-# 任何通配符都不放。
-CORS_ALLOWED_ORIGINS = (
-    "http://tauri.localhost",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-)
+# ---------------------------------------------------------------- 跨源放行
+# CORS 的放行口径：**任意来源**（2026-11-03 用户决策）。
+#
+# 口径变更的由来：来源白名单（含 WebSocket 的 Origin 门禁）并不是安全边界——
+# 同源判定基于请求的 ``Host`` 头，可被 DNS rebinding 绕过；而真正的准入边界
+# 是**令牌与票据**（见 ``BearerAuthMiddleware`` 与 ``TicketStore``）。
+# 取消之后跨源访问只剩「必须拿得到令牌」这一道闸。
+#
+# ``allow_credentials`` 保持 False：本服务不用 Cookie 认证（凭据是显式的
+# ``Authorization`` 头），所以响应里的 ``Access-Control-Allow-Origin: *``
+# 不会与「带凭据的跨源请求」冲突（浏览器的凭据模式默认就是 same-origin）。
 # 允许的方法
 # 注意：这份清单是**显式白名单**，新增接口用到了新方法（PUT / PATCH 等）时，
 # 必须同步改这里，否则浏览器预检直接被拒（三期任务 05 新增 `/api/forwards`
@@ -79,7 +82,7 @@ CORS_ALLOWED_HEADERS = ("Authorization", "Content-Type")
 
 # ---------------------------------------------------------------- WebSocket 豁免清单
 # 中间件对 WebSocket scope **默认拒绝**（fail-closed）：只有这里显式登记的
-# WS 路由才放行到路由层，由路由自己再做票据与 Origin 校验。
+# WS 路由才放行到路由层，由路由自己再做票据校验。
 #
 # 新增 WS 路由要改两处：① 在这里登记路径；② 在路由里自己完成鉴权。
 # 漏了① → 默认被拒（不是裸奔）；漏了② → 登记了但没鉴权（所以登记与鉴权要一起改）。
@@ -90,7 +93,7 @@ WEBSOCKET_EXEMPT_PATHS = ("/api/terminal/sessions",)
 AUTH_FAILED_DETAIL = "访问令牌无效或缺失"
 # 认证失败时回的挑战头：提示客户端走 Bearer
 AUTH_CHALLENGE_HEADERS = {"WWW-Authenticate": "Bearer"}
-# 拒握手时的关闭码（策略违规：未鉴权 / 票据无效 / Origin 不放行）。
+# 拒握手时的关闭码（策略违规：未鉴权 / 票据无效）。
 # 注意口径：**握手在 accept 之前就被拒**，生产环境（uvicorn）对客户端表现为
 # HTTP 403 拒绝响应，关闭码不送达；TestClient 下表现为
 # ``WebSocketDisconnect(1008)``——那是测试语义，不是线上协议。
@@ -357,119 +360,6 @@ class TicketStore:
                 self._tickets.pop(ticket, None)
 
 
-# ---------------------------------------------------------------- 跨源放行
-def origin_allowed(origin: str | None, host: str | None, scheme: str | None = None) -> bool:
-    """WebSocket 握手的 ``Origin`` 是否放行。
-
-    三条规则：
-
-    1. **同源放行**：Origin 与请求同源（scheme + 主机 + 端口都一致）。
-       后端托管网页的形态下，浏览器发起 WS 带的正是自身 Origin（如
-       ``http://127.0.0.1:8000``），不放行同源等于把网页终端全断。
-    2. **白名单放行**：Origin 在跨源放行清单里（桌面 WebView 与本地开发来源）。
-    3. 其余拒绝。
-
-    ``scheme`` 是这次连接的 scheme（ASGI scope 里的 ``ws`` / ``wss``）：
-    Origin 的 scheme 与它不一致时**不算同源**（``http`` 的 Origin 与 ``https``
-    的连接是两个源）。
-
-    ``Origin`` 缺失时放行：浏览器发起的 WebSocket 握手**一定**带 Origin，
-    不带 Origin 的是非浏览器客户端（凭据照常校验）。
-    """
-    if not origin:
-        return True
-    origin = origin.strip()
-    if not origin:
-        return True
-    if origin in CORS_ALLOWED_ORIGINS:
-        return True
-    if not host:
-        return False
-    return _same_origin(origin, host, scheme)
-
-
-def _normalize_scheme(scheme: str | None) -> str | None:
-    """把连接的 scheme 归一化成 ``http`` / ``https``。
-
-    ``ws`` / ``wss`` 分别等价于 ``http`` / ``https``；认不出来的返回空值
-    （调用方按「scheme 未知」处理：只比主机与端口）。
-    """
-    if not scheme:
-        return None
-    text = scheme.strip().lower()
-    if text in ("ws", "http"):
-        return "http"
-    if text in ("wss", "https"):
-        return "https"
-    return None
-
-
-def _same_origin(origin: str, host: str, scheme: str | None = None) -> bool:
-    """Origin 与请求是否同源（scheme + 主机 + 端口，忽略大小写）。
-
-    两条口径：
-
-    - **scheme 也要比**：``http`` 的 Origin 与 ``https`` 的连接不是同源。
-    - **默认端口按 Origin 的 scheme 取**：``https`` → 443、``http`` → 80。
-      ``Host`` 头不带端口时按这个默认端口算——固定按 80 算会把 https 同源
-      误判成跨源。
-
-    ``scheme`` 是这次连接的 scheme（ASGI scope 里的 ``ws`` / ``wss``）。
-    ``host`` 正常是 ``Host`` 头（不带 scheme）；万一带上了（内部表示），
-    也按它自己的 scheme 一并比。
-
-    注意：前置 TLS 终止代理的场景下，服务端看到的连接 scheme 是 ``http``
-    而浏览器的 Origin 是 ``https``，此时会被判成跨源。本服务默认部署在回环
-    明文端口上，不受此影响。
-    """
-    parsed = urlsplit(origin)
-    if parsed.scheme not in ("http", "https"):
-        return False
-    hostname = parsed.hostname
-    if not hostname:
-        return False
-    host_text = host.strip()
-    host_scheme: str | None = None
-    if "://" in host_text:
-        host_parsed = urlsplit(host_text)
-        host_scheme = host_parsed.scheme or None
-        host_text = host_parsed.netloc or host_parsed.path
-    request_scheme = _normalize_scheme(scheme)
-    normalized_host_scheme = _normalize_scheme(host_scheme)
-    if (
-        request_scheme is not None
-        and normalized_host_scheme is not None
-        and request_scheme != normalized_host_scheme
-    ):
-        return False
-    effective_scheme = request_scheme or normalized_host_scheme
-    if effective_scheme is not None and effective_scheme != parsed.scheme:
-        return False
-    default_port = 443 if parsed.scheme == "https" else 80
-    origin_port = parsed.port or default_port
-    host_name, host_port = _split_host_port(host_text, default_port)
-    return hostname == host_name and origin_port == host_port
-
-
-def _split_host_port(value: str, default_port: int) -> tuple[str, int]:
-    """把 ``host[:port]`` 拆成 ``(主机, 端口)``；IPv6 字面量带方括号。"""
-    text = value.strip()
-    if text.startswith("["):
-        end = text.find("]")
-        if end < 0:
-            return text.lower(), default_port
-        host = text[1:end]
-        rest = text[end + 1 :]
-        if rest.startswith(":") and rest[1:].isdigit():
-            return host.lower(), int(rest[1:])
-        return host.lower(), default_port
-    if ":" in text:
-        host, _, port_text = text.rpartition(":")
-        if port_text.isdigit():
-            return host.lower(), int(port_text)
-    return text.lower(), default_port
-
-
 # ---------------------------------------------------------------- 认证中间件
 def is_api_path(path: str, prefix: str) -> bool:
     """路径是否落在 API 前缀下。
@@ -507,7 +397,7 @@ class BearerAuthMiddleware:
     - ``/api/health`` **不豁免**：401 也是健康口径的一部分，前端靠它区分
       「后端不可达」与「令牌无效」。
     - **WebSocket scope 默认拒绝**（fail-closed）：只有 ``websocket_exempt_paths``
-      里显式登记的 WS 路由才放行到路由层（路由自己再做票据与 Origin 校验）。
+      里显式登记的 WS 路由才放行到路由层（路由自己再做票据校验）。
       将来新增 WS 路由而忘了写鉴权时，默认被拒，而不是裸奔。
     - 缺失与错误不区分：同一句文案、同一状态码；不回显令牌，也不把令牌写进日志。
     """

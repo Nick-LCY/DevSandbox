@@ -3,9 +3,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { api } from '../../api/client';
 import {
-  CONNECTION_TOKEN_SOURCE,
   clearPendingConnection,
-  describeConnectionSource,
+  DESKTOP_BASE_URL_REQUIRED_ERROR,
   describeHealthFailure,
   readPendingConnection,
   syncDesktopBackend,
@@ -19,7 +18,12 @@ import { Input } from '../ui/input';
 interface ConnectionSetupProps {
   /** 当前已存的连接配置（引导面板拿它做初值）。 */
   config: ConnectionConfig;
-  /** 是否运行在桌面壳里（桌面形态要填后端地址，web 形态固定同源）。 */
+  /**
+   * 是否运行在桌面壳里。
+   *
+   * 只管**桌面运行时的那一套**（CSP 同步与待验证配置的体检流程）与
+   * 「基址必填」这一条（桌面壳与后端不同源）——两种形态都能填后端地址。
+   */
   desktop: boolean;
   /** 保存配置（保存后工作台才挂载）。 */
   onSave: (next: ConnectionConfig) => void;
@@ -30,9 +34,10 @@ interface ConnectionSetupProps {
  *
  * **这是页面状态，不是路由**：地址栏仍然是 `#/`，刷新页面回到这里。
  *
- * 形态差异（ADR 0015 第 5 节）：
- * - web 形态：后端与本页面同源，后端地址固定只读；令牌必填。
- * - 桌面形态：后端地址必填（桌面壳不知道后端在哪），令牌必填。
+ * 配置口径（2026-11-03 起两种形态不再有差别）：
+ * - 后端地址**两种形态都能填**：留空 = 与本页面同源，填了就连那台主机
+ *   （**桌面形态例外**：桌面壳与后端不同源，基址必填，见本段末尾）；
+ * - 访问令牌必填（后端对全部 `/api` 生效，没有令牌就换不到数据）。
  *
  * 「保存并连接」的动作口径：**先体检再保存**——只有健康检查通过才保存配置、
  * 才挂载工作台；不通过就**就地红字**报错（区分「令牌无效」与「后端不可达」），
@@ -42,6 +47,11 @@ interface ConnectionSetupProps {
  * 生成主文档的 `connect-src`；主文档的 CSP 变了就得重载主文档，重载后才谈得上
  * 跨主机的健康检查。草稿先落在「待验证配置」里，重载回来时用它体检——
  * 时序契约见 `apps/desktop/README.md` 的「CSP」一节。
+ *
+ * **桌面形态下基址必填**：桌面壳与后端不同源，基址留空 = 请求打到桌面壳自己
+ * （重载后必然 404，体检只会报一句误导人的「后端不可达」）。所以留空时**就地红字**
+ * 拦下，不进「写 pending → 同步 CSP → 重载 → 体检」那套流程。网页形态留空照旧
+ * （= 同源，直接体检）。
  */
 export function ConnectionSetup({ config, desktop, onSave }: ConnectionSetupProps) {
   const { show } = useToast();
@@ -92,7 +102,14 @@ export function ConnectionSetup({ config, desktop, onSave }: ConnectionSetupProp
   }, [desktop, onSave, show]);
 
   const save = useCallback(async () => {
-    const baseError = desktop ? validateBaseUrl(baseUrl) : '';
+    // 桌面形态：基址留空 = 请求打到桌面壳自己（桌面壳与后端不同源）。
+    // 这时进「写 pending → 同步 CSP → 重载 → 体检」只会得到一句误导人的
+    // 「后端不可达」（重载后必然 404）——就地红字，要求先填基址。
+    if (desktop && baseUrl.trim() === '') {
+      setError(DESKTOP_BASE_URL_REQUIRED_ERROR);
+      return;
+    }
+    const baseError = validateBaseUrl(baseUrl);
     if (baseError) {
       setError(baseError);
       return;
@@ -104,7 +121,7 @@ export function ConnectionSetup({ config, desktop, onSave }: ConnectionSetupProp
     setError('');
     setBusy(true);
     const next: ConnectionConfig = {
-      backendBaseUrl: desktop ? baseUrl.trim() : '',
+      backendBaseUrl: baseUrl.trim(),
       token: token.trim(),
     };
     if (desktop) {
@@ -145,11 +162,6 @@ export function ConnectionSetup({ config, desktop, onSave }: ConnectionSetupProp
           </div>
           <h1 className="text-[15px] font-semibold">连接后端服务</h1>
         </div>
-
-        <p className="text-[12.5px] leading-relaxed text-muted-foreground">
-          {describeConnectionSource(desktop)}
-        </p>
-
         <div className="mt-5 space-y-4">
           <div>
             <label
@@ -161,10 +173,9 @@ export function ConnectionSetup({ config, desktop, onSave }: ConnectionSetupProp
             <Input
               id="connection-base-url"
               value={baseUrl}
-              readOnly={!desktop}
               autoComplete="off"
               spellCheck={false}
-              placeholder={desktop ? 'http://127.0.0.1:8000' : '与本页面同源'}
+              placeholder="http://127.0.0.1:8000（留空 = 与本页面同源）"
               onChange={(event) => setBaseUrl(event.target.value)}
               data-testid="page-connection-base-url-input"
             />
@@ -216,10 +227,6 @@ export function ConnectionSetup({ config, desktop, onSave }: ConnectionSetupProp
             '保存并连接'
           )}
         </button>
-
-        <p className="mt-4 text-[12px] leading-relaxed text-muted-foreground">
-          {CONNECTION_TOKEN_SOURCE}
-        </p>
       </div>
     </div>
   );

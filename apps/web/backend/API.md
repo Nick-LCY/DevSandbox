@@ -439,6 +439,7 @@
 | 接口文档 | `/docs` 与 `/openapi.json` **默认关闭**；用 `SANDBOX_CONSOLE_DOCS=1` 显式开启（接口清单不外泄）。**开启后 `/docs` 与 `/openapi.json` 不受令牌保护**（中间件只拦 `/api` 前缀），仅限本机排查时临时开启，排查完关掉 |
 | 错误响应体 | 统一 `{"detail": "中文消息"}`；400 / 404 / 409 保留平台异常原文，500 只给固定文案（原文只进日志） |
 | 鉴权 | **全部 `/api`（含终端 WebSocket）受访问令牌保护**；`/api/health` **不豁免**；详见第 14 章 |
+| 跨源 | **CORS 放行任意来源**（响应头 `Access-Control-Allow-Origin: *`）；WebSocket 握手**不再校验 `Origin`**——准入边界只有令牌与票据（2026-11-03 用户决策，详见 14.4） |
 
 创建接口支持两类路径声明：**挂载**（`mounts`，平台不处置宿主目录）与
 **文件注入**（`files`，平台把宿主文件复制一份再只读挂进容器）。注入副本落在
@@ -646,8 +647,8 @@
 1. 浏览器先用 `POST /api/auth/ticket`（带 `Authorization: Bearer <令牌>`）换一张
    **一次性票据**（浏览器 `WebSocket` API 不能设自定义头，见第 14 章）；
 2. 浏览器连上 `WS /api/terminal/sessions/{session_id}?ticket=<票据>`，同时带自身
-   `Origin`（服务端校验放行清单，同源与白名单来源放行，其余拒握手）；
-3. 服务端校验票据（**校验即作废**）与 `Origin`，过了才 `accept`；任一不过都
+   `Origin`（**服务端不再校验来源**，2026-11-03 用户决策）；
+3. 服务端校验票据（**校验即作废**），过了才 `accept`；不过就
    **握手在 accept 前被拒**——生产环境（uvicorn）对客户端表现为 HTTP 403、
    关闭码不送达；TestClient 下表现为 `WebSocketDisconnect(1008)`，属测试语义；
 4. 服务端先登记附着（连接数加一），再回 `hello`；
@@ -799,6 +800,11 @@ TTY 负责（容器内拿到的是真实 TTY，默认 termios 生效）。
 三期起，后端从「同源无认证」改成「独立 API + 令牌认证」：**全部 `/api`（含终端 WebSocket）受访问令牌保护**。
 契约依据 [[architecture/decisions/0013-三期定位改定与认证重启.md|ADR 0013]] 第 3、4 节。
 
+> **2026-11-03 用户决策（跨源口径放宽）**：CORS 改为**放行任意来源**；WebSocket 握手的
+> `Origin` 校验**一并取消**。理由：`Origin` 不是安全边界（同源判定基于可伪造的 `Host` 头，
+> 可被 DNS rebinding 绕过），**真正的准入边界是令牌与票据**——这两项口径不变。
+> 本章中「CORS 白名单」「Origin 白名单/同源放行」等旧表述按新口径改写。
+
 | 项 | 口径 |
 |---|---|
 | 令牌性质 | **单一访问凭据**：不做账号体系、不做多用户隔离、不做分级与吊销。拿到令牌即拿到平台的全部能力 |
@@ -810,13 +816,14 @@ TTY 负责（容器内拿到的是真实 TTY，默认 termios 生效）。
 | 请求头 | `Authorization: Bearer <令牌>` |
 | 认证失败 | `401` + `{"detail": "访问令牌无效或缺失"}`；**缺失与错误不区分**，不回显令牌，不把令牌写进日志 |
 | 拦截范围 | **只拦 `/api` 前缀**：静态资源（`/`、`/assets/*`、`/fonts/*`）与 `/docs`、`/openapi.json` 不拦 |
+| 接口文档开关 | `/docs` 与 `/openapi.json` **默认关闭**，用 `SANDBOX_CONSOLE_DOCS=1` 显式开启。**开启时这两个路径不受令牌保护**（令牌闸只拦 `/api` 前缀），且 CORS 已放行任意来源 → **现已跨源可读**（任意网页都能拿到接口清单）。**仅限本机排查时临时开启，排查完关掉** |
 | `/api/health` | **不豁免**：没令牌同样 401。401 也是健康口径的一部分——前端靠它区分「后端不可达」与「令牌无效」 |
-| WebSocket 路由准入 | 中间件对 WS scope **默认拒绝**（fail-closed）：只有显式登记的终端 WS 路由放行到路由层，由路由自己再校验票据与 `Origin`。将来新增 WS 路由而忘了写鉴权时，默认被拒（不是裸奔） |
+| WebSocket 路由准入 | 中间件对 WS scope **默认拒绝**（fail-closed）：只有显式登记的终端 WS 路由放行到路由层，由路由自己再校验票据。将来新增 WS 路由而忘了写鉴权时，默认被拒（不是裸奔） |
 | 票据 | `POST /api/auth/ticket` → `{"ticket": "...", "expires_in": 30}`；一次性、30 秒过期、进程内存态 |
 | 票据过期判定 | 单调时钟（`time.monotonic`），不受系统时间调整影响 |
-| CORS 白名单 | `http://tauri.localhost`、`http://localhost:5173`、`http://127.0.0.1:5173`；**不放通配符**（响应里不会出现 `Access-Control-Allow-Origin: *`） |
-| CORS 其余项 | `allow_credentials=False`；方法 `GET` / `POST` / `DELETE` / `OPTIONS`；头 `Authorization` / `Content-Type` |
-| WebSocket Origin | 见 14.4：**同源放行** + 白名单放行，其余拒握手 |
+| CORS 放行来源 | **任意来源**（`allow_origins=["*"]`）：响应头是 `Access-Control-Allow-Origin: *` |
+| CORS 其余项 | `allow_credentials=False`（不用 Cookie 认证，凭据走显式的 `Authorization` 头）；方法 `GET` / `POST` / `DELETE` / `OPTIONS`；头 `Authorization` / `Content-Type`（**这两份白名单不变**） |
+| WebSocket Origin | **已取消校验**（2026-11-03 用户决策）：握手不再看 `Origin`，只认票据。见 14.4 |
 
 ### 14.1 令牌来源与落盘
 
@@ -878,29 +885,29 @@ WS 握手通过
 
 ### 14.4 CORS 与 WebSocket Origin 口径
 
+**2026-11-03 用户决策**：CORS 放宽到**任意来源**；WebSocket 握手的 `Origin` 校验**一并取消**。
+两者是同一条决策的两面——**来源从来不是安全边界，准入边界只有令牌与票据**。
+
 | 场景 | 来源 | 结果 |
 |---|---|---|
-| HTTP 请求，来源在 CORS 白名单内 | `http://tauri.localhost` / `http://localhost:5173` / `http://127.0.0.1:5173` | 放行：响应带 `Access-Control-Allow-Origin: <该来源>` |
-| HTTP 请求，来源不在白名单内 | 其它任何来源 | 不放行：响应**不带** `Access-Control-Allow-Origin`（浏览器据此拦下） |
-| HTTP 预检（`OPTIONS`） | 白名单内 | 放行（预检本身不带 `Authorization` 头，令牌闸不拦预检） |
-| HTTP 预检（`OPTIONS`） | 白名单外 | 拒绝（`400`），不放行 |
-| WebSocket 握手，**与请求同源**（scheme + 主机 + 端口都一致） | 如后端托管网页时的 `http://127.0.0.1:8000` | **放行** |
-| WebSocket 握手，来源在白名单内 | 同 CORS 白名单 | 放行 |
-| WebSocket 握手，其余来源 | 其它任何来源 | **握手在 accept 前被拒**：生产环境（uvicorn）对客户端表现为 HTTP 403、关闭码不送达；TestClient 下表现为 `WebSocketDisconnect(1008)`，属测试语义 |
-| WebSocket 握手，无 `Origin` 头 | 非浏览器客户端 | 放行（浏览器发起的 WS 握手**一定**带 `Origin`；凭据照常校验） |
+| HTTP 请求，任意来源 | 任何 `Origin`（含 `http://evil.example`） | 放行：响应带 `Access-Control-Allow-Origin: *` |
+| HTTP 预检（`OPTIONS`），任意来源 | 任何 `Origin` | 放行（`200`；预检本身不带 `Authorization` 头，令牌闸不拦预检） |
+| WebSocket 握手，**任意来源**（或不带 `Origin`） | 任何 `Origin` | **放行**（只要票据有效）；握手不再看来源 |
+| WebSocket 握手，**票据无效 / 缺失** | 任意 `Origin` | **握手在 accept 前被拒**：生产环境（uvicorn）对客户端表现为 HTTP 403、关闭码不送达；TestClient 下表现为 `WebSocketDisconnect(1008)`，属测试语义 |
 | WebSocket 握手，**未登记的 WS 路由** | 任何不在豁免清单内的路径 | **握手在 accept 前被拒**（中间件 fail-closed，不进路由层） |
 
-**为什么 WS 的放行清单要额外收一条「同源」**：后端托管网页的形态下（本机回环任意端口，
-或绑内网地址时的自身 Host），浏览器发起 WS 带的正是自身 Origin（如 `http://127.0.0.1:8000`）。
-不放行同源等于把网页终端全断。
+**CORS 其余项不变**：`allow_credentials=False`；方法 `GET` / `POST` / `DELETE` / `OPTIONS`；
+头 `Authorization` / `Content-Type`。
 
-**同源怎么判**：scheme + 主机 + 端口三者都要一致。默认端口按 **Origin 的 scheme** 取
-（`https` → 443、`http` → 80）：`Host` 头不带端口时按这个默认端口算，固定按 80 算会把
-https 同源误判成跨源。scheme 也要比：`http` 的 Origin 与 `https` 的连接不是同源。
+**为什么取消 Origin 门禁**：
 
-> **Origin 校验不是安全边界**：同源判定基于请求的 `Host` 头，**可被 DNS rebinding 绕过**
-> （攻击者让域名解析到回环地址，Host 头就跟着变成回环地址）。它只是一道减少误伤、
-> 挡住顺手发起的跨源连接的辅助闸；**真正的准入边界是令牌与票据**（见 14.2、14.3）。
+- 同源判定基于请求的 `Host` 头，**可被 DNS rebinding 绕过**（攻击者让域名解析到回环地址，
+  `Host` 头就跟着变成回环地址）；白名单也只是「减少误伤、挡住顺手发起的跨源连接」的辅助闸。
+- 真正决定「能不能拿到数据」的是**令牌与票据**（见 14.2、14.3）：没有令牌就换不到票据，
+  没有票据就连不上终端 WS——这两道闸一个都没动。
+- 代价是响应头里会出现 `Access-Control-Allow-Origin: *`（旧口径里「不出现通配符」一条已作废）。
+  本服务不用 Cookie 认证（`allow_credentials=False`，凭据走显式的 `Authorization` 头），
+  通配符与浏览器默认的 `credentials: 'same-origin'` 不冲突。
 
 ### 14.5 绑非回环地址时的告警口径
 
@@ -914,10 +921,10 @@ https 同源误判成跨源。scheme 也要比：`http` 的 Origin 与 `https` �
 
 | 模块 | 职责 |
 |---|---|
-| `sandbox_console/auth.py` | 令牌来源解析与落盘、常量时间比对、票据存储、跨源放行清单与 Origin 判定、Bearer 认证中间件（含 WS 的 fail-closed 准入） |
+| `sandbox_console/auth.py` | 令牌来源解析与落盘、常量时间比对、票据存储、Bearer 认证中间件（含 WS 的 fail-closed 准入）；**跨源只管 CORS 放行任意来源，不再有 Origin 判定** |
 | `sandbox_console/routes/auth.py` | `POST /api/auth/ticket`（票据签发；**必须是 `async def`**——票据存储仅限事件循环单线程使用） |
 | `sandbox_console/app.py` | 挂中间件（**外层跨源放行、内层令牌认证**）、启动时解析令牌并打日志 |
-| `sandbox_console/routes/terminal.py` | 终端 WS 握手校验（票据 + `Origin`） |
+| `sandbox_console/routes/terminal.py` | 终端 WS 握手校验（**只认票据**；2026-11-03 起不再校验 `Origin`） |
 
 中间件顺序要紧：跨源放行在**外层**，预检请求由它直接应答，不会落到内层的令牌闸上
 （预检本来就不带 `Authorization` 头）。

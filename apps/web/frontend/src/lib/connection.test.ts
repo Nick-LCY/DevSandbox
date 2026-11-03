@@ -8,6 +8,9 @@
  * - 存储不可用不抛异常（隐私模式：读回落默认、写静默忽略）；
  * - 基址推导（空基址 = 同源、尾部斜杠归一、补 scheme、ws/wss 映射）；
  * - 形态探测（`window.__TAURI_INTERNALS__` 特性探测）与未配置判定。
+ *
+ * **2026-11-03 起两种形态在连接配置上不再有差别**：基址可空可填，
+ * 未配置只看令牌（不再看形态，也不再看基址）。
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -17,10 +20,8 @@ import {
   PENDING_CONNECTION_STORAGE_KEY,
   cacheConnectionConfig,
   clearPendingConnection,
-  describeConnectionSource,
   describeHealthFailure,
   effectiveBackendBaseUrl,
-  enforceRuntimeConfig,
   getConnectionConfig,
   isConnectionConfigured,
   isDesktopRuntime,
@@ -176,17 +177,32 @@ describe('基址推导', () => {
   });
 });
 
-describe('按运行形态收敛配置', () => {
-  it('web 形态：基址强制为空（同源），不只界面草稿层', () => {
-    expect(
-      enforceRuntimeConfig({ backendBaseUrl: 'http://10.0.0.5:8000', token: 'sbx' }, false),
-    ).toEqual({ backendBaseUrl: '', token: 'sbx' });
+describe('两种形态在连接配置上不再有差别', () => {
+  it('基址可填：填了就用，不会被形态收敛掉', () => {
+    // 网页形态也能指向远端后端（不再强制同源）。
+    cacheConnectionConfig({ backendBaseUrl: 'http://10.0.0.5:8000', token: 'sbx' });
+
+    expect(getConnectionConfig()).toEqual({
+      backendBaseUrl: 'http://10.0.0.5:8000',
+      token: 'sbx',
+    });
+    expect(resolveApiBaseUrl(getConnectionConfig())).toBe('http://10.0.0.5:8000');
   });
 
-  it('桌面形态：基址保留并归一，令牌去空白', () => {
-    expect(
-      enforceRuntimeConfig({ backendBaseUrl: '10.0.0.5:8000/', token: ' sbx ' }, true),
-    ).toEqual({ backendBaseUrl: 'http://10.0.0.5:8000', token: 'sbx' });
+  it('基址可空：空串保持空串（= 同源）', () => {
+    cacheConnectionConfig({ backendBaseUrl: '', token: 'sbx' });
+
+    expect(getConnectionConfig()).toEqual({ backendBaseUrl: '', token: 'sbx' });
+    expect(resolveApiBaseUrl(getConnectionConfig())).toBe('');
+  });
+
+  it('配置归一：基址补 scheme / 去尾部斜杠，令牌去空白', () => {
+    cacheConnectionConfig({ backendBaseUrl: '10.0.0.5:8000/', token: ' sbx ' });
+
+    expect(getConnectionConfig()).toEqual({
+      backendBaseUrl: 'http://10.0.0.5:8000',
+      token: 'sbx',
+    });
   });
 });
 
@@ -319,21 +335,12 @@ describe('形态探测与未配置判定', () => {
     expect(isDesktopRuntime()).toBe(true);
   });
 
-  it('未配置判定：令牌为空一律未配置', () => {
-    expect(isConnectionConfigured({ backendBaseUrl: '', token: '' }, false)).toBe(false);
-    expect(isConnectionConfigured({ backendBaseUrl: 'http://h:1', token: '' }, false)).toBe(false);
-    expect(isConnectionConfigured({ backendBaseUrl: '', token: '' }, true)).toBe(false);
-  });
-
-  it('未配置判定：桌面形态下基址为空也算未配置，web 形态不看基址', () => {
-    expect(isConnectionConfigured({ backendBaseUrl: '', token: 'sbx' }, true)).toBe(false);
-    expect(isConnectionConfigured({ backendBaseUrl: '', token: 'sbx' }, false)).toBe(true);
-    expect(isConnectionConfigured({ backendBaseUrl: 'http://h:1', token: 'sbx' }, true)).toBe(true);
-  });
-
-  it('形态说明文案：两种形态各有一句', () => {
-    expect(describeConnectionSource(true)).toContain('桌面形态');
-    expect(describeConnectionSource(false)).toContain('网页形态');
+  it('未配置判定：只看令牌（基址不参与，两种形态一个口径）', () => {
+    expect(isConnectionConfigured({ backendBaseUrl: '', token: '' })).toBe(false);
+    expect(isConnectionConfigured({ backendBaseUrl: 'http://h:1', token: '' })).toBe(false);
+    // 基址空 = 同源，也是合法配置。
+    expect(isConnectionConfigured({ backendBaseUrl: '', token: 'sbx' })).toBe(true);
+    expect(isConnectionConfigured({ backendBaseUrl: 'http://h:1', token: 'sbx' })).toBe(true);
   });
 });
 

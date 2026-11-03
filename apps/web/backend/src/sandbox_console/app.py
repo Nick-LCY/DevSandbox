@@ -16,7 +16,6 @@ from sandbox_platform import ConfigError, PlatformConfig, SandboxService, __vers
 from .auth import (
     CORS_ALLOWED_HEADERS,
     CORS_ALLOWED_METHODS,
-    CORS_ALLOWED_ORIGINS,
     TOKEN_ENV_VAR,
     WEBSOCKET_EXEMPT_PATHS,
     BearerAuthMiddleware,
@@ -166,8 +165,8 @@ def create_app(config: PlatformConfig | None = None) -> FastAPI:
     ----
     config : 平台配置，缺省按环境变量装配
 
-    连接层的两道闸在这里装上：外层跨源放行（CORS）、内层令牌认证（只拦
-    ``/api`` 前缀）。令牌本身在生命周期钩子里解析（见 ``lifespan``）。
+    连接层的两道闸在这里装上：外层跨源放行（CORS，任意来源）、内层令牌认证
+    （只拦 ``/api`` 前缀）。令牌本身在生命周期钩子里解析（见 ``lifespan``）。
 
     生命周期服务不在这里注入：路由通过依赖注入取整个进程共用的实例，
     测试用 ``dependency_overrides`` 替换。
@@ -197,11 +196,12 @@ def _install_connection_middleware(app: FastAPI) -> None:
     内层的令牌认证上——预检请求本来就不带 ``Authorization`` 头。
 
     两道闸各管一段：令牌认证只拦 ``/api`` 前缀（静态资源与 ``/docs`` 不拦），
-    跨源放行只管来源（不放通配符）。
+    跨源放行只管来源（**任意来源都放行**，2026-11-03 用户决策：来源不是安全
+    边界，准入边界只有令牌与票据）。
 
     令牌闸对 WebSocket 是 **fail-closed**：只有 ``WEBSOCKET_EXEMPT_PATHS`` 里
-    显式登记的 WS 路由（当前只有终端 WS）才放行到路由层，由路由自己再做票据与
-    Origin 校验；其余 WS 路由一律拒握手——将来新增 WS 路由忘了写鉴权时，
+    显式登记的 WS 路由（当前只有终端 WS）才放行到路由层，由路由自己再做票据
+    校验；其余 WS 路由一律拒握手——将来新增 WS 路由忘了写鉴权时，
     默认被拒而不是裸奔。
     """
     app.add_middleware(
@@ -211,7 +211,11 @@ def _install_connection_middleware(app: FastAPI) -> None:
     )
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=list(CORS_ALLOWED_ORIGINS),
+        # 任意来源放行（2026-11-03 用户决策）：响应头是
+        # ``Access-Control-Allow-Origin: *``。不用 Cookie 认证
+        # （``allow_credentials=False``），凭据走显式的 ``Authorization`` 头，
+        # 与通配符不冲突。
+        allow_origins=["*"],
         allow_credentials=False,
         allow_methods=list(CORS_ALLOWED_METHODS),
         allow_headers=list(CORS_ALLOWED_HEADERS),

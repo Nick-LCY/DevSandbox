@@ -321,6 +321,64 @@ describe('未配置态', () => {
     expect(screen.queryByTestId('page-connection-setup')).toBeNull();
   });
 
+  it('桌面形态：未配置只看令牌——基址为空但有令牌 → 已配置，工作台直接挂载', async () => {
+    // 鉴别力在这里：**旧口径**（桌面形态基址为空 = 未配置）会渲染引导面板；
+    // **新口径**（未配置只看令牌）直接挂载工作台。
+    // （网页形态的同款场景两套口径都判「已配置」，不具鉴别力，故取桌面形态。）
+    const invoke = vi.fn();
+    invoke.mockResolvedValue(undefined);
+    invoke.mockResolvedValueOnce(undefined); // set_backend_base_url
+    invoke.mockResolvedValue(false); // csp_needs_reload → 不用重载
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      value: { invoke },
+      configurable: true,
+      writable: true,
+    });
+    try {
+      window.localStorage.setItem(
+        CONNECTION_STORAGE_KEY,
+        JSON.stringify({ backendBaseUrl: '', token: 'sbx_test' }),
+      );
+      mocks.health.mockResolvedValue({ version: '0.2.0', console_mounted: true });
+      mocks.listSandboxes.mockResolvedValue([]);
+
+      renderWorkbench();
+
+      await waitFor(() => expect(mocks.listSandboxes).toHaveBeenCalled());
+      expect(screen.queryByTestId('page-connection-setup')).toBeNull();
+    } finally {
+      delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    }
+  });
+
+  it('网页形态：后端地址可填，填了就按它体检（不再强制同源）', async () => {
+    window.localStorage.clear();
+    mocks.health.mockResolvedValue({ version: '0.2.0', console_mounted: true });
+    mocks.listSandboxes.mockResolvedValue([]);
+
+    renderWorkbench();
+
+    const base = await screen.findByTestId('page-connection-base-url-input');
+    // 网页形态下地址框也可编辑（不再是只读）。
+    expect((base as HTMLInputElement).readOnly).toBe(false);
+    fireEvent.change(base, { target: { value: 'http://10.0.0.5:8000' } });
+    const token = screen.getByTestId('page-connection-token-input');
+    fireEvent.change(token, { target: { value: 'sbx_test' } });
+    fireEvent.click(screen.getByTestId('page-connection-submit-button'));
+
+    await waitFor(() => expect(mocks.health).toHaveBeenCalled());
+    // 体检用的是填的那台后端。
+    expect(mocks.health.mock.calls[0][0]).toEqual({
+      backendBaseUrl: 'http://10.0.0.5:8000',
+      token: 'sbx_test',
+    });
+    // 落盘的配置保留基址：不被形态收敛成空串。
+    expect(JSON.parse(window.localStorage.getItem(CONNECTION_STORAGE_KEY) ?? '{}')).toEqual({
+      backendBaseUrl: 'http://10.0.0.5:8000',
+      token: 'sbx_test',
+    });
+  });
+
   it('引导态下令牌为空：就地红字，不发请求', async () => {
     window.localStorage.clear();
 

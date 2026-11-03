@@ -53,7 +53,7 @@ describe('请求基址与凭据', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('/api/health');
   });
 
-  it('基址非空：请求走绝对地址（桌面形态连远端后端）', async () => {
+  it('基址非空：请求走绝对地址（连远端后端）', async () => {
     setConnectionConfig({ backendBaseUrl: 'http://10.0.0.5:8000', token: 'sbx_test' });
     fetchMock.mockResolvedValue(jsonResponse({ version: '0.2.0', console_mounted: true }));
 
@@ -62,6 +62,16 @@ describe('请求基址与凭据', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('http://10.0.0.5:8000/api/health');
     const headers = (fetchMock.mock.calls[0][1] as RequestInit).headers as Headers;
     expect(headers.get('Authorization')).toBe('Bearer sbx_test');
+  });
+
+  it('基址可配：网页形态填了远端地址也走绝对地址（两种形态一个口径）', async () => {
+    // 连接层不再按形态收敛：网页端也能指向远端后端。
+    setConnectionConfig({ backendBaseUrl: 'https://sandbox.example:8443', token: 'sbx_test' });
+    fetchMock.mockResolvedValue(jsonResponse({ version: '0.2.0', console_mounted: true }));
+
+    await api.health();
+
+    expect(fetchMock.mock.calls[0][0]).toBe('https://sandbox.example:8443/api/health');
   });
 
   it('令牌缺失：一个请求都不发，抛「未配置」错误', async () => {

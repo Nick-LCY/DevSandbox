@@ -1,21 +1,27 @@
 /**
  * 连接配置：后端在哪 + 用什么令牌。
  *
- * 口径（见 ADR 0015 第 2 节）：
- * - 模型 `{ backendBaseUrl, token }`；`backendBaseUrl` 空串 = **同源**（web 形态默认），
- *   桌面形态必填非空。
+ * 口径（见 ADR 0015 第 2 节；**2026-11-03 起两种形态在配置上不再有差别**）：
+ * - 模型 `{ backendBaseUrl, token }`；`backendBaseUrl` 空串 = **同源**，
+ *   非空 = 连这台主机。**两种形态都能填**：网页端也可以指向远端后端。
  * - 存储：localStorage，键 `sandbox-console-connection`。
  * - 存取口径与 `src/lib/theme.ts`、`src/lib/sidebar-collapsed.ts` 同款：
  *   只认「用户明确写过的值」，非法值 / 读取失败一律回落默认（= 未配置），
  *   存储不可用（隐私模式）时静默忽略，不打断交互。
  * - **挂载时不写存储**：只有用户主动保存连接配置才落盘。
  *
- * 未配置判定：**令牌为空**（web 形态的基址恒为同源），或**桌面形态下基址为空**。
+ * 未配置判定：**令牌为空**（不再看运行形态，也不再看基址——基址可空 = 同源）。
  * 未配置时不渲染工作台，改渲染引导面板（页面状态，不是路由）。
  *
+ * **桌面形态的表单层要求（与「未配置判定」是两件事）**：桌面壳与后端**不同源**
+ * （`tauri://` / `http://tauri.localhost` vs 后端主机），基址留空 = 请求打到桌面壳
+ * 自己，后端根本不在那儿——桌面形态下**保存前必须填基址**
+ * （文案见 `DESKTOP_BASE_URL_REQUIRED_ERROR`）。网页形态留空仍合法（= 同源）。
+ *
  * 桌面形态还有一层「动态 CSP」的同步（`syncDesktopBackend`）：后端主机是运行期
- * 才知道的，桌面壳按它生成主文档的 `connect-src`——口径与时序契约见
- * `apps/desktop/README.md` 的「CSP」一节与 `apps/desktop/src-tauri/src/csp.rs`。
+ * 才知道的，桌面壳按它生成主文档的 `connect-src`——那是**桌面运行时的机制**，
+ * 与「地址能不能填」无关：口径与时序契约见 `apps/desktop/README.md` 的
+ * 「CSP」一节与 `apps/desktop/src-tauri/src/csp.rs`。
  */
 import { useCallback, useMemo, useState } from 'react';
 
@@ -24,7 +30,8 @@ export interface ConnectionConfig {
   /**
    * 后端基址（如 `http://127.0.0.1:8000`）。
    *
-   * 空串 = 同源（请求走相对路径，web 形态由后端托管前端时就是这个口径）。
+   * 空串 = 同源（请求走相对路径）。两种形态都能填：非空 = 连这台主机。
+   * **桌面形态下保存前必填**（表单层要求，见 `DESKTOP_BASE_URL_REQUIRED_ERROR`）。
    */
   backendBaseUrl: string;
   /** 访问令牌（`Authorization: Bearer <token>`）。空串 = 未配置。 */
@@ -49,17 +56,6 @@ export const DEFAULT_CONNECTION_CONFIG: ConnectionConfig = {
   backendBaseUrl: '',
   token: '',
 };
-
-/** 令牌来源说明（两种形态共用的一句话）。 */
-export const CONNECTION_TOKEN_SOURCE =
-  '访问令牌在后端部署处的 <平台数据根>/console-token.json 文件里，也可用环境变量 SANDBOX_CONSOLE_TOKEN 注入。';
-
-/** 形态差异的一句话说明。 */
-export function describeConnectionSource(desktop: boolean): string {
-  return desktop
-    ? '桌面形态下请填写后端地址；网页形态下后端与本页面同源，不需要填地址。'
-    : '网页形态下后端与本页面同源，后端地址固定不可改；桌面形态下才需要填写后端地址。';
-}
 
 /** 形如 `scheme://` 的前缀。 */
 const SCHEME_PATTERN = /^[a-z][a-z0-9+.-]*:\/\//i;
@@ -101,7 +97,7 @@ export function normalizeBaseUrl(raw: string): string {
 /**
  * 校验后端地址。返回空串表示合法，否则返回中文原因（就地展示的红字）。
  *
- * 空串合法：web 形态的基址恒为同源。
+ * 空串合法：空基址 = 同源（默认口径，两种形态一样）。
  *
  * **不带路径 / 查询 / 片段**：基址只表示「后端在哪个主机的哪个端口」，
  * 路径、参数与 `#` 一律拒绝（后端的接口都在根路径下，填了路径反而对不上）。
@@ -128,6 +124,15 @@ export function validateBaseUrl(raw: string): string {
   }
   return '';
 }
+
+/**
+ * 桌面形态下基址为空的本地校验文案（引导面板与设置抽屉共用一句）。
+ *
+ * 桌面壳与后端不同源：基址留空 = 请求走页面同源 = 打到桌面壳自己，
+ * 后端不可达是必然结果（重载后必然 404）。网页形态留空合法（= 同源）。
+ */
+export const DESKTOP_BASE_URL_REQUIRED_ERROR =
+  '桌面形态必须填写后端地址（桌面壳与后端不同源，留空无法访问）';
 
 /**
  * 读已存连接配置。
@@ -262,22 +267,6 @@ export function resolveApiBaseUrl(config: ConnectionConfig): string {
 }
 
 /**
- * 按运行形态收敛配置：**web 形态的基址恒为空**（同源）。
- *
- * 收敛放在**配置层**（不只是界面草稿层）：任何调用方传进来的基址，
- * 在 web 形态下都会被丢掉——后端与页面同源，填了别的地址反而连不上。
- */
-export function enforceRuntimeConfig(
-  config: ConnectionConfig,
-  desktop: boolean,
-): ConnectionConfig {
-  return {
-    backendBaseUrl: desktop ? normalizeBaseUrl(config.backendBaseUrl) : '',
-    token: config.token.trim(),
-  };
-}
-
-/**
  * 运行形态探测：是否跑在 Tauri 桌面壳里。
  *
  * 特性探测 `window.__TAURI_INTERNALS__`（Tauri v2 注入的内部对象），
@@ -294,21 +283,13 @@ export function isDesktopRuntime(): boolean {
 /**
  * 当前配置是否已配置（可以连后端了）。
  *
- * - 令牌为空 → 未配置（两种形态都是）：后端对全部 `/api` 生效，没有令牌就换不到数据。
- * - 桌面形态下基址为空 → 未配置：桌面壳不知道后端在哪。
- * - web 形态的基址恒为同源（空串即合法），不看基址。
+ * **未配置 = 令牌为空**：后端对全部 `/api` 生效，没有令牌就换不到数据。
+ *
+ * 基址**不参与判定**：空基址 = 同源（合法），非空基址 = 连远端后端（也合法），
+ * 两种运行形态一个口径。
  */
-export function isConnectionConfigured(
-  config: ConnectionConfig,
-  desktop: boolean = isDesktopRuntime(),
-): boolean {
-  if (config.token.trim() === '') {
-    return false;
-  }
-  if (desktop && config.backendBaseUrl.trim() === '') {
-    return false;
-  }
-  return true;
+export function isConnectionConfigured(config: ConnectionConfig): boolean {
+  return config.token.trim() !== '';
 }
 
 /**
@@ -464,7 +445,7 @@ function statusOf(exc: unknown): number | null {
 export interface ConnectionApi {
   /** 当前配置。 */
   config: ConnectionConfig;
-  /** 改配置并落盘（同时按运行形态收敛：web 形态的基址恒为空）。 */
+  /** 改配置并落盘（基址与令牌统一归一：基址可空 = 同源）。 */
   setConfig: (next: ConnectionConfig) => void;
   /** 当前是否已配置（未配置时不渲染工作台，改渲染引导面板）。 */
   configured: boolean;
@@ -479,29 +460,27 @@ export interface ConnectionApi {
  * - 初始化时**同步**写内存缓存（不靠 effect 的执行顺序）：接口层与终端地址
  *   推导在首次渲染时就能拿到同一份配置。
  * - 只有用户主动保存（引导面板的「保存并连接」/ 设置抽屉的「保存配置」）才落盘。
+ * - **不再按运行形态收敛**：两种形态都能配后端地址，未配置只看令牌。
  */
 export function useConnection(): ConnectionApi {
   const desktop = useMemo(() => isDesktopRuntime(), []);
   const [config, setConfigState] = useState<ConnectionConfig>(() => {
-    const initial = enforceRuntimeConfig(readStoredConnection(), desktop);
+    const initial = readStoredConnection();
     // 初始化就落进内存缓存：接口层（`src/api/client.ts`）与终端地址推导
     // 在首次渲染时读到的就是这份配置，不依赖 effect 的执行顺序。
     cacheConnectionConfig(initial);
     return initial;
   });
 
-  const setConfig = useCallback(
-    (next: ConnectionConfig) => {
-      const normalized = enforceRuntimeConfig(next, desktop);
-      setConnectionConfig(normalized);
-      setConfigState(normalized);
-      // 生效配置一落盘，待验证配置就没有意义了（清掉，别留着误导下一次体检）。
-      clearPendingConnection();
-    },
-    [desktop],
-  );
+  const setConfig = useCallback((next: ConnectionConfig) => {
+    // 归一 + 落盘（基址与令牌的归一口径在 `cacheConnectionConfig` 里）。
+    setConnectionConfig(next);
+    setConfigState(getConnectionConfig());
+    // 生效配置一落盘，待验证配置就没有意义了（清掉，别留着误导下一次体检）。
+    clearPendingConnection();
+  }, []);
 
-  const configured = isConnectionConfigured(config, desktop);
+  const configured = isConnectionConfigured(config);
 
   return { config, setConfig, configured, desktop };
 }

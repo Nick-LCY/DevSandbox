@@ -5,7 +5,7 @@ import { api } from '../../api/client';
 import type { ProxyRestartResult, ProxyStatus } from '../../api/types';
 import { formatBytes, formatTimestamp } from '../../lib/format';
 import {
-  describeConnectionSource,
+  DESKTOP_BASE_URL_REQUIRED_ERROR,
   isDesktopRuntime,
   syncDesktopBackend,
   validateBaseUrl,
@@ -86,7 +86,7 @@ export function SettingsDialog({
   const [connectionError, setConnectionError] = useState('');
   /** 「测试连接」进行中。 */
   const [testing, setTesting] = useState(false);
-  /** 桌面形态（桌面壳里才需要填后端地址）。 */
+  /** 桌面形态（只有桌面壳里才需要走 CSP 同步那一步）。 */
   const desktop = useMemo(() => isDesktopRuntime(), []);
 
   // 打开抽屉时把草稿重置成生效中的配置（关闭期间改的草稿不粘到下一次）。
@@ -101,7 +101,7 @@ export function SettingsDialog({
 
   /** 校验草稿：返回空串表示合法。 */
   const validateDraft = useCallback((): string => {
-    const baseError = desktop ? validateBaseUrl(baseUrl) : '';
+    const baseError = validateBaseUrl(baseUrl);
     if (baseError) {
       return baseError;
     }
@@ -109,15 +109,15 @@ export function SettingsDialog({
       return '请填写访问令牌';
     }
     return '';
-  }, [baseUrl, desktop, token]);
+  }, [baseUrl, token]);
 
-  /** 草稿值 → 连接配置（web 形态的基址恒为同源，即空串）。 */
+  /** 草稿值 → 连接配置（基址可空：空串 = 与本页面同源）。 */
   const draftConfig = useCallback(
     (): ConnectionConfig => ({
-      backendBaseUrl: desktop ? baseUrl.trim() : '',
+      backendBaseUrl: baseUrl.trim(),
       token: token.trim(),
     }),
-    [baseUrl, desktop, token],
+    [baseUrl, token],
   );
 
   /** 「测试连接」：拿草稿值打一次健康检查，结果按 toast 规范反馈。 */
@@ -148,8 +148,16 @@ export function SettingsDialog({
    *
    * 顺序是硬要求：**先落盘，再同步**——同步可能要重载主文档（桌面壳的主文档
    * CSP 里要带上后端主机），重载后配置得还在。
+   *
+   * **桌面形态下基址必填**：桌面壳与后端不同源，基址留空 = 请求打到桌面壳自己
+   * （后端根本不在那儿），这时保存只会把一份连不上的配置落盘——就地红字拦下，
+   * 不落盘、不同步 CSP。
    */
   const saveConnection = useCallback(async () => {
+    if (desktop && baseUrl.trim() === '') {
+      setConnectionError(DESKTOP_BASE_URL_REQUIRED_ERROR);
+      return;
+    }
     const error = validateDraft();
     if (error) {
       setConnectionError(error);
@@ -166,7 +174,7 @@ export function SettingsDialog({
       }
     }
     show('success', '连接配置已保存', { source: 'connection' });
-  }, [desktop, draftConfig, onConnectionChange, show, validateDraft]);
+  }, [baseUrl, desktop, draftConfig, onConnectionChange, show, validateDraft]);
 
   const load = useCallback(
     async (options?: { quiet?: boolean }) => {
@@ -349,11 +357,6 @@ export function SettingsDialog({
       {/* 第三区：连接配置（后端地址 + 访问令牌 + 测试连接 + 保存配置）。 */}
       <section className="mt-6 border-t border-border pt-5" aria-label="连接配置">
         <h3 className="mb-2 text-[13px] font-semibold text-foreground">连接配置</h3>
-
-        <p className="mb-3 text-[12px] leading-relaxed text-muted-foreground">
-          {describeConnectionSource(desktop)}
-        </p>
-
         <div className="space-y-3">
           <div>
             <label
@@ -365,10 +368,9 @@ export function SettingsDialog({
             <Input
               id="settings-connection-base-url"
               value={baseUrl}
-              readOnly={!desktop}
               autoComplete="off"
               spellCheck={false}
-              placeholder={desktop ? 'http://127.0.0.1:8000' : '与本页面同源'}
+              placeholder="http://127.0.0.1:8000（留空 = 与本页面同源）"
               onChange={(event) => setBaseUrl(event.target.value)}
               data-testid="page-settings-connection-base-url-input"
             />
