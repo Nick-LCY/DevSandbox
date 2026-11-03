@@ -1,13 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { api } from '../../api/client';
+import { ConnectionNotConfiguredError, api } from '../../api/client';
 import type { SandboxDetail, SandboxSummary } from '../../api/types';
+import {
+  clearPendingConnection,
+  describeHealthFailure,
+  effectiveBackendBaseUrl,
+  readPendingConnection,
+  syncDesktopBackend,
+  useConnection,
+  type ConnectionConfig,
+  type DesktopSyncOutcome,
+} from '../../lib/connection';
 import { useDrawerWidth } from '../../lib/drawer-width';
 import { nextPollFailure } from '../../lib/poll';
 import { TerminalPanel } from '../TerminalPanel';
 import { useToast } from '../Toast';
 import { useNavigate, useRoute } from '../../lib/router';
 import { AppShell, type HealthView } from './AppShell';
+import { ConnectionSetup } from './ConnectionSetup';
 import { CreateSandboxDialog } from './CreateSandboxDialog';
 import { DeleteSandboxDialog } from './DeleteSandboxDialog';
 import { EmptyState } from './EmptyState';
@@ -22,17 +33,113 @@ const POLL_INTERVAL = 5000;
 /** 后端健康自检的轮询间隔（毫秒）。 */
 const HEALTH_POLL_INTERVAL = 15000;
 
+/** 桌面形态启动同步的兜底超时（毫秒）：桌面壳没响应时不能把界面挂死。 */
+const DESKTOP_SYNC_TIMEOUT = 3000;
+
+/**
+ * 工作台入口：未配置时先给引导面板，配置好了才装工作台。
+ *
+ * **未配置态不是路由**：地址栏仍然是 `#/`，刷新页面回到这里。
+ *
+ * 未配置时工作台整体**不挂载**（而不是挂载后再隐藏）：沙箱列表轮询（5 秒）
+ * 与健康自检轮询（15 秒）一个都不启动——没令牌时发出去的请求必然 401，
+ * 轮询只会白跑。保存配置后工作台挂载，轮询立即开始。
+ *
+ * 桌面形态还有一步「启动同步」：主文档的 CSP 里要带上后端主机（动态 CSP），
+ * 桌面壳没同步好之前**不挂载工作台**——那一版主文档的 CSP 还拦着跨主机请求，
+ * 工作台的轮询先发出去只会白跑（还会报一串假失败）。
+ */
+export function Workbench() {
+  const { config, setConfig, configured, desktop } = useConnection();
+  /** 运行期发现配置失效（接口层报「未配置」）：回到引导态。 */
+  const [invalidated, setInvalidated] = useState(false);
+  /** 桌面形态的启动同步还没完（可能要重载主文档）。 */
+  const [bootReady, setBootReady] = useState(!desktop);
+  /** 启动那一刻的连接配置（启动同步要用它，之后不再变）。 */
+  const initialConfigRef = useRef(config);
+
+  useEffect(() => {
+    if (!desktop) {
+      setBootReady(true);
+      return undefined;
+    }
+    let cancelled = false;
+    let timer: number | null = null;
+    void (async () => {
+      // 待验证配置只是「首次配置还没体检过」的草稿：已经配置好的应用不看它。
+      const pending = configured ? null : readPendingConnection();
+      if (configured) {
+        clearPendingConnection();
+      }
+      const base = effectiveBackendBaseUrl(initialConfigRef.current, pending);
+      // IPC 兜底：桌面壳没响应时不能把界面挂死（空白页）。
+      const timeout = new Promise<DesktopSyncOutcome>((resolve) => {
+        timer = window.setTimeout(() => resolve('unavailable'), DESKTOP_SYNC_TIMEOUT);
+      });
+      const outcome = await Promise.race([syncDesktopBackend(base), timeout]);
+      if (cancelled || outcome === 'reloading') {
+        // 重载中：页面即将卸载，不用管后续（这一轮不挂载工作台）。
+        return;
+      }
+      setBootReady(true);
+    })();
+    return () => {
+      cancelled = true;
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [desktop]);
+
+  if (!bootReady) {
+    // 桌面形态的启动同步期间不挂载任何东西（工作台的轮询会被 CSP 拦掉）。
+    return null;
+  }
+
+  if (!configured || invalidated) {
+    return (
+      <ConnectionSetup
+        config={config}
+        desktop={desktop}
+        onSave={(next) => {
+          setInvalidated(false);
+          setConfig(next);
+        }}
+      />
+    );
+  }
+
+  return (
+    <WorkbenchView
+      connection={config}
+      onConnectionChange={setConfig}
+      onNotConfigured={() => setInvalidated(true)}
+    />
+  );
+}
+
 /**
  * 工作台：单页总装与状态中枢。
  *
  * 左侧边栏是沙箱列表，右侧工作区是选中沙箱的摘要与终端会话标签；
- * 新建沙箱 / 沙箱详情 / 设置（代理设置 + 启动模板）都是右侧抽屉
+ * 新建沙箱 / 沙箱详情 / 设置（代理设置 + 启动模板 + 连接配置）都是右侧抽屉
  * （开关状态不入路由）。
  *
  * 选中的沙箱与当前终端会话都来自路由（`#/sandboxes/<名>[/<会话标识>]`）：
  * 刷新页面或把链接发给别人，能落到同一个位置。
  */
-export function Workbench() {
+function WorkbenchView({
+  connection,
+  onConnectionChange,
+  onNotConfigured,
+}: {
+  /** 当前连接配置（设置抽屉的「连接配置」区要改它）。 */
+  connection: ConnectionConfig;
+  /** 改连接配置（落盘 + 桌面侧同步动态 CSP）。 */
+  onConnectionChange: (next: ConnectionConfig) => void;
+  /** 运行期发现配置失效（接口层报「未配置」）：回到引导态。 */
+  onNotConfigured: () => void;
+}) {
   const route = useRoute();
   const navigate = useNavigate();
   const { show } = useToast();
@@ -92,6 +199,12 @@ export function Workbench() {
         if (requestId !== requestIdRef.current) {
           return;
         }
+        if (exc instanceof ConnectionNotConfiguredError) {
+          // 配置失效（令牌没了）：回引导态，不弹普通错误 toast——
+          // 「去配置连接」比「读取沙箱列表失败」有用。
+          onNotConfigured();
+          return;
+        }
         const message = exc instanceof Error ? exc.message : '读取沙箱列表失败';
         if (!silent) {
           // 首次加载失败：立刻弹失败 toast，侧栏回落到空态展示。
@@ -113,7 +226,7 @@ export function Workbench() {
         }
       }
     },
-    [show],
+    [show, onNotConfigured],
   );
 
   useEffect(() => {
@@ -139,8 +252,15 @@ export function Workbench() {
           view = { state: 'ok', text: `服务正常（v${result.version}）` };
         }
       } catch (exc) {
-        const reason = exc instanceof Error ? exc.message : '无法连接后端服务';
-        view = { state: 'down', text: `后端服务不可达：${reason}` };
+        if (exc instanceof ConnectionNotConfiguredError) {
+          // 配置失效：回引导态（不弹 toast）。
+          if (!cancelled) {
+            onNotConfigured();
+          }
+          return;
+        }
+        // 令牌无效与后端不可达是两回事：文案不混（带前缀，后端 detail 原文跟上）。
+        view = { state: 'down', text: describeHealthFailure(exc) };
       }
       if (!cancelled) {
         setHealth(view);
@@ -155,7 +275,7 @@ export function Workbench() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [onNotConfigured]);
 
   /* ------------------------------------------------------------------ 详情 */
 
@@ -380,6 +500,8 @@ export function Workbench() {
         onOpenChange={setSettingsOpen}
         widthVw={widthVw}
         onWidthChange={setWidthVw}
+        connection={connection}
+        onConnectionChange={onConnectionChange}
       />
 
       <DeleteSandboxDialog

@@ -3,6 +3,8 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 
+import { fetchAuthTicket } from '../api/client';
+import { getConnectionConfig } from '../lib/connection';
 import {
   CLOSE_CODE_UNKNOWN_SESSION,
   SESSION_INVALID_MESSAGE,
@@ -11,6 +13,16 @@ import {
   parseTerminalFrame,
   terminalSocketUrl,
 } from '../lib/terminal';
+import {
+  MAX_RECONNECT_FAILURES,
+  classifyTicketFailure,
+  reconnectDelayMs,
+  stopsAutoReconnect,
+  ticketFailureStatusText,
+  ticketFailureToastKey,
+  unauthorizedStatusText,
+  type TicketFailure,
+} from '../lib/terminal-connection';
 import type { TerminalState, TerminalStatus } from '../lib/terminal-feedback';
 import { createFitDebouncer } from '../lib/terminal-fit';
 import { classifyTerminalShortcut } from '../lib/terminal-shortcuts';
@@ -24,14 +36,8 @@ import { useToast } from './Toast';
  */
 export type { TerminalState, TerminalStatus } from '../lib/terminal-feedback';
 
-/** 重连退避上限（毫秒）。 */
-const RECONNECT_MAX_DELAY = 8000;
-/** 重连退避基数（毫秒）。 */
-const RECONNECT_BASE_DELAY = 500;
 /** 连接稳定存活多久算「真的连上了」（毫秒）。 */
 const RECONNECT_STABLE_AFTER = 5000;
-/** 连续失败上限：达到即停掉自动重连，等用户手动重试。 */
-const MAX_RECONNECT_FAILURES = 10;
 
 /**
  * 尺寸自适应的去抖窗口（毫秒）。
@@ -44,6 +50,9 @@ const FIT_DEBOUNCE_MS = 100;
 
 /** 剪贴板失败提示的来源标记（端到端脚本靠它定位这条提示）。 */
 const CLIPBOARD_TOAST_SOURCE = 'terminal-clipboard';
+
+/** 终端连接失败（票据取不到 / 连不上）的来源标记。 */
+const TERMINAL_CONNECTION_TOAST_SOURCE = 'terminal-connection';
 
 interface TerminalViewProps {
   sessionId: string;
@@ -77,6 +86,10 @@ interface TerminalViewProps {
  * 重连退避的计数只在连接**真的可用**时才清零：收到服务端的 `hello` 帧，
  * 或连接稳定存活超过 5 秒。握手成功不等于连上了——服务端握手后立刻关闭时，
  * 若在 `onopen` 清零计数就会变成每 500ms 一次的连接风暴。
+ *
+ * 取票失败（拿不到一次性票据）的策略在 `src/lib/terminal-connection.ts`
+ * （纯函数，可单测）：状态文案单列（不与「连接断开」混）、令牌无效时停掉
+ * 自动重连（重试多少次都是 401）、提示按文案去重。
  */
 export function TerminalView({
   sessionId,
@@ -113,6 +126,8 @@ export function TerminalView({
     let retryTimer: number | null = null;
     let stableTimer: number | null = null;
     let socket: WebSocket | null = null;
+    /** 上一条票据失败的提示键（同一句不重复弹）。 */
+    let lastTicketFailureKey = '';
 
     const term = new Terminal({
       cursorBlink: true,
@@ -313,7 +328,13 @@ export function TerminalView({
       safeFit();
     });
 
-    function scheduleReconnect(): void {
+    /**
+     * 安排下一次重连。
+     *
+     * `failure` 是这次失败的原因（取票失败时带上）：状态栏据此写**单列文案**
+     * （不与「连接断开」混——「票据没取到」和「连接断了」是两回事）。
+     */
+    function scheduleReconnect(failure?: TicketFailure): void {
       if (disposed || finished || gaveUp) {
         return;
       }
@@ -324,24 +345,88 @@ export function TerminalView({
         report('failed', '重连失败，点击重试');
         return;
       }
-      const delay = Math.min(RECONNECT_MAX_DELAY, RECONNECT_BASE_DELAY * 2 ** (attempt - 1));
-      report('reconnecting', `连接断开，${Math.round(delay / 1000)} 秒后自动重连…`, {
-        retryDelaySeconds: Math.round(delay / 1000),
-      });
+      const delay = reconnectDelayMs(attempt);
+      const seconds = Math.round(delay / 1000);
+      report(
+        'reconnecting',
+        failure
+          ? ticketFailureStatusText(failure, seconds)
+          : `连接断开，${seconds} 秒后自动重连…`,
+        { retryDelaySeconds: seconds },
+      );
       retryTimer = window.setTimeout(() => {
-        connect();
+        void connect();
       }, delay);
     }
 
-    function connect(): void {
+    /**
+     * 票据取不到的失败提示。
+     *
+     * 浏览器发起的 WebSocket 不能设请求头，握手靠一次性票据（`?ticket=`）；
+     * 票据取不到说明后端不可达或令牌无效——不是会话失效，不能报成「会话失效」。
+     * 同一句不重复弹（重连会反复取票据）。
+     */
+    const reportTicketFailure = (failure: TicketFailure): void => {
+      const key = ticketFailureToastKey(failure);
+      if (key === lastTicketFailureKey) {
+        return;
+      }
+      lastTicketFailureKey = key;
+      showRef.current('error', `终端连接失败：${failure.message}`, {
+        source: TERMINAL_CONNECTION_TOAST_SOURCE,
+      });
+    };
+
+    async function connect(): Promise<void> {
       if (disposed || finished || gaveUp) {
         return;
       }
       report(attempt === 0 ? 'connecting' : 'reconnecting', '正在连接终端会话…');
 
+      // 每次连接 / 重连前现取一张一次性票据（不缓存：票据 30 秒过期、用过即废）。
+      let ticket: string;
+      try {
+        ticket = await fetchAuthTicket();
+      } catch (exc) {
+        if (disposed || finished || gaveUp) {
+          return;
+        }
+        const failure = classifyTicketFailure(exc);
+        if (stopsAutoReconnect(failure)) {
+          // 令牌无效：重试多少次都是 401——停掉自动重连，
+          // 提示去设置抽屉换令牌（换完点「重试连接」手动再来一次）。
+          gaveUp = true;
+          report('failed', unauthorizedStatusText(failure));
+          return;
+        }
+        // 取不到票据：连不上。按退避节奏重试，状态文案单列，
+        // 失败提示单独弹（来源 terminal-connection）。
+        scheduleReconnect(failure);
+        reportTicketFailure(failure);
+        return;
+      }
+      if (disposed || finished || gaveUp) {
+        return;
+      }
+
       let next: WebSocket;
       try {
-        next = new WebSocket(terminalSocketUrl(sessionId, window.location));
+        // 连接地址从连接配置推导（同源时按页面位置推导，web 形态行为不变）。
+        // 推导不出来（例如基址填成了别的协议）：**不猜一个地址**，进「连接地址非法」。
+        const url = terminalSocketUrl(
+          sessionId,
+          {
+            baseUrl: getConnectionConfig().backendBaseUrl,
+            origin: window.location,
+          },
+          ticket,
+        );
+        if (url === null) {
+          finished = true;
+          report('invalid', '终端连接地址非法，无法建立连接');
+          return;
+        }
+        next = new WebSocket(url);
       } catch {
         // 连接地址非法：走失效状态，不抛异常把整个 effect 打断。
         finished = true;
@@ -466,7 +551,7 @@ export function TerminalView({
         });
     }
 
-    connect();
+    void connect();
 
     return () => {
       disposed = true;

@@ -236,3 +236,16 @@ export interface TemplateDeleteResult {
   id: string;
   deleted: boolean;
 }
+
+/**
+ * 一次性票据（`POST /api/auth/ticket`）。
+ *
+ * 浏览器发起的 WebSocket 不能设自定义头，所以先用 Bearer 换一张票据，
+ * 再以 `?ticket=` 带上；票据 30 秒过期、用过即废。
+ */
+export interface AuthTicketResponse {
+  /** 票据本体。 */
+  ticket: string;
+  /** 有效期（秒）。 */
+  expires_in: number;
+}

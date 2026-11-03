@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
   listTemplates: vi.fn(),
   renameTemplate: vi.fn(),
   deleteTemplate: vi.fn(),
+  health: vi.fn(),
 }));
 
 vi.mock('../../api/client', async (importOriginal) => {
@@ -40,6 +41,7 @@ vi.mock('../../api/client', async (importOriginal) => {
       listTemplates: mocks.listTemplates,
       renameTemplate: mocks.renameTemplate,
       deleteTemplate: mocks.deleteTemplate,
+      health: mocks.health,
     },
   };
 });
@@ -71,11 +73,21 @@ function makeRestartResult() {
   };
 }
 
+/** 「保存配置」回调的替身。 */
+const onConnectionChange = vi.fn();
+
 /** 渲染带 Provider 的设置抽屉。 */
 function renderDialog(): void {
   render(
     <ToastProvider>
-      <SettingsDialog open onOpenChange={vi.fn()} widthVw={40} onWidthChange={vi.fn()} />
+      <SettingsDialog
+        open
+        onOpenChange={vi.fn()}
+        widthVw={40}
+        onWidthChange={vi.fn()}
+        connection={{ backendBaseUrl: '', token: 'sbx_test' }}
+        onConnectionChange={onConnectionChange}
+      />
     </ToastProvider>,
   );
 }
@@ -100,12 +112,14 @@ afterEach(() => {
   mocks.listTemplates.mockReset();
   mocks.renameTemplate.mockReset();
   mocks.deleteTemplate.mockReset();
+  mocks.health.mockReset();
 });
 
 // 默认：代理状态读得到、模板列表为空（各用例自己覆盖需要的那一项）。
 beforeEach(() => {
   mocks.proxyStatus.mockResolvedValue(makeStatus());
   mocks.listTemplates.mockResolvedValue([]);
+  mocks.health.mockResolvedValue({ version: '0.2.0', console_mounted: true });
 });
 
 describe('代理重启反馈', () => {
@@ -299,5 +313,95 @@ describe('设置抽屉的模板管理区', () => {
     expect(toast.getAttribute('data-toast-source')).toBe('settings-template');
     expect(toast.textContent).toContain('记录已不存在（可能已被删除）');
     expect(toast.textContent).not.toContain('已删除');
+  });
+});
+
+describe('设置抽屉的连接配置区', () => {
+  it('「连接配置」区在抽屉里，web 形态下后端地址只读', async () => {
+    renderDialog();
+
+    const section = await screen.findByLabelText('连接配置');
+    expect(section.contains(screen.getByTestId('page-settings-connection-base-url-input'))).toBe(
+      true,
+    );
+    expect(section.contains(screen.getByTestId('page-settings-connection-token-input'))).toBe(true);
+    expect(section.contains(screen.getByTestId('page-settings-connection-test-button'))).toBe(true);
+    expect(section.contains(screen.getByTestId('page-settings-connection-save-button'))).toBe(true);
+
+    // web 形态：后端地址固定同源，只读。
+    const baseUrl = screen.getByTestId(
+      'page-settings-connection-base-url-input',
+    ) as HTMLInputElement;
+    expect(baseUrl.readOnly).toBe(true);
+  });
+
+  it('「测试连接」成功：弹成功 toast（来源 connection）', async () => {
+    renderDialog();
+
+    await screen.findByTestId('page-settings-connection-test-button');
+    fireEvent.click(screen.getByTestId('page-settings-connection-test-button'));
+
+    await waitFor(() => expect(mocks.health).toHaveBeenCalledTimes(1));
+    const toast = await screen.findByTestId('page-toast-item');
+    expect(toast.getAttribute('data-toast-kind')).toBe('success');
+    expect(toast.getAttribute('data-toast-source')).toBe('connection');
+  });
+
+  it('「测试连接」失败：弹失败 toast（来源 connection），文案带原因', async () => {
+    mocks.health.mockRejectedValue(new Error('访问令牌无效或缺失'));
+
+    renderDialog();
+
+    await screen.findByTestId('page-settings-connection-test-button');
+    fireEvent.click(screen.getByTestId('page-settings-connection-test-button'));
+
+    await waitFor(() => expect(mocks.health).toHaveBeenCalledTimes(1));
+    const toast = await screen.findByTestId('page-toast-item');
+    expect(toast.getAttribute('data-toast-kind')).toBe('error');
+    expect(toast.getAttribute('data-toast-source')).toBe('connection');
+    expect(toast.textContent).toContain('访问令牌无效或缺失');
+  });
+
+  it('「保存配置」：把草稿交出去并弹成功 toast', async () => {
+    renderDialog();
+
+    const token = await screen.findByTestId('page-settings-connection-token-input');
+    fireEvent.change(token, { target: { value: 'sbx_new' } });
+    fireEvent.click(screen.getByTestId('page-settings-connection-save-button'));
+
+    await waitFor(() => expect(onConnectionChange).toHaveBeenCalledTimes(1));
+    expect(onConnectionChange.mock.calls[0][0]).toEqual({
+      backendBaseUrl: '',
+      token: 'sbx_new',
+    });
+    const toast = await screen.findByTestId('page-toast-item');
+    expect(toast.getAttribute('data-toast-kind')).toBe('success');
+    expect(toast.getAttribute('data-toast-source')).toBe('connection');
+  });
+
+  it('令牌为空：就地红字，不发请求也不保存', async () => {
+    renderDialog();
+
+    const token = await screen.findByTestId('page-settings-connection-token-input');
+    fireEvent.change(token, { target: { value: '   ' } });
+    fireEvent.click(screen.getByTestId('page-settings-connection-test-button'));
+
+    const error = await screen.findByTestId('page-settings-connection-error');
+    expect(error.textContent).toContain('请填写访问令牌');
+    expect(mocks.health).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('page-settings-connection-save-button'));
+    expect(onConnectionChange).not.toHaveBeenCalled();
+  });
+
+  it('校验红字带 role="alert"（读屏能播报）', async () => {
+    renderDialog();
+
+    const token = await screen.findByTestId('page-settings-connection-token-input');
+    fireEvent.change(token, { target: { value: '   ' } });
+    fireEvent.click(screen.getByTestId('page-settings-connection-test-button'));
+
+    const error = await screen.findByTestId('page-settings-connection-error');
+    expect(error.getAttribute('role')).toBe('alert');
   });
 });

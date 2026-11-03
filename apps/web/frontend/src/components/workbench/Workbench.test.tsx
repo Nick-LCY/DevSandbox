@@ -16,8 +16,10 @@
  */
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ApiError, ConnectionNotConfiguredError } from '../../api/client';
+import { CONNECTION_STORAGE_KEY, resetDesktopSyncState } from '../../lib/connection';
 import { ToastProvider } from '../Toast';
 import { Workbench } from './Workbench';
 
@@ -81,6 +83,21 @@ afterEach(() => {
   mocks.reclaimSandbox.mockReset();
   mocks.deleteSandbox.mockReset();
   window.location.hash = '';
+  window.localStorage.clear();
+  // 桌面同步的去重缓存是模块级的：每个用例之间清掉。
+  resetDesktopSyncState();
+});
+
+/**
+ * 默认给一份**已配置**的连接配置。
+ *
+ * 未配置（没令牌）时工作台根本不挂载，改渲染引导面板——测工作台得先配置好。
+ */
+beforeEach(() => {
+  window.localStorage.setItem(
+    CONNECTION_STORAGE_KEY,
+    JSON.stringify({ backendBaseUrl: '', token: 'sbx_test' }),
+  );
 });
 
 describe('沙箱列表读取失败', () => {
@@ -271,5 +288,201 @@ describe('删除沙箱', () => {
 
     // 删除前不再拉回收清单：清单一律用接口直取核对。
     expect(mocks.reclaimSandbox).not.toHaveBeenCalled();
+  });
+});
+
+describe('未配置态', () => {
+  it('没有令牌：渲染引导面板，一个请求都不发', async () => {
+    window.localStorage.clear();
+
+    renderWorkbench();
+
+    await screen.findByTestId('page-connection-setup');
+    expect(mocks.listSandboxes).not.toHaveBeenCalled();
+    expect(mocks.health).not.toHaveBeenCalled();
+    // 引导态不是路由：地址栏仍然是工作台。
+    expect(window.location.hash === '' || window.location.hash === '#/').toBe(true);
+  });
+
+  it('填了令牌保存后：工作台挂载，轮询立即启动', async () => {
+    window.localStorage.clear();
+    mocks.health.mockResolvedValue({ version: '0.2.0', console_mounted: true });
+    mocks.listSandboxes.mockResolvedValue([]);
+
+    renderWorkbench();
+
+    const token = await screen.findByTestId('page-connection-token-input');
+    fireEvent.change(token, { target: { value: 'sbx_test' } });
+    fireEvent.click(screen.getByTestId('page-connection-submit-button'));
+
+    // 保存后工作台立即挂载：沙箱列表与健康自检都立刻发一次。
+    await waitFor(() => expect(mocks.listSandboxes).toHaveBeenCalled());
+    await waitFor(() => expect(mocks.health).toHaveBeenCalled());
+    expect(screen.queryByTestId('page-connection-setup')).toBeNull();
+  });
+
+  it('引导态下令牌为空：就地红字，不发请求', async () => {
+    window.localStorage.clear();
+
+    renderWorkbench();
+
+    await screen.findByTestId('page-connection-setup');
+    fireEvent.click(screen.getByTestId('page-connection-submit-button'));
+
+    const error = await screen.findByTestId('page-connection-error');
+    expect(error.textContent).toContain('请填写访问令牌');
+    expect(mocks.health).not.toHaveBeenCalled();
+  });
+
+  it('引导态的校验红字带 role="alert"（读屏能播报）', async () => {
+    window.localStorage.clear();
+
+    renderWorkbench();
+
+    await screen.findByTestId('page-connection-setup');
+    fireEvent.click(screen.getByTestId('page-connection-submit-button'));
+
+    const error = await screen.findByTestId('page-connection-error');
+    expect(error.getAttribute('role')).toBe('alert');
+  });
+
+  it('引导态下健康检查 401：不保存、不挂载工作台，就地红字说「令牌无效」', async () => {
+    window.localStorage.clear();
+    mocks.health.mockRejectedValue(new ApiError('访问令牌无效或缺失', 401));
+
+    renderWorkbench();
+
+    const token = await screen.findByTestId('page-connection-token-input');
+    fireEvent.change(token, { target: { value: 'sbx_bad' } });
+    fireEvent.click(screen.getByTestId('page-connection-submit-button'));
+
+    const error = await screen.findByTestId('page-connection-error');
+    expect(error.textContent).toContain('令牌无效');
+    expect(error.textContent).toContain('访问令牌无效或缺失');
+    // 没保存：不进工作台（工作台还在引导面板后面）。
+    expect(screen.queryByTestId('page-connection-setup')).not.toBeNull();
+    expect(mocks.listSandboxes).not.toHaveBeenCalled();
+    // 配置没落盘。
+    expect(window.localStorage.getItem(CONNECTION_STORAGE_KEY)).toBeNull();
+  });
+
+  it('引导态下健康检查不通：就地红字说「后端不可达」（与「令牌无效」不混）', async () => {
+    window.localStorage.clear();
+    mocks.health.mockRejectedValue(new ApiError('无法连接后端服务，请确认控制台服务已启动', 0));
+
+    renderWorkbench();
+
+    const token = await screen.findByTestId('page-connection-token-input');
+    fireEvent.change(token, { target: { value: 'sbx_test' } });
+    fireEvent.click(screen.getByTestId('page-connection-submit-button'));
+
+    const error = await screen.findByTestId('page-connection-error');
+    expect(error.textContent).toContain('后端不可达');
+    expect(error.textContent).not.toContain('令牌无效');
+    expect(mocks.listSandboxes).not.toHaveBeenCalled();
+  });
+});
+
+describe('运行期配置失效', () => {
+  it('轮询报「未配置」：回到引导面板，不弹普通错误 toast', async () => {
+    mocks.health.mockResolvedValue({ version: '0.2.0', console_mounted: true });
+    mocks.listSandboxes.mockRejectedValue(
+      new ConnectionNotConfiguredError('尚未配置后端连接：请先填写访问令牌'),
+    );
+
+    renderWorkbench();
+
+    // 回到引导面板。
+    await screen.findByTestId('page-connection-setup');
+    // 不弹「读取沙箱列表失败」那种普通错误 toast。
+    expect(toastsOf('error')).toHaveLength(0);
+  });
+
+  it('健康检查 401：侧栏健康文案带「令牌无效：」前缀', async () => {
+    mocks.health.mockRejectedValue(new ApiError('访问令牌无效或缺失', 401));
+    mocks.listSandboxes.mockResolvedValue([]);
+
+    renderWorkbench();
+
+    const health = await screen.findByTestId('page-layout-health');
+    await waitFor(() =>
+      expect(health.getAttribute('aria-label')).toContain('令牌无效：访问令牌无效或缺失'),
+    );
+  });
+});
+
+describe('桌面形态的动态 CSP 同步', () => {
+  /** 桌面壳的 IPC 替身。 */
+  const invoke = vi.fn();
+
+  beforeEach(() => {
+    invoke.mockReset();
+    // set_backend_base_url → 无返回值；csp_needs_reload → 不用重载。
+    invoke.mockResolvedValue(undefined);
+    invoke.mockResolvedValueOnce(undefined);
+    invoke.mockResolvedValue(false);
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      value: { invoke },
+      configurable: true,
+      writable: true,
+    });
+  });
+
+  afterEach(() => {
+    delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
+
+  it('启动时先同步 CSP，再挂载界面', async () => {
+    window.localStorage.clear();
+
+    renderWorkbench();
+
+    await screen.findByTestId('page-connection-setup');
+    expect(invoke.mock.calls.map((call) => call[0])).toEqual([
+      'set_backend_base_url',
+      'csp_needs_reload',
+    ]);
+  });
+
+  it('「保存并连接」：先同步 CSP，再体检，体检通过了才落盘并挂载工作台', async () => {
+    window.localStorage.clear();
+    mocks.health.mockResolvedValue({ version: '0.2.0', console_mounted: true });
+    mocks.listSandboxes.mockResolvedValue([]);
+
+    renderWorkbench();
+
+    const base = await screen.findByTestId('page-connection-base-url-input');
+    fireEvent.change(base, { target: { value: 'http://10.0.0.5:8000' } });
+    const token = screen.getByTestId('page-connection-token-input');
+    fireEvent.change(token, { target: { value: 'sbx_test' } });
+    fireEvent.click(screen.getByTestId('page-connection-submit-button'));
+
+    await waitFor(() => expect(mocks.health).toHaveBeenCalled());
+    // 同步在体检之前（主文档的 CSP 得先放行这台主机，体检才发得出去）。
+    const lastInvokeOrder = invoke.mock.invocationCallOrder.at(-1) ?? 0;
+    expect(lastInvokeOrder).toBeLessThan(mocks.health.mock.invocationCallOrder[0]);
+    // 体检通过 → 配置落盘 → 工作台挂载。
+    await waitFor(() => expect(mocks.listSandboxes).toHaveBeenCalled());
+    expect(
+      JSON.parse(window.localStorage.getItem(CONNECTION_STORAGE_KEY) ?? '{}'),
+    ).toEqual({ backendBaseUrl: 'http://10.0.0.5:8000', token: 'sbx_test' });
+  });
+
+  it('体检 401：配置不落盘、不挂载工作台，就地红字', async () => {
+    window.localStorage.clear();
+    mocks.health.mockRejectedValue(new ApiError('访问令牌无效或缺失', 401));
+
+    renderWorkbench();
+
+    const base = await screen.findByTestId('page-connection-base-url-input');
+    fireEvent.change(base, { target: { value: 'http://10.0.0.5:8000' } });
+    const token = screen.getByTestId('page-connection-token-input');
+    fireEvent.change(token, { target: { value: 'sbx_bad' } });
+    fireEvent.click(screen.getByTestId('page-connection-submit-button'));
+
+    const error = await screen.findByTestId('page-connection-error');
+    expect(error.textContent).toContain('令牌无效');
+    expect(mocks.listSandboxes).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem(CONNECTION_STORAGE_KEY)).toBeNull();
   });
 });

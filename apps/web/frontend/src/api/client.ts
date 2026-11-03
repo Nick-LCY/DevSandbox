@@ -1,10 +1,17 @@
 /**
- * 后端接口调用。全部走同源相对路径（前端不含任何认证逻辑）。
+ * 后端接口调用。请求基址由连接配置决定（见 `src/lib/connection.ts`），
+ * 每个请求都带 `Authorization: Bearer <token>`。
  *
  * 错误消息直接取后端 `{"detail": "中文消息"}` 里的 `detail`，页面原样展示。
  */
 
+import {
+  getConnectionConfig,
+  resolveApiBaseUrl,
+  type ConnectionConfig,
+} from '../lib/connection';
 import type {
+  AuthTicketResponse,
   CreateSandboxRequest,
   CreateSandboxResponse,
   DeleteSandboxResponse,
@@ -34,7 +41,25 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * 未配置连接：**请求根本没发出去**（令牌缺失）。
+ *
+ * 与 `ApiError` 分开：上层要靠它区分「还没配置，去引导态」与「后端报错了」。
+ */
+export class ConnectionNotConfiguredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ConnectionNotConfiguredError';
+  }
+}
+
+/** 未配置连接时的提示文案。 */
+export const NOT_CONFIGURED_MESSAGE = '尚未配置后端连接：请先填写访问令牌';
+
 const NETWORK_ERROR_MESSAGE = '无法连接后端服务，请确认控制台服务已启动';
+
+/** 健康检查的超时（毫秒）：后端不可达时不能把「正在连接」的加载态挂死。 */
+const HEALTH_TIMEOUT_MS = 10000;
 
 async function readDetail(response: Response): Promise<string> {
   try {
@@ -48,15 +73,36 @@ async function readDetail(response: Response): Promise<string> {
   return `请求失败（HTTP ${response.status}）`;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/**
+ * 发一次请求。
+ *
+ * - 基址：连接配置里的后端基址（空串 = 同源，走相对路径）。
+ * - 凭据：**每个请求都带 `Authorization: Bearer <token>`**（后端对全部 `/api` 生效）。
+ * - 令牌缺失时**一个请求都不发**，抛 `ConnectionNotConfiguredError` 交给上层进引导态。
+ * - `connection` 可以覆盖当前配置（设置抽屉的「测试连接」用还没保存的草稿值试）。
+ */
+async function request<T>(
+  path: string,
+  init?: RequestInit,
+  connection?: ConnectionConfig,
+): Promise<T> {
+  const config = connection ?? getConnectionConfig();
+  if (config.token.trim() === '') {
+    // 令牌缺失：不发请求（后端会回 401，发了也只是白跑一趟）。
+    throw new ConnectionNotConfiguredError(NOT_CONFIGURED_MESSAGE);
+  }
+
   const headers = new Headers(init?.headers);
+  headers.set('Authorization', `Bearer ${config.token}`);
   if (init?.body !== undefined && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
 
+  const url = `${resolveApiBaseUrl(config)}${path}`;
+
   let response: Response;
   try {
-    response = await fetch(path, { credentials: 'same-origin', ...init, headers });
+    response = await fetch(url, { credentials: 'same-origin', ...init, headers });
   } catch {
     throw new ApiError(NETWORK_ERROR_MESSAGE, 0);
   }
@@ -74,8 +120,56 @@ function pathOf(name: string): string {
   return `/api/sandboxes/${encodeURIComponent(name)}`;
 }
 
+/**
+ * 带超时的请求（健康检查用）。
+ *
+ * 后端地址是用户填的：填了一个不通的地址时，连接可能一直挂着（不回包也不断），
+ * 那会让「测试连接」/「保存并连接」的加载态永远转下去。这里给一个超时兜底。
+ */
+async function requestWithTimeout<T>(
+  path: string,
+  connection: ConnectionConfig | undefined,
+  timeoutMs: number,
+): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await request<T>(path, { signal: controller.signal }, connection);
+  } catch (exc) {
+    if (controller.signal.aborted) {
+      throw new ApiError(`连接后端超时（${Math.round(timeoutMs / 1000)} 秒无响应）`, 0);
+    }
+    throw exc;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * 换一张一次性终端票据（`POST /api/auth/ticket`）。
+ *
+ * 浏览器发起的 WebSocket 不能设自定义头（`WebSocket` API 不支持），所以先用
+ * Bearer 换一张 30 秒有效、用过即废的票据，再以 `?ticket=` 带上。
+ *
+ * **不缓存**：每次连接 / 重连前现取（票据用过即废，缓存下来也没用）。
+ */
+export async function fetchAuthTicket(): Promise<string> {
+  const response = await request<AuthTicketResponse>('/api/auth/ticket', { method: 'POST' });
+  return response.ticket;
+}
+
 export const api = {
-  health: () => request<HealthResponse>('/api/health'),
+  /**
+   * 后端健康自检。给了连接配置就用它（设置抽屉的「测试连接」用草稿值试），
+   * 不给就用当前配置。
+   *
+   * 带 10 秒超时：填了不通的后端地址时不会把加载态挂死。
+   */
+  health: (connection?: ConnectionConfig) =>
+    requestWithTimeout<HealthResponse>('/api/health', connection, HEALTH_TIMEOUT_MS),
+
+  /** 换一张一次性终端票据（见 `fetchAuthTicket`）。 */
+  fetchAuthTicket: () => fetchAuthTicket(),
 
   /** 全部沙箱（含停止态）。后端返回裸数组。 */
   listSandboxes: () => request<SandboxSummary[]>('/api/sandboxes'),

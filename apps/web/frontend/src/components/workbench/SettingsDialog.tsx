@@ -1,9 +1,16 @@
 import { Loader2 } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { api } from '../../api/client';
 import type { ProxyRestartResult, ProxyStatus } from '../../api/types';
 import { formatBytes, formatTimestamp } from '../../lib/format';
+import {
+  describeConnectionSource,
+  isDesktopRuntime,
+  syncDesktopBackend,
+  validateBaseUrl,
+  type ConnectionConfig,
+} from '../../lib/connection';
 import {
   describeCaOutcome,
   describeCertificate,
@@ -13,6 +20,7 @@ import {
   describeTcp,
 } from '../../lib/proxy';
 import { useToast } from '../Toast';
+import { Input } from '../ui/input';
 import { DrawerShell } from './DrawerShell';
 import { TemplateManager } from './TemplateManager';
 
@@ -32,10 +40,11 @@ function Field({ label, value, testId }: { label: string; value: string; testId:
 }
 
 /**
- * 设置抽屉：代理设置 + 启动模板管理。
+ * 设置抽屉：代理设置 + 启动模板管理 + 连接配置。
  *
  * 第一区是代理设置（状态展示 + 刷新状态 + 重启 + CA 重装结果），内容与原
- * 「代理设置」抽屉完全一致；第二区是启动模板管理区（列表 / 行内重命名 / 删除）。
+ * 「代理设置」抽屉完全一致；第二区是启动模板管理区（列表 / 行内重命名 / 删除）；
+ * 第三区是连接配置（后端地址 + 访问令牌 + 测试连接 + 保存配置）。
  *
  * 「刷新状态」与「重启代理」两个按钮**在第一区里**（状态字段区之后），不再挂在
  * 整个抽屉的全局页脚：抽屉页脚只放跟整张抽屉相关的动作，这两个按钮只管代理，
@@ -48,6 +57,8 @@ export function SettingsDialog({
   onOpenChange,
   widthVw,
   onWidthChange,
+  connection,
+  onConnectionChange,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -55,12 +66,107 @@ export function SettingsDialog({
   widthVw: number;
   /** 宽度变化回调（工作台负责持久化）。 */
   onWidthChange: (vw: number) => void;
+  /** 当前连接配置。 */
+  connection: ConnectionConfig;
+  /** 改连接配置（落盘 + 桌面侧同步动态 CSP）。 */
+  onConnectionChange: (next: ConnectionConfig) => void;
 }) {
   const { show } = useToast();
   const [status, setStatus] = useState<ProxyStatus | null>(null);
   const [restart, setRestart] = useState<ProxyRestartResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [restarting, setRestarting] = useState(false);
+
+  /* ------------------------------------------------------- 连接配置（第三区） */
+
+  /** 连接配置的草稿值：没保存前不动生效中的配置。 */
+  const [baseUrl, setBaseUrl] = useState(connection.backendBaseUrl);
+  const [token, setToken] = useState(connection.token);
+  /** 连接配置的本地校验红字（就地展示，不走 toast）。 */
+  const [connectionError, setConnectionError] = useState('');
+  /** 「测试连接」进行中。 */
+  const [testing, setTesting] = useState(false);
+  /** 桌面形态（桌面壳里才需要填后端地址）。 */
+  const desktop = useMemo(() => isDesktopRuntime(), []);
+
+  // 打开抽屉时把草稿重置成生效中的配置（关闭期间改的草稿不粘到下一次）。
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    setBaseUrl(connection.backendBaseUrl);
+    setToken(connection.token);
+    setConnectionError('');
+  }, [open, connection]);
+
+  /** 校验草稿：返回空串表示合法。 */
+  const validateDraft = useCallback((): string => {
+    const baseError = desktop ? validateBaseUrl(baseUrl) : '';
+    if (baseError) {
+      return baseError;
+    }
+    if (token.trim() === '') {
+      return '请填写访问令牌';
+    }
+    return '';
+  }, [baseUrl, desktop, token]);
+
+  /** 草稿值 → 连接配置（web 形态的基址恒为同源，即空串）。 */
+  const draftConfig = useCallback(
+    (): ConnectionConfig => ({
+      backendBaseUrl: desktop ? baseUrl.trim() : '',
+      token: token.trim(),
+    }),
+    [baseUrl, desktop, token],
+  );
+
+  /** 「测试连接」：拿草稿值打一次健康检查，结果按 toast 规范反馈。 */
+  const testConnection = useCallback(async () => {
+    const error = validateDraft();
+    if (error) {
+      setConnectionError(error);
+      return;
+    }
+    setConnectionError('');
+    setTesting(true);
+    try {
+      await api.health(draftConfig());
+      show('success', '连接成功', { source: 'connection' });
+    } catch (exc) {
+      show(
+        'error',
+        `连接失败：${exc instanceof Error ? exc.message : '无法连接后端服务'}`,
+        { source: 'connection' },
+      );
+    } finally {
+      setTesting(false);
+    }
+  }, [draftConfig, show, validateDraft]);
+
+  /**
+   * 「保存配置」：落盘（并同步桌面侧的动态 CSP）。
+   *
+   * 顺序是硬要求：**先落盘，再同步**——同步可能要重载主文档（桌面壳的主文档
+   * CSP 里要带上后端主机），重载后配置得还在。
+   */
+  const saveConnection = useCallback(async () => {
+    const error = validateDraft();
+    if (error) {
+      setConnectionError(error);
+      return;
+    }
+    setConnectionError('');
+    const next = draftConfig();
+    onConnectionChange(next);
+    if (desktop) {
+      const outcome = await syncDesktopBackend(next.backendBaseUrl);
+      if (outcome === 'reloading') {
+        // 主文档重载中：提示会随页面一起消失，不再补一条。
+        return;
+      }
+    }
+    show('success', '连接配置已保存', { source: 'connection' });
+  }, [desktop, draftConfig, onConnectionChange, show, validateDraft]);
 
   const load = useCallback(
     async (options?: { quiet?: boolean }) => {
@@ -238,6 +344,93 @@ export function SettingsDialog({
       {/* 第二区：启动模板管理（列表 / 行内重命名 / 删除）。 */}
       <section className="mt-6 border-t border-border pt-5" aria-label="启动模板">
         <TemplateManager />
+      </section>
+
+      {/* 第三区：连接配置（后端地址 + 访问令牌 + 测试连接 + 保存配置）。 */}
+      <section className="mt-6 border-t border-border pt-5" aria-label="连接配置">
+        <h3 className="mb-2 text-[13px] font-semibold text-foreground">连接配置</h3>
+
+        <p className="mb-3 text-[12px] leading-relaxed text-muted-foreground">
+          {describeConnectionSource(desktop)}
+        </p>
+
+        <div className="space-y-3">
+          <div>
+            <label
+              htmlFor="settings-connection-base-url"
+              className="mb-1.5 block text-[12.5px] font-medium text-foreground"
+            >
+              后端地址
+            </label>
+            <Input
+              id="settings-connection-base-url"
+              value={baseUrl}
+              readOnly={!desktop}
+              autoComplete="off"
+              spellCheck={false}
+              placeholder={desktop ? 'http://127.0.0.1:8000' : '与本页面同源'}
+              onChange={(event) => setBaseUrl(event.target.value)}
+              data-testid="page-settings-connection-base-url-input"
+            />
+          </div>
+
+          <div>
+            <label
+              htmlFor="settings-connection-token"
+              className="mb-1.5 block text-[12.5px] font-medium text-foreground"
+            >
+              访问令牌
+            </label>
+            <Input
+              id="settings-connection-token"
+              type="password"
+              value={token}
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="粘贴后端部署处的访问令牌"
+              onChange={(event) => setToken(event.target.value)}
+              data-testid="page-settings-connection-token-input"
+            />
+          </div>
+        </div>
+
+        {connectionError && (
+          <p
+            className="mt-3 text-[12.5px] text-destructive"
+            role="alert"
+            data-testid="page-settings-connection-error"
+          >
+            {connectionError}
+          </p>
+        )}
+
+        <div className="mt-3 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => void testConnection()}
+            disabled={testing}
+            data-testid="page-settings-connection-test-button"
+            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-border bg-background px-3 text-[13px] text-foreground transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+          >
+            {testing ? (
+              <>
+                <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                正在测试
+              </>
+            ) : (
+              '测试连接'
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => void saveConnection()}
+            disabled={testing}
+            data-testid="page-settings-connection-save-button"
+            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-transparent bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/80 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+          >
+            保存配置
+          </button>
+        </div>
       </section>
     </DrawerShell>
   );

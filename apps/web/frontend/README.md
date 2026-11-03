@@ -46,6 +46,8 @@ pnpm run build      # = tsc --noEmit && vite build
 uv run --project apps/web/backend python -m sandbox_console        # 默认监听 127.0.0.1:8000
 ```
 
+**`base: './'`（相对路径基址）**：产物里的资源引用是 `./assets/...` 而不是 `/assets/...`。两种部署形态都能解析——网页形态（后端 `StaticFiles` 挂在 `/`）与桌面形态（Tauri 自定义协议，Windows 上是 `http://tauri.localhost/`）都是从根路径解析。开发模式下 Vite 仍按 `/` 提供服务（`base: './'` 只影响构建产物）。
+
 后端相关环境变量：
 
 | 变量 | 作用 | 默认 |
@@ -63,7 +65,7 @@ pnpm run test       # vitest run，纯数据转换逻辑与组件交互的单元
 
 单元测试覆盖挂载声明解析、文件注入声明解析（两段格式、家目录写法、敏感清单、宿主与容器路径重复）、环境变量解析、启动模板的纯逻辑（宽松挂载解析、宽松文件注入解析、表单合并语义与配置收集）、两层路由解析（含畸形百分号编码）、字节与时间格式化、终端帧协议解析、终端状态提示的口径与去重规则（纯函数，含用户主动关闭、空闲回收与服务退出兜底三种结束原因）、终端快捷键的分类（纯函数：浏览器保留键、Ctrl+Shift+C 复制、Ctrl+Shift+V 粘贴、其余带 Ctrl/Meta/Alt 的组合转发、纯键普通处理，Meta+Shift+C/V 同样触发）、代理状态文案转换、主题存取、抽屉宽度的存取与换算、轮询失败计数，终端面板的会话标签与关闭会话交互（标签渲染、点标签回调、运行中与已退出的两套确认文案、确认与取消、失败提示、记录已不存在、关闭流程未走完、列表刷新失败、终态提示、同一状态反复上报不重复刷屏、轮询连续失败），工作台的列表读取失败与轮询失败反馈、停止沙箱先弹确认框，新建沙箱抽屉的镜像列表失败说明、镜像选择器的本地筛选（输入关键字只剩命中项）、列表到位后输入框不被预填、逐字符打字能命中、没命中时的空态、弹层顶部无空白块、输入框内部的下拉箭头（纯指示器、点击落在输入框上）、候选项的指针光标、空列表不留空白带、键盘选中、选中后的详情行、改字即放弃选择与未选镜像时的校验红字、挂载空态的精简文案，文件注入区的声明入请求与就地校验红字（格式非法、容器路径重复）、空态占位（一行都没声明时显示「暂未声明注入。」）、除该空态占位外无解释性文案，以及文件注入的模板联动（出现即整组替换、没有则保持现状）与保存为模板时的文件行入库，模板选择器的可搜可选、选中回填（模板声明原样回填与镜像不在宿主列表时的留空）、模板下拉下不再挂说明段、模板入口的位置（加载模板在抽屉最上方、保存为模板在页脚且在主按钮左侧）、保存为模板的空名禁提交与成功提示、保存弹窗的精简文案，以及创建成功收口，设置抽屉的代理重启失败反馈不被状态刷新失败顶掉、刷新与重启两个按钮在代理设置区里（抽屉没有全局页脚）、模板列表渲染与空态、管理区不再挂说明段、模板列表读取失败、行内重命名（回车提交 / Esc 取消 / 空名禁提交）与删除确认弹窗，删除沙箱确认的一次点即执行，停止沙箱确认弹窗的勾选项与忙碌锁，以及抽屉外壳的焦点管理、关闭途径、宽度拖拽把手（条子中间带竖向抓握图标）与指针拖拽路径（拖动中不落盘、松手落盘一次、按下即松手不落盘、视口宽不可用时不换算），最后是全局 toast 组件本身（类型 → 配色类映射、5 秒自动消失、关闭键提前关闭、倒计时圆环的动画类名与时长、悬停 / 点提示区 / 聚焦提示区 / 按下提示条不暂停倒计时、按 F6 不被 Base UI 接管、窗口失焦停表与回前台整体重走 5 秒、新反馈顶掉旧条并重置计时、退场竞态下圆环重建）。组件测试用 jsdom 环境（文件头部 `@vitest-environment jsdom` 注解切换），依赖 `@testing-library/react` 与 `jsdom`。
 
-本轮新增：侧栏折叠（默认展开、收窄到 56px、可访问名随状态切换、**底部工具区的贴底约束类**、健康状态的可访问名跟随健康文案）、终端焦点回填门控（有意图回填、原位回填、焦点在终端外不抢、**重挂载把焦点复位到 body 后没有意图就不回填**、新建会话后回填）、终端尺寸自适应的尾沿去抖（**连续多次触发只发一次 resize**）。
+本轮新增：侧栏折叠（默认展开、收窄到 56px、可访问名随状态切换、**底部工具区的贴底约束类**、健康状态的可访问名跟随健康文案）、终端焦点回填门控（有意图回填、原位回填、焦点在终端外不抢、**重挂载把焦点复位到 body 后没有意图就不回填**、新建会话后回填）、终端尺寸自适应的尾沿去抖（**连续多次触发只发一次 resize**）、**连接层**（连接配置的存取与非法值回落 / 基址推导与尾部斜杠归一 / **基址带路径与参数被拒** / **按形态收敛（网页形态基址恒为空）** / 形态探测与未配置判定；接口层的基址拼接、`Authorization` 头、票据获取与「令牌缺失不发请求」；终端 WebSocket 地址的基址推导（**不保留路径、推导不出来不回落同源**）与票据拼接；**终端取票失败的策略**（401 停自动重连 / 退避节奏 / 提示去重）；未配置态的引导面板与「**先体检再保存**」（401 不保存不挂载、错误就地红字）；**运行期配置失效回引导面板**；桌面形态的动态 CSP 同步与主文档重载；设置抽屉的连接配置区与测试连接反馈）。
 
 toast 挂全局 `ToastProvider`：组件测试渲染带 Provider 的片段，断言看 `page-toast-item` 与 `data-toast-kind`（必要时再加 `data-toast-source`）。
 
@@ -103,17 +105,20 @@ apps/web/frontend/
     │   ├── globals.css   样式底座（Tailwind v4 + 双主题令牌 + Preflight）
     │   └── fonts.css     自托管字体（思源黑体 / Geist Mono）
     ├── api/
-    │   ├── client.ts     接口调用与错误映射（统一读后端 detail 文案）
+    │   ├── client.ts     接口调用与错误映射（统一读后端 detail 文案；基址 + Bearer 头）
+    │   ├── client.test.ts 接口层的基址拼接 / Authorization 头 / 票据 / 未配置不发请求
     │   └── types.ts      接口数据形状（与后端 schemas.py 对齐）
     ├── lib/              纯逻辑（可单测）
     │   ├── router.ts     两层哈希路由
+    │   ├── connection.ts 连接配置（存取 / 基址推导 / 形态探测 / 未配置判定 / 桌面 CSP 同步）
     │   ├── format.ts     字节数 / 时间戳格式化
     │   ├── mounts.ts     挂载声明解析与校验
     │   ├── files.ts      文件注入声明解析与校验
     │   ├── env.ts        环境变量声明解析
     │   ├── templates.ts  启动模板（挂载解析 / 表单合并与收集）
     │   ├── proxy.ts      代理状态文案转换
-    │   ├── terminal.ts   终端帧协议
+    │   ├── terminal.ts   终端帧协议与 WS 地址推导
+    │   ├── terminal-connection.ts 终端取票失败的策略（分类 / 重连节奏 / 提示去重）
     │   ├── sessions.ts   会话定序与标签序号登记
     │   ├── poll.ts       后台轮询的连续失败计数（到阈值弹一条 toast）
     │   ├── toast.ts      操作反馈（toast）的类型与配色口径
@@ -132,16 +137,17 @@ apps/web/frontend/
     │   ├── ui/                shadcn/ui 原语（Base UI）
     │   │   └── combobox.tsx     可搜索选择器（Base UI Combobox：输入即本地筛选）
     │   └── workbench/         工作台各部件
-    │       ├── Workbench.tsx          总装与状态中枢
+    │       ├── Workbench.tsx          总装与状态中枢（未配置时分流到引导面板）
     │       ├── AppShell.tsx           外壳（侧栏 + 工作区）
     │       ├── Sidebar.tsx            侧栏（品牌 / 新建 / 列表 / 底部工具）
     │       ├── SandboxList.tsx        沙箱列表项
     │       ├── WorkspaceHeader.tsx    选中沙箱的摘要与操作
     │       ├── TerminalTabs.tsx       终端会话标签条
     │       ├── EmptyState.tsx         没选中沙箱时的引导块
+    │       ├── ConnectionSetup.tsx    未配置态的引导面板（页面状态，不是路由）
     │       ├── CreateSandboxDialog.tsx  新建沙箱抽屉
     │       ├── SandboxDetailDialog.tsx 沙箱详情抽屉
-    │       ├── SettingsDialog.tsx      设置抽屉（代理设置 + 启动模板）
+    │       ├── SettingsDialog.tsx      设置抽屉（代理设置 + 启动模板 + 连接配置）
     │       ├── TemplateManager.tsx     启动模板管理区（列表 / 重命名 / 删除）
     │       ├── DrawerShell.tsx        抽屉外壳（Base UI Drawer：右侧滑出 / 宽度可拖拽）
     │       ├── DeleteSandboxDialog.tsx 删除确认弹窗（一次点即执行）
@@ -187,9 +193,75 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 - 地址里的沙箱名与会话标识会做一次百分号解码；解码失败（畸形编码，如 `#/sandboxes/%`）不会抛异常打断渲染，一律退回工作台。
 - 旧四页地址（`#/new`、`#/settings` 等）不再有对应路由，解析时也退回工作台。
 
+## 连接配置（基址 / 凭据 / 未配置态）
+
+同一份前端产物要能分别连「同源后端」（网页形态）与「远端后端」（桌面形态），所以**后端在哪、用什么令牌**是一份独立状态，收敛在 `src/lib/connection.ts`（存取 + 推导 + Hook，纯逻辑，有单元测试）。
+
+| 口径 | 规定 |
+|---|---|
+| 模型 | `{ backendBaseUrl, token }`；`backendBaseUrl` 空串 = **同源**（网页形态由后端托管前端时就是这个口径），桌面形态必填非空 |
+| 存储 | 存储键 `sandbox-console-connection`，localStorage；存取口径与 `src/lib/theme.ts` 同款（非法值 / 读取失败回落默认 = 未配置；存储不可用时静默忽略） |
+| 落盘时机 | **只有用户主动保存才写存储**；挂载时不写 |
+| 基址归一 | 去空白、补 scheme（`127.0.0.1:8000` → `http://127.0.0.1:8000`）、去尾部斜杠（基址后面直接拼 `/api/...`，不出双斜杠） |
+| 基址形状 | **只到主机与端口**：带路径 / 查询 / 片段一律拒绝（红字「后端地址不要带路径、参数或 #」）——后端接口都在根路径下，填了路径反而对不上 |
+| 形态收敛 | **网页形态的基址恒为空**（同源）：收敛在**配置层**（`enforceRuntimeConfig`），不只是界面草稿层——任何调用方传进来的基址在网页形态下都会被丢掉 |
+| 请求基址 | `resolveApiBaseUrl()`：空基址 → 空串（相对路径，同源）；否则去尾部斜杠的绝对地址 |
+| 凭据 | **每个请求都带 `Authorization: Bearer <token>`**（后端对全部 `/api` 生效，含 `/api/health`） |
+| 令牌缺失 | **一个请求都不发**：接口层抛 `ConnectionNotConfiguredError`，上层进引导态（不拿 401 刷屏） |
+| 运行期失效 | 轮询路径上拿到 `ConnectionNotConfiguredError` → **回到引导面板**（置 `configured=false`），**不弹普通错误 toast**——「去配置连接」比「读取沙箱列表失败」有用 |
+| 终端地址 | `terminalSocketUrl()`：基址非空时从基址推导（`http→ws` / `https→wss`，**不保留路径**，与 HTTP 侧口径一致）；基址为空时按 `window.location` 推导（**网页形态行为零变化**） |
+| 终端地址非法 | 基址非空但**推导不出来**（如 `ftp://`）时**不回落页面同源**：`terminalSocketUrl()` 返回 `null`，终端视图进「连接地址非法」状态——回落会把「连错了地址」变成「连到了别的地方」 |
+| 终端票据 | 浏览器发起的 WebSocket 不能设请求头，握手靠 `?ticket=`：每次连接 / 重连前先 `POST /api/auth/ticket` 现取一张（30 秒有效、用过即废，**不缓存**） |
+| 运行形态 | 特性探测 `window.__TAURI_INTERNALS__`（**不引 `@tauri-apps/api`**）：桌面形态才显示「后端地址」输入框 |
+
+### 桌面形态：动态 CSP 的同步与主文档重载
+
+桌面壳的主文档 CSP 里要带上**用户配的后端主机**（host 级放行，口径与时序契约见
+`apps/desktop/README.md` 的「CSP」一节与 `apps/desktop/src-tauri/src/csp.rs`）。前端这边：
+
+- `syncDesktopBackend(baseUrl)`（`src/lib/connection.ts`）：先 `invoke('set_backend_base_url')` 更新桌面壳的状态，
+  再 `invoke('csp_needs_reload')` 问「这一版主文档的 CSP 跟上了吗」，**没跟上就 `location.reload()`**。
+- **同一个后端基址只送一次**（本次页面会话内）：桌面壳的状态已经是它了，重复送没有意义。
+- **桌面形态启动时先同步再挂载工作台**：那一版主文档的 CSP 还拦着跨主机请求，工作台的轮询先发出去只会白跑。
+- **改了后端地址 → 主文档会重载一次**（重载后这一版 CSP 才带上新主机）。这是正常现象，配置存在 localStorage 里，重载后直接进工作台。
+
+### 未配置态（引导面板）
+
+**未配置 = 令牌为空**（网页形态的基址恒为同源），或**桌面形态下基址为空**。
+
+- 未配置时**不渲染工作台**，改渲染 `src/components/workbench/ConnectionSetup.tsx`（后端地址 + 访问令牌 + 「保存并连接」+ 来源说明）。
+- **未配置态不是路由**：地址栏仍然是 `#/`，刷新页面回到这里。
+- 未配置时工作台**整体不挂载**：沙箱列表轮询（5 秒）与健康自检轮询（15 秒）**一个都不启动**；保存配置后工作台挂载，轮询立即开始。
+- 网页形态下后端地址**只读**（固定同源）；桌面形态下可填任意后端地址。
+- 「保存并连接」的动作口径：**先体检再保存**——只有健康检查通过才保存配置、才挂载工作台；
+  不通过就**就地红字**报错，**配置不落盘、工作台不挂载**。红字分两种（`describeHealthFailure`）：
+  「令牌无效：<后端 detail>」与「后端不可达：<原因>」（两种失败态不混）。
+- 桌面形态的「保存并连接」多一步：**先同步 CSP（可能要重载主文档）再体检**。跨主机的健康检查会被
+  旧 CSP 拦死，所以草稿先落在**待验证配置**（存储键 `sandbox-console-connection-pending`）里，
+  重载回来时用它体检，**体检通过才提升为生效配置**；不通过就清掉待验证配置、回引导面板并就地红字。
+- 来源说明两行：形态差异一句话（网页形态同源 / 桌面形态要填地址）+ 令牌从哪来（`<平台数据根>/console-token.json` 或环境变量 `SANDBOX_CONSOLE_TOKEN`）。
+
+### 设置抽屉的「连接配置」区
+
+设置抽屉第三区（代理设置、启动模板之后）：后端地址 + 访问令牌 + 「测试连接」+「保存配置」。
+
+- 「测试连接」拿**还没保存的草稿值**打一次 `GET /api/health`，成功弹成功 toast、失败弹失败 toast（来源 `connection`）。
+- 「保存配置」把草稿落盘（桌面形态下顺带把后端基址经 IPC 告诉 Rust 侧，让动态 CSP 跟着走）。
+  **顺序是先落盘再同步**：同步可能要重载主文档，重载后配置得还在。
+- 本地校验（地址格式非法 / 令牌为空）**就地红字**展示（带 `role="alert"`，读屏能播报），不发请求。
+- 已知边界：桌面形态下**改了后端地址后，第一次「测试连接」会被 CSP 拦掉**（这一版主文档的 CSP 里还是旧主机，
+  表现是「后端不可达」）。先「保存配置」（重载一次主文档），再测。
+
 ## 后端健康自检
 
 侧栏底部常驻一条健康自检（`GET /api/health`，每 15 秒一次）：后端不可达时直接提示「后端服务不可达」并给出原因；后端可用但前端产物未挂载时提示「前端产物未挂载」。
+
+**令牌无效与后端不可达分开说**（`describeHealthFailure`，两种失败态不混）：
+
+| 失败 | 文案 |
+|---|---|
+| 令牌无效（401 / 403） | 「令牌无效：<后端 detail 原文>」 |
+| 其余失败（网络不通 / 超时 / 后端 500） | 「后端不可达：<原因>」 |
 
 健康自检在折叠态只留一个状态点（文字用 `sr-only` 收起来：视觉隐藏，**仍留在可访问树里**），可访问名也不会丢——容器带 `aria-label="后端健康：<健康文案>"`，跟随健康状态变化。
 
@@ -368,6 +440,10 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 - 断线后按退避节奏自动重连，**始终携带原 `session_id`**：服务端先回放环形缓冲再接实时流，现场不丢。页面刷新后（会话还在后端会话表里）点标签就能重新挂回原会话。
 - **退避计数只在连接真的可用时才清零**：收到服务端的 `hello` 帧，或连接稳定存活超过 5 秒。握手成功不等于连上了——服务端握手后立刻关闭时，如果在 `onopen` 就清零计数，会退化成每 500ms 一次的连接风暴。
 - 连续失败 10 次即停掉自动重连，界面显示「重连失败，点击重试」，由用户点「重试连接」手动触发。
+- **取票失败单独一类**（策略纯函数在 `src/lib/terminal-connection.ts`，有单元测试）：浏览器发起的WebSocket 不能设请求头，握手靠一次性票据，**票据取不到 = 根本没连上**（不是「连上之后断了」）：
+  - **状态文案单列**：「取不到终端票据：<原因>；N 秒后自动重连…」（不说「连接断开」）；
+  - **令牌无效（401）→ 停掉自动重连**：重试多少次都是 401，白跑；状态栏写「令牌无效：<后端 detail>；请到设置抽屉更新令牌后重试」，等用户换完令牌点「重试连接」；
+  - 其余失败（后端不可达 / 后端 500）按退避节奏重试，失败 toast 单独弹（来源 `terminal-connection`），**同一句不重复弹**（重连会反复取票据）。
 - 后端服务重启会让全部会话失效：此时前端明确提示「终端会话已失效（后端服务已重启），请新建终端」，并停止重连。
 - 服务端发来的 `error` 帧与「会话失效」都弹**失败 toast**（会话失效的文案是「终端会话已失效（后端服务已重启），请新建终端」），不会与状态栏的「已连接」混成一个文案。
 - **终态也有反馈**：进程正常退出（退出码 0）弹**提示 toast**「终端会话已结束」；退出码非 0 弹**失败 toast**（文案带退出码）；**退出码未知**（后端没给退出码）同样弹**失败 toast**（文案「终端会话异常结束（退出码未知）」）；退避重连中弹**提示 toast**（文案带退避秒数）；重连到上限弹**失败 toast**「重连失败，点击重试」。同一会话的同一条提示不重复弹（服务端可能反复推同一个 error 帧）；连接恢复后清掉记录，下一轮失败能重新提示。
@@ -382,9 +458,9 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 - 删除成功后标签消失；删除失败时展示后端 `detail` 原文。
 - 删除**本体成功**与**列表刷新失败**分开提示：两者合进同一条**提示 toast（蓝色）**，不把已成功的删除说成失败；后端回报 `removed=false` 时提示「记录已不存在（可能已被删除）」，回报 `closed=false` 时提示关闭流程未走完。
 
-### 设置（代理设置 + 启动模板）
+### 设置（代理设置 + 启动模板 + 连接配置）
 
-设置是抽屉（侧边栏底部的入口文案是「设置」，图标是 lucide `Settings`）。抽屉分两区：
+设置是抽屉（侧边栏底部的入口文案是「设置」，图标是 lucide `Settings`）。抽屉分三区：
 
 **第一区：代理设置**。直接展示六个字段：容器运行状态、健康状态、端口连通、缓存目录占用、证书就绪状态与代理访问地址。读状态失败与重启失败都弹**失败 toast**；点「重启代理」后弹一条**提示 toast（蓝色）**「代理正在重启，重启期间依赖镜像拉取会失败，属预期行为」（toast 5 秒后消失；按钮自身的加载态是「旋转图标 + 正在重启」）；重启结果按 `restarted` / `ca_changed` / `ca_reinstalled` / `reinstalled_users` / `failed_users` 如实展示，不把未修复报成已修复。**「刷新状态」与「重启代理」两个按钮在第一区里**（状态字段区之后、右对齐）：它们只管代理，挨着代理设置区更贴切；因此**抽屉不再有全局页脚**（两个按钮的 `data-testid` 与行为一个没变）。
 
@@ -393,6 +469,8 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 - 列表每行给**模板名 + 最近更新时间**，另有「重命名」与「删除」两个行内按钮；列表为空时给一句空态说明，列表读不到时弹失败 toast（来源 `settings-template`）并在抽屉里留一行就地环境状态说明。
 - **行内重命名**：该行变成输入框，**回车提交 / Esc 取消**，**空名禁提交**（按钮禁用 + 就地红字）；成功后弹成功 toast（来源 `settings-template`）。模板**标识不变**（标识由服务端生成，与名称解耦）。
 - **删除**走 `ModalShell` 确认弹窗（面板宽 400px），文案写明**只删模板、不影响已创建的沙箱**（沙箱一旦创建就不再依赖模板）；删除失败弹失败 toast，弹窗留在原地可以重试。
+
+**第三区：连接配置**（详见上方「连接配置」一节）。后端地址 + 访问令牌 + 「测试连接」+「保存配置」；结果按 toast 规范反馈（来源 `connection`）。
 
 ## data-testid 规范
 
@@ -407,6 +485,7 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 | 沙箱详情抽屉 | `sandbox-detail-dialog` | `page-sandbox-detail-dialog`（抽屉容器）/ `page-sandbox-detail-dialog-state` / `page-sandbox-detail-dialog-image` / `page-sandbox-detail-dialog-created-at` / `page-sandbox-detail-dialog-updated-at` / `page-sandbox-detail-image-source` / `page-sandbox-detail-system-user` / `page-sandbox-detail-container-name` / `page-sandbox-detail-network-name` / `page-sandbox-detail-socket-path` / `page-sandbox-detail-socket-mount-path` / `page-sandbox-detail-workdir` / `page-sandbox-detail-command` / `page-sandbox-detail-subid` / `page-sandbox-detail-network-owned` / `page-sandbox-detail-env` / `page-sandbox-detail-env-item` / `page-sandbox-detail-env-empty` / `page-sandbox-detail-mounts` / `page-sandbox-detail-mount-item` / `page-sandbox-detail-mounts-empty` / `page-sandbox-detail-dependencies` / `page-sandbox-detail-dependency-item` / `page-sandbox-detail-dependencies-empty` / `page-sandbox-detail-loading` / `page-sandbox-detail-unavailable`（读不到详情时的空态说明）|
 | 终端 | `sandbox-detail-terminal` | `page-sandbox-detail-terminal-panel` / `page-sandbox-detail-terminal-tabs` / `page-sandbox-detail-terminal-tab` / `page-sandbox-detail-terminal-tab-select` / `page-sandbox-detail-terminal-tab-close` / `page-sandbox-detail-terminal-new-button` / `page-sandbox-detail-terminal-status` / `page-sandbox-detail-terminal-fullscreen-button`（全屏开关；可访问名随状态在「全屏终端 / 退出全屏」之间切换，**不带 `aria-pressed`**）/ `page-sandbox-detail-terminal-retry-button` / `page-sandbox-detail-terminal-stopped-hint` / `page-sandbox-detail-terminal-surface` / `page-sandbox-detail-terminal-mount`（终端表面内层的测量/挂载盒，xterm 根元素的父节点）/ `page-sandbox-detail-terminal-placeholder` / `page-sandbox-detail-terminal-remove-confirm` / `page-sandbox-detail-terminal-remove-confirm-button` / `page-sandbox-detail-terminal-remove-cancel-button` |
 | 设置 | `settings` | `page-settings-dialog`（抽屉容器）/ `page-settings-title` / `page-settings-container-running` / `page-settings-healthy` / `page-settings-tcp-ok` / `page-settings-cache-size` / `page-settings-certificate-ready` / `page-settings-proxy-url` / `page-settings-refresh-button` / `page-settings-restart-button` / `page-settings-restart-result` / `page-settings-restarted` / `page-settings-restart-message` / `page-settings-ca-changed` / `page-settings-ca-reinstalled` / `page-settings-ca-conclusion` / `page-settings-reinstalled-users` / `page-settings-failed-users` / `page-settings-loading` |
+| 连接配置 | `connection` | `page-connection-setup`（未配置态的引导面板）/ `page-connection-base-url-input` / `page-connection-token-input` / `page-connection-submit-button`（「保存并连接」）/ `page-connection-error`（本地校验红字 / 体检失败红字，`role="alert"`）/ `page-settings-connection-base-url-input` / `page-settings-connection-token-input` / `page-settings-connection-test-button`（「测试连接」）/ `page-settings-connection-save-button`（「保存配置」）/ `page-settings-connection-error`（本地校验红字，`role="alert"`）|
 | 启动模板 | `settings-template` | `page-settings-template-section` / `page-settings-template-list` / `page-settings-template-item`（带 `data-template-id` 与 `data-template-name`）/ `page-settings-template-name` / `page-settings-template-updated-at` / `page-settings-template-rename-button` / `page-settings-template-rename-input` / `page-settings-template-rename-save-button` / `page-settings-template-rename-cancel-button` / `page-settings-template-rename-error` / `page-settings-template-delete-button` / `page-settings-template-delete-dialog` / `page-settings-template-delete-untouched-note`（「只删模板，不影响已创建的沙箱」）/ `page-settings-template-delete-confirm-button` / `page-settings-template-delete-cancel-button` / `page-settings-template-empty` / `page-settings-template-loading` / `page-settings-template-status`（模板列表读取失败的就地环境状态说明，`role="status"`）/ `page-settings-template-refresh-button` |
 | 删除沙箱 | `sandbox-detail-delete` | `page-sandbox-detail-delete-dialog` / `page-sandbox-detail-delete-title` / `page-sandbox-detail-delete-untouched-note` / `page-sandbox-detail-delete-confirm-button` / `page-sandbox-detail-delete-cancel-button` |
 | 停止沙箱 | `sandbox-detail-stop` | `page-sandbox-detail-stop-dialog` / `page-sandbox-detail-stop-title` / `page-sandbox-detail-stop-dependencies-checkbox`（「同时停止依赖容器」，默认勾选）/ `page-sandbox-detail-stop-confirm-button` / `page-sandbox-detail-stop-cancel-button` |
@@ -488,6 +567,8 @@ const detailFailed = page.locator(
 | `sandbox-template` | 新建沙箱抽屉里的模板列表读取失败、保存模板的结果、模板里有解析不了的挂载声明 |
 | `proxy-settings` | 代理状态读取失败、代理重启结果 |
 | `settings-template` | 设置抽屉里的模板列表读取失败、重命名与删除模板的结果 |
+| `connection` | 连接配置相关的操作结果（引导面板的「保存并连接」、设置抽屉的「测试连接」与「保存配置」） |
+| `terminal-connection` | 终端连接失败（一次性票据取不到 / 连不上） |
 
 toast 5 秒后自动消失，断言要放在动作之后立即执行。
 
@@ -500,7 +581,7 @@ toast 5 秒后自动消失，断言要放在动作之后立即执行。
 
 | 方法 | 路径 | 前端用途 |
 |---|---|---|
-| GET | `/api/health` | 侧栏底部的健康自检 |
+| GET | `/api/health` | 侧栏底部的健康自检；设置抽屉「测试连接」也用它 |
 | GET | `/api/sandboxes` | 侧栏沙箱列表（裸数组） |
 | POST | `/api/sandboxes` | 新建沙箱（带 `image_source=host`） |
 | GET | `/api/sandboxes/{name}` | 工作区摘要与详情抽屉 |
@@ -518,6 +599,7 @@ toast 5 秒后自动消失，断言要放在动作之后立即执行。
 | POST | `/api/terminal/sessions` | 新建终端会话 |
 | GET | `/api/terminal/sessions?sandbox=` | 终端标签条的数据源（裸数组） |
 | DELETE | `/api/terminal/sessions/{session_id}` | 删除会话（运行中＝先关后删，已退出＝走一遍收尾再删） |
-| WS | `/api/terminal/sessions/{session_id}` | 终端帧桥接 |
+| WS | `/api/terminal/sessions/{session_id}` | 终端帧桥接（握手带一次性票据 `?ticket=`）|
+| POST | `/api/auth/ticket` | 换一次性终端票据（每次连接 / 重连前现取，不缓存）|
 
 错误消息一律直接展示后端 `{"detail": "中文消息"}` 里的 `detail`，前端不另造说法。
