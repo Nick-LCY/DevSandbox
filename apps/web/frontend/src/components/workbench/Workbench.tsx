@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { ConnectionNotConfiguredError, api } from '../../api/client';
-import type { SandboxDetail, SandboxSummary } from '../../api/types';
+import type { ForwardModel, SandboxDetail, SandboxSummary } from '../../api/types';
 import {
   clearPendingConnection,
   describeHealthFailure,
@@ -14,6 +14,11 @@ import {
 } from '../../lib/connection';
 import { useDrawerWidth } from '../../lib/drawer-width';
 import { nextPollFailure } from '../../lib/poll';
+import {
+  describeMergedPollFailure,
+  mergedPollFailed,
+  type MergedPollResult,
+} from '../../lib/sandbox-poll';
 import { TerminalPanel } from '../TerminalPanel';
 import { useToast } from '../Toast';
 import { useNavigate, useRoute } from '../../lib/router';
@@ -32,6 +37,9 @@ const POLL_INTERVAL = 5000;
 
 /** 后端健康自检的轮询间隔（毫秒）。 */
 const HEALTH_POLL_INTERVAL = 15000;
+
+/** 沙箱详情 + 端口转发记录的合并轮询间隔（毫秒）。 */
+const DETAIL_POLL_INTERVAL = 10000;
 
 /** 桌面形态启动同步的兜底超时（毫秒）：桌面壳没响应时不能把界面挂死。 */
 const DESKTOP_SYNC_TIMEOUT = 3000;
@@ -155,6 +163,8 @@ function WorkbenchView({
 
   const [detail, setDetail] = useState<SandboxDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  /** 后端的端口转发记录（**与详情合并轮询**，详情抽屉里的转发表格用它）。 */
+  const [forwards, setForwards] = useState<ForwardModel[]>([]);
   const [busy, setBusy] = useState(false);
   const [stopDependencies, setStopDependencies] = useState(true);
 
@@ -174,8 +184,14 @@ function WorkbenchView({
   const requestIdRef = useRef(0);
   /** 详情请求的序号：旧响应回来时直接丢弃，不许覆盖新沙箱的头部。 */
   const detailRequestIdRef = useRef(0);
+  /** 转发记录请求的序号：同样防止乱序回写（旧沙箱的记录不许串台）。 */
+  const forwardsRequestIdRef = useRef(0);
   /** 后台轮询连续失败次数：到阈值弹一条失败 toast，任一次成功即清零。 */
   const pollFailuresRef = useRef(0);
+  /** 详情 + 转发记录的合并轮询连续失败次数（同上口径）。 */
+  const detailPollFailuresRef = useRef(0);
+  /** 详情抽屉上一次是否打开（用来抓「从关到开」的那一瞬间）。 */
+  const detailOpenRef = useRef(false);
 
   /** 当前选中的沙箱名（没选中时为 null）。 */
   const selectedName = route.name === 'workbench-sandbox' ? route.sandboxName : null;
@@ -283,42 +299,177 @@ function WorkbenchView({
 
   /* ------------------------------------------------------------------ 详情 */
 
-  const loadDetail = useCallback(async (name: string) => {
-    const requestId = detailRequestIdRef.current + 1;
-    detailRequestIdRef.current = requestId;
-    setDetailLoading(true);
-    try {
-      const found = await api.getSandbox(name);
-      if (requestId !== detailRequestIdRef.current) {
+  /**
+   * 读沙箱详情。
+   *
+   * `silent` = 轮询那一拍：**失败不逐次弹**（连续 3 次才弹一条），
+   * 且**不清空已有的详情**（一拍的抖动不该把工作区头部抹掉）。
+   */
+  const loadDetail = useCallback(
+    async (name: string, options?: { silent?: boolean }): Promise<string | null> => {
+      const requestId = detailRequestIdRef.current + 1;
+      detailRequestIdRef.current = requestId;
+      if (!options?.silent) {
+        setDetailLoading(true);
+      }
+      try {
+        const found = await api.getSandbox(name);
+        if (requestId !== detailRequestIdRef.current) {
+          return null;
+        }
+        setDetail(found);
+        return null;
+      } catch (exc) {
+        if (requestId !== detailRequestIdRef.current) {
+          return null;
+        }
+        const message = exc instanceof Error ? exc.message : '读取沙箱详情失败';
+        if (!options?.silent) {
+          // 手动触发（首次读 / 头部刷新）：立刻弹失败 toast，工作区回落到空态展示。
+          setDetail(null);
+          show('error', message, { source: 'sandbox-detail' });
+        }
+        return message;
+      } finally {
+        // **只有非 silent 的那次请求才复位 loading**：silent 请求自己不把
+        // loading 置起来（它只是轮询那一拍），提前关掉会把还在转的头部
+        // loading 误关。
+        if (!options?.silent && requestId === detailRequestIdRef.current) {
+          setDetailLoading(false);
+        }
+      }
+    },
+    [show],
+  );
+
+  /**
+   * 读后端的端口转发记录。
+   *
+   * **与详情合并轮询**：转发记录由工作台持有，端口转发区只管渲染。
+   * 失败口径与详情一致（`silent` 时不逐次弹）。
+   *
+   * **只有桌面形态才读**：web 形态的端口转发区连转发记录都不读
+   * （只有一张说明卡，没有表格），读取在工作台层且仅桌面形态执行。
+   */
+  const loadForwards = useCallback(
+    async (name: string, options?: { silent?: boolean }): Promise<string | null> => {
+      // web 形态：不读转发记录（面板不渲染行，也就没有读它的理由）。
+      if (!desktop) {
+        return null;
+      }
+      const requestId = forwardsRequestIdRef.current + 1;
+      forwardsRequestIdRef.current = requestId;
+      try {
+        const list = await api.listForwards(name);
+        if (requestId !== forwardsRequestIdRef.current) {
+          return null;
+        }
+        setForwards(list);
+        return null;
+      } catch (exc) {
+        if (requestId !== forwardsRequestIdRef.current) {
+          return null;
+        }
+        const message = exc instanceof Error ? exc.message : '读取端口转发列表失败';
+        if (!options?.silent) {
+          show('error', message, { source: 'sandbox-detail' });
+        }
+        return message;
+      }
+    },
+    [desktop, show],
+  );
+
+  /**
+   * 一拍刷两份：沙箱详情 + 转发记录（并行）。
+   *
+   * 两份结果分别落 `detail` 与 `forwards`；失败原因原样返回（交给调用方决定
+   * 是立即弹还是计入连续失败计数）。
+   *
+   * **web 形态只刷详情**：转发记录的读取在工作台层且**仅桌面形态执行**
+   * （web 形态的端口转发区只有一张说明卡，没有表格可渲染）。
+   */
+  const refreshSelected = useCallback(
+    async (name: string, options?: { silent?: boolean }): Promise<MergedPollResult> => {
+      const [detailError, forwardsError] = await Promise.all([
+        loadDetail(name, options),
+        loadForwards(name, options),
+      ]);
+      return { detailError, forwardsError };
+    },
+    [loadDetail, loadForwards],
+  );
+
+  /** 一拍之后的失败计数（连续 3 次失败弹一条，成功即清零）。 */
+  const accountMergedPoll = useCallback(
+    (result: MergedPollResult) => {
+      const step = nextPollFailure(detailPollFailuresRef.current, !mergedPollFailed(result));
+      detailPollFailuresRef.current = step.count;
+      if (!step.shouldToast) {
         return;
       }
-      setDetail(found);
-    } catch (exc) {
-      if (requestId !== detailRequestIdRef.current) {
-        return;
-      }
-      setDetail(null);
-      // 详情读取失败：弹失败 toast，工作区回落到空态展示。
-      show('error', exc instanceof Error ? exc.message : '读取沙箱详情失败', {
-        source: 'sandbox-detail',
-      });
-    } finally {
-      if (requestId === detailRequestIdRef.current) {
-        setDetailLoading(false);
-      }
-    }
-  }, [show]);
+      show('error', describeMergedPollFailure(result), { source: 'sandbox-detail' });
+    },
+    [show],
+  );
 
   useEffect(() => {
     if (!selectedName) {
       setDetail(null);
+      setForwards([]);
       return;
     }
-    // 换沙箱：先把上一个沙箱的详情清掉，别让头部串台；
-    // 在途的旧请求由 loadDetail 的请求序号护栏丢弃。
+    // 换沙箱：先把上一个沙箱的详情与转发记录清掉，别让头部串台；
+    // 在途的旧请求由请求序号护栏丢弃。
     setDetail(null);
-    void loadDetail(selectedName);
-  }, [selectedName, loadDetail]);
+    setForwards([]);
+    detailPollFailuresRef.current = 0;
+    void refreshSelected(selectedName);
+  }, [selectedName, refreshSelected]);
+
+  /**
+   * 合并轮询：每 10 秒刷一次详情 + 转发记录。
+   *
+   * **不管详情抽屉开没开都跑**（抽屉关着时数据也得是最新的）。
+   * 失败口径：逐次不弹（会刷屏），**连续 3 次失败弹一条**；
+   * 页面不可见时整拍跳过（省一次往返，也不让后台标签页堆积请求）。
+   */
+  useEffect(() => {
+    if (!selectedName) {
+      return undefined;
+    }
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') {
+        return;
+      }
+      void refreshSelected(selectedName, { silent: true }).then(accountMergedPoll);
+    }, DETAIL_POLL_INTERVAL);
+    return () => window.clearInterval(timer);
+  }, [selectedName, refreshSelected, accountMergedPoll]);
+
+  /**
+   * 打开详情抽屉的那一瞬间：**立即合并刷一次**（详情 + 转发记录），不等下一拍。
+   *
+   * **非 silent**：开抽屉是**用户主动触发的操作**，失败**立即弹 toast**
+   * （与「用户主动触发的操作失败立刻弹」一致），**不计入**合并轮询的
+   * 连续失败计数（那是后台轮询的口径）。周期节拍仍是 silent + 计数。
+   */
+  useEffect(() => {
+    const wasOpen = detailOpenRef.current;
+    detailOpenRef.current = detailOpen;
+    if (!detailOpen || wasOpen || !selectedName) {
+      return;
+    }
+    void refreshSelected(selectedName);
+  }, [detailOpen, selectedName, refreshSelected]);
+
+  /** 端口转发的写操作完成后：立即重拉转发记录（不等下一拍）。 */
+  const reloadForwards = useCallback(() => {
+    if (!selectedName) {
+      return;
+    }
+    void loadForwards(selectedName, { silent: true });
+  }, [selectedName, loadForwards]);
 
   /* -------------------------------------------------------------- 生命周期 */
 
@@ -499,6 +650,8 @@ function WorkbenchView({
         onWidthChange={setWidthVw}
         desktop={desktop}
         connection={connection}
+        forwards={forwards}
+        onForwardsChanged={reloadForwards}
       />
 
       <SettingsDialog

@@ -1,11 +1,12 @@
 /**
  * 端口转发的纯逻辑单测。
  *
- * 覆盖三条口径：
+ * 覆盖四条口径：
  * - **本机端口校验**：非空、纯数字、`1~65535`；**低端口（<1024）不拦**
  *   （能不能绑由操作系统说了算，绑不上时桌面端明确报错）；
- * - **映射文案**：容器端口 → 本机端口；
- * - **状态文案与本机地址拼接**：四色语义 + `http://127.0.0.1:<port>`。
+ * - **状态文案**：后端记录（可用 / 已停止）、本机监听四态；
+ * - **圆点配色**：本机状态（绿 / 黄 / 红）与容器状态（绿 / 红，不用脉动）；
+ * - **tooltip 文案**：本机状态与容器状态的提示语（同时是圆点的可访问名）。
  */
 
 import { describe, expect, it } from 'vitest';
@@ -15,12 +16,17 @@ import {
   PORT_MAX,
   PORT_MIN,
   describeListenerStarted,
-  forwardMappingLabel,
+  forwardRecordDotClass,
+  forwardRecordState,
+  forwardRecordStateLabel,
   forwardStateLabel,
   listenerBadgeState,
+  listenerDotClass,
+  listenerStateHint,
   listenerStateLabel,
   listenerTone,
   listenerToneClass,
+  localForwardEndpoint,
   localForwardUrl,
   parsePort,
   validatePort,
@@ -78,19 +84,14 @@ describe('端口解析', () => {
   });
 });
 
-describe('映射文案与本机地址', () => {
-  it('容器端口 → 本机端口', () => {
-    expect(forwardMappingLabel(8080, 18000)).toBe('8080 → 18000');
-    expect(forwardMappingLabel(8080, 8080)).toBe('8080 → 8080');
-  });
-
-  it('本机端口还没开启时显示占位符', () => {
-    expect(forwardMappingLabel(8080, null)).toBe('8080 → —');
-  });
-
+describe('本机地址', () => {
   it('本机地址只指回环', () => {
     expect(localForwardUrl(8080)).toBe(`http://${LOCAL_FORWARD_HOST}:8080`);
     expect(LOCAL_FORWARD_HOST).toBe('127.0.0.1');
+  });
+
+  it('「主机:端口」形态不带协议头（提示文案里用）', () => {
+    expect(localForwardEndpoint(18000)).toBe('127.0.0.1:18000');
   });
 });
 
@@ -103,6 +104,7 @@ describe('状态文案', () => {
 
   it('本机监听状态', () => {
     expect(listenerStateLabel('listening')).toBe('监听中');
+    expect(listenerStateLabel('starting')).toBe('开启中');
     expect(listenerStateLabel('stopped')).toBe('未开启');
     expect(listenerStateLabel('error')).toBe('失败');
   });
@@ -118,18 +120,6 @@ describe('状态文案', () => {
     expect(listenerToneClass('busy')).toContain('text-status-busy');
     expect(listenerToneClass('stopped')).toBe('text-status-stopped');
     expect(listenerToneClass('failed')).toBe('text-status-failed');
-  });
-});
-
-describe('开启本机监听后的提示文案', () => {  it('端口没被占时给本机地址', () => {
-    expect(describeListenerStarted(8080, 8080)).toBe('本机监听已开启：http://127.0.0.1:8080');
-  });
-
-  it('端口被占自动换掉时说清楚实际端口', () => {
-    const text = describeListenerStarted(8080, 18000);
-    expect(text).toContain('8080');
-    expect(text).toContain('18000');
-    expect(text).toContain('http://127.0.0.1:18000');
   });
 });
 
@@ -161,5 +151,55 @@ describe('本机监听徽标的状态（颜色与文字同源）', () => {
     expect(listenerStateLabel(listenerBadgeState({ starting: false, listening: false, failed: false }))).toBe(
       '未开启',
     );
+  });
+});
+
+describe('圆点配色（表格里的纯圆点）', () => {
+  it('本机状态：监听中绿 / 开启中黄（脉动）/ 未开启与失败红', () => {
+    expect(listenerDotClass('listening')).toBe('text-status-running');
+    expect(listenerDotClass('starting')).toContain('text-status-busy');
+    expect(listenerDotClass('starting')).toContain('animate-status-pulse');
+    // 未开启是红点（记录在但本机没监听 = 待处理）。
+    expect(listenerDotClass('stopped')).toBe('text-status-failed');
+    expect(listenerDotClass('error')).toBe('text-status-failed');
+  });
+
+  it('容器状态：可用绿 / 已停止与无记录红（不用脉动）', () => {
+    expect(forwardRecordDotClass('running')).toBe('text-status-running');
+    expect(forwardRecordDotClass('stopped')).toBe('text-status-failed');
+    expect(forwardRecordDotClass('orphan')).toBe('text-status-failed');
+    expect(forwardRecordDotClass('orphan')).not.toContain('animate-status-pulse');
+  });
+});
+
+describe('tooltip 文案（同时是圆点的可访问名）', () => {
+  it('本机状态四态', () => {
+    expect(listenerStateHint('starting', null)).toBe('正在开启本机监听…');
+    expect(listenerStateHint('listening', 18000)).toBe('监听中 · 127.0.0.1:18000');
+    expect(listenerStateHint('error', null)).toBe('本机监听失败');
+    expect(listenerStateHint('stopped', null)).toBe('本机监听未开启');
+  });
+
+  it('容器状态三态', () => {
+    expect(forwardRecordState('running')).toBe('running');
+    expect(forwardRecordState('stopped')).toBe('stopped');
+    // 没有后端记录 = 孤儿行。
+    expect(forwardRecordState(undefined)).toBe('orphan');
+    expect(forwardRecordStateLabel('running')).toBe('后端转发可用');
+    expect(forwardRecordStateLabel('stopped')).toBe('后端转发已停止');
+    expect(forwardRecordStateLabel('orphan')).toBe('无后端转发记录');
+  });
+});
+
+describe('开启本机监听后的提示文案', () => {
+  it('端口没被占时给本机地址', () => {
+    expect(describeListenerStarted(8080, 8080)).toBe('本机监听已开启：http://127.0.0.1:8080');
+  });
+
+  it('端口被占自动换掉时说清楚实际端口', () => {
+    const text = describeListenerStarted(8080, 18000);
+    expect(text).toContain('8080');
+    expect(text).toContain('18000');
+    expect(text).toContain('http://127.0.0.1:18000');
   });
 });

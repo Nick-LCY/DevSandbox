@@ -61,7 +61,7 @@ pnpm run typecheck  # tsc --noEmit，零错误
 pnpm run test       # vitest run，纯数据转换逻辑与组件交互的单元测试
 ```
 
-单元测试覆盖挂载声明解析、文件注入声明解析（两段格式、家目录写法、敏感清单、宿主与容器路径重复）、环境变量解析、启动模板的纯逻辑（宽松挂载解析、宽松文件注入解析、表单合并语义与配置收集）、两层路由解析（含畸形百分号编码）、字节与时间格式化、终端帧协议解析、终端状态提示的口径与去重规则（纯函数，含用户主动关闭、空闲回收与服务退出兜底三种结束原因）、终端快捷键的分类（纯函数：浏览器保留键、Ctrl+Shift+C 复制、Ctrl+Shift+V 粘贴、其余带 Ctrl/Meta/Alt 的组合转发、纯键普通处理，Meta+Shift+C/V 同样触发）、代理状态文案转换、主题存取、抽屉宽度的存取与换算、轮询失败计数，终端面板的会话标签与关闭会话交互（标签渲染、点标签回调、运行中与已退出的两套确认文案、确认与取消、失败提示、记录已不存在、关闭流程未走完、列表刷新失败、终态提示、同一状态反复上报不重复刷屏、轮询连续失败），工作台的列表读取失败与轮询失败反馈、停止沙箱先弹确认框，新建沙箱抽屉的镜像列表失败说明、镜像选择器的本地筛选（输入关键字只剩命中项）、列表到位后输入框不被预填、逐字符打字能命中、没命中时的空态、弹层顶部无空白块、输入框内部的下拉箭头（纯指示器、点击落在输入框上）、候选项的指针光标、空列表不留空白带、键盘选中、选中后的详情行、改字即放弃选择与未选镜像时的校验红字、挂载空态的精简文案，文件注入区的声明入请求与就地校验红字（格式非法、容器路径重复）、空态占位（一行都没声明时显示「暂未声明注入。」）、除该空态占位外无解释性文案，以及文件注入的模板联动（出现即整组替换、没有则保持现状）与保存为模板时的文件行入库，模板选择器的可搜可选、选中回填（模板声明原样回填与镜像不在宿主列表时的留空）、模板下拉下不再挂说明段、模板入口的位置（加载模板在抽屉最上方、保存为模板在页脚且在主按钮左侧）、保存为模板的空名禁提交与成功提示、保存弹窗的精简文案，以及创建成功收口，设置抽屉的代理重启失败反馈不被状态刷新失败顶掉、刷新与重启两个按钮在代理设置区里（抽屉没有全局页脚）、模板列表渲染与空态、管理区不再挂说明段、模板列表读取失败、行内重命名（回车提交 / Esc 取消 / 空名禁提交）与删除确认弹窗，删除沙箱确认的一次点即执行，停止沙箱确认弹窗的勾选项与忙碌锁，以及抽屉外壳的焦点管理、关闭途径、宽度拖拽把手（条子中间带竖向抓握图标）与指针拖拽路径（拖动中不落盘、松手落盘一次、按下即松手不落盘、视口宽不可用时不换算），最后是全局 toast 组件本身（类型 → 配色类映射、5 秒自动消失、关闭键提前关闭、倒计时圆环的动画类名与时长、悬停 / 点提示区 / 聚焦提示区 / 按下提示条不暂停倒计时、按 F6 不被 Base UI 接管、窗口失焦停表与回前台整体重走 5 秒、新反馈顶掉旧条并重置计时、退场竞态下圆环重建）。组件测试用 jsdom 环境（文件头部 `@vitest-environment jsdom` 注解切换），依赖 `@testing-library/react` 与 `jsdom`。
+单元测试覆盖挂载声明解析、文件注入声明解析（两段格式、家目录写法、敏感清单、宿主与容器路径重复）、环境变量解析、启动模板的纯逻辑（宽松挂载解析、宽松文件注入解析、表单合并语义与配置收集）、两层路由解析（含畸形百分号编码）、字节与时间格式化、终端帧协议解析、终端状态提示的口径与去重规则（纯函数，含用户主动关闭、空闲回收与服务退出兜底三种结束原因）、终端快捷键的分类（纯函数：浏览器保留键、Ctrl+Shift+C 复制、Ctrl+Shift+V 粘贴、其余带 Ctrl/Meta/Alt 的组合转发、纯键普通处理，Meta+Shift+C/V 同样触发）、代理状态文案转换、主题存取、抽屉宽度的存取与换算、轮询失败计数，终端面板的会话标签与关闭会话交互（标签渲染、点标签回调、运行中与已退出的两套确认文案、确认与取消、失败提示、记录已不存在、关闭流程未走完、列表刷新失败、终态提示、同一状态反复上报不重复刷屏、轮询连续失败），工作台的列表读取失败与轮询失败反馈、停止沙箱先弹确认框，新建沙箱抽屉的镜像列表失败说明、镜像选择器的本地筛选（输入关键字只剩命中项）、列表到位后输入框不被预填、逐字符打字能命中、没命中时的空态、弹层顶部无空白块、输入框内部的下拉箭头（纯指示器、点击落在输入框上）、候选项的指针光标、空列表不留空白带、键盘选中、选中后的详情行、改字即放弃选择与未选镜像时的校验红字、挂载空态的精简文案，文件注入区的声明入请求与就地校验红字（格式非法、容器路径重复）、空态占位（一行都没声明时显示「暂未声明注入。」）、除该空态占位外无解释性文案，以及文件注入的模板联动（出现即整组替换、没有则保持现状）与保存为模板时的文件行入库，模板选择器的可搜可选、选中回填（模板声明原样回填与镜像不在宿主列表时的留空）、模板下拉下不再挂说明段、模板入口的位置（加载模板在抽屉最上方、保存为模板在页脚且在主按钮左侧）、保存为模板的空名禁提交与成功提示、保存弹窗的精简文案，以及创建成功收口，设置抽屉的代理重启失败反馈不被状态刷新失败顶掉、刷新与重启两个按钮在代理设置区里（抽屉没有全局页脚）、模板列表渲染与空态、管理区不再挂说明段、模板列表读取失败、行内重命名（回车提交 / Esc 取消 / 空名禁提交）与删除确认弹窗，删除沙箱确认的一次点即执行，停止沙箱确认弹窗的勾选项与忙碌锁，以及抽屉外壳的焦点管理、关闭途径、宽度拖拽把手（条子中间带竖向抓握图标）与指针拖拽路径（拖动中不落盘、松手落盘一次、按下即松手不落盘、视口宽不可用时不换算），最后是全局 toast 组件本身（类型 → 配色类映射、5 秒自动消失、关闭键提前关闭、倒计时圆环的动画类名与时长、悬停 / 点提示区 / 聚焦提示区 / 按下提示条不暂停倒计时、按 F6 不被 Base UI 接管、窗口失焦停表与回前台整体重走 5 秒、新反馈顶掉旧条并重置计时、退场竞态下圆环重建），以及端口转发区的五列表格（五列表头、行并集 = 记录 ∪ 监听、本机端口列显示实际值与「—」、圆点状态与 `data-state`、圆点的可访问名、新建双开、删除先停后删与孤儿行只停、**无本机监听的行删除时不调 stop 也不误报**、同步两方向含监听迁移、**迁移时旧监听停不掉则中止迁移**、**迁移期间旧行圆点也变「开启中」**、**后端已停 + 本机无监听 → 先建记录再开监听**、行内编辑的停旧重开与校验红字、**编辑态 Esc 不冒泡（不关抽屉）**、**回车提交防重入**、轮询刷回来的数据不触发任何开 / 关监听），以及工作台里沙箱详情与转发记录的合并轮询（一拍刷两份、**web 形态只刷详情（转发记录不读）**、页面不可见整拍跳过、连续 3 次失败弹一条、**轮询失败不清空已有详情**、**写操作后立即重拉转发记录**、**打开抽屉那一拍立即弹 toast 且不消耗连续失败计数**）。组件测试用 jsdom 环境（文件头部 `@vitest-environment jsdom` 注解切换），依赖 `@testing-library/react` 与 `jsdom`。
 
 本轮新增：侧栏折叠（默认展开、收窄到 56px、可访问名随状态切换、**底部工具区的贴底约束类**、健康状态的可访问名跟随健康文案）、终端焦点回填门控（有意图回填、原位回填、焦点在终端外不抢、**重挂载把焦点复位到 body 后没有意图就不回填**、新建会话后回填）、终端尺寸自适应的尾沿去抖（**连续多次触发只发一次 resize**）、**连接层**（连接配置的存取与非法值回落 / **基址恒非空**（空值归一为默认地址 `http://127.0.0.1:8000`，存量存储里的空基址读到时也归一）/ 基址推导与尾部斜杠归一 / **基址带路径与参数被拒** / **未配置只看令牌（两种形态一个口径）** / 形态探测与未配置判定；接口层的**请求恒为绝对地址**、`Authorization` 头、票据获取与「令牌缺失不发请求」；终端 WebSocket 地址的基址推导（**恒从基址推导、不保留路径、推导不出来不猜地址**、**推导前先过归一层**（漏 scheme 的写法也推得出来）、**主机名带非 ASCII 字符不猜 punycode 地址**）与票据拼接；**终端取票失败的策略**（401 停自动重连 / 退避节奏 / 提示去重）；未配置态的引导面板与「**先体检再保存**」（401 不保存不挂载、错误就地红字）；**引导面板的地址框两种形态都可编辑、预填默认地址**；**运行期配置失效回引导面板**；桌面形态的动态 CSP 同步与主文档重载（**送出去的基址恒为「非空且已归一」**：存量空基址归一为默认地址、漏 scheme 的写法补上 scheme；**去重按归一值比较**）；设置抽屉的连接配置区与测试连接反馈；**基址必填**（设置抽屉「保存配置」与引导面板「保存并连接」时基址留空 → 就地红字「请填写后端地址」：不落盘 / 不写待验证配置 / 不同步 CSP / 不体检；**网页形态与桌面形态一个口径**））。
 
@@ -116,12 +116,13 @@ apps/web/frontend/
     │   ├── templates.ts  启动模板（挂载解析 / 表单合并与收集）
     │   ├── proxy.ts      代理状态文案转换
     │   ├── terminal.ts   终端帧协议与 WS 地址推导
-    │   ├── port-forward.ts 端口转发纯逻辑（本机端口校验 / 映射文案 / 状态文案 / 徽标状态 / 本机地址拼接）
+    │   ├── port-forward.ts 端口转发纯逻辑（本机端口校验 / 状态文案 / 圆点配色 / tooltip 文案 / 本机地址拼接）
     │   ├── desktop-forward.ts 桌面壳端口转发 IPC 桥（start/stop/listeners 与两个事件的订阅）
     │   ├── desktop-forward.test.ts IPC 桥单测（失败值收口 / 事件订阅的 target 形状 / 订阅失败降级）
     │   ├── terminal-connection.ts 终端取票失败的策略（分类 / 重连节奏 / 提示去重）
     │   ├── sessions.ts   会话定序与标签序号登记
     │   ├── poll.ts       后台轮询的连续失败计数（到阈值弹一条 toast）
+    │   ├── sandbox-poll.ts 沙箱详情 + 转发记录的合并轮询（一拍算不算失败 / 失败文案）
     │   ├── toast.ts      操作反馈（toast）的类型与配色口径
     │   ├── theme.ts      亮 / 暗主题切换
     │   ├── sidebar-collapsed.ts 侧栏折叠状态的存取（默认展开，挂载不写）
@@ -330,7 +331,7 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 | 关闭键 | 每条 toast 右上角有 `×` 关闭键，可提前关闭 |
 | 倒计时 | 关闭键外围一圈描边圆环（SVG `stroke-dasharray` / `stroke-dashoffset`），5 秒线性画满，与自动消失同步（画满即消失）；关键帧 `app-toast-countdown` 写在 `src/styles/globals.css`，时长取同一个常量。反馈被顶替时圆环按「代次」重建（代次只增不减），画满与消失始终同步 |
 | 同时几条 | 同一时刻只留**最新一条**：新的操作结果直接顶掉旧的（轮询失败不会刷屏） |
-| 谁弹 | 用户主动触发的操作失败**立刻弹**；**首次加载失败也立刻弹**；后台轮询（沙箱列表 5 秒一轮、终端会话表 10 秒一轮）**逐次失败不弹，连续失败 3 次弹一条**（任一次成功即清零）——后端整体不可达时侧栏底部的健康自检已经常驻提示，但端点级失败（接口 500）它兜不住，必须另有提示 |
+| 谁弹 | 用户主动触发的操作失败**立刻弹**；**首次加载失败也立刻弹**；后台轮询（沙箱列表 5 秒一轮、终端会话表 10 秒一轮、沙箱详情 + 转发记录合并轮询 10 秒一轮）**逐次失败不弹，连续失败 3 次弹一条**（任一次成功即清零）——后端整体不可达时侧栏底部的健康自检已经常驻提示，但端点级失败（接口 500）它兜不住，必须另有提示 |
 | 倒计时何时会停 | **只有窗口失焦会停**（`window` 的 blur 事件）：失焦时倒计时停表、圆环停画；回前台时整条**重走 5 秒**（圆环重画 + 计时器重走），不是接着上次剩的时间继续。页面上悬停、点提示区、聚焦提示区、按下提示条、按 F6 都**不**暂停（Base UI 默认会暂停，还会接管 F6 把提示区聚焦并按停倒计时，已逐条拦掉） |
 | 滑动关闭 | 关掉（`swipeDirection={[]}`）：Base UI 的滑动会顺带挂 pointerdown 处理器，触摸按下会把倒计时按停 |
 
@@ -387,6 +388,23 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 - **面板不挂 `duration-*`**：Tailwind 的 `duration-*` 会同时输出 `transition-duration`，默认 `transition-property: all` 会把宽度一起过渡，拖拽把手时面板滞后 150ms 不跟手。动画时长只写 `[--tw-duration:…]`（只影响 `animation` 简写）。
 
 ## 关键行为
+
+### 沙箱详情与转发记录的合并轮询
+
+工作台选中一个沙箱后，**每 10 秒一拍**，并行刷两份数据（`GET /api/sandboxes/<名>` + `GET /api/forwards?sandbox=<名>`）：
+
+| 口径 | 规定 |
+|---|---|
+| 触发条件 | **当前有选中沙箱**（`selectedName` 非空）才跑；换沙箱 / 清空选中时定时器重建 |
+| 与抽屉无关 | **不管沙箱详情抽屉开没开都跑**（抽屉关着时数据也得是最新的） |
+| 打开抽屉 | 抽屉**从关到开的瞬间立即刷一次**（不等下一拍）；这一拍是**非 silent**（用户主动触发的操作，失败**立即弹** toast），**不计入**周期节拍的连续失败计数 |
+| 落点 | 详情进 `detail`、转发记录进 `forwards`；两份各带**请求序号护栏**（旧响应回来直接丢弃，不许乱序回写） |
+| 失败口径 | 周期节拍是 **silent**：**逐次不弹**（会刷屏），**连续 3 次失败弹一条失败 toast**（来源 `sandbox-detail`，任一次成功即清零）；**页面不可见时整拍跳过**（省一次往返，也不让后台标签页堆积请求） |
+| 手动刷新 | 工作区头部的刷新按钮**只刷详情**，失败**立即弹**（维持现状） |
+| 数据流向 | **转发记录由工作台持有**，经 props 传给详情抽屉 → 端口转发区；**面板自己不拉**（web 形态的面板连数据都不读） |
+| 形态差异 | **转发记录的读取在工作台层且仅桌面形态执行**：**web 形态只刷详情**，转发记录一个都不读（面板不渲染行，没有读它的理由） |
+
+纯逻辑（一拍算不算失败、失败文案怎么拼）在 `src/lib/sandbox-poll.ts`，有单元测试；轮询定时器本身留在组件层（与终端会话表的轮询同款骨架）。
 
 ### 新建沙箱
 
@@ -482,25 +500,38 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 **界面位置**：沙箱详情抽屉（`page-sandbox-detail-dialog`）底部的「端口转发」区
 （组件 `src/components/workbench/PortForwardPanel.tsx`）。
 
-**两种形态的差异**（决策 C，2026-11-03）：
+**两种形态的差异**（决策 C，2026-11-03；2026-11-04 改为五列表格）：
 
 | 形态 | 渲染什么 | 不渲染什么 |
 |---|---|---|
-| **web 形态** | 一张说明卡（**「网页形态无法管理端口转发，请使用桌面端」**）+「安装桌面端」按钮（点开 `ModalShell` 安装指引弹窗） | **列表 / 新建 / 开启关闭 / 停止等一切管理操作**——本机端口的监听由桌面端持有，在网页上建转发只会给出「建了却连不上」的半截功能；**连转发记录都不读** |
-| **桌面形态** | 完整管理：新建转发、列表（容器端口 → 本机端口）、开启 / 关闭本机监听、停止转发、开启后行内显示 `http://127.0.0.1:<本机端口>` 与复制按钮 | — |
+| **web 形态** | 一张说明卡（**「网页形态无法管理端口转发，请使用桌面端」**）+「安装桌面端」按钮（点开 `ModalShell` 安装指引弹窗） | **表格 / 新建 / 同步 / 编辑 / 删除等一切管理操作**——本机端口的监听由桌面端持有，在网页上建转发只会给出「建了却连不上」的半截功能；**面板自己不读任何数据**（转发记录由工作台经 props 送来，本机监听表不查）；**转发记录的读取在工作台层且仅桌面形态执行**（web 形态只刷详情） |
+| **桌面形态** | 完整管理：**新建表单卡在上 + 五列表格在下**，表格行 = **后端记录 ∪ 本机监听的并集**，操作列三个 icon 按钮：**同步 / 编辑本机端口 / 删除转发** | — |
 
 - **本机端口规则**（ADR 0014 第 4 节）：**默认 = 容器端口**、**可编辑**、**不可为空**（空值在表单层就拦掉）、**被占自动换空闲端口并显示实际值**、**允许 <1024**（低端口能不能绑由操作系统说了算：Windows 可绑、macOS 现代版可绑，**Linux 非 root 绑不了时由桌面端明确报错**，不静默失败）。
-- **界面显示的必须是实际端口**：桌面端开启监听时返回的是**实际生效**的端口（用户输入的端口被占时会被换成空闲端口），列表与提示里都显示它。
+- **界面显示的必须是实际端口**：桌面端开启监听时返回的是**实际生效**的端口（用户输入的端口被占时会被换成空闲端口），**本机端口列**与提示里都显示它；没有本机监听时该列显示「—」。
 - **本机端口只在桌面端存在**：后端的三条转发 REST 不带本机端口字段（链路两点化，后端宿主零端口）。
-- **管理操作的落点**：
-  - 「开启本机监听」→ 桌面端 `start_forward`（**幂等**：同一条转发重复开启返回现有端口）；
-  - 「关闭本机监听」→ 桌面端 `stop_forward`（关监听 + 关全部连接，转发记录保留）；
-  - 「停止转发」→ 先 `stop_forward` 再 `DELETE /api/forwards/{id}`（删转发容器 + 删记录）。
-    **`stop_forward` 失败不静默**：弹失败提示「本机监听停止失败，该端口可能仍被占用；请在桌面端重新开启本机监听后再关闭」，
-    **然后照旧删记录**（不留指向已删转发的僵尸监听）。
-- **状态徽标只表达本机监听语义**（颜色与文字同源）：未开启（灰）/ 开启中（琥珀，脉动）/ 监听中（绿）/ 失败（红）。
-  **后端转发记录的状态（running / 已停止）不进徽标**，单独一行文字展示（`page-forward-item-record-state`）——
-  混进徽标会出现「灰点 +『可用』」这种自相矛盾的呈现。
+- **五列表格**（真 `<table>` 语义，样式手写、不引组件库）：
+  - 列顺序 = **本机端口 | 容器端口 | 本地状态 | 容器状态 | 操作**；表头 `text-[11.5px] text-muted-foreground` 左对齐，两个状态列居中，操作列右对齐；端口两列 `font-mono text-[12.5px]`。
+  - **行集合 = 后端记录 ∪ 本机监听**（按转发标识对齐）：
+    - 有记录有监听 = 正常行；
+    - 有记录无监听 = 正常行，本地状态点显示「未开启」**红点**；
+    - **无记录有监听 = 孤儿行**（记录被删了、本机还在听）：照常渲染，容器端口取监听携带的值，容器状态点为红点，提示「无后端转发记录」。
+  - 行样式：行间 `border-t border-border` 分隔，表头 `border-b`，**不做斑马纹**。
+- **状态是纯圆点 + tooltip**（不再是「带文字的徽标」）：本地状态与容器状态两列各一个圆点（`size-[7px] rounded-full bg-current`，颜色类与圆点放同一元素）。
+  - 本地状态四态（优先级：开启中 > 监听中 > 失败 > 未开启）：绿 = 监听中、黄（脉动）= 开启中、红 = 失败 / 未开启；**容器状态列不用脉动**（后端没有中间态，黄色语义预留不落地）：绿 = 可用、红 = 已停止 / 无后端记录。
+  - 提示用 `src/components/ui/tooltip.tsx`（Base UI Tooltip，全库首例）：表格容器外包一层 `TooltipProvider`，触发器用 `render` 渲染成 `<span>`（**纯展示的圆点不得渲染成 button**），`delay={0}`；**提示文案同时作为圆点的 `aria-label`**（可访问名不能丢）：
+    监听中 · `127.0.0.1:<实际端口>` / 正在开启本机监听… / 本机监听未开启 / 本机监听失败；后端转发可用 / 后端转发已停止 / 无后端转发记录。
+  - **隧道致命失败不动摇监听中的绿色**：监听还活着就是绿的，失败原因走行内红字（`page-forward-item-error`）。
+- **操作列三个单 icon 按钮**（全部 icon-only、`size-7`、都带 `aria-label` 与 `title`）：
+  - **同步**（lucide `RefreshCw`，`page-forward-row-sync-button`）：两个方向按需执行——
+    ① 后端可用 + 本机无监听 → `start_forward`（`localPort` 传 `null`：Rust 侧默认取容器端口、被占自动从 18000 段扫空闲，**前端不复刻扫描逻辑**）；
+    ② 本机有监听 + 后端无记录 / 已停 → `create_forward`（后端幂等：复用旧记录并写回「可用」，记录已删则新建）。
+    **记录重建后 `id` 可能与本机监听表里的旧标识不同**（隧道按转发标识寻址，旧标识已失效）→ **必须把本机监听迁到新 id**（`stop_forward` 旧 id → `start_forward` 新 id，端口不变）；id 相同（复用场景）则监听不动。
+    迁移时旧标识 `stop_forward` 停不掉 → **中止迁移**（不对新 id 再开监听，避免端口冲突），弹提示「本机监听仍指向旧的转发标识，请删除该行后重新同步」，新记录行仍立即出现。
+    两者已经一致时**不发任何请求**，只弹一条成功提示「转发已同步」。
+  - **编辑**（lucide `Pencil`，`page-forward-row-edit-button`）：**仅本机监听中可用**（未开启时按钮禁用，提示「本机监听未开启，先同步或新建后再编辑」）。点开进入**行内编辑态**：本机端口单元格里换成一个小输入框 + 确认 / 取消两个小按钮，校验 1~65535、非空（红字就地，`role="alert"`）；确认执行「停旧监听 → 按新端口重开」，提示里说清**实际生效**的端口。
+  - **删除**（lucide `Trash2`，`page-forward-row-delete-button`）：先 `stop_forward` 再 `DELETE /api/forwards/{id}`（顺序不能反：先收本机监听再删记录，不留僵尸监听）。**本机没在听的行不调 `stop_forward`**（停了也停不掉，只会误报一条「停止失败」）。`stop_forward` 失败**不中断**删除，弹失败提示「本机监听停止失败，该端口可能仍被占用；…」。**孤儿行（后端无记录）只调 `stop_forward`**（没有可删的记录，DELETE 跳过）。无确认弹窗。
+- **本机监听的生命周期完全手动**：**没有任何自动开启 / 自动关闭**——轮询只把**数据**刷回来，绝不碰监听。监听只随「新建 / 删除 / 行内同步 / 行内编辑 / 连接配置变更重开」变化。
 - **单条隧道断开不关监听**：监听器活到用户显式关闭为止，断开的只是那一条本机连接（桌面端上报连接级状态）。
 - **桌面 IPC 的两处硬约束**（`src/lib/desktop-forward.ts`）：
   - **invoke 的拒绝值可能是裸字符串**（Rust 侧 `Result<_, String>`）：桥层统一收口成 `Error`，
@@ -514,7 +545,7 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
   口径：`forward_listeners` 拿当前状态 → 逐个 `stop_forward` → 用新凭据 `start_forward` **同端口**重开；
   **逐条独立**，一条失败弹一条失败提示，不中断其余条与保存流程。
 - **校验红字就地展示**（`role="alert"`，留在抽屉里）；操作结果走右上角 toast，来源标识固定 `port-forward`。
-- 纯逻辑（端口校验、映射文案、状态文案、徽标状态、本机地址拼接）在 `src/lib/port-forward.ts`，有单元测试；
+- 纯逻辑（端口校验、状态文案、圆点配色、tooltip 文案、本机地址拼接）在 `src/lib/port-forward.ts`，有单元测试；
   桌面 IPC 桥在 `src/lib/desktop-forward.ts`，有单元测试。
 
 ### 设置（代理设置 + 启动模板 + 连接配置）
@@ -542,7 +573,7 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 | 新建沙箱 | `sandbox-create` | `page-sandbox-create-dialog`（抽屉容器）/ `page-sandbox-create-title` / `page-sandbox-create-name-input` / `page-sandbox-create-image-select`（**镜像选择器的输入框**，可搜索；不再是原生 `select`）/ `page-sandbox-create-image-trigger`（输入框**内部右侧**的下拉箭头指示器，装饰性不可点）/ `page-sandbox-create-image-popup`（镜像选择器的弹层）/ `page-sandbox-create-image-option`（弹层里的候选镜像，带 `data-image-reference="<引用>"`）/ `page-sandbox-create-image-no-match`（搜索没命中时的空态）/ `page-sandbox-create-image-refresh-button` / `page-sandbox-create-image-detail` / `page-sandbox-create-image-empty` / `page-sandbox-create-image-status`（镜像列表读取失败的就地环境状态说明，`role="status"`）/ `page-sandbox-create-template-select`（**模板选择器的输入框**，可搜索）/ `page-sandbox-create-template-trigger`（输入框**内部右侧**的下拉箭头指示器，装饰性不可点）/ `page-sandbox-create-template-popup` / `page-sandbox-create-template-option`（弹层里的候选模板，带 `data-template-id` 与 `data-template-name`）/ `page-sandbox-create-template-no-match` / `page-sandbox-create-template-save-button`（「保存为模板」，在抽屉页脚、「创建沙箱」主按钮左侧）/ `page-sandbox-create-template-empty` / `page-sandbox-create-template-status`（模板列表读取失败的就地环境状态说明，`role="status"`）/ `page-sandbox-create-template-dialog`（命名弹窗）/ `page-sandbox-create-template-name-input` / `page-sandbox-create-template-name-error`（空名红字）/ `page-sandbox-create-template-confirm-button` / `page-sandbox-create-template-cancel-button` / `page-sandbox-create-mount-add-button` / `page-sandbox-create-mount-empty` / `page-sandbox-create-mount-item` / `page-sandbox-create-mount-host-input` / `page-sandbox-create-mount-container-input` / `page-sandbox-create-mount-readonly-checkbox` / `page-sandbox-create-mount-remove-button` / `page-sandbox-create-file-add-button`（「添加文件」）/ `page-sandbox-create-file-empty`（一行都没声明时的空态占位）/ `page-sandbox-create-file-item` / `page-sandbox-create-file-host-input` / `page-sandbox-create-file-container-input` / `page-sandbox-create-file-remove-button`（「文件注入」区：只有标题、按钮与两个输入框，除空态占位外无说明文案）/ `page-sandbox-create-command-input` / `page-sandbox-create-workdir-input` / `page-sandbox-create-env-input` / `page-sandbox-create-submit-button` / `page-sandbox-create-validation-error`（本地表单校验红字）|
 | 沙箱详情（工作区头部） | `sandbox-detail` | `page-sandbox-detail-title` / `page-sandbox-detail-state` / `page-sandbox-detail-image` / `page-sandbox-detail-refresh-button` / `page-sandbox-detail-start-button` / `page-sandbox-detail-stop-button` / `page-sandbox-detail-detail-button` / `page-sandbox-detail-delete-button` / `page-sandbox-detail-empty` |
 | 沙箱详情抽屉 | `sandbox-detail-dialog` | `page-sandbox-detail-dialog`（抽屉容器）/ `page-sandbox-detail-dialog-state` / `page-sandbox-detail-dialog-image` / `page-sandbox-detail-dialog-created-at` / `page-sandbox-detail-dialog-updated-at` / `page-sandbox-detail-image-source` / `page-sandbox-detail-system-user` / `page-sandbox-detail-container-name` / `page-sandbox-detail-network-name` / `page-sandbox-detail-socket-path` / `page-sandbox-detail-socket-mount-path` / `page-sandbox-detail-workdir` / `page-sandbox-detail-command` / `page-sandbox-detail-subid` / `page-sandbox-detail-network-owned` / `page-sandbox-detail-env` / `page-sandbox-detail-env-item` / `page-sandbox-detail-env-empty` / `page-sandbox-detail-mounts` / `page-sandbox-detail-mount-item` / `page-sandbox-detail-mounts-empty` / `page-sandbox-detail-dependencies` / `page-sandbox-detail-dependency-item` / `page-sandbox-detail-dependencies-empty` / `page-sandbox-detail-loading` / `page-sandbox-detail-unavailable`（读不到详情时的空态说明）|
-| 端口转发 | `forward` | `page-forward-panel`（桌面形态的整个区）/ `page-forward-notice`（web 形态的说明卡）/ `page-forward-install-button`（web 形态的「安装桌面端」按钮）/ `page-forward-install-dialog`（安装指引弹窗）/ `page-forward-install-close-button`（弹窗的「知道了」）/ `page-forward-install-step-package` / `-step-config` / `-step-access`（弹窗里的三个要点）/ `page-forward-list` / `page-forward-item`（带 `data-forward-id` 与 `data-container-port`）/ `page-forward-item-mapping`（容器端口 → 本机端口）/ `page-forward-item-state`（状态徽标，只表达本机监听语义）/ `page-forward-item-record-state`（后端转发记录的状态，独立一行文字）/ `page-forward-item-url`（本机访问地址）/ `page-forward-item-copy-button` / `page-forward-item-toggle-button`（开启 / 关闭本机监听）/ `page-forward-item-stop-button`（停止转发）/ `page-forward-item-error`（行内错误说明，`role="alert"`）/ `page-forward-create-container-port-input` / `page-forward-create-local-port-input`（本机端口默认跟随容器端口）/ `page-forward-create-submit-button`（「转发」）/ `page-forward-create-error`（本地校验红字，`role="alert"`）/ `page-forward-empty` / `page-forward-loading` |
+| 端口转发 | `forward` | `page-forward-panel`（桌面形态的整个区）/ `page-forward-notice`（web 形态的说明卡）/ `page-forward-install-button`（web 形态的「安装桌面端」按钮）/ `page-forward-install-dialog`（安装指引弹窗）/ `page-forward-install-close-button`（弹窗的「知道了」）/ `page-forward-install-step-package` / `-step-config` / `-step-access`（弹窗里的三个要点）/ `page-forward-table`（五列表格）/ `page-forward-row`（一行，带 `data-forward-id` 与 `data-container-port`）/ `page-forward-row-local-port`（本机端口单元格；无监听显示「—」）/ `page-forward-row-container-port`（容器端口单元格）/ `page-forward-row-local-state`（本地状态圆点，带 `data-state="starting\|listening\|stopped\|error"`，`aria-label` 即提示文案）/ `page-forward-row-container-state`（容器状态圆点，带 `data-state="running\|stopped\|orphan"`，`aria-label` 即提示文案）/ `page-forward-row-sync-button`（同步转发）/ `page-forward-row-edit-button`（编辑本机端口；未开启时禁用）/ `page-forward-row-edit-input`（行内编辑的本机端口输入框）/ `page-forward-row-edit-confirm-button` / `page-forward-row-edit-cancel-button`（行内编辑的确认 / 取消）/ `page-forward-row-edit-error`（行内编辑的校验红字，`role="alert"`）/ `page-forward-row-delete-button`（删除转发）/ `page-forward-item-error`（行内错误说明，`role="alert"`）/ `page-forward-create-container-port-input` / `page-forward-create-local-port-input`（本机端口默认跟随容器端口）/ `page-forward-create-submit-button`（「转发」）/ `page-forward-create-error`（本地校验红字，`role="alert"`）/ `page-forward-empty` / `page-forward-loading` |
 | 终端 | `sandbox-detail-terminal` | `page-sandbox-detail-terminal-panel` / `page-sandbox-detail-terminal-tabs` / `page-sandbox-detail-terminal-tab` / `page-sandbox-detail-terminal-tab-select` / `page-sandbox-detail-terminal-tab-close` / `page-sandbox-detail-terminal-new-button` / `page-sandbox-detail-terminal-status` / `page-sandbox-detail-terminal-fullscreen-button`（全屏开关；可访问名随状态在「全屏终端 / 退出全屏」之间切换，**不带 `aria-pressed`**）/ `page-sandbox-detail-terminal-retry-button` / `page-sandbox-detail-terminal-stopped-hint` / `page-sandbox-detail-terminal-surface` / `page-sandbox-detail-terminal-mount`（终端表面内层的测量/挂载盒，xterm 根元素的父节点）/ `page-sandbox-detail-terminal-placeholder` / `page-sandbox-detail-terminal-remove-confirm` / `page-sandbox-detail-terminal-remove-confirm-button` / `page-sandbox-detail-terminal-remove-cancel-button` |
 | 设置 | `settings` | `page-settings-dialog`（抽屉容器）/ `page-settings-title` / `page-settings-container-running` / `page-settings-healthy` / `page-settings-tcp-ok` / `page-settings-cache-size` / `page-settings-certificate-ready` / `page-settings-proxy-url` / `page-settings-refresh-button` / `page-settings-restart-button` / `page-settings-restart-result` / `page-settings-restarted` / `page-settings-restart-message` / `page-settings-ca-changed` / `page-settings-ca-reinstalled` / `page-settings-ca-conclusion` / `page-settings-reinstalled-users` / `page-settings-failed-users` / `page-settings-loading` |
 | 连接配置 | `connection` | `page-connection-setup`（未配置态的引导面板）/ `page-connection-base-url-input` / `page-connection-token-input` / `page-connection-submit-button`（「保存并连接」）/ `page-connection-error`（本地校验红字 / 体检失败红字，`role="alert"`）/ `page-settings-connection-base-url-input` / `page-settings-connection-token-input` / `page-settings-connection-test-button`（「测试连接」）/ `page-settings-connection-save-button`（「保存配置」）/ `page-settings-connection-error`（本地校验红字，`role="alert"`）|
@@ -584,6 +615,14 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 - **代理设置的摘要与两个字段**（抽屉里不再有顶部摘要绿条，也不再展示 CA 可取回与状态明细）：
   `page-settings-summary` / `page-settings-ca-fetchable` / `page-settings-detail`。
 
+端口转发区改成五列表格后下线的标识（**名字不得复用**）：
+
+- **卡片行 + 文字徽标**（行容器 / 映射 / 徽标 / 记录状态 / 地址 / 复制 / 开关 / 停止 / 列表容器）：
+  `page-forward-item`（行容器）/ `page-forward-item-mapping`（「容器端口 → 本机端口」映射）/ `page-forward-item-state`（带文字的状态徽标）/
+  `page-forward-item-record-state`（后端转发记录的状态，独立一行文字）/ `page-forward-item-url`（本机访问地址）/
+  `page-forward-item-copy-button`（复制本机地址）/ `page-forward-item-toggle-button`（开启 / 关闭本机监听）/
+  `page-forward-item-stop-button`（停止转发）/ `page-forward-list`（行列表容器）。
+
 侧边栏「代理设置」改名「设置」后下线的标识：
 
 - `page-layout-proxy-button`（侧边栏底部入口：现为 `page-layout-settings-button`）。
@@ -618,7 +657,7 @@ const detailFailed = page.locator(
 | 来源 | 什么时候弹 |
 |---|---|
 | `sandbox-list` | 沙箱列表读取失败（首次加载 / 连续 3 次轮询失败） |
-| `sandbox-detail` | 沙箱详情读取失败 |
+| `sandbox-detail` | 沙箱详情读取失败（手动刷新立即弹）；**沙箱详情 + 转发记录的合并轮询**连续 3 次失败弹一条；**转发列表的非 silent 首读失败**（打开抽屉那一拍）同样用这个来源 |
 | `sandbox-lifecycle` | 启动 / 停止沙箱的结果 |
 | `sandbox-delete` | 删除沙箱的结果 |
 | `terminal-sessions` | 终端会话表读取失败、关闭会话的副作用提示 |
@@ -629,7 +668,7 @@ const detailFailed = page.locator(
 | `settings-template` | 设置抽屉里的模板列表读取失败、重命名与删除模板的结果 |
 | `connection` | 连接配置相关的操作结果（引导面板的「保存并连接」、设置抽屉的「测试连接」与「保存配置」） |
 | `terminal-connection` | 终端连接失败（一次性票据取不到 / 连不上） |
-| `port-forward` | 端口转发的操作结果（读取转发列表失败、新建转发、开启 / 关闭本机监听、停止转发、复制本机地址、隧道连接级失败） |
+| `port-forward` | 端口转发的操作结果（新建转发、同步转发、编辑本机端口、删除转发、开启本机监听失败、隧道连接级失败） |
 
 toast 5 秒后自动消失，断言要放在动作之后立即执行。
 

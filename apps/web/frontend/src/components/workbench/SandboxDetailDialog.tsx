@@ -1,4 +1,4 @@
-import type { SandboxDetail } from '../../api/types';
+import type { ForwardModel, SandboxDetail } from '../../api/types';
 import type { ConnectionConfig } from '../../lib/connection';
 import { formatBoolean, formatTimestamp, orPlaceholder } from '../../lib/format';
 import { DrawerShell } from './DrawerShell';
@@ -17,6 +17,10 @@ interface SandboxDetailDialogProps {
   desktop: boolean;
   /** 连接配置（桌面形态下端口转发要经 IPC 把基址与令牌交给 Rust 侧）。 */
   connection: ConnectionConfig;
+  /** 后端的端口转发记录（**工作台轮询送来**，面板自己不拉）。 */
+  forwards: ForwardModel[];
+  /** 端口转发写操作完成后回调（工作台立即重拉转发记录）。 */
+  onForwardsChanged: () => void;
 }
 
 /** 详情里的一行：左标签右值。 */
@@ -51,6 +55,8 @@ export function SandboxDetailDialog({
   onWidthChange,
   desktop,
   connection,
+  forwards,
+  onForwardsChanged,
 }: SandboxDetailDialogProps) {
   return (
     <DrawerShell
@@ -201,11 +207,17 @@ export function SandboxDetailDialog({
           </div>
 
           {/* 端口转发：web 形态只渲染说明卡与「安装桌面端」按钮，
-              桌面形态才有完整管理（列表 / 开启关闭 / 停止）。 */}
+              桌面形态才有完整管理（新建 / 表格 / 同步 / 编辑 / 删除）。 */}
           <div>
             <h3 className="text-[13px] font-medium">端口转发</h3>
             <div className="mt-2">
-              <PortForwardPanel sandbox={detail.name} desktop={desktop} connection={connection} />
+              <PortForwardPanel
+                sandbox={detail.name}
+                desktop={desktop}
+                connection={connection}
+                forwards={forwards}
+                onForwardsChanged={onForwardsChanged}
+              />
             </div>
           </div>
         </div>

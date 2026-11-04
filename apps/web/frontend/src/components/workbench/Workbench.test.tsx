@@ -13,6 +13,13 @@
  *
  * 反馈一律走右上角的 toast（挂全局 Provider），断言看 toast 条目与
  * `data-toast-kind` / `data-toast-source`。
+ *
+ * 另外覆盖「沙箱详情 + 转发记录的合并轮询」：
+ * - **web 形态只刷详情**（转发记录连读都不读）、桌面形态一拍刷两份；
+ * - 页面不可见整拍跳过、连续 3 次失败弹一条（来源 `sandbox-detail`）；
+ * - **轮询失败不清空已有详情**；
+ * - **写操作完成后工作台立即重拉转发记录**；
+ * - **打开抽屉那一拍失败立即弹 toast，且不消耗连续失败计数**。
  */
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -31,6 +38,9 @@ const mocks = vi.hoisted(() => ({
   listSandboxes: vi.fn(),
   health: vi.fn(),
   getSandbox: vi.fn(),
+  listForwards: vi.fn(),
+  createForward: vi.fn(),
+  listTerminalSessions: vi.fn(),
   stopSandbox: vi.fn(),
   reclaimSandbox: vi.fn(),
   deleteSandbox: vi.fn(),
@@ -45,6 +55,9 @@ vi.mock('../../api/client', async (importOriginal) => {
       listSandboxes: mocks.listSandboxes,
       health: mocks.health,
       getSandbox: mocks.getSandbox,
+      listForwards: mocks.listForwards,
+      createForward: mocks.createForward,
+      listTerminalSessions: mocks.listTerminalSessions,
       stopSandbox: mocks.stopSandbox,
       reclaimSandbox: mocks.reclaimSandbox,
       deleteSandbox: mocks.deleteSandbox,
@@ -59,6 +72,9 @@ vi.mock('../TerminalView', () => ({
 
 /** 列表轮询间隔（毫秒）：与 `Workbench.tsx` 里的常量一致。 */
 const POLL_INTERVAL = 5000;
+
+/** 详情 + 转发记录的合并轮询间隔（毫秒）：与 `Workbench.tsx` 里的常量一致。 */
+const DETAIL_POLL_INTERVAL = 10000;
 
 /** 当前屏幕上的 toast（按类型筛）。 */
 function toastsOf(kind: 'success' | 'error' | 'info'): HTMLElement[] {
@@ -83,6 +99,9 @@ afterEach(() => {
   mocks.listSandboxes.mockReset();
   mocks.health.mockReset();
   mocks.getSandbox.mockReset();
+  mocks.listForwards.mockReset();
+  mocks.createForward.mockReset();
+  mocks.listTerminalSessions.mockReset();
   mocks.stopSandbox.mockReset();
   mocks.reclaimSandbox.mockReset();
   mocks.deleteSandbox.mockReset();
@@ -90,7 +109,35 @@ afterEach(() => {
   window.localStorage.clear();
   // 桌面同步的去重缓存是模块级的：每个用例之间清掉。
   resetDesktopSyncState();
+  // 形态探测看的是 `window.__TAURI_INTERNALS__`：用例之间复位成 web 形态。
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
 });
+
+/**
+ * 把运行形态切成**桌面壳**。
+ *
+ * 转发记录的读取在工作台层且**仅桌面形态执行**（web 形态连记录都不读），
+ * 所以「转发记录也刷」那几条用例得先切形态。
+ */
+function mockDesktopShell(): void {
+  const invoke = vi.fn(async (cmd: string) => {
+    switch (cmd) {
+      case 'csp_needs_reload':
+        return false;
+      case 'forward_listeners':
+        return [];
+      case 'start_forward':
+        return 8080;
+      default:
+        return undefined;
+    }
+  });
+  Object.defineProperty(window, '__TAURI_INTERNALS__', {
+    value: { invoke },
+    configurable: true,
+    writable: true,
+  });
+}
 
 /**
  * 默认给一份**已配置**的连接配置。
@@ -102,6 +149,17 @@ beforeEach(() => {
     CONNECTION_STORAGE_KEY,
     JSON.stringify({ backendBaseUrl: DEFAULT_BACKEND_BASE_URL, token: 'sbx_test' }),
   );
+  mocks.listForwards.mockResolvedValue([]);
+  mocks.createForward.mockResolvedValue({
+    id: 'abc123def456',
+    sandbox: 'acc-demo',
+    container_port: 8080,
+    state: 'running',
+    created_at: '2026-11-03T00:00:00Z',
+    updated_at: '2026-11-03T00:00:00Z',
+  });
+  // 终端会话表：本组用例不关心终端，让它安静下来（它的失败提示会顶掉别的提示）。
+  mocks.listTerminalSessions.mockResolvedValue([]);
 });
 
 describe('沙箱列表读取失败', () => {
@@ -201,6 +259,151 @@ function mockRunningSandbox(): void {
   mocks.getSandbox.mockResolvedValue(makeDetail());
   window.location.hash = '#/sandboxes/acc-demo';
 }
+
+describe('沙箱详情与转发记录的合并轮询', () => {
+  it('web 形态：只刷详情，转发记录连读都不读', async () => {
+    mockRunningSandbox();
+
+    renderWorkbench();
+
+    await waitFor(() => expect(mocks.getSandbox).toHaveBeenCalledWith('acc-demo'));
+    // web 形态的端口转发区不渲染表格：转发记录一个都不读。
+    expect(mocks.listForwards).not.toHaveBeenCalled();
+  });
+
+  it('桌面形态：选中沙箱一拍刷两份（详情 + 转发记录）', async () => {
+    mockDesktopShell();
+    mockRunningSandbox();
+
+    renderWorkbench();
+
+    await waitFor(() => expect(mocks.getSandbox).toHaveBeenCalledWith('acc-demo'));
+    await waitFor(() => expect(mocks.listForwards).toHaveBeenCalledWith('acc-demo'));
+  });
+
+  it('每 10 秒一拍：详情与转发记录各刷一次', async () => {
+    vi.useFakeTimers();
+    mockDesktopShell();
+    mockRunningSandbox();
+
+    renderWorkbench();
+
+    await vi.waitFor(() => expect(mocks.getSandbox).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(mocks.listForwards).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(DETAIL_POLL_INTERVAL);
+    expect(mocks.getSandbox).toHaveBeenCalledTimes(2);
+    expect(mocks.listForwards).toHaveBeenCalledTimes(2);
+  });
+
+  it('页面不可见时：整拍跳过（不发请求）', async () => {
+    vi.useFakeTimers();
+    mockDesktopShell();
+    mockRunningSandbox();
+    const visibility = vi
+      .spyOn(document, 'visibilityState', 'get')
+      .mockReturnValue('hidden' as DocumentVisibilityState);
+
+    try {
+      renderWorkbench();
+
+      await vi.waitFor(() => expect(mocks.getSandbox).toHaveBeenCalledTimes(1));
+      await vi.advanceTimersByTimeAsync(DETAIL_POLL_INTERVAL);
+      expect(mocks.getSandbox).toHaveBeenCalledTimes(1);
+      expect(mocks.listForwards).toHaveBeenCalledTimes(1);
+    } finally {
+      visibility.mockRestore();
+    }
+  });
+
+  it('轮询连续 3 次失败：弹一条失败 toast（来源 sandbox-detail）', async () => {
+    vi.useFakeTimers();
+    mockRunningSandbox();
+    // 首次加载成功，之后每轮都失败。
+    mocks.getSandbox.mockResolvedValueOnce(makeDetail());
+    mocks.getSandbox.mockRejectedValue(new Error('读取沙箱详情失败'));
+
+    renderWorkbench();
+
+    await vi.waitFor(() => expect(mocks.getSandbox).toHaveBeenCalledTimes(1));
+    // 前两轮失败：不弹。
+    await vi.advanceTimersByTimeAsync(DETAIL_POLL_INTERVAL);
+    await vi.advanceTimersByTimeAsync(DETAIL_POLL_INTERVAL);
+    expect(toastsOf('error')).toHaveLength(0);
+    // 第三轮失败：弹一条。
+    await vi.advanceTimersByTimeAsync(DETAIL_POLL_INTERVAL);
+    const toast = toastsOf('error')[0];
+    expect(toast.textContent).toContain('连续 3 次轮询');
+    expect(toast.getAttribute('data-toast-source')).toBe('sandbox-detail');
+  });
+
+  it('轮询失败不清空已有详情（头部仍显示上一次读到的沙箱）', async () => {
+    vi.useFakeTimers();
+    mockRunningSandbox();
+    mocks.getSandbox.mockResolvedValue(makeDetail());
+
+    renderWorkbench();
+
+    await vi.waitFor(() => expect(mocks.getSandbox).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() =>
+      expect(screen.getByTestId('page-sandbox-detail-title').textContent).toBe('acc-demo'),
+    );
+
+    // 之后都失败：轮询那一拍是 silent 的，**不清空已有详情**。
+    mocks.getSandbox.mockRejectedValue(new Error('读取沙箱详情失败'));
+    await vi.advanceTimersByTimeAsync(DETAIL_POLL_INTERVAL);
+
+    expect(screen.getByTestId('page-sandbox-detail-title').textContent).toBe('acc-demo');
+  });
+
+  it('写操作完成后：工作台立即重拉转发记录（不等下一拍）', async () => {
+    mockDesktopShell();
+    mockRunningSandbox();
+
+    renderWorkbench();
+
+    await waitFor(() => expect(mocks.listForwards).toHaveBeenCalledTimes(1));
+
+    // 打开详情抽屉（端口转发区在抽屉底部）。
+    fireEvent.click(await screen.findByTestId('page-sandbox-detail-detail-button'));
+    const containerInput = await screen.findByTestId('page-forward-create-container-port-input');
+    await waitFor(() => expect(mocks.listForwards).toHaveBeenCalledTimes(2));
+
+    // 新建一条转发：写操作完成 → 工作台立即重拉转发记录。
+    fireEvent.change(containerInput, { target: { value: '8080' } });
+    fireEvent.click(screen.getByTestId('page-forward-create-submit-button'));
+
+    await waitFor(() => expect(mocks.listForwards).toHaveBeenCalledTimes(3));
+  });
+
+  it('打开抽屉那一拍：刷新失败立即弹 toast，且不消耗连续失败计数', async () => {
+    vi.useFakeTimers();
+    mockDesktopShell();
+    mockRunningSandbox();
+    mocks.getSandbox.mockResolvedValue(makeDetail());
+
+    renderWorkbench();
+
+    await vi.waitFor(() => expect(mocks.getSandbox).toHaveBeenCalledTimes(1));
+    // 之后都失败。
+    mocks.getSandbox.mockRejectedValue(new Error('读取沙箱详情失败'));
+
+    // 开抽屉是用户主动触发的：那一拍的失败**立即弹**。
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-detail-button'));
+    await vi.waitFor(() => expect(toastsOf('error')).toHaveLength(1));
+    expect(toastsOf('error')[0].getAttribute('data-toast-source')).toBe('sandbox-detail');
+
+    // 这一拍**不计入**合并轮询的连续失败计数：计数从 0 起，
+    // 后面两拍轮询失败都不到阈值（不弹）。
+    await vi.advanceTimersByTimeAsync(DETAIL_POLL_INTERVAL);
+    await vi.advanceTimersByTimeAsync(DETAIL_POLL_INTERVAL);
+    expect(toastsOf('error')).toHaveLength(0);
+
+    // 第三拍轮询失败：连续 3 次才弹一条（说明计数确实是从 0 起的）。
+    await vi.advanceTimersByTimeAsync(DETAIL_POLL_INTERVAL);
+    expect(toastsOf('error')).toHaveLength(1);
+    expect(toastsOf('error')[0].textContent).toContain('连续 3 次轮询');
+  });
+});
 
 describe('停止沙箱的确认环节', () => {
   it('点停止先弹确认框，未确认前不发停止请求', async () => {
