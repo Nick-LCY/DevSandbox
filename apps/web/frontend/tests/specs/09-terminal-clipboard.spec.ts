@@ -18,6 +18,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
 import { createSandbox, listSandboxes } from '../helpers/api';
+import { authHeaders } from '../helpers/auth';
 import { gotoDetail, toastItem } from '../helpers/console';
 import { readFixtures } from '../helpers/sandbox';
 import {
@@ -106,6 +107,8 @@ async function resetShellLine(page: Page, sessionId: string): Promise<void> {
 async function attachOrCreateTerminal(page: Page): Promise<string> {
   const response = await page.request.get(
     `/api/terminal/sessions?sandbox=${encodeURIComponent(SANDBOX_NAME)}`,
+    // 直调接口要带令牌（后端对全部 `/api` 生效令牌认证）。
+    { headers: authHeaders() },
   );
   const records = (await response.json()) as { session_id: string }[];
   await gotoDetail(page, SANDBOX_NAME);

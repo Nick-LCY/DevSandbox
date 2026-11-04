@@ -1,12 +1,17 @@
 /**
  * 边界验收：
  * 一、沙箱内的依赖镜像拉取仍统一经统一镜像代理（代理访问日志 + 守护进程单元环境变量取证）；
- * 二、控制台服务只监听回环地址、不做认证、不暴露公网。
+ * 二、控制台服务只监听回环地址、接口要令牌、不暴露公网。
+ *
+ * 注：二期口径是「不做认证」，三期起后端对全部 `/api` 生效令牌认证
+ * （`apps/web/backend/API.md` 第 14 章）——「不带凭据也能拿到数据」那条口径
+ * 已作废，改为「不带凭据 = 401，带令牌 = 200」。
  */
 
 import { expect, test } from '@playwright/test';
 
 import { createSandbox, health, listSandboxes } from '../helpers/api';
+import { AUTH_FAILED_DETAIL, authHeaders } from '../helpers/auth';
 import { gotoDetail } from '../helpers/console';
 import { run, sandboxExec, userUid } from '../helpers/host';
 import { readFixtures } from '../helpers/sandbox';
@@ -74,7 +79,7 @@ test.describe('边界', () => {
     expect(lines.some((line) => line.includes('"upstream_cache_status":"HIT"'))).toBe(true);
   });
 
-  test('服务只监听回环地址、不做认证、不暴露接口文档', async ({ page }) => {
+  test('服务只监听回环地址、接口要令牌、不暴露接口文档', async ({ page }) => {
     const { port } = readFixtures();
 
     // ① 监听地址：只有回环，没有 0.0.0.0
@@ -85,8 +90,14 @@ test.describe('边界', () => {
       expect(line, `服务监听在非回环地址上：${line}`).toContain('127.0.0.1');
     }
 
-    // ② 不做认证：不带任何凭据直接调接口就能拿到数据
-    const response = await page.request.get('/api/sandboxes');
+    // ② 令牌是准入门槛：不带凭据拿不到数据（401），带令牌才拿得到
+    //    （三期起全部 `/api` 生效令牌认证，`/api/health` 不豁免）
+    const anonymous = await page.request.get('/api/sandboxes');
+    expect(anonymous.status()).toBe(401);
+    const anonymousBody = (await anonymous.json()) as { detail?: string };
+    expect(anonymousBody.detail ?? '').toBe(AUTH_FAILED_DETAIL);
+
+    const response = await page.request.get('/api/sandboxes', { headers: authHeaders() });
     expect(response.status()).toBe(200);
     expect(Array.isArray(await response.json())).toBe(true);
     expect((await health()).status).toBe('ok');

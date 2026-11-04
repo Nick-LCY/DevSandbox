@@ -13,6 +13,7 @@ import { expect, test, type Page } from '@playwright/test';
 import path from 'node:path';
 
 import { createSandbox, listSandboxes } from '../helpers/api';
+import { authHeaders } from '../helpers/auth';
 import { gotoDetail, toastItem, waitDialogSettled } from '../helpers/console';
 import { sandboxContainerState, userUid } from '../helpers/host';
 import { readFixtures } from '../helpers/sandbox';
@@ -118,6 +119,8 @@ test.describe('网页终端', () => {
     // 两个终端是两个独立的容器内进程（各自一个带真实 TTY 的 shell）
     const sessions = await page.request.get(
       `/api/terminal/sessions?sandbox=${encodeURIComponent(SANDBOX_NAME)}`,
+      // 直调接口要带令牌（后端对全部 `/api` 生效令牌认证）。
+      { headers: authHeaders() },
     );
     const records = (await sessions.json()) as { session_id: string; pid: number }[];
     expect(records.length).toBeGreaterThanOrEqual(2);
@@ -265,12 +268,16 @@ test.describe('网页终端', () => {
     // ── 服务端的会话表已清空：旧会话不再可附着
     const sessions = await page.request.get(
       `/api/terminal/sessions?sandbox=${encodeURIComponent(SANDBOX_NAME)}`,
+      // 直调接口要带令牌（后端对全部 `/api` 生效令牌认证）。
+      { headers: authHeaders() },
     );
     const records = (await sessions.json()) as { session_id: string }[];
     expect(records.map((item) => item.session_id)).not.toContain(sessionId);
 
     // ── 服务重启不影响沙箱本身：容器还在跑
-    const detail = await page.request.get(`/api/sandboxes/${SANDBOX_NAME}`);
+    const detail = await page.request.get(`/api/sandboxes/${SANDBOX_NAME}`, {
+      headers: authHeaders(),
+    });
     const body = (await detail.json()) as { system_user: string; container_name: string };
     const uid = userUid(body.system_user);
     expect(sandboxContainerState(body.system_user, uid, body.container_name)).toBe('running');

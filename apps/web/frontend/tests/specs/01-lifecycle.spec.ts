@@ -3,6 +3,10 @@
  * → 终端执行命令断言回显 → 删除（确认弹窗里点一次即删）→ 回空态。
  *
  * 全程只经网页操作，不碰命令行；每一步都有可判定的断言。
+ *
+ * 三期起后端对全部 `/api` 生效令牌认证：本文件里的接口直调走
+ * `helpers/api.ts`（统一带认证头），页面侧的令牌由套件的 storageState 预置
+ * （`helpers/connection.ts`）——用例本身不感知令牌，页面一打开就在工作台里。
  */
 
 import { expect, test } from '@playwright/test';

@@ -6,6 +6,7 @@
 import { expect, test } from '@playwright/test';
 
 import { getSandbox, reclaimPlan, type DeleteResultModel } from '../helpers/api';
+import { authHeaders } from '../helpers/auth';
 import {
   confirmDelete,
   fillCreateForm,
@@ -150,7 +151,10 @@ test.describe('删除回收复验', () => {
   });
 
   test('重复删除同一沙箱是幂等的（返回不存在，不报错）', async ({ page }) => {
-    const response = await page.request.delete(`/api/sandboxes/${SANDBOX_NAME}`);
+    const response = await page.request.delete(`/api/sandboxes/${SANDBOX_NAME}`, {
+      // 直调接口要带令牌（后端对全部 `/api` 生效令牌认证）。
+      headers: authHeaders(),
+    });
     expect(response.status()).toBe(200);
     const body = (await response.json()) as DeleteResultModel;
     expect(body.existed).toBe(false);

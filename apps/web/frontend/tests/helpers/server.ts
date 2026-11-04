@@ -6,6 +6,11 @@
  *
  * 端口从环境变量 `CONSOLE_TEST_PORT` 取，默认 8100：宿主 8000 端口被无关进程占用。
  *
+ * 三期起后端对全部 `/api` 生效令牌认证：服务进程用环境变量
+ * `SANDBOX_CONSOLE_TOKEN` 注入**固定测试令牌**（注入优先 = 不落盘），
+ * 健康自检也要带 `Authorization` 头（否则自检恒 401，等健康永远超时）。
+ * 令牌常量在 `helpers/auth.ts`（单一来源，页面预置与直调请求头共用同一份）。
+ *
  * `uv run` 一律带 `--no-sync`：工作区里两个成员共用同一个虚拟环境，
  * 按成员同步是精确对齐的（只同步服务端包会把核心包的依赖剪掉），
  * 两个成员来回跑就互相剪。环境由
@@ -17,6 +22,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 
+import { TEST_TOKEN, TOKEN_ENV_VAR, authHeaders } from './auth';
 import { BACKEND_PROJECT_DIR, CONSOLE_DIST_DIR, RUNTIME_DIR } from './paths';
 
 export const DEFAULT_PORT = Number(process.env.CONSOLE_TEST_PORT ?? '8100');
@@ -79,6 +85,8 @@ export async function healthOk(port: number, timeoutMs = 2000): Promise<boolean>
   try {
     const response = await fetch(`http://${HOST}:${port}/api/health`, {
       signal: AbortSignal.timeout(timeoutMs),
+      // 健康自检同样要令牌：`/api/health` 不豁免（没有令牌就是 401）。
+      headers: authHeaders(),
     });
     if (!response.ok) {
       return false;
@@ -115,6 +123,8 @@ export async function startConsoleServer(port: number = DEFAULT_PORT): Promise<S
       SANDBOX_CONSOLE_PORT: String(port),
       // 前端产物目录显式指到仓库内的构建产物，避免依赖「相对当前工作目录」的默认值
       SANDBOX_CONSOLE_DIST: CONSOLE_DIST_DIR,
+      // 固定测试令牌：注入优先 = 不落盘（磁盘上不留令牌文件）。
+      [TOKEN_ENV_VAR]: TEST_TOKEN,
     },
     stdio: ['ignore', logFd, logFd],
     detached: false,

@@ -20,6 +20,14 @@ export const APPS_DIR = path.resolve(WEB_DIR, '..');
 export const ARTIFACTS_DIR = path.join(TESTS_DIR, 'artifacts');
 /** 运行期状态：服务进程信息、临时工作目录。 */
 export const RUNTIME_DIR = path.join(TESTS_DIR, '.runtime');
+/**
+ * 预置连接配置的 storageState 文件。
+ *
+ * `global-setup.ts` 按测试服务的实际端口写它，`playwright.config.ts` 的
+ * `use.storageState` 读它——页面一打开就是「已配置」态（口径见
+ * `helpers/connection.ts`）。
+ */
+export const STORAGE_STATE_FILE = path.join(RUNTIME_DIR, 'storage-state.json');
 
 /** 命令行入口（apps/cli/sandboxctl.py，单文件薄壳）。 */
 export const CLI_PATH = path.join(APPS_DIR, 'cli', 'sandboxctl.py');

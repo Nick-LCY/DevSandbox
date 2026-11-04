@@ -8,6 +8,11 @@
  *
  * 另加一层：参数相同的两个沙箱（一个网页建、一个命令行建），
  * 挂载清单与状态流转必须等价。
+ *
+ * 三期起后端对全部 `/api` 生效令牌认证：**网页侧**的接口直调走
+ * `helpers/api.ts`（统一带认证头），页面侧的令牌由套件的 storageState 预置
+ * （`helpers/connection.ts`）；**命令行侧**走核心包、不经控制台 API，
+ * 因此不涉及令牌（等价的另一半仍然是「没令牌时的老样子」）。
  */
 
 import { expect, test } from '@playwright/test';

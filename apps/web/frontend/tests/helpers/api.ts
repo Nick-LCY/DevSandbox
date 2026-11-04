@@ -4,8 +4,13 @@
  * 验收里用它做两件事：
  * 一是在用例准备阶段造沙箱（不必绕网页）；
  * 二是把网页看到的字段与接口返回的字段对齐核对。
+ *
+ * 三期起后端对全部 `/api` 生效令牌认证：这里的每个直调都带
+ * `Authorization: Bearer <令牌>`（令牌常量在 `helpers/auth.ts`，与服务进程
+ * 注入的是同一份）。
  */
 
+import { authHeaders } from './auth';
 import { readFixtures } from './sandbox';
 
 export interface SandboxSummaryModel {
@@ -95,6 +100,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: {
       'Content-Type': 'application/json',
+      // 认证头（后端对全部 `/api` 生效令牌认证）。
+      // 展开顺序有讲究：**显式传入的 header 优先于 `authHeaders()`**——
+      // 后展开的同名头覆盖先展开的，所以负向用例要换令牌时，
+      // 在 `init.headers` 里传 `Authorization` 就能盖掉默认令牌。
+      ...authHeaders(),
       ...(init?.headers ?? {}),
     },
   });

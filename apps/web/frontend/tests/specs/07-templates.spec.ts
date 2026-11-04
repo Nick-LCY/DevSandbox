@@ -7,6 +7,10 @@
  *
  * 口径：模板声明**原样透传**——不做任何占位符替换，回填与提交都是模板里
  * 写的内容（平台只做既有校验）。
+ *
+ * 三期起后端对全部 `/api` 生效令牌认证：接口直取走 `helpers/api.ts`
+ * （统一带认证头），页面侧的令牌由套件的 storageState 预置
+ * （`helpers/connection.ts`）。
  */
 
 import { expect, type Locator, type Page, test } from '@playwright/test';
