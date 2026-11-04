@@ -4,7 +4,7 @@
 
 三期 = 桌面端打包（Tauri）+ 端口转发 + 连接层改造（后端独立 API + token 认证）。原「前后端分离部署」规划被本期吸收（后端侧并入、Cloudflare 静态托管退役），决策依据见 [[architecture/decisions/0013-三期定位改定与认证重启.md|0013 三期定位改定与认证重启]]；端口转发机制见 [[architecture/decisions/0014-端口转发机制选型.md|0014 端口转发机制选型]]；桌面壳与连接配置见 [[architecture/decisions/0015-桌面壳与连接配置抽象.md|0015 桌面壳与连接配置抽象]]。
 
-**状态：01 doing、02 done（待与 03 同批发布）、03 doing（实现完成，待真机复验），04 done、05 done，06~09 todo。** 打样轮 01 的本机部分已完成（结论见 [[tasks/phase3-desktop/RESULTS.md|三期留档]]），首轮 Windows 反馈已入档（P4 路径②可行、P2 外观初测通过；P2 控制台三项、P5 与「骨架可启动」仍待验）；02（连接层后端改造：令牌 + 一次性票据鉴权 / CORS 任意来源）与 03（连接层前端改造：基址抽象 / 连接配置 / 未配置态）**均已落地**，按部署口径**同批发布**后网页控制台恢复；03 只差第 2 条完成标准（同一份产物连本机 / 远端后端全链路可用）待用户 Windows 真机 + 真后端复验，**04 已完成**（2026-11-03：核心包 `forwarding.py` 落地并通过审查修复轮——转发容器编排（不发布端口）/ exec 字节泵 / 转发记录原子读写 / 生命周期联动与遗留清理；门禁：核心包 pytest 288 passed、ruff 0、CLI 零改动），**05 已完成**（2026-11-03：三条转发管理 REST + 隧道 WebSocket 落地并通过审查修复轮——错误帧与 HTTP `detail` 全为固定中文文案（原文只进日志）、`SandboxError` 统一收敛 1008、镜像失败 503、字节泵 I/O 独立线程池（32）、stderr 排空与失败原因帧、关闭竞态收敛、新增关闭码 1011；门禁：服务端 pytest 289 passed / 核心包 292 passed / ruff 0 / 分层契约 10 passed / CLI·前端·桌面零改动），**06 起可开工**（06 已按 2026-11-03 决策 C 重写）。看板见 [[current-state.md|当前状态]]。
+**状态：01 doing、02 done（待与 03 同批发布）、03 doing（实现完成，待真机复验），04 done、05 done，**06 doing（实现完成，待真机复验）**，07~09 todo。** 打样轮 01 的本机部分已完成（结论见 [[tasks/phase3-desktop/RESULTS.md|三期留档]]），首轮 Windows 反馈已入档（P4 路径②可行、P2 外观初测通过；P2 控制台三项、P5 与「骨架可启动」仍待验）；02（连接层后端改造：令牌 + 一次性票据鉴权 / CORS 任意来源）与 03（连接层前端改造：基址抽象 / 连接配置 / 未配置态）**均已落地**，按部署口径**同批发布**后网页控制台恢复；03 只差第 2 条完成标准（同一份产物连本机 / 远端后端全链路可用）待用户 Windows 真机 + 真后端复验，**04 已完成**（2026-11-03：核心包 `forwarding.py` 落地并通过审查修复轮——转发容器编排（不发布端口）/ exec 字节泵 / 转发记录原子读写 / 生命周期联动与遗留清理；门禁：核心包 pytest 288 passed、ruff 0、CLI 零改动），**05 已完成**（2026-11-03：三条转发管理 REST + 隧道 WebSocket 落地并通过审查修复轮——错误帧与 HTTP `detail` 全为固定中文文案（原文只进日志）、`SandboxError` 统一收敛 1008、镜像失败 503、字节泵 I/O 独立线程池（32）、stderr 排空与失败原因帧、关闭竞态收敛、新增关闭码 1011；门禁：服务端 pytest 289 passed / 核心包 292 passed / ruff 0 / 分层契约 10 passed / CLI·前端·桌面零改动），**06 doing**（2026-11-03：桌面侧已实现并通过审查修复轮——Rust 本机监听（每转发一个 `127.0.0.1` 监听、每条连接各开一条隧道 WS，Bearer；**单条隧道断开只关该连接、监听器保留到用户显式 `stop_forward`**）+ 端口转发界面（web 形态只说明卡 + 安装指引、桌面形态完整管理；Rust 侧不落盘令牌）；门禁：前端 vitest 527 / typecheck 双零错 / build 过、cargo check 0 警告 / cargo test 20；**只差完成标准第 1 条（真机连通）与整体验收，待用户 Windows 真机 + 真后端复验**）。看板见 [[current-state.md|当前状态]]。
 
 > **⚠️ 已知过渡态（勿当回归）**：既有 Playwright 验收套件（`apps/web/frontend/tests`，9 条 spec）**自 03 落地起为红**——未配置态引导面板替换了工作台，后端又要求令牌，脚本没预置令牌就进不了工作台。**07（[[tasks/phase3-desktop/07-acceptance-tokenization.md|验收套件 token 化]]）落地后恢复**。这 9 条红是已知过渡态，不是回归。
 
@@ -17,7 +17,7 @@
 | [[tasks/phase3-desktop/03-frontend-connection-layer.md\|03]] | 连接层前端改造：基址抽象 / 连接配置 / 未配置态 | doing | `src/lib/connection.ts`、请求基址、WS 地址推导、引导面板、设置区 |
 | [[tasks/phase3-desktop/04-port-forward-core.md\|04]] | 端口转发核心包能力 | done | `forwarding.py`：转发容器编排（**不发布端口**）、exec 字节泵、转发记录原子读写、生命周期联动与遗留清理（**无宿主端口分配**） |
 | [[tasks/phase3-desktop/05-port-forward-server-api.md\|05]] | 端口转发服务端接口 | done | 三条转发管理 REST（GET 裸数组 / POST `{sandbox, port}` / DELETE）+ `/api/forward/tunnel/{id}` 隧道 WS（**exec 字节泵**，模型无 `host_port`；Bearer 鉴权、固定文案错误帧、关闭码 1000/1001/1008/1011） |
-| [[tasks/phase3-desktop/06-port-forward-desktop.md\|06]] | 端口转发桌面侧 | todo | Rust 本机监听与隧道桥接、端口转发界面（web 形态只说明卡 + 安装指引，桌面形态完整管理） |
+| [[tasks/phase3-desktop/06-port-forward-desktop.md\|06]] | 端口转发桌面侧 | doing | Rust 本机监听与隧道桥接（每连接一条隧道 WS；**单条隧道断开只关该连接，监听器保留到用户显式停止**）、端口转发界面（web 形态只说明卡 + 安装指引，桌面形态完整管理）；**待真机复验** |
 | [[tasks/phase3-desktop/07-acceptance-tokenization.md\|07]] | 既有验收套件 token 化改造 | todo | 令牌注入、`storageState` 预置、负向用例 |
 | [[tasks/phase3-desktop/08-windows-package.md\|08]] | Windows 打包产物与冒烟 | todo | 安装包产出、干净机器安装冒烟 |
 | [[tasks/phase3-desktop/09-acceptance-and-docs.md\|09]] | 验收回归与文档收口 | todo | 全量回归 + 三篇 ADR + 看板 / 词汇 / 总览 / 约定 / API.md 同步 |
@@ -32,11 +32,11 @@
  └───────────────────────┘
 ```
 
-**图上进度标记**：01 doing / 02 done / 03 doing（待真机复验）/ **04 done** / **05 done** / 06~09 todo（**06 可开工**）。
+**图上进度标记**：01 doing / 02 done / 03 doing（待真机复验）/ **04 done** / **05 done** / **06 doing**（待真机复验）/ 07~09 todo。
 
 - **01 是全期的前置硬门槛**：`P1`（免 root `-p` 是否在宿主回环真的产生监听）**已实测通过**，但按 **2026-11-03 决策 C** **不采用**该路径——04 / 05 / 06 按 **Fallback B（`docker exec -i` 字节泵）** 实现（后端宿主零端口）；`P2`（WebView2 三项冒烟）不成立时，03 的样式与剪贴板口径要调整；`P4`（Windows 出包路径）不成立时，08 无法交付。
 - **02 → 03 强顺序**：后端契约先定，前端才能对接。
-- **04 → 05 → 06 强顺序**：核心包能力先定，服务端再包 REST 与隧道，桌面侧最后接。**04 / 05 均已 done**（2026-11-03），**06 可开工**。
+- **04 → 05 → 06 强顺序**：核心包能力先定，服务端再包 REST 与隧道，桌面侧最后接。**04 / 05 均已 done**（2026-11-03），**06 doing**（实现完成，待真机复验）。
 - **07 可与 04 / 05 / 06 并行**：它改造的是既有验收套件，与新功能无耦合；但它依赖 02 的令牌契约。
 - **09 收口**：等 01~08 全部就位。
 

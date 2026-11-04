@@ -56,7 +56,7 @@ status: todo        # todo | doing | done | blocked
 - [[tasks/phase3-desktop/03-frontend-connection-layer.md]] — 连接层前端改造：请求基址抽象 / 连接配置 / WebSocket 地址推导 / 未配置态（doing：前端侧已落地，CSP 闸门闭合；只差「同一份产物连本机 / 远端后端」待真机复验；**2026-11-03 决策 D「基址不可空」已落地（2026-11-03，前端改造完成）**）
 - [[tasks/phase3-desktop/04-port-forward-core.md]] — 端口转发核心包能力：转发容器编排（**不发布端口**）/ exec 字节泵 / 转发记录原子读写 / 生命周期与清理（**无宿主端口分配**）（done：`forwarding.py` 已落地并通过审查修复轮；门禁 pytest 288 passed / ruff 0 / CLI 零改动；两处既定偏差见任务文件文末「进展」）
 - [[tasks/phase3-desktop/05-port-forward-server-api.md]] — 端口转发服务端接口：转发管理 REST + 隧道 WebSocket（**exec 字节泵**，done：三条 REST + 隧道 WS 已落地并通过审查修复轮——Bearer 鉴权、固定中文文案错误帧、关闭码 1000/1001/1008/1011、字节泵专用线程池；门禁 pytest 289 passed / 核心包 292 passed / ruff 0 / 分层契约 10 passed / CLI·前端·桌面零改动）
-- [[tasks/phase3-desktop/06-port-forward-desktop.md]] — 端口转发桌面侧：Rust 本机 TCP 监听 + 隧道桥接 + 端口转发界面（todo：已按 2026-11-03 决策 C 重写界面部分）
+- [[tasks/phase3-desktop/06-port-forward-desktop.md]] — 端口转发桌面侧：Rust 本机 TCP 监听 + 隧道桥接 + 端口转发界面（doing：已实现并通过审查修复轮——**每转发一个本机监听、每条连接各开一条隧道 WS（Bearer）**；**正式口径：单条隧道断开只关该连接，监听器保留到用户显式 `stop_forward`**；web 形态只说明卡 + 安装指引、桌面形态完整管理；Rust 侧不落盘令牌。门禁 vitest 527 / typecheck 双零错 / build 过、cargo check 0 警告 / cargo test 20；**待用户 Windows 真机 + 真后端复验**）
 - [[tasks/phase3-desktop/07-acceptance-tokenization.md]] — 既有验收套件 token 化改造
 - [[tasks/phase3-desktop/08-windows-package.md]] — Windows 打包产物与冒烟
 - [[tasks/phase3-desktop/09-acceptance-and-docs.md]] — 验收回归与文档收口
