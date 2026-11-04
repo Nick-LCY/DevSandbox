@@ -27,7 +27,7 @@ status: todo
 ## 实施步骤
 
 1. **质量基线**：核心包 pytest（含 `-m root`）、服务端 pytest、ruff（`E4/E7/E9/F`）、前端 vitest / typecheck / typecheck:tests / build 全绿。
-2. **真机回归**：既有 9 条 spec + 新增的认证用例（`10-auth.spec.ts`）+ 端口转发用例（转发建立 → 桌面端开启 → 本机访问 → 停止 → 沙箱删除后回收）全绿。
+2. **真机回归**：既有 9 条 spec + 新增的认证用例（`10-auth-connection.spec.ts`）+ 端口转发用例（转发建立 → 桌面端开启 → 本机访问 → 停止 → 沙箱删除后回收）全绿。
 3. **三篇 ADR**：按仓库模板写全六段（日期、状态、背景、决策、影响、相关决策），文件名 `0013-三期定位改定与认证重启.md`、`0014-端口转发机制选型.md`、`0015-桌面壳与连接配置抽象.md`。
 4. **清单同步**：三篇 ADR 登记进 `docs/architecture/decisions/README.md` 与 `docs/architecture/README.md` 两张表；PRD 与任务集登记进对应清单；看板、词汇表、总览、约定、API.md、两个 README 同步到位。
 5. **留档**：`docs/tasks/phase3-desktop/RESULTS.md` 记实测数字（各套测试条数、真机用例数、Windows 冒烟结论）。

@@ -77,4 +77,4 @@ status: doing
 - **门禁**：vitest **493 全绿**；`typecheck` 与 `typecheck:tests` **双零错**；`build` 成功；服务端 pytest **245 passed（CORS/Origin 口径调整后）**；`cargo check` 通过 + **11 条 Rust 单测**全过（基线策略不含 `script-src 'unsafe-inline'`、基线与改写后均无 scheme 通配、host 换算、IPv6 方括号只带一层、幂等改写、重载判定等）。
 - **字体**：新增中文文案后核对字符集为 **3636 字、与库内子集一致**（新增用字全在子集内），**未重跑** `build-fonts.sh`，产物无需变更。
 - **待复验**：完成标准 11 条中 **10 条已闭合**，唯第 2 条（同一份产物连同源 / 远端后端全链路可用）**待用户在 Windows 真机 + 真后端复验**。
-- **已知过渡态（非回归）**：既有 Playwright 验收套件（`apps/web/frontend/tests`，9 条 spec）**自 03 落地起为红**——未配置态引导面板替换了工作台，后端又要求令牌，脚本没预置令牌就进不了工作台；**07（[[tasks/phase3-desktop/07-acceptance-tokenization.md|验收套件 token 化]]）落地后恢复**。看到这 9 条红不要当回归。
+- **已知过渡态（非回归）· 历史留档**：既有 Playwright 验收套件（`apps/web/frontend/tests`，9 条 spec）**自 03 落地起为红**——未配置态引导面板替换了工作台，后端又要求令牌，脚本没预置令牌就进不了工作台；**07（[[tasks/phase3-desktop/07-acceptance-tokenization.md|验收套件 token 化]]）落地后恢复**。看到这 9 条红不要当回归。**状态更新（2026-11-03）：该过渡态已于 07 结束**——既有 9 条 spec 全部恢复并全量 46 passed / 0 failed（约 8.6 分钟，含认证负向用例与带票正向对照）；**现在套件为红才是真回归**。

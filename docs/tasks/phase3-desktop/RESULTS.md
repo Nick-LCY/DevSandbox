@@ -28,7 +28,7 @@
 | ruff（E4/E7/E9/F） | 待填 | — |
 | 前端 vitest | 待填 | — |
 | 前端 typecheck / typecheck:tests / build | 待填 | — |
-| Playwright 真机 | 待填 | 既有 9 条 + 认证用例 + 端口转发用例 |
+| Playwright 真机 | **46 passed / 0 failed**（约 8.6 分钟，2026-11-03，07 轮：既有 9 条 + 认证 10 条；端口转发用例待 06 真机后补） | 既有 9 条 + 认证用例 + 端口转发用例 |
 | Windows 冒烟结论 | 待填 | — |
 
 ## 三、已知边界
@@ -37,7 +37,7 @@
 - **端口发布只绑回环**：实测确认 `-p 127.0.0.1:<宿主端口>:<容器端口>` 在宿主上只出现 `127.0.0.1:<端口>` 的监听（不是 `0.0.0.0`），不出本机、不出局域网。
 - **多路复用推迟**：一条 WebSocket 对一条 TCP 连接；高并发场景每条连接多一次握手。
 - **令牌轮换无 UI**：泄漏后只能删文件重启，本期接受。
-- **前端 `base` 已改为相对路径**（03 落地）：`apps/web/frontend/vite.config.ts` 现为 `base: './'`，`apps/web/frontend/dist/index.html` 里资源引用形如 `./assets/xxx.js`。相对引用在 Tauri 自定义协议（Windows 上是 `http://tauri.localhost` 根路径）与后端 `StaticFiles` 托管两种形态下都能解析；但这是一次**全量产物变更**，既有验收需重跑（PRD R12）——当前这 9 条 spec 为红是**过渡态**（引导面板 + 后端要令牌），07 token 化后恢复。
+- **前端 `base` 已改为相对路径**（03 落地）：`apps/web/frontend/vite.config.ts` 现为 `base: './'`，`apps/web/frontend/dist/index.html` 里资源引用形如 `./assets/xxx.js`。相对引用在 Tauri 自定义协议（Windows 上是 `http://tauri.localhost` 根路径）与后端 `StaticFiles` 托管两种形态下都能解析；但这是一次**全量产物变更**，既有验收需重跑（PRD R12）——**状态更新（2026-11-03）：这 9 条 spec 的过渡态红已由 07（[[tasks/phase3-desktop/07-acceptance-tokenization.md|验收套件 token 化]]）恢复**，现全量 46 passed / 0 failed（约 8.6 分钟，含认证负向用例与带票正向对照）。
 - **桌面壳 CSP 不再是 `csp: null`**（03 落地）：已按 [[architecture/decisions/0015-桌面壳与连接配置抽象.md|ADR 0015]] 第 6 节收敛为「配置基线 + Rust 运行期 host 级动态生成」——`tauri.conf.json` 存基线策略（`connect-src` 只留 `'self'`），Rust 侧按当前后端主机动态补 `http(s)://<host>:*` 与 `ws(s)://<host>:*`；时序契约为「保存连接配置 → 同步 Rust 状态 → 按需重载主文档」。端口转发侧（任务 06）的同款闸门仍待闭合。
 
 ---

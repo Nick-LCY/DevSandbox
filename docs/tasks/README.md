@@ -57,7 +57,7 @@ status: todo        # todo | doing | done | blocked
 - [[tasks/phase3-desktop/04-port-forward-core.md]] — 端口转发核心包能力：转发容器编排（**不发布端口**）/ exec 字节泵 / 转发记录原子读写 / 生命周期与清理（**无宿主端口分配**）（done：`forwarding.py` 已落地并通过审查修复轮；门禁 pytest 288 passed / ruff 0 / CLI 零改动；两处既定偏差见任务文件文末「进展」）
 - [[tasks/phase3-desktop/05-port-forward-server-api.md]] — 端口转发服务端接口：转发管理 REST + 隧道 WebSocket（**exec 字节泵**，done：三条 REST + 隧道 WS 已落地并通过审查修复轮——Bearer 鉴权、固定中文文案错误帧、关闭码 1000/1001/1008/1011、字节泵专用线程池；门禁 pytest 289 passed / 核心包 292 passed / ruff 0 / 分层契约 10 passed / CLI·前端·桌面零改动）
 - [[tasks/phase3-desktop/06-port-forward-desktop.md]] — 端口转发桌面侧：Rust 本机 TCP 监听 + 隧道桥接 + 端口转发界面（doing：已实现并通过审查修复轮——**每转发一个本机监听、每条连接各开一条隧道 WS（Bearer）**；**正式口径：单条隧道断开只关该连接，监听器保留到用户显式 `stop_forward`**；web 形态只说明卡 + 安装指引、桌面形态完整管理；Rust 侧不落盘令牌。门禁 vitest 527 / typecheck 双零错 / build 过、cargo check 0 警告 / cargo test 20；**待用户 Windows 真机 + 真后端复验**）
-- [[tasks/phase3-desktop/07-acceptance-tokenization.md]] — 既有验收套件 token 化改造
+- [[tasks/phase3-desktop/07-acceptance-tokenization.md]] — 既有验收套件 token 化改造（done：测试令牌单一来源 `helpers/auth.ts`、页面侧 `storageState` 预置 + 运行期注入、新增 `10-auth-connection.spec.ts` 10 条认证用例含 401 负向、无票据 WS 被拒与带票正向对照；门禁：全量套件 **46 passed / 0 failed**（约 8.6 分钟），**产品源码零改动**；「验收套件为红」的过渡态到此结束）
 - [[tasks/phase3-desktop/08-windows-package.md]] — Windows 打包产物与冒烟
 - [[tasks/phase3-desktop/09-acceptance-and-docs.md]] — 验收回归与文档收口
 - [[tasks/phase3-desktop/RESULTS.md]] — 三期打样与实测结论留档（P1/P3 已填；首轮用户反馈已入档：P4 路径②部分闭合、P2 外观初测通过，P2 控制台三项与 P5 待验）

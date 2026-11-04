@@ -54,4 +54,5 @@ status: doing
 
 - 本机（Linux）部分完成：P1 主路径裁决通过（rootlesskit 在宿主回环产生监听、`curl` 连通；Fallback B 备案验过成立但不采纳）、P3 转发镜像钉 digest 经代理拉取成功、Tauri v2 骨架落盘并过 `cargo check`。**（2026-11-03 决策 C：P1 结论仍成立但 `-p` 路径不采用，Fallback B 升为唯一路径，后端宿主零端口。）**
 - P2（WebView2 三项冒烟）、P4（Windows 出包路径）、P5（WebView2 运行时策略）与「骨架可启动」待用户 Windows 真机实测闭合。
+- **验收套件状态（2026-11-03）**：既有 9 条 spec 自 03 落地起的过渡态红**已于 07（[[tasks/phase3-desktop/07-acceptance-tokenization.md|验收套件 token 化]]）恢复**——全量 46 passed / 0 failed（约 8.6 分钟，含认证负向用例与带票正向对照）。**本任务的待复验项（P2 / P4 / P5 / 骨架可启动）不受影响，仍待 Windows 真机。**
 - 结论与命令留档见 [[tasks/phase3-desktop/RESULTS.md|三期留档]]。

@@ -1,6 +1,6 @@
 ---
 prd: prds/phase3-desktop.md
-status: todo
+status: done
 ---
 # 任务：既有验收套件 token 化改造
 
@@ -14,9 +14,9 @@ status: todo
 - 改 `apps/web/frontend/tests/helpers/api.ts` — 所有 REST 直调带 `Authorization` 头
 - 改 `apps/web/frontend/tests/playwright.config.ts` — `storageState` 预置连接配置
 - 新增 `apps/web/frontend/tests/helpers/auth.ts` — 测试令牌常量与带认证的请求助手
-- 新增 `apps/web/frontend/tests/specs/10-auth.spec.ts` — 认证正负向用例
+- 新增 `apps/web/frontend/tests/specs/10-auth-connection.spec.ts` — 认证正负向用例
 - 改 `apps/web/frontend/tests/README.md` — 用例清单与令牌说明
-- 改 `apps/web/frontend/src/api/client.ts` / `src/lib/connection.ts` — 若注入方式需要前端配合则同步
+- 改 `apps/web/frontend/src/api/client.ts` / `src/lib/connection.ts` — 若注入方式需要前端配合则同步（**实际未改**：页面侧预置走测试侧 localStorage 注入，**产品源码零改动**）
 
 ## 实施步骤
 
@@ -25,25 +25,37 @@ status: todo
 3. **页面侧令牌**：Playwright 的 `use.storageState` 预置 `http://127.0.0.1:<port>` origin 下的 `localStorage['sandbox-console-connection'] = {backendBaseUrl: "http://127.0.0.1:<port>", token: "<TEST_TOKEN>"}`；这样页面一打开就处于「已配置」态，直接进工作台。**基址必须非空**（2026-11-03 决策 D：基址不可为空，「空 = 同源」逻辑链已删除）——旧存储里空基址读取时虽会归一为默认值，但**预置值与文档都不写空串**。`<port>` 取**测试服务的实际端口**（默认 `8100`，见 `tests/helpers/server.ts` 的 `CONSOLE_TEST_PORT`；宿主 `8000` 被无关进程占用，不能写死）；产品默认基址是 `http://127.0.0.1:8000`（见 [[architecture/decisions/0015-桌面壳与连接配置抽象.md|ADR 0015]]）。
 4. **REST 直调**：`helpers/api.ts` 的 `request()` 统一带上认证头。
 5. **终端 WS**：终端用例走页面内的 WebSocket，前端自动取票据，用例本身不改；只需确认断线重连路径也带票据。
-6. **负向 / 正向用例**（新 `10-auth.spec.ts`）：
+6. **负向 / 正向用例**（新 `10-auth-connection.spec.ts`）：
    - 无令牌访问 `/api/health` → 401；
    - 错误令牌 → 401；
    - 正确令牌 → 200；
    - 无票据的终端 WS 握手 → 被拒（可用 Playwright 的 `page.evaluate` 里手写 `new WebSocket(...)` 观察 `onerror` / `onclose`）；
+   - 带有效票据的终端 WS 握手 → 成功（**正向对照**：同一 host:port、同一个路由，**唯一差别是「带了票」**，用来证明负向用例的「连不上」是票据闸拒，而不是地址写错 / 路由没挂 / 服务没起这类环境问题）；
    - 未配置态引导：无 localStorage 配置时页面渲染引导面板且不是路由。
 
 ## 完成标准
 
-- [ ] 既有 9 条 spec 在 token 模式下全量回归通过（无一条因认证改造而失败）。
-- [ ] `helpers/server.ts` 启动的后端带固定测试令牌；健康等待不会因 401 卡死。
-- [ ] 页面侧通过 `storageState` 预置连接配置，既有用例直接进工作台（不新增「先配置再操作」的步骤）。
-- [ ] `helpers/api.ts` 的所有直调都带认证头。
-- [ ] 新增 `10-auth.spec.ts` 覆盖：无令牌 401 / 错令牌 401 / 正确令牌 200 / 无票据 WS 被拒 / 未配置态引导。
-- [ ] 负向用例**保留**并常驻（不是临时验证脚本）。
-- [ ] `apps/web/frontend/tests/README.md` 更新用例清单与令牌说明。
+- [x] 既有 9 条 spec 在 token 模式下全量回归通过（无一条因认证改造而失败）。
+- [x] `helpers/server.ts` 启动的后端带固定测试令牌；健康等待不会因 401 卡死。
+- [x] 页面侧通过 `storageState` 预置连接配置，既有用例直接进工作台（不新增「先配置再操作」的步骤）。
+- [x] `helpers/api.ts` 的所有直调都带认证头。
+- [x] 新增 `10-auth-connection.spec.ts` 覆盖：无令牌 401 / 错令牌 401 / 正确令牌 200 / 无票据 WS 被拒（**精确断言关闭码 1006**）/ 带有效票据 WS 握手成功（**正向对照**）/ 未配置态引导。
+- [x] 负向用例**保留**并常驻（不是临时验证脚本）。
+- [x] `apps/web/frontend/tests/README.md` 更新用例清单与令牌说明。
 
 ## 依赖
 
 - 依赖 [[tasks/phase3-desktop/02-backend-token-and-cors.md|02 连接层后端改造]]（令牌与票据契约）。
 - 依赖 [[tasks/phase3-desktop/03-frontend-connection-layer.md|03 连接层前端改造]]（连接配置的存储键与结构，用于 `storageState` 预置）。
 - 可与 [[tasks/phase3-desktop/04-port-forward-core.md|04]]~[[tasks/phase3-desktop/06-port-forward-desktop.md|06]] 并行。
+
+## 进展（2026-11-03）
+
+- **接续完成（07 落地，验收套件恢复）**：既有 9 条 spec 在令牌模式下**全部恢复通过**；新增 `specs/10-auth-connection.spec.ts` **10 条认证用例**（无令牌 401 / 错令牌 401 / 正确令牌 200 / 无票据 WS 握手被拒 / **带有效票据 WS 握手成功（正向对照）** / 未配置态引导面板且工作台不挂载 / 预置配置工作台挂载 / 引导面板「保存并连接」 / 错令牌时健康自检显示「令牌无效」 / 已配置态回归）。**「验收套件为红」的过渡态就此结束**（该过渡态自 03 落地起，根因 = 引导面板替换工作台 + 后端要令牌）。
+- **审查微修复要点**：
+  - **测试令牌单一来源**：`helpers/auth.ts` 导出 `TEST_TOKEN` / `authHeaders()` / `bearerHeaders()`，**服务进程注入（`SANDBOX_CONSOLE_TOKEN`）、脚本直调、页面预置三处共用同一份令牌**（固定常量，不是每次运行随机生成——三处要在同一次运行里对上）；令牌只在本机验收环境用，**注入优先 = 不落盘**。
+  - **页面侧预置**：既有 9 条用例走 `storageState`（`global-setup` 按服务**实际端口**写 `.runtime/storage-state.json`，`playwright.config.ts` 的 `use.storageState` 读它）；负向用例走运行期注入（`seedConnection` / `clearConnection`，`addInitScript` 写 / 删 localStorage），构造「未配置」与「错令牌」两态。
+  - **WS 负向**：无票据的终端握手**必须连不上**，且**精确断言关闭码 1006**——服务端在 **accept 之前**就拒了握手（生产环境 uvicorn 回 HTTP 403 拒绝响应），**关闭码不送达客户端**，浏览器只能观测到「异常断开」1006（服务端语义 1008 只在 TestClient 下可见）。**不能只判「不是 1000」**：超时的兜底值 `-1` 也满足那个断言，会把「压根没连上（服务没起 / 地址写错 / 路由没挂）」蒙混成「被票据闸拒了」，负向用例就恒绿等于没验。
+  - **带票正向对照（同文件内新增）**：用 `authHeaders()` POST `/api/auth/ticket` 换一张一次性票据，再用 `?ticket=` 连**同一个** WS 地址（同一 host:port、同一个路由），断言 `opened === true`——唯一的差别是「带了票」，证明负向用例里的「连不上」确实是票据闸拒的。
+  - **产品源码零改动**：`src/api/client.ts` / `src/lib/connection.ts` **未动**——预置只发生在测试侧的 localStorage 注入，不改前端行为。
+- **门禁**：全量套件 **46 passed / 0 failed**（约 **8.6 分钟**，含前端构建与真机沙箱）；既有 9 条 spec 全绿 + 认证用例 **10 条常驻**（负向用例不删，随每次回归一起跑；含带票正向对照 1 条）。
