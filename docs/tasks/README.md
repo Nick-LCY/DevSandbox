@@ -51,16 +51,16 @@ status: todo        # todo | doing | done | blocked
 - [[tasks/console-templates/04-acceptance-and-docs.md]] — 控制台模板轮真机验收与文档收口：三套测试全绿、两篇架构决策记录、看板与约定同步
 - [[tasks/file-injection/README.md]] — 文件注入轮（创建沙箱时把宿主文件复制进沙箱）任务集索引，含四个工作包完成状态、验收数字与提交链
 - [[tasks/phase3-desktop/README.md]] — 三期（桌面端打包 + 端口转发）任务集索引，含 9 个任务、依赖顺序与关键前置风险
-- [[tasks/phase3-desktop/01-prototype-and-spike.md]] — 打样轮：免 root 端口发布 / Tauri 壳 / WebView2 三项冒烟 / Windows 出包路径（doing：本机 P1 / P3 已实测通过；P1 结论仍成立但按 2026-11-03 决策 C **不采用** `-p` 路径；首轮 Windows 反馈——P4 路径②可行、P2 外观初测通过，控制台三项待调试构建复验）
+- [[tasks/phase3-desktop/01-prototype-and-spike.md]] — 打样轮：免 root 端口发布 / Tauri 壳 / WebView2 三项冒烟 / Windows 出包路径（done：本机 P1 / P3 已实测通过；P1 结论仍成立但按 2026-11-03 决策 C **不采用** `-p` 路径；**2026-11-04 Windows 11 真机复验全通过**——P2 三项全过、P4 路径②正式可交付、P5 无提装）
 - [[tasks/phase3-desktop/02-backend-token-and-cors.md]] — 连接层后端改造：令牌 + 一次性票据鉴权 / CORS 任意来源（done：后端侧已落地，准入边界 = 令牌 + 票据；按部署口径须与 03 同批发布）
-- [[tasks/phase3-desktop/03-frontend-connection-layer.md]] — 连接层前端改造：请求基址抽象 / 连接配置 / WebSocket 地址推导 / 未配置态（doing：前端侧已落地，CSP 闸门闭合；只差「同一份产物连本机 / 远端后端」待真机复验；**2026-11-03 决策 D「基址不可空」已落地（2026-11-03，前端改造完成）**）
+- [[tasks/phase3-desktop/03-frontend-connection-layer.md]] — 连接层前端改造：请求基址抽象 / 连接配置 / WebSocket 地址推导 / 未配置态（doing：前端侧已落地，CSP 闸门闭合；**远端形态已于 2026-11-04 真机实测通过**，本机形态待用户拍板；**2026-11-03 决策 D「基址不可空」已落地（2026-11-03，前端改造完成）**）
 - [[tasks/phase3-desktop/04-port-forward-core.md]] — 端口转发核心包能力：转发容器编排（**不发布端口**）/ exec 字节泵 / 转发记录原子读写 / 生命周期与清理（**无宿主端口分配**）（done：`forwarding.py` 已落地并通过审查修复轮；门禁 pytest 288 passed / ruff 0 / CLI 零改动；两处既定偏差见任务文件文末「进展」）
 - [[tasks/phase3-desktop/05-port-forward-server-api.md]] — 端口转发服务端接口：转发管理 REST + 隧道 WebSocket（**exec 字节泵**，done：三条 REST + 隧道 WS 已落地并通过审查修复轮——Bearer 鉴权、固定中文文案错误帧、关闭码 1000/1001/1008/1011、字节泵专用线程池；门禁 pytest 289 passed / 核心包 292 passed / ruff 0 / 分层契约 10 passed / CLI·前端·桌面零改动）
-- [[tasks/phase3-desktop/06-port-forward-desktop.md]] — 端口转发桌面侧：Rust 本机 TCP 监听 + 隧道桥接 + 端口转发界面（doing：已实现并通过审查修复轮——**每转发一个本机监听、每条连接各开一条隧道 WS（Bearer）**；**正式口径：单条隧道断开只关该连接，监听器保留到用户显式 `stop_forward`**；web 形态只说明卡 + 安装指引、桌面形态完整管理；Rust 侧不落盘令牌。门禁 vitest 527 / typecheck 双零错 / build 过、cargo check 0 警告 / cargo test 20；**待用户 Windows 真机 + 真后端复验**）
+- [[tasks/phase3-desktop/06-port-forward-desktop.md]] — 端口转发桌面侧：Rust 本机 TCP 监听 + 隧道桥接 + 端口转发界面（done：已实现并通过审查修复轮——**每转发一个本机监听、每条连接各开一条隧道 WS（Bearer）**；**正式口径：单条隧道断开只关该连接，监听器保留到用户显式 `stop_forward`**；web 形态只说明卡 + 安装指引、桌面形态完整管理；Rust 侧不落盘令牌。门禁 vitest 527 / typecheck 双零错 / build 过、cargo check 0 警告 / cargo test 20；**2026-11-04 真机连通通过、整体验收由用户实际使用确认**）
 - [[tasks/phase3-desktop/07-acceptance-tokenization.md]] — 既有验收套件 token 化改造（done：测试令牌单一来源 `helpers/auth.ts`、页面侧 `storageState` 预置 + 运行期注入、新增 `10-auth-connection.spec.ts` 10 条认证用例含 401 负向、无票据 WS 被拒与带票正向对照；门禁：全量套件 **46 passed / 0 failed**（约 8.6 分钟），**产品源码零改动**；「验收套件为红」的过渡态到此结束）
 - [[tasks/phase3-desktop/08-windows-package.md]] — Windows 打包产物与冒烟
 - [[tasks/phase3-desktop/09-acceptance-and-docs.md]] — 验收回归与文档收口
-- [[tasks/phase3-desktop/RESULTS.md]] — 三期打样与实测结论留档（P1/P3 已填；首轮用户反馈已入档：P4 路径②部分闭合、P2 外观初测通过，P2 控制台三项与 P5 待验）
+- [[tasks/phase3-desktop/RESULTS.md]] — 三期打样与实测结论留档（P1~P5 全部有结论：P1 / P3 本机实测；P2 / P4 / P5 于 2026-11-04 Windows 11 真机实测闭合；06 真机连通同轮通过）
 
 ## 看板
 任务状态汇总见 [[current-state.md]]，由人维护。

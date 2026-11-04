@@ -2,9 +2,10 @@
 
 > **留档说明**
 > - 本文件是三期（桌面端打包 + 端口转发）的**打样与实测结论**留档，由 [[tasks/phase3-desktop/01-prototype-and-spike.md|任务 01]] 打样轮与 [[tasks/phase3-desktop/09-acceptance-and-docs.md|任务 09]] 收口轮填写。
-> - **当前状态（2026-11-03）**：打样轮已在本机（Linux）完成 **P1 / P3** 两项实测并成文；**P2 / P4 / P5** 三项依赖 Windows 真机，留「待 Windows 实测」占位（判定标准已写死，见第五、七、八节）。
+> - **当前状态（2026-11-04）**：**P1~P5 五项全部有结论**——P1 / P3 是本机（Linux）实测（见第四、六节）；**P2 / P4 / P5 已于 2026-11-04 在 Windows 11 真机上实测闭合**（见第五、七、八节）。
 > - **2026-11-03 决策 C 追加说明**：P1 的**实测结论依然成立**（`-p` 在本平台**可用**），但**该路径不再采用**——端口转发链路两点化、**后端宿主零端口**，Fallback B（`docker exec -i` 字节泵）升为**唯一路径**（[[architecture/decisions/0014-端口转发机制选型.md|ADR 0014]] 第二次修订）。本文件中「04/05/06 按主路径实现」一类的**执行指向**已失效，**实测数据与命令留档一律保留**。
 > - **首轮用户反馈（2026-11-03）已入档**：P4 的路径②部分闭合、P2 外观初测通过（详见第五、七、八节的「首轮反馈」小段）；P2 的三项控制台判定与 xterm 真渲染、P5 均未闭合。
+> - **正式回填（2026-11-04，Windows 11 真机 + 真后端）**：**P2 三项逐项通过**；**P4 路径②正式可交付**（NSIS `setup.exe` 约 3.7 MB，**构建耗时未统计**）；**P5 无提装动作、直接可用**（Win11 自带 WebView2 运行时）；**06 真机连通同轮通过**（结论见 [[tasks/phase3-desktop/06-port-forward-desktop.md|任务 06]]）。**03 全链路的远端形态通过、本机形态（连同机后端）本轮未单独实测**，口径待用户拍板（[[tasks/phase3-desktop/03-frontend-connection-layer.md|任务 03]] 状态仍为 doing）。
 > - 打样轮的产物：Tauri v2 工程骨架在 [[architecture/decisions/0015-桌面壳与连接配置抽象.md|ADR 0015]] 约定的位置 `apps/desktop/`；操作指引见 `apps/desktop/README.md`。
 > - 关联页面：[[tasks/phase3-desktop/README.md|三期任务集]]、[[prds/phase3-desktop.md|三期 PRD]]、[[architecture/decisions/0014-端口转发机制选型.md|0014 端口转发机制选型]]、[[current-state.md|当前状态]]。
 
@@ -13,10 +14,10 @@
 | 编号 | 前置项 | 结论 | 关键输出 / 裁决 |
 |---|---|---|---|
 | **P1** | 免 root 守护进程 `-p` 发布宿主回环 | **通过（本机实测）** | 宿主 `ss -ltn` 出现 `127.0.0.1:18000`（属主 `rootlesskit` 进程），`curl 127.0.0.1:18000` 拿到容器内服务响应体 → **主路径成立** ~~04/05/06 按主路径实现~~ **（2026-11-03 决策 C：`-p` 路径不再采用，Fallback B 升为唯一路径；实测结论本身仍成立）** |
-| **P2** | Tauri v2 + WebView2 三项冒烟（`oklch` / xterm.js / `navigator.clipboard`） | **待 Windows 实测** | 判定标准已写死（见第五节）；操作步骤见 `apps/desktop/README.md` |
+| **P2** | Tauri v2 + WebView2 三项冒烟（`oklch` / xterm.js / `navigator.clipboard`） | **通过（Windows 11 真机，2026-11-04）** | 三项逐项通过：① `oklch()` 配色正常；② xterm.js 渲染 / fit / 表面不溢出正常（随 03 远端形态全链路实测一并验过）；③ `window.isSecureContext === true`、`navigator.clipboard` 读写双向成功（详见第五节） |
 | **P3** | 转发镜像经统一镜像代理可拉 | **通过（本机实测）** | `alpine/socat:1.8.1.3@sha256:466c8a0383e16463fabdb7df01008292fb78d07da60224a46cb5d3142ce122ed` 经统一镜像代理拉进免 root 守护进程成功，二次拉取的访问日志全部命中代理缓存（计数口径与局限见第六节） |
-| **P4** | Windows 出包路径 | **待 Windows 实测** | 候选两条：GitHub Actions `windows-latest`（需先有远端）/ 用户自有 Windows 机；判定标准见第七节 |
-| **P5** | Windows 目标机器的 WebView2 运行时策略 | **待 Windows 实测** | `webviewInstallMode` 三选一（Evergreen 静默 / 离线随包 / 提示自装）；判定标准见第八节 |
+| **P4** | Windows 出包路径 | **通过（Windows 11 真机，2026-11-04）** | **路径②（用户自有 Windows 机器本地构建）正式可交付**：产出 NSIS `setup.exe` 约 **3.7 MB**；环境 / 产物形态已正式记录，**构建耗时未统计**（详见第七节） |
+| **P5** | Windows 目标机器的 WebView2 运行时策略 | **通过（Windows 11 真机，2026-11-04）** | **无提装动作、直接可用**——Win11 系统自带 WebView2 运行时，属预期行为（详见第八节） |
 
 ## 二、验收数字（任务 09 填）
 
@@ -29,7 +30,7 @@
 | 前端 vitest | 待填 | — |
 | 前端 typecheck / typecheck:tests / build | 待填 | — |
 | Playwright 真机 | **46 passed / 0 failed**（约 8.6 分钟，2026-11-03，07 轮：既有 9 条 + 认证 10 条；端口转发用例待 06 真机后补） | 既有 9 条 + 认证用例 + 端口转发用例 |
-| Windows 冒烟结论 | 待填 | — |
+| Windows 冒烟结论 | **P2 三项全过**（`oklch` 配色正常 / `window.isSecureContext === true` / 剪贴板读写可用，用户原话「其他测试也都成功通过」）；**P4 路径②正式可交付**（Windows 11，NSIS `setup.exe` 约 3.7 MB，**构建耗时未统计**）；**P5 无提装**（Win11 自带 WebView2 运行时，直接可用）；**06 真机连通通过**（2026-11-04，桌面端开启转发后本机端口可访问沙箱服务） | P1~P5 逐项有结论 |
 
 ## 三、已知边界
 
@@ -38,7 +39,7 @@
 - **多路复用推迟**：一条 WebSocket 对一条 TCP 连接；高并发场景每条连接多一次握手。
 - **令牌轮换无 UI**：泄漏后只能删文件重启，本期接受。
 - **前端 `base` 已改为相对路径**（03 落地）：`apps/web/frontend/vite.config.ts` 现为 `base: './'`，`apps/web/frontend/dist/index.html` 里资源引用形如 `./assets/xxx.js`。相对引用在 Tauri 自定义协议（Windows 上是 `http://tauri.localhost` 根路径）与后端 `StaticFiles` 托管两种形态下都能解析；但这是一次**全量产物变更**，既有验收需重跑（PRD R12）——**状态更新（2026-11-03）：这 9 条 spec 的过渡态红已由 07（[[tasks/phase3-desktop/07-acceptance-tokenization.md|验收套件 token 化]]）恢复**，现全量 46 passed / 0 failed（约 8.6 分钟，含认证负向用例与带票正向对照）。
-- **桌面壳 CSP 不再是 `csp: null`**（03 落地）：已按 [[architecture/decisions/0015-桌面壳与连接配置抽象.md|ADR 0015]] 第 6 节收敛为「配置基线 + Rust 运行期 host 级动态生成」——`tauri.conf.json` 存基线策略（`connect-src` 只留 `'self'`），Rust 侧按当前后端主机动态补 `http(s)://<host>:*` 与 `ws(s)://<host>:*`；时序契约为「保存连接配置 → 同步 Rust 状态 → 按需重载主文档」。端口转发侧（任务 06）的同款闸门仍待闭合。
+- **桌面壳 CSP 不再是 `csp: null`**（03 落地）：已按 [[architecture/decisions/0015-桌面壳与连接配置抽象.md|ADR 0015]] 第 6 节收敛为「配置基线 + Rust 运行期 host 级动态生成」——`tauri.conf.json` 存基线策略（`connect-src` 只留 `'self'`），Rust 侧按当前后端主机动态补 `http(s)://<host>:*` 与 `ws(s)://<host>:*`；时序契约为「保存连接配置 → 同步 Rust 状态 → 按需重载主文档」。端口转发侧（任务 06）的同款闸门**已闭合**（06 完成标准已勾选）。
 
 ---
 
@@ -220,9 +221,9 @@ $ ss -ltn | grep 18000            → （空，端口已释放）
 
 ---
 
-## 五、P2 待 Windows 实测：Tauri v2 + WebView2 三项冒烟
+## 五、P2 实测留档：Tauri v2 + WebView2 三项冒烟（Windows 11 真机，通过）
 
-> **状态：待 Windows 实测**（本机是 Linux，没有 WebView2；**不接受「在桌面版 Chromium 里过了就算过」**）。
+> **状态：通过（2026-11-04，Windows 11 真机 + 真后端）**——三项逐项通过（结论见 5.3）。**不接受「在桌面版 Chromium 里过了就算过」**这条约束照旧成立：本次判定是在真机 Windows 11 + WebView2 上做的。
 > 操作步骤与判定方法见 `apps/desktop/README.md`「WebView2 三项冒烟（P2 真机操作步骤）」。
 
 判定标准（逐项记「通过 / 不通过 + 现象截图或输出」）：
@@ -231,13 +232,13 @@ $ ss -ltn | grep 18000            → （空，端口已释放）
 |---|---|---|
 | **① `oklch()` 配色** | 界面**有颜色**（不是整页灰白/黑）；DevTools 里 `CSS.supports('color', 'oklch(0.7 0.15 200)') === true` | 令牌层补一条 `rgb()` 回退色（只改 `globals.css` 的 `:root` / `.dark` 与 `@theme` 映射，不在组件里写裸色值） |
 | **② xterm.js** | 1) **渲染**：终端出字符、能敲命令回显；2) **fit**：拖动窗口改变宽度时**列数跟着变**且与可视区域匹配；3) **表面不溢出**：右边缘无原生滚动条、字符不裁切 | 调整终端测量盒与字体度量（注意既有坑：自托管字体 swap 晚到会让列数失配，前端已有 `document.fonts.ready` 后补 `fit` 的处理，要在 WebView2 下复验） |
-| **③ `navigator.clipboard`** | 1) `window.isSecureContext === true`（**这是预期值，不是已证事实；具体取值待 Windows 实测**）；2) `typeof navigator.clipboard !== 'undefined'`；3) **读写双向成功**（终端内 `Ctrl+Shift+C` 复制 → 外部粘贴；外部复制 → 终端 `Ctrl+Shift+V` 粘贴） | 剪贴板快捷键改走 Tauri 侧剪贴板能力（改 `src/lib/terminal-shortcuts.ts` 的分类口径与单元测试）。既有约定：非安全上下文下接口不存在，走失败路径弹提示，**不做降级**——判定重点是接口在不在 |
+| **③ `navigator.clipboard`** | 1) `window.isSecureContext === true`（**这是预期值，不是已证事实；具体取值待 Windows 实测** → **2026-11-04 真机实测为 `true`，已证实**）；2) `typeof navigator.clipboard !== 'undefined'`；3) **读写双向成功**（终端内 `Ctrl+Shift+C` 复制 → 外部粘贴；外部复制 → 终端 `Ctrl+Shift+V` 粘贴） | 剪贴板快捷键改走 Tauri 侧剪贴板能力（改 `src/lib/terminal-shortcuts.ts` 的分类口径与单元测试）。既有约定：非安全上下文下接口不存在，走失败路径弹提示，**不做降级**——判定重点是接口在不在 |
 
 打样轮已为本项准备好的东西：Tauri v2 工程骨架（`apps/desktop/`）、Windows 构建指引（`apps/desktop/README.md`「Windows 构建指引」）、`pnpm tauri dev` 冒烟路径。
 
 ### 5.1 首轮反馈（2026-11-03）
 
-> 本节只追加用户首轮实测反馈，不改上文判定标准。**本项尚未闭合**：外观初测通过，三项控制台判定与 xterm 真渲染仍待验。
+> 本节只追加用户首轮实测反馈，不改上文判定标准。**本项尚未闭合**：外观初测通过，三项控制台判定与 xterm 真渲染仍待验。**（2026-11-04 已闭合，见 5.3。）**
 
 - **外观初测通过**：配色正常，未见 `oklch` 掉色（界面有颜色，不是整页灰白/黑）。
 - **正式版构建打不开开发者工具 —— 正常现象**：开发者工具只在调试构建（`pnpm tauri dev`）下提供，正式版构建（`pnpm tauri build`）不含 DevTools 入口，不是构建失败。
@@ -247,6 +248,22 @@ $ ss -ltn | grep 18000            → （空，端口已释放）
 ### 5.2 03 落地后的可测性变化（2026-11-03）
 
 03（连接层前端改造）已落地，桌面壳可按连接配置（后端地址 + 令牌）**连上真后端**，因此 **xterm 真渲染（渲染 / fit / 表面不溢出）与剪贴板读写现在可以在真机上做端到端验证**——不再受「前端拿不到数据」的阻塞。该复验窗口与 P2 的控制台三项**合并成一次 Windows 真机复验**（见 [[current-state.md|当前状态]] 的 TODO 条目）。
+
+### 5.3 真机复验结论（2026-11-04，Windows 11 + 真后端）
+
+> **本项已闭合**：三项逐项通过。用户在 Windows 11 真机上复验，原话「其他测试也都成功通过」。
+
+| 项 | 判定 | 实测现象 |
+|---|---|---|
+| **① `oklch()` 配色** | **通过** | 界面**有颜色**、未掉色（不是整页灰白 / 黑）；其余测试项一并通过 |
+| **② xterm.js（渲染 / fit / 表面不溢出）** | **通过** | 随 03 的**远端形态**全链路实测一并验过——桌面壳按连接配置连上**远端后端**后终端实际可用（终端、转发等功能实际使用无问题） |
+| **③ `navigator.clipboard`** | **通过** | `window.isSecureContext === true`（**预期值已证实**）；`navigator.clipboard` 可用；**读写双向成功** |
+
+**口径说明**：
+
+- ①与③的控制台判定取自真机（调试构建 `pnpm tauri dev`）的 DevTools；②的真渲染依赖后端连通，与 03 的**远端形态**全链路实测合并完成（见 [[tasks/phase3-desktop/03-frontend-connection-layer.md|任务 03]]）。
+- **03 的本机形态（连同机后端）本轮未单独实测**，口径待用户拍板——**该缺口不影响 P2 的判定**（P2 判的是 WebView2 的三项能力本身，不判后端部署形态）。
+
 
 ---
 
@@ -374,9 +391,9 @@ Size=4405810
 
 ---
 
-## 七、P4 待 Windows 实测：Windows 出包路径
+## 七、P4 实测留档：Windows 出包路径（Windows 11 真机，通过）
 
-> **状态：待 Windows 实测**（本机是 Linux，Tauri v2 **不支持从 Linux 交叉编译出 Windows 安装包**）。
+> **状态：通过（2026-11-04）**——**路径②（用户自有 Windows 机器本地构建）正式可交付**（正式记录见 7.2）。本机是 Linux，Tauri v2 **不支持从 Linux 交叉编译出 Windows 安装包**，故出包只能在 Windows 侧完成。
 
 判定标准：至少一条路径**可重复执行**，并记录「所需环境 / 耗时 / 产物形态」。
 
@@ -386,7 +403,7 @@ Size=4405810
 | **② 用户自有 Windows 机器本地构建** | Rust stable(MSVC) + Visual Studio Build Tools（含 Windows SDK）+ WebView2 SDK + Node ≥ 22 + pnpm 10 | 依赖用户配合，每次出包都占用那台机器 |
 | ③ 从 Linux 交叉编译 | — | **Tauri v2 不支持，不作为选项** |
 
-记录模板（Windows 侧实测时填）：
+记录模板（Windows 侧实测时填——**已按 7.2 回填**）：
 
 - 环境：Windows 版本 / Rust 版本 / Node 与 pnpm 版本 / Build Tools 版本 / WebView2 运行时版本；
 - 耗时：`pnpm install` / 前端 `pnpm build` / `pnpm tauri build` 各自墙钟耗时；
@@ -395,17 +412,28 @@ Size=4405810
 
 ### 7.1 首轮反馈（2026-11-03）
 
-> 本节只追加用户首轮实测反馈，不改上文记录模板。**路径②已部分闭合**，模板里的细节待正式补记。
+> 本节只追加用户首轮实测反馈，不改上文记录模板。**路径②已部分闭合**，模板里的细节待正式补记。**（2026-11-04 已正式补记，见 7.2。）**
 
 - **路径②（用户自有 Windows 机器本地构建）可行**：用户在自有 Windows 机器上本地构建**通过**——「至少一条路径可重复执行」这条判定**已闭合**。
 - **待正式记录**：上文「记录模板」的三项细节——环境（Windows / Rust / Node / pnpm / Build Tools / WebView2 运行时版本）、耗时（`pnpm install` / 前端 `pnpm build` / `pnpm tauri build` 各自墙钟耗时）、产物形态（NSIS 安装包与 cargo 原始产物的实际文件名与路径）——首轮反馈未给出数值，待补记。
 - **路径①（GitHub Actions `windows-latest`）本轮未验**：仓库当前无远端、无 `.github`，是否保留为备份路径待定。
 
+### 7.2 正式记录（2026-11-04，Windows 11 真机）
+
+> **本项已闭合**：路径②**正式可交付**（结论与首轮打样结论一致，见 7.1）。上方「记录模板」的三项细节按本次实测回填。
+
+- **路径**：② 用户自有 Windows 机器本地构建（`pnpm tauri build`，骨架的 `bundle.targets` 为 `["nsis"]`）。
+- **环境**：**Windows 11**；Rust / Node / pnpm / Visual Studio Build Tools / WebView2 运行时**各版本号本轮未统计**（本次正式记录只给出了 Windows 版本）。
+- **耗时**：**未统计**——本轮**未采集** `pnpm install` / 前端 `pnpm build` / `pnpm tauri build` 各自的墙钟耗时，**留空待补**；不影响「至少一条路径可重复执行」这条判定。
+- **产物形态**：**NSIS 安装包 `setup.exe`，约 3.7 MB**（落在 `apps\desktop\src-tauri\target\release\bundle\nsis\`）；cargo 原始产物 `apps\desktop\src-tauri\target\release\sandbox-console-desktop.exe`（**按 Cargo 包名 `sandbox-console-desktop` 命名，不是中文**；只有 NSIS 安装完成后的「开始菜单 / 桌面快捷方式」指向的 `沙箱控制台.exe` 才用中文名）。
+- **结论**：**路径②正式可交付**——出包口径与首轮打样结论一致，08 的出包方式按此走。
+- **未做**：路径①（GitHub Actions `windows-latest`）本轮未验——仓库仍**无远端、无 `.github`**；保留为备份路径，是否补做待定。
+
 ---
 
-## 八、P5 待 Windows 实测：WebView2 运行时策略
+## 八、P5 实测留档：WebView2 运行时策略（Windows 11 真机，通过）
 
-> **状态：待 Windows 实测**（需要在「没有 WebView2 运行时」的机器上试安装包才能定）。
+> **状态：通过（2026-11-04）**——真机上**无提装动作、直接可用**（Win11 系统自带 WebView2 运行时），属预期行为（结论见 8.2）。
 
 Tauri v2 的 `bundle.windows.webviewInstallMode` 取值与 PRD 的三选一对应：
 
@@ -417,7 +445,7 @@ Tauri v2 的 `bundle.windows.webviewInstallMode` 取值与 PRD 的三选一对�
 | （备选）内嵌 bootstrapper | `{"type": "embedBootstrapper", "silent": true}` | +约 1.8MB | 否 |
 | （备选）固定运行时 | `{"type": "fixedRuntime", "path": "..."}` | **+约 180MB** | 是 |
 
-当前骨架里的取值是 **`downloadBootstrapper`（Evergreen 静默安装）**——它是 Tauri v2 的默认值，也是体积最小的选择；**最终取值待 Windows 实测后定**。
+当前骨架里的取值是 **`downloadBootstrapper`（Evergreen 静默安装）**——它是 Tauri v2 的默认值，也是体积最小的选择；**2026-11-04 真机实测后取值不变**（目标机器自带 Evergreen 运行时，安装与启动全程不触发提装，见 8.2）。
 
 判定标准：
 
@@ -429,7 +457,16 @@ Tauri v2 的 `bundle.windows.webviewInstallMode` 取值与 PRD 的三选一对�
 
 ### 8.1 首轮反馈（2026-11-03）
 
-- **无新信息**：本轮用户反馈未涉及 WebView2 运行时策略（未装运行时的机器上的安装行为），P5 维持「待 Windows 实测」，上文的取值表与判定标准照旧。
+- **无新信息**：本轮用户反馈未涉及 WebView2 运行时策略（未装运行时的机器上的安装行为），P5 维持「待 Windows 实测」，上文的取值表与判定标准照旧。**（2026-11-04 已验，见 8.2。）**
+
+### 8.2 真机复验结论（2026-11-04，Windows 11 真机）
+
+> **本项已闭合**：**无提装动作，直接可用**。
+
+- **实测现象**：在 Windows 11 真机上安装并启动桌面端，**没有任何 WebView2 运行时提装动作**（不弹安装、不触发下载），**直接可用**。
+- **原因**：**Windows 11 系统自带 WebView2 运行时**（Evergreen）——属**预期行为**，不是构建缺陷。
+- **取值结论**：骨架里的 `downloadBootstrapper`（Evergreen 静默安装）**保持不变**；目标机器自带运行时，本轮**不会触发**该 bootstrapper。
+- **口径边界（如实记录）**：上文判定标准第 1 条「在一台**未装 WebView2 运行时**的 Windows 机器上试安装包」本轮**未覆盖**（本轮机器自带运行时），因此「离线随包分发 / 提示自装」等**缺运行时场景下的行为未验**；目标机器的 WebView2 版本不由我们控制，最低版本口径按 [[architecture/decisions/0015-桌面壳与连接配置抽象.md|ADR 0015]] 的对应条款保留。
 
 ---
 
@@ -454,6 +491,6 @@ Tauri v2 的 `bundle.windows.webviewInstallMode` 取值与 PRD 的三选一对�
 - `tauri.conf.json` 对 **官方 schema（`https://schema.tauri.app/config/2`）校验 0 错误**；
 - `beforeBuildCommand` 的工作目录经验证是 `apps/desktop`（相对路径 `../web/frontend` 正确解析，前端构建被自动触发）；
 - 前端产物已重建（`apps/web/frontend`：`pnpm install --frozen-lockfile` + `pnpm build`，产物落在 `apps/web/frontend/dist`，**没有第二份前端**）。
-- **未完成的**：Windows 上的运行行为、NSIS 出包、WebView2 三项冒烟（见第五、七、八节）。
+- **未完成的（截至 2026-11-03 打样轮）**：Windows 上的运行行为、NSIS 出包、WebView2 三项冒烟（见第五、七、八节）——**已于 2026-11-04 在 Windows 11 真机上全部闭合**（P2 三项通过 / P4 路径②正式可交付 / P5 无提装；06 真机连通同轮通过）。
 
 **Linux 侧的限制**：本机无 WebView2，也无显示环境（`DISPLAY` 为空、无 Xvfb），因此**无法在 Linux 上启动应用做真机冒烟**；三项冒烟必须在 Windows 真机上做。
