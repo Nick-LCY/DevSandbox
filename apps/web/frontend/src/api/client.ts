@@ -18,6 +18,8 @@ import type {
   CreateSandboxRequest,
   CreateSandboxResponse,
   DeleteSandboxResponse,
+  ForwardDeleteResponse,
+  ForwardModel,
   HealthResponse,
   HostImage,
   ProxyRestartResult,
@@ -259,4 +261,39 @@ export const api = {
       `/api/terminal/sessions/${encodeURIComponent(sessionId)}`,
       { method: 'DELETE' },
     ),
+
+  /**
+   * 列出端口转发。给了沙箱名则只列该沙箱的转发。
+   *
+   * 后端返回**裸数组**。注意：**本机端口不在这里**——本机端口由桌面端持有，
+   * 后端宿主零端口（ADR 0014 第二次修订）。
+   */
+  listForwards: (sandbox?: string) =>
+    request<ForwardModel[]>(
+      sandbox === undefined
+        ? '/api/forwards'
+        : `/api/forwards?sandbox=${encodeURIComponent(sandbox)}`,
+    ),
+
+  /**
+   * 建立端口转发（**幂等**：同一沙箱同一容器端口已有转发则复用既有转发）。
+   *
+   * 入参 `port` 是**容器端口**（转发目标端口），不是本机端口。
+   */
+  createForward: (sandbox: string, port: number) =>
+    request<ForwardModel>('/api/forwards', {
+      method: 'POST',
+      body: JSON.stringify({ sandbox, port }),
+    }),
+
+  /**
+   * 停止端口转发：删转发容器 + 删记录。
+   *
+   * **幂等口径**：首次停止 → 200 + 处理清单；重复停止同一条 → 404
+   * （已无可停的东西，按「不存在」报）。
+   */
+  deleteForward: (forwardId: string) =>
+    request<ForwardDeleteResponse>(`/api/forwards/${encodeURIComponent(forwardId)}`, {
+      method: 'DELETE',
+    }),
 };

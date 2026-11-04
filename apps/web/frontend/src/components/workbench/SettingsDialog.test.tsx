@@ -501,9 +501,10 @@ describe('设置抽屉的连接配置区', () => {
     // 用户填 `10.0.0.5:8000`：原串送进 Rust 侧的 `Url::parse` 会解析失败 →
     // `connect-src` 少掉那台主机 → 跨主机请求全被 CSP 拦死（界面上看不出原因）。
     const { invoke } = injectDesktopRuntime();
-    invoke.mockResolvedValue(undefined);
-    invoke.mockResolvedValueOnce(undefined);
-    invoke.mockResolvedValueOnce(false);
+    // `csp_needs_reload` 返回 false（不用重载主文档）；其余命令返回 undefined。
+    invoke.mockImplementation((cmd: string) =>
+      Promise.resolve(cmd === 'csp_needs_reload' ? false : undefined),
+    );
 
     renderDialog();
 
@@ -512,16 +513,19 @@ describe('设置抽屉的连接配置区', () => {
     fireEvent.click(screen.getByTestId('page-settings-connection-save-button'));
 
     await waitFor(() => expect(invoke).toHaveBeenCalled());
-    expect(invoke.mock.calls[0][0]).toBe('set_backend_base_url');
-    expect(invoke.mock.calls[0][1]).toEqual({ backendBaseUrl: 'http://10.0.0.5:8000' });
+    // 保存配置时**先重启已开启的本机监听**（forward_listeners），再同步 CSP，
+    // 所以不能假设第一条 invoke 就是同步命令。
+    const syncCall = invoke.mock.calls.find((call) => call[0] === 'set_backend_base_url');
+    expect(syncCall).toBeTruthy();
+    expect(syncCall?.[1]).toEqual({ backendBaseUrl: 'http://10.0.0.5:8000' });
   });
 
   it('桌面形态：存量空基址 → 表单回填与同步都是归一后的默认地址', async () => {
     // 决策 D 之前允许基址为空（同源）：那些存量数据归一为默认地址再送出去。
     const { invoke } = injectDesktopRuntime();
-    invoke.mockResolvedValue(undefined);
-    invoke.mockResolvedValueOnce(undefined);
-    invoke.mockResolvedValueOnce(false);
+    invoke.mockImplementation((cmd: string) =>
+      Promise.resolve(cmd === 'csp_needs_reload' ? false : undefined),
+    );
 
     renderDialog({ connection: { backendBaseUrl: '', token: 'sbx_test' } });
 
@@ -530,7 +534,90 @@ describe('设置抽屉的连接配置区', () => {
     fireEvent.click(screen.getByTestId('page-settings-connection-save-button'));
 
     await waitFor(() => expect(invoke).toHaveBeenCalled());
-    expect(invoke.mock.calls[0][0]).toBe('set_backend_base_url');
-    expect(invoke.mock.calls[0][1]).toEqual({ backendBaseUrl: 'http://127.0.0.1:8000' });
+    const syncCall = invoke.mock.calls.find((call) => call[0] === 'set_backend_base_url');
+    expect(syncCall).toBeTruthy();
+    expect(syncCall?.[1]).toEqual({ backendBaseUrl: 'http://127.0.0.1:8000' });
+  });
+
+  it('桌面形态：保存连接配置 → 已开启的本机监听用新凭据重启（同端口）', async () => {
+    // 令牌与基址是**开启监听那一刻的快照**：改了配置不重启，旧监听仍拿着
+    // 旧凭据，隧道会以 1008（策略违规）收场。
+    const { invoke } = injectDesktopRuntime();
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'forward_listeners') {
+        return Promise.resolve([
+          {
+            forward_id: 'abc123def456',
+            container_port: 8080,
+            local_port: 18000,
+            state: 'listening',
+          },
+        ]);
+      }
+      if (cmd === 'csp_needs_reload') {
+        return Promise.resolve(false);
+      }
+      return Promise.resolve(undefined);
+    });
+
+    renderDialog();
+
+    const token = await screen.findByTestId('page-settings-connection-token-input');
+    fireEvent.change(token, { target: { value: 'sbx_new' } });
+    fireEvent.click(screen.getByTestId('page-settings-connection-save-button'));
+
+    // 先停后开，且用**新令牌 + 同一个本机端口**重开。
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('stop_forward', { forwardId: 'abc123def456' }),
+    );
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('start_forward', {
+        forwardId: 'abc123def456',
+        backendBaseUrl: 'http://127.0.0.1:8000',
+        token: 'sbx_new',
+        containerPort: 8080,
+        localPort: 18000,
+      }),
+    );
+    // 顺序：stop 在 start 之前。
+    const stopIndex = invoke.mock.calls.findIndex((call) => call[0] === 'stop_forward');
+    const startIndex = invoke.mock.calls.findIndex((call) => call[0] === 'start_forward');
+    expect(stopIndex).toBeGreaterThanOrEqual(0);
+    expect(startIndex).toBeGreaterThan(stopIndex);
+  });
+
+  it('桌面形态：某条监听重启失败 → 弹失败提示，其余流程不中断', async () => {
+    const { invoke } = injectDesktopRuntime();
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'forward_listeners') {
+        return Promise.resolve([
+          {
+            forward_id: 'abc123def456',
+            container_port: 8080,
+            local_port: 18000,
+            state: 'listening',
+          },
+        ]);
+      }
+      if (cmd === 'stop_forward') {
+        return Promise.reject('本机监听停止失败');
+      }
+      if (cmd === 'csp_needs_reload') {
+        return Promise.resolve(false);
+      }
+      return Promise.resolve(undefined);
+    });
+
+    renderDialog();
+
+    const token = await screen.findByTestId('page-settings-connection-token-input');
+    fireEvent.change(token, { target: { value: 'sbx_new' } });
+    fireEvent.click(screen.getByTestId('page-settings-connection-save-button'));
+
+    const toast = await screen.findByTestId('page-toast-item');
+    // toast 同时只留最新一条：失败提示弹在成功提示之后，最终看到的是它。
+    await waitFor(() => expect(toast.textContent).toContain('本机监听重启失败'));
+    // 失败不中断：配置照样保存成功。
+    await waitFor(() => expect(onConnectionChange).toHaveBeenCalled());
   });
 });

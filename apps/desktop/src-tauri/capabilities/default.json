@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "桌面壳的默认能力：前端订阅端口转发事件（forward://state / forward://connection）需要 core:event 的 listen / unlisten 权限。",
+  "windows": ["main"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

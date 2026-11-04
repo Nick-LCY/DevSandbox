@@ -18,8 +18,11 @@ apps/desktop/
     ├── Cargo.toml            # tauri = "2"（开 config-json5：tauri.conf.json 能写注释）+ tauri-build
     ├── build.rs
     ├── tauri.conf.json       # productName / identifier / frontendDist / bundle.targets / app.security.csp
-    ├── src/main.rs           # 窗口与 webview 创建（在这里注入运行期 CSP）+ 连接配置命令
+    ├── src/main.rs           # 窗口与 webview 创建（在这里注入运行期 CSP）+ 连接配置命令 + 转发命令注册
     ├── src/csp.rs            # CSP 基线策略与运行期改写（纯函数 + 单元测试）
+    ├── src/forward.rs        # 端口转发：本机 TCP 监听 + 隧道 WS 桥接（纯函数 + 单元测试）
+    ├── src/commands.rs       # 端口转发的 Tauri 命令（start_forward / stop_forward / forward_listeners）
+    ├── capabilities/         # ACL 能力清单（default.json：放行 core:event 的 listen / unlisten）
     └── icons/                # 图标（source.png 是源图，其余由 `pnpm tauri icon` 生成）
 ```
 
@@ -219,8 +222,12 @@ Tailwind v4 的整套色板以 `oklch()` 为底座，Chromium < 111 会整页掉
   `tauri.conf.json` 里 `app.windows` 的位置留了一行注释指向 `main.rs`（**别加回去**：会开出第二个窗口）。
 - **`tauri.conf.json` 能写注释**：`Cargo.toml` 里给 `tauri` 与 `tauri-build` 都开了 `config-json5`
   特性（与 tauri-cli 的解析口径一致——CLI 恒开这个特性），因此配置里可以用 `//` 注释。
-- **命令的 ACL**：`set_backend_base_url` 与 `csp_needs_reload` 都是应用自带命令，当前工程**没有 `capabilities/` 目录**
-  （没有 ACL 清单），应用命令不被 ACL 拦截；将来若新增 capabilities，要显式放行这两条命令。
+- **命令的 ACL**：`set_backend_base_url` 与 `csp_needs_reload` 都是**应用自带命令**。
+  应用自带命令只被两样东西拦：① 应用自己的权限清单（`src-tauri/permissions/`，
+  本工程**没有**）；② 非本地来源（远程网页发起的调用）。
+  **能力清单（`src-tauri/capabilities/`）不拦应用自带命令**——它拦的是**插件命令**
+  （`plugin:*`）。本工程的能力清单只放行了 `core:event` 的 listen / unlisten
+  （见「端口转发」一节），不涉及这两条命令。
 - 策略改写是**幂等**的：重复改写不会把来源加两遍（`src/csp.rs` 有单元测试）。
 - **IPv6 主机**：`url::Url::host_str()` 返回的主机**已经带方括号**（`[::1]`），拼来源时不再包一层
   （否则会变成 `[[::1]]`，那条来源在 CSP 里不合法）。
@@ -235,12 +242,113 @@ Tailwind v4 的整套色板以 `oklch()` 为底座，Chromium < 111 会整页掉
 
 ```bash
 cd src-tauri && cargo check      # Rust 侧编译校验
-cd src-tauri && cargo test       # CSP 纯函数的单元测试
+cd src-tauri && cargo test       # CSP 与端口转发的纯函数单元测试
 ```
+
+## 端口转发（本机监听 + 隧道桥接）
+
+实现见 `src/forward.rs`（监听管理与字节桥接）与 `src/commands.rs`（Tauri 命令）。
+链路与协议口径见 `apps/web/backend/API.md` 第 15 章与
+[[architecture/decisions/0014-端口转发机制选型.md|ADR 0014]]。
+
+### 监听模型
+
+- **一个「开启的转发」= 一个本机 `TcpListener`**（`127.0.0.1:<本机端口>`，**只绑回环**，不出本机）。
+- **监听器活到用户 `stop_forward` 为止**：单条隧道断开**不关监听**——只关掉那一条本机连接，
+  并上报**连接级**状态（`forward://connection`）。下一次连接会重新建隧道。
+- **每条 accept 到的 TCP 连接各开一条隧道 WS**（服务端支持并发隧道，天然满足
+  「同一转发的多条并发连接互不串扰」）。
+- **转发级的致命失败**（后端不可达、令牌无效、转发不存在/已停止……，都发生在**隧道建立阶段**）
+  → 上报**转发级**状态（`forward://state`），监听器仍然保留（用户改完配置可以再试一次）。
+- **停止转发 = 关监听 + 关全部连接**：取消信号覆盖**每条连接**的桥接 future
+  （`src/forward.rs` 的 `accept_loop` 里，整条 `bridge` 挂在
+  `tokio::select!` 的取消分支上），取消即 drop future、本机 socket 与隧道 WS
+  **两个 socket 随之关闭**。
+  **为什么要这么包**：桥接里的 `sink.send`（往隧道写）与 `local_write.write_all`
+  （往本机写）都可能因为**对端不读**而永久阻塞，它们不在 select 的取消分支里——
+  不这么做的话，停止转发之后那些本机连接会一直挂着（**僵尸连接**），端口也一直占着。
+  **验证口径**：停止转发后，本机上那条连着的 socket 应当被关闭（对端随即读到
+  EOF / 「连接被重置」），而不是继续挂着。
+- **`stopped` 状态事件只发一次**：在 `stop()` 里发（监听循环退出时不再重复发），
+  免得前端把同一次停止当成两次。
+
+### 命令与事件
+
+| 命令 | 入参 | 返回 | 说明 |
+|---|---|---|---|
+| `start_forward` | `forwardId` / `backendBaseUrl` / `token` / `containerPort` / `localPort?` | **实际生效**的本机端口 | 开启本机监听；**幂等**（同一条转发重复开启返回现有端口） |
+| `stop_forward` | `forwardId` | — | 关监听 + 关全部连接；没开启时**明确报错** |
+| `forward_listeners` | — | 监听状态数组 | 当前所有「已开启本机监听」的转发（前端挂载时回填用） |
+
+| 事件 | 载荷 | 含义 |
+|---|---|---|
+| `forward://state` | `{forward_id, state, container_port, local_port, message}` | **转发级**：`listening` / `stopped` / `error` |
+| `forward://connection` | `{forward_id, state, container_port, local_port, message}` | **连接级**：`connected` / `closed` / `error` |
+
+**关闭码文案**：已知关闭码给固定中文（`1000` 正常 / `1001` 服务退出可重连 /
+`1008` 策略违规不可重试 / `1011` 字节泵异常可重试）；**未知关闭码带码值**
+（如「隧道已断开（关闭码 1006）」），与 `1000` 的「隧道已正常关闭」拉开区分度。
+
+事件名带 `://` 是合法的（Tauri 事件名允许字母、数字与 `-` / `/` / `:` / `_`）。
+
+#### 事件订阅需要 capabilities 里的 `core:event` 权限
+
+**Tauri v2 对 `plugin:event|listen` / `plugin:event|unlisten` 一律走 ACL 校验**——不是
+「本工程没有 ACL 清单就放行」，而是**没有能力清单 = 一律拒绝**。所以事件订阅要在
+`src-tauri/capabilities/default.json` 里显式放行：
+
+```json
+{
+  "identifier": "default",
+  "windows": ["main"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}
+```
+
+- `windows` **必须写**：能力清单里的窗口标签要跟 `main.rs` 里
+  `WebviewWindowBuilder` 创建的窗口标签一致（本工程是 `main`）；
+  不写（空列表）时命令一条都匹配不上，等于没放行。
+- 少了这条能力 → 前端订阅被 ACL 拒 → **事件通道整体不通**（界面看着正常，
+  实际状态一直不同步）。前端侧还有一道兜底：订阅失败会打一条 `console.warn`
+  （`src/lib/desktop-forward.ts`），别让它静默。
+- **验证口径**：构建后 `src-tauri/gen/schemas/capabilities.json` 不再是空对象
+  （`{}`），且编译产物里能查到 `plugin:event|listen` / `plugin:event|unlisten`
+  （它们是被解析进运行时允许清单的命令名）。
+
+> **另一处硬约束**：Rust 侧的 `EventTarget` 是**带标签的枚举**
+> （`#[serde(tag = "kind")]`），「任意目标」是 `{"kind":"Any"}`——
+> 传裸字符串 `"Any"` 会被反序列化拒掉（前端 `desktop-forward.ts` 里已按对象形状传）。
+
+### 本机端口规则（ADR 0014 第 4 节）
+
+- **默认 = 容器端口**（用户可改，改动经 IPC 传进来）；
+- **不可为空**（空值在表单层就拦掉）；
+- **被占自动换空闲端口**（从 `18000` 起扫），**返回并显示实际生效的端口**；
+- **允许 <1024**（低端口）：Windows 可绑、macOS 现代版可绑；**Linux 上非 root 绑不了**
+  ——那种情况**明确报错**（`本机端口 N 小于 1024，当前系统不允许普通用户绑定低端口`），不静默失败。
+
+### 隧道协议（与 API.md 15.4 一一对应）
+
+- 地址：`ws(s)://<后端host>[:<port>]/api/forward/tunnel/<forward_id>`（由后端基址推导：
+  `http`→`ws`、`https`→`wss`）；
+  **基址带路径 / 参数 / # 时明确报错**（与前端 `validateBaseUrl` 一个口径）——
+  隧道地址的路径是固定的，拼不出正确地址，不静默忽略；
+- 握手头：`Authorization: Bearer <令牌>`（**令牌不落盘**：每次由前端经 IPC 传入，只活在内存里）；
+- **首帧必为服务端的文本 `hello` 帧**：不是 hello（或直接是错误帧）→ 按错误帧的
+  **固定中文文案**上报并关掉那条本机连接；
+- 二进制帧 = 双向透传字节；文本帧 = 控制（错误帧的文案直接展示）；
+- 关闭码分类：`1000` 正常收敛 / `1001` 服务退出（可重连）/ `1008` 策略违规
+  （令牌无效、转发不存在或已停止——**不可重试**，提示去检查配置或转发状态）/
+  `1011` 字节泵异常结束（可重试）；**未知关闭码带码值**（如 `1006`）。
+
+### CSP
+
+**不用改 CSP**：隧道 WS 走的是 `ws(s)://<后端host>:*`，**已经在动态 CSP 的放行范围内**
+（见上文「CSP」一节的 `connect-src` 行）。本任务**未改** `csp.rs` 与 `tauri.conf.json` 的 CSP 口径。
 
 ## 已知边界
 
 - **前端 `base` 已是相对路径**：`vite.config.ts` 的 `base: './'`（三期任务 03 落地），产物里的资源引用形如 `./assets/xxx.js`；网页形态（后端 `StaticFiles` 挂在 `/`）与桌面形态（Tauri 自定义协议）都能解析。改基址会动全量产物，必须重跑既有验收。
 - **桌面形态启动时会重载一次主文档**：Rust 进程是新的，还不知道后端主机（这一版主文档的 CSP 里只有 `'self'`），前端启动同步后会重载主文档（重载后这一版 CSP 才带上后端主机）。这是**预期行为**，不是故障。
-- **端口转发尚未接入**：Rust 侧的「本机监听 + 隧道桥接」在后续任务（[[tasks/phase3-desktop/06-port-forward-desktop.md|任务 06]]）里补；本轮只有连接层。
+- **端口转发已接入**（任务 06 落地）：Rust 侧的「本机监听 + 隧道桥接」在 `src/forward.rs`，命令在 `src/commands.rs`。**隧道链路的真机验证（真实后端 + 真实沙箱）待 Windows 真机复验**（见上文「已知边界」与三期留档页）。
 - **Linux 只保证源码层面可构建**，不承诺出包；Windows 安装包见上文「Windows 构建指引」。

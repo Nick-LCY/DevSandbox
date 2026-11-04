@@ -1,16 +1,20 @@
 // 沙箱控制台桌面端（Tauri v2）——纯连接器。
 //
 // 桌面壳是「纯连接器」：装载前端静态产物、按连接配置设定 CSP、维护端口转发的
-// 本机监听与隧道桥接。本期只做前两件：
+// 本机监听与隧道桥接。三件事：
 //   - 前端产物来自 `../../web/frontend/dist`（与网页形态同一份，不复制第二份）；
 //   - **CSP 由 Rust 侧在主文档被请求时注入**（见 `csp` 模块）：静态策略枚举
 //     不完用户运行期才配出来的后端地址，`connect-src` 因此按**当前后端主机**
 //     放行（host 级，不是 scheme 级）。
-// 端口转发的 Rust 侧监听与隧道桥接在后续任务里补。
+//   - **端口转发**（见 `forward` 模块）：本机 `127.0.0.1` 监听 + 隧道 WS 桥接。
+//     隧道 WS 走的是 `ws(s)://<后端host>:*`，**已经在动态 CSP 的放行范围内**，
+//     不需要再改 CSP 口径。
 // Windows 下发布版不弹控制台窗口。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod commands;
 mod csp;
+mod forward;
 
 use std::sync::{Arc, Mutex};
 
@@ -19,6 +23,7 @@ use tauri::webview::WebviewWindowBuilder;
 use tauri::WebviewUrl;
 
 use csp::{apply_dynamic_csp, connect_sources, csp_matches_backend, normalize_base_url, BASE_CSP};
+use forward::ForwardManager;
 
 /// 主窗口的标签（与 `tauri.conf.json` 里原来的窗口配置同名同义）。
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -69,12 +74,18 @@ fn csp_needs_reload(state: tauri::State<'_, SharedCspState>) -> bool {
 
 fn main() {
     let csp_state: SharedCspState = Arc::new(Mutex::new(CspState::default()));
+    // 端口转发的本机监听管理器（进程内单例）。
+    let forward_manager: forward::SharedForwardManager = Arc::new(ForwardManager::new());
 
     tauri::Builder::default()
         .manage(csp_state.clone())
+        .manage(forward_manager.clone())
         .invoke_handler(tauri::generate_handler![
             set_backend_base_url,
-            csp_needs_reload
+            csp_needs_reload,
+            commands::start_forward,
+            commands::stop_forward,
+            commands::forward_listeners
         ])
         .setup(move |app| {
             let csp_state = csp_state.clone();

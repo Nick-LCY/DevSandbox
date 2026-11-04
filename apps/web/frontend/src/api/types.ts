@@ -238,6 +238,35 @@ export interface TemplateDeleteResult {
 }
 
 /**
+ * 一条端口转发的记录（`ForwardModel`）。
+ *
+ * **没有宿主 / 本机端口字段**：链路两点化后后端宿主零端口，
+ * 本机端口由**桌面端**持有（不进平台记录）。
+ */
+export interface ForwardModel {
+  /** 转发标识（12 位十六进制）。 */
+  id: string;
+  /** 所属沙箱名。 */
+  sandbox: string;
+  /** 转发目标端口（容器端口）。 */
+  container_port: number;
+  /** 转发状态：running（可用）/ stopped（已随沙箱停止，记录保留）。 */
+  state: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 停止端口转发的结果。 */
+export interface ForwardDeleteResponse {
+  /** 被停止的转发标识。 */
+  id: string;
+  /** 确实处理掉的条目。 */
+  removed: string[];
+  /** 尝试过但没成功的条目（带原因，如实上报，不吞掉）。 */
+  failed: string[];
+}
+
+/**
  * 一次性票据（`POST /api/auth/ticket`）。
  *
  * 浏览器发起的 WebSocket 不能设自定义头，所以先用 Bearer 换一张票据，

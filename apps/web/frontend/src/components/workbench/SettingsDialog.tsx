@@ -12,6 +12,7 @@ import {
   validateBaseUrl,
   type ConnectionConfig,
 } from '../../lib/connection';
+import { restartForwardListeners } from '../../lib/desktop-forward';
 import {
   describeCaOutcome,
   describeCertificate,
@@ -27,6 +28,27 @@ import { TemplateManager } from './TemplateManager';
 
 /** 重启期间的提示文案：代理不可达时依赖镜像拉取失败是预期行为，不做降级。 */
 const RESTARTING_NOTICE = '代理正在重启，重启期间依赖镜像拉取会失败，属预期行为。';
+
+/**
+ * 重启已开启的本机监听，收集失败原因。
+ *
+ * **逐条独立**：一条失败不影响其它条，也不中断后面的保存流程。
+ * 失败原因逐条返回（由调用方逐条弹提示）。
+ */
+async function collectListenerRestartFailures(config: ConnectionConfig): Promise<string[]> {
+  const failures: string[] = [];
+  try {
+    const restarts = await restartForwardListeners(config);
+    for (const item of restarts) {
+      if (!item.ok) {
+        failures.push(`本机监听重启失败：${item.message ?? '未知原因'}`);
+      }
+    }
+  } catch (exc) {
+    failures.push(`本机监听重启失败：${exc instanceof Error ? exc.message : String(exc)}`);
+  }
+  return failures;
+}
 
 /** 详情里的一行：左标签右值。 */
 function Field({ label, value, testId }: { label: string; value: string; testId: string }) {
@@ -165,6 +187,10 @@ export function SettingsDialog({
     setConnectionError('');
     const next = draftConfig();
     onConnectionChange(next);
+    // 桌面形态：**先把已开启的本机监听用新凭据重启一遍**（令牌与后端基址是
+    // 开启监听那一刻的快照——不重启的话，旧监听仍拿着旧凭据，隧道会以
+    // 1008（策略违规）收场）。逐条独立：一条失败不影响其它条。
+    const failures = desktop ? await collectListenerRestartFailures(next) : [];
     if (desktop) {
       // 同步的基址恒为「非空且已归一」：用户可能填了漏 scheme 的 `10.0.0.5:8000`，
       // 原串送进 Rust 侧的 `Url::parse` 会解析失败 → CSP 静默拦死那台主机。
@@ -175,6 +201,10 @@ export function SettingsDialog({
       }
     }
     show('success', '连接配置已保存', { source: 'connection' });
+    // 失败提示**放在成功之后弹**：toast 同时只留最新一条，失败那条更该被看见。
+    for (const message of failures) {
+      show('error', message, { source: 'port-forward' });
+    }
   }, [desktop, draftConfig, onConnectionChange, show, validateDraft]);
 
   const load = useCallback(

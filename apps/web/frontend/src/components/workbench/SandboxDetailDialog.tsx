@@ -1,6 +1,8 @@
 import type { SandboxDetail } from '../../api/types';
+import type { ConnectionConfig } from '../../lib/connection';
 import { formatBoolean, formatTimestamp, orPlaceholder } from '../../lib/format';
 import { DrawerShell } from './DrawerShell';
+import { PortForwardPanel } from './PortForwardPanel';
 
 interface SandboxDetailDialogProps {
   open: boolean;
@@ -11,6 +13,10 @@ interface SandboxDetailDialogProps {
   widthVw: number;
   /** 宽度变化回调（工作台负责持久化）。 */
   onWidthChange: (vw: number) => void;
+  /** 是否运行在桌面壳里（**只有桌面形态才有端口转发的完整管理**）。 */
+  desktop: boolean;
+  /** 连接配置（桌面形态下端口转发要经 IPC 把基址与令牌交给 Rust 侧）。 */
+  connection: ConnectionConfig;
 }
 
 /** 详情里的一行：左标签右值。 */
@@ -43,6 +49,8 @@ export function SandboxDetailDialog({
   loading,
   widthVw,
   onWidthChange,
+  desktop,
+  connection,
 }: SandboxDetailDialogProps) {
   return (
     <DrawerShell
@@ -190,6 +198,15 @@ export function SandboxDetailDialog({
                 ))}
               </ul>
             )}
+          </div>
+
+          {/* 端口转发：web 形态只渲染说明卡与「安装桌面端」按钮，
+              桌面形态才有完整管理（列表 / 开启关闭 / 停止）。 */}
+          <div>
+            <h3 className="text-[13px] font-medium">端口转发</h3>
+            <div className="mt-2">
+              <PortForwardPanel sandbox={detail.name} desktop={desktop} connection={connection} />
+            </div>
           </div>
         </div>
       )}

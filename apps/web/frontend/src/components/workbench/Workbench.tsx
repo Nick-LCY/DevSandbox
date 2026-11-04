@@ -112,6 +112,7 @@ export function Workbench() {
   return (
     <WorkbenchView
       connection={config}
+      desktop={desktop}
       onConnectionChange={setConfig}
       onNotConfigured={() => setInvalidated(true)}
     />
@@ -130,11 +131,14 @@ export function Workbench() {
  */
 function WorkbenchView({
   connection,
+  desktop,
   onConnectionChange,
   onNotConfigured,
 }: {
   /** 当前连接配置（设置抽屉的「连接配置」区要改它）。 */
   connection: ConnectionConfig;
+  /** 是否运行在桌面壳里（**端口转发的完整管理只在桌面形态**）。 */
+  desktop: boolean;
   /** 改连接配置（落盘 + 桌面侧同步动态 CSP）。 */
   onConnectionChange: (next: ConnectionConfig) => void;
   /** 运行期发现配置失效（接口层报「未配置」）：回到引导态。 */
@@ -493,6 +497,8 @@ function WorkbenchView({
         loading={detailLoading}
         widthVw={widthVw}
         onWidthChange={setWidthVw}
+        desktop={desktop}
+        connection={connection}
       />
 
       <SettingsDialog
