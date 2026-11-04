@@ -22,7 +22,9 @@ use tauri::http::HeaderValue;
 use tauri::webview::WebviewWindowBuilder;
 use tauri::WebviewUrl;
 
-use csp::{apply_dynamic_csp, connect_sources, csp_matches_backend, normalize_base_url, BASE_CSP};
+use csp::{
+    apply_dynamic_csp, connect_sources, needs_csp_reload, normalize_base_url, BASE_CSP,
+};
 use forward::ForwardManager;
 
 /// 主窗口的标签（与 `tauri.conf.json` 里原来的窗口配置同名同义）。
@@ -66,10 +68,19 @@ fn set_backend_base_url(state: tauri::State<'_, SharedCspState>, backend_base_ur
 ///
 /// 不一致 = 当前这一版主文档的 `connect-src` 里没有后端主机 → 前端要重载
 /// 主文档（重载后新的一版 CSP 才带得上）。一致 = 不用重载。
+///
+/// **dev 构建恒返回 false**（`tauri::is_dev()`，编译期常量）：dev 下 webview 直接
+/// 导航到 devUrl，主文档不经协议提供 → 「已加载 CSP」的状态机不适用（`loaded`
+/// 永远是 `None`）。此时若照常判定就会永远「不一致」，前端陷入无限整页刷新。
+/// 判定逻辑收敛在 `csp::needs_csp_reload`（纯函数，有单元测试）。
 #[tauri::command]
 fn csp_needs_reload(state: tauri::State<'_, SharedCspState>) -> bool {
     let guard = lock_state(state.inner());
-    !csp_matches_backend(guard.loaded.as_deref(), guard.desired.as_deref())
+    needs_csp_reload(
+        tauri::is_dev(),
+        guard.loaded.as_deref(),
+        guard.desired.as_deref(),
+    )
 }
 
 fn main() {

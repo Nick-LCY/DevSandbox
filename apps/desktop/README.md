@@ -203,12 +203,23 @@ Tailwind v4 的整套色板以 `oklch()` 为底座，Chromium < 111 会整页掉
 - **顺序是硬要求**：先更新状态（`set_backend_base_url` 返回），再重载主文档。反了就拿到旧 CSP。
 - **谁触发重载**：前端（它要知道「状态已更新」才能重载）。Rust 侧不主动 reload，只提供
   `csp_needs_reload` 这个判定。
+- **dev 构建下恒不需要重载**（dev 页面不经协议提供，CSP 状态机不适用）：dev 下 webview 直接导航到
+  devUrl（`http://localhost:5173`），主文档**不经 tauri 协议提供**（Tauri 的 `PROXY_DEV_SERVER`
+  只在 mobile 生效），`on_web_resource_request` 不会触发 → `loaded` 永远是 `None`，
+  「已加载 CSP」的状态机在 dev 下不适用。此时若照常判定就会永远「不一致」，前端会陷入
+  **无限整页刷新**。因此 `csp_needs_reload` 在 dev 下**恒返回 false**（判定用
+  `tauri::is_dev()`，编译期常量；逻辑收敛在 `src/csp.rs` 的纯函数 `needs_csp_reload`，有单元测试）。
+  发布构建（主文档走协议提供）才按「`loaded` 与 `desired` 是否一致」判定。
+- **潜在坑：`build.frontendDist` 不得配成外部 URL**（`FrontendDist::Url` 形态）：那种形态下**发布构建**的
+  主文档**同样不经协议提供**（Tauri 把那个外部 URL 直接当作应用 URL），`on_web_resource_request`
+  不触发 → `loaded` 永远是 `None` → 与 dev 同款的**无限整页刷新**。当前 `tauri.conf.json` 里配的是
+  **本地目录路径**（`../../web/frontend/dist`），不受影响。
 - **重载不丢配置**：连接配置存在 localStorage 里，重载后前端直接进工作台。
-- **基址恒非空后，桌面端每次启动会同步一次 CSP 并重载一次主文档**：前端启动时把后端基址
+- **发布构建下，基址恒非空后，桌面端每次启动会同步一次 CSP 并重载一次主文档**：前端启动时把后端基址
   （**恒非空、恒归一**：`normalizeBaseUrl` 补 scheme、空值落回默认地址）经 `set_backend_base_url` 送来，
   `desired` 从 `None` 变成那个基址；而这一版主文档的 CSP 还是启动时生成的（`loaded` 仍是 `None`），
   `loaded != desired` → **重载一次主文档**。重载后主文档按 `desired` 重新生成 CSP（`loaded == desired`），
-  **不再重载**——这是**预期行为，不是死循环**。
+  **不再重载**——这是**预期行为，不是死循环**（dev 构建恒不重载，见上）。
 - **桌面形态首次配置**：跨主机的健康检查会被 CSP 拦死（这一版主文档的 CSP 里还没有后端主机），
   所以引导面板的「保存并连接」先走「写待验证配置 → 同步 CSP → 重载」，重载回来时再体检，
   **体检通过才提升为生效配置**（口径见 `apps/web/frontend/README.md` 的「连接配置」一节）。

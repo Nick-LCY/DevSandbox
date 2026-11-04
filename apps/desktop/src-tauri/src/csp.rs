@@ -36,6 +36,17 @@
 //!
 //! 顺序是硬要求：**状态更新完成 → 主文档重新请求**。中间不能插别的动作，
 //! 否则重载拿到的还是旧 CSP。
+//!
+//! **桌面端 dev 构建是例外**（见 `needs_csp_reload`）：桌面端 dev 下 webview 直接导航到
+//! devUrl（`http://localhost:5173`），主文档**不经 tauri 协议提供**（Tauri 的
+//! `PROXY_DEV_SERVER` 是 `cfg!(all(dev, mobile))`，**只在 mobile 生效**），
+//! `on_web_resource_request` 压根不会被触发——「已加载 CSP」这个状态机在**桌面端**
+//! dev 下不适用，**恒不需要重载**。
+//!
+//! 注意：mobile dev 构建的主文档是**经协议代理提供**的（`PROXY_DEV_SERVER` 生效），
+//! 该前提下 CSP 状态机反而**适用**。本工程只出桌面包（`bundle.targets` 只有 `nsis`），
+//! 当前无实际影响——**但「dev 下主文档不经协议提供」这句只对桌面端成立**，
+//! 别写成通用断言。
 
 use tauri::Url;
 
@@ -66,6 +77,24 @@ pub fn normalize_base_url(raw: Option<&str>) -> Option<String> {
 /// 两者不一致 = 当前这一版主文档的 CSP 没跟上 → 需要重载主文档。
 pub fn csp_matches_backend(loaded: Option<&str>, desired: Option<&str>) -> bool {
     normalize_base_url(loaded) == normalize_base_url(desired)
+}
+
+/// 要不要重载主文档（让这一版主文档的 CSP 跟上期望的后端基址）。
+///
+/// - `is_dev`：dev 构建（`tauri::is_dev()`，编译期常量）。**桌面端** dev 下主文档**不经协议
+///   提供**（webview 直接导航到 devUrl），`on_web_resource_request` 不触发 →
+///   `loaded` 永远是 `None`，「已加载 CSP」的状态机**不适用**。此时重载既没有
+///   意义（dev 页面的 CSP 不由本壳生成），又会让前端陷入「重载 → 仍不一致 →
+///   再重载」的**无限整页刷新**。**桌面端 dev 下恒返回 false。**
+///   （限定「桌面端」是因为 Tauri 的 `PROXY_DEV_SERVER` 是 `cfg!(all(dev, mobile))`：
+///   mobile dev 的主文档经协议代理提供，该前提下状态机反而适用、照常判定即可。
+///   本工程只出桌面包，无实际影响。）
+/// - 非 dev（发布构建）：主文档走协议提供，语义与 `!csp_matches_backend(...)` 一致。
+pub fn needs_csp_reload(is_dev: bool, loaded: Option<&str>, desired: Option<&str>) -> bool {
+    if is_dev {
+        return false;
+    }
+    !csp_matches_backend(loaded, desired)
 }
 
 /// 依据后端基址算出要补进 `connect-src` 的来源。
@@ -291,5 +320,71 @@ mod tests {
             Some("http://10.0.0.5:8000"),
             Some("http://10.0.0.6:8000")
         ));
+    }
+
+    #[test]
+    fn dev_构建下恒不需要重载() {
+        // dev 下主文档不经协议提供：loaded 永远是 None → 状态机不适用，
+        // 无论 loaded / desired 是什么组合，都不该让前端重载（否则无限整页刷新）。
+        assert!(!needs_csp_reload(true, None, None));
+        assert!(!needs_csp_reload(true, None, Some("http://10.0.0.5:8000")));
+        assert!(!needs_csp_reload(
+            true,
+            Some("http://10.0.0.5:8000"),
+            Some("http://10.0.0.5:8000")
+        ));
+        assert!(!needs_csp_reload(
+            true,
+            Some("http://10.0.0.5:8000"),
+            Some("http://10.0.0.6:8000")
+        ));
+        // 空串与 None 等价。
+        assert!(!needs_csp_reload(true, Some(""), None));
+    }
+
+    #[test]
+    fn 发布构建下的重载判定与_csp_匹配取反一致() {
+        // 刚起来：还不知道后端主机 → 一致 → 不用重载。
+        assert!(!needs_csp_reload(false, None, None));
+        // 空串与 None 等价 → 不用重载。
+        assert!(!needs_csp_reload(false, Some(""), None));
+        // 前端送来了后端主机，但这一版主文档还是旧策略 → 要重载。
+        assert!(needs_csp_reload(
+            false,
+            None,
+            Some("http://10.0.0.5:8000")
+        ));
+        // 重载后一致 → 不用再重载。
+        assert!(!needs_csp_reload(
+            false,
+            Some("http://10.0.0.5:8000"),
+            Some("http://10.0.0.5:8000")
+        ));
+        // 换了主机 → 又要重载。
+        assert!(needs_csp_reload(
+            false,
+            Some("http://10.0.0.5:8000"),
+            Some("http://10.0.0.6:8000")
+        ));
+    }
+
+    #[test]
+    fn 发布构建下的重载判定逐例对齐_csp_匹配取反() {
+        // 发布构建的判定就是「!csp_matches_backend」：逐例对齐，别让两条口径漂移。
+        let cases: [(Option<&str>, Option<&str>); 6] = [
+            (None, None),
+            (Some(""), None),
+            (None, Some("http://10.0.0.5:8000")),
+            (Some("http://10.0.0.5:8000"), Some("http://10.0.0.5:8000")),
+            (Some("http://10.0.0.5:8000"), Some("http://10.0.0.6:8000")),
+            (Some("http://10.0.0.5:8000"), None),
+        ];
+        for (loaded, desired) in cases {
+            assert_eq!(
+                needs_csp_reload(false, loaded, desired),
+                !csp_matches_backend(loaded, desired),
+                "发布构建下判定应与 !csp_matches_backend 一致：loaded={loaded:?} desired={desired:?}"
+            );
+        }
     }
 }
