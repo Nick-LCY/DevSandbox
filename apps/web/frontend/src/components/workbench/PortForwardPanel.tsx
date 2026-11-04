@@ -710,7 +710,7 @@ export function PortForwardPanel({
       </div>
 
       {/* 转发表（在下）：五列 —— 本机端口 / 容器端口 / 本地状态 / 容器状态 / 操作。 */}
-      <div className="rounded-lg border border-border bg-card px-3 py-2.5">
+      <div className="rounded-lg border border-border bg-card py-2.5">
         {!listenersLoaded ? (
           <p className="text-[12.5px] text-muted-foreground" data-testid="page-forward-loading">
             正在读取端口转发…
@@ -728,7 +728,7 @@ export function PortForwardPanel({
             <table className="w-full border-collapse" data-testid="page-forward-table">
               <thead>
                 <tr className="border-b border-border text-[11.5px] text-muted-foreground">
-                  <th scope="col" className="py-1.5 pr-3 text-left font-medium">
+                  <th scope="col" className="py-1.5 px-3 text-left font-medium">
                     本机端口
                   </th>
                   <th scope="col" className="py-1.5 pr-3 text-left font-medium">
@@ -740,7 +740,7 @@ export function PortForwardPanel({
                   <th scope="col" className="py-1.5 pr-3 text-center font-medium">
                     容器状态
                   </th>
-                  <th scope="col" className="py-1.5 text-right font-medium">
+                  <th scope="col" className="py-1.5 pr-3 text-right font-medium">
                     操作
                   </th>
                 </tr>
@@ -771,7 +771,7 @@ export function PortForwardPanel({
                       data-forward-id={row.id}
                       data-container-port={row.containerPort}
                     >
-                      <td className="py-1.5 pr-3 align-middle" data-testid="page-forward-row-local-port">
+                      <td className="py-1.5 px-3 align-middle" data-testid="page-forward-row-local-port">
                         {editing ? (
                           <div className="flex flex-col items-start gap-1">
                             <div className="flex items-center gap-1">
@@ -889,7 +889,7 @@ export function PortForwardPanel({
                           <TooltipContent>{containerHint}</TooltipContent>
                         </Tooltip>
                       </td>
-                      <td className="py-1.5 text-right align-middle">
+                      <td className="py-1.5 pr-3 text-right align-middle">
                         {editing ? null : (
                           <div className="flex items-center justify-end gap-1">
                             <button
