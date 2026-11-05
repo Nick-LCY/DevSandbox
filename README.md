@@ -8,6 +8,7 @@
 |---|---|
 | `apps/core/src/sandbox_platform/` | 控制面核心模块（生命周期编排、用户与子 ID 段管理、镜像与挂载装配、元数据存储） |
 | `apps/core/tests/` | 核心包单元测试与宿主级测试（宿主级测试打 `root` 标记），含代码分层契约测试 |
+| `apps/desktop/` | 桌面端 Tauri 壳：Windows 打包、端口转发本机监听与隧道桥接 |
 | `apps/web/backend/src/sandbox_console/` | 控制台服务端包：FastAPI 应用工厂、依赖注入、请求与响应模型、沙箱管理路由、宿主镜像与代理设置路由、网页终端桥接 |
 | `apps/web/backend/API.md` | 各模块对外函数签名与参数表（含二期 HTTP 接口） |
 | `apps/web/backend/tests/` | 服务端接口测试（路由编排、错误映射、终端会话） |

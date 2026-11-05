@@ -97,6 +97,11 @@ pnpm tauri build
 
 `bundle.targets` 目前只含 `nsis`（Windows 安装包）；要加 MSI 时在 `tauri.conf.json` 的 `bundle.targets` 里补 `"msi"`。
 
+### 打包与平台的已知限制
+
+- **安装包未做代码签名**：本期**没有代码签名证书**（证书采购与保管不在本期范围），NSIS 安装包是**未签名**产物。Windows SmartScreen 在**首次运行**时可能弹「Windows 已保护你的电脑」告警——点**「更多信息」→「仍要运行」**即可继续安装 / 启动；该告警属**预期行为**，不是产物损坏。**后续如拿到签名证书，可对安装包补签**消除告警。
+- **目标平台仅 Windows（Tauri + WebView2）**：桌面端的**出包与平台验收只承诺 Windows**（Tauri v2 + WebView2 运行时，见下文「WebView2 运行时策略」）。Linux / macOS **只保证源码层面可构建**（前端构建 + `cargo check` 能过），**不承诺出包**（不做 NSIS / MSI 打包），也**不做平台专属验收**。
+
 ### 快速冒烟（开发模式）
 
 ```powershell
