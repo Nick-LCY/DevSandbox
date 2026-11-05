@@ -233,59 +233,61 @@
 
 ## 验收标准
 
+> **核销状态**：**已全部核销（2026-11-04，38 勾选 + 本条补勾 = 39/39）**。本节 **39 条**逐条比对实现与测试证据后全部闭合——原唯一留白项（「打包与回归」节的「文档同步」：仓库根 `README.md` 的「目录结构」表未列 `apps/desktop/`）**已补齐**（根 `README.md` 的「目录结构」表现已列 `apps/desktop/` 行；其余各文档此前均已核对到位）。每条括注的证据锚点见 [[tasks/phase3-desktop/README.md|三期任务集]] 各任务的收口段与 [[tasks/phase3-desktop/RESULTS.md|三期留档]]。
+
 ### 桌面壳
 
-- [ ] Tauri 应用在 Windows + WebView2 上启动，加载的是 `apps/web/frontend/dist` 同一份产物（无第二份前端源码）。
-- [ ] 应用只包含「前端 + 连接配置」，不拉起、不托管、不探测后端进程；后端未启动时应用仍能启动并进入连接引导态。
-- [ ] 应用可连接**部署在另一台机器**上的后端（后端地址在连接配置里指定），沙箱列表、创建、终端全部可用。
-- [ ] 真机 WebView2 三项冒烟全过：`oklch()` 配色正常、xterm.js 终端渲染与 `fit` 正常、`navigator.clipboard` 在安全上下文下可读可写。
-- [ ] 前端构建产物在 web 形态（后端 `StaticFiles` 托管）下行为零变化。
+- [x] Tauri 应用在 Windows + WebView2 上启动，加载的是 `apps/web/frontend/dist` 同一份产物（无第二份前端源码）。**（2026-11-04 Windows 11 真机启动通过；`frontendDist` 直接指向 `apps/web/frontend/dist`，无第二份前端源码——[[tasks/phase3-desktop/01-prototype-and-spike.md|任务 01]] 收口 + [[tasks/phase3-desktop/08-windows-package.md|任务 08]] 完成标准。）**
+- [x] 应用只包含「前端 + 连接配置」，不拉起、不托管、不探测后端进程；后端未启动时应用仍能启动并进入连接引导态。**（纯连接器定位见 [[architecture/decisions/0015-桌面壳与连接配置抽象.md|ADR 0015]] 第 3 节与 `apps/desktop/README.md` 首段；未配置态判定 = 令牌为空（[[tasks/phase3-desktop/03-frontend-connection-layer.md|任务 03]] 完成标准 + `connection.test.ts`「未配置判定：只看令牌」），引导面板的渲染不依赖后端在线。）**
+- [x] 应用可连接**部署在另一台机器**上的后端（后端地址在连接配置里指定），沙箱列表、创建、终端全部可用。**（2026-11-04 Windows 11 真机 + 真后端，**远端形态**全链路实测通过——终端、转发等功能实际使用无问题（[[tasks/phase3-desktop/03-frontend-connection-layer.md|任务 03]] 收口）；同轮冒烟覆盖安装 / 启动 / 连接 / 使用（[[tasks/phase3-desktop/08-windows-package.md|任务 08]] 收口）。）**
+- [x] 真机 WebView2 三项冒烟全过：`oklch()` 配色正常、xterm.js 终端渲染与 `fit` 正常、`navigator.clipboard` 在安全上下文下可读可写。**（真机逐项通过：`oklch` 配色正常；xterm 渲染 / fit / 表面不溢出正常；`window.isSecureContext === true` 且剪贴板读写双向成功——[[tasks/phase3-desktop/RESULTS.md|三期留档]] 第五节 5.3。）**
+- [x] 前端构建产物在 web 形态（后端 `StaticFiles` 托管）下行为零变化。**（`base: './'` 全量产物变更带来的过渡态红已由 [[tasks/phase3-desktop/07-acceptance-tokenization.md|任务 07]] 恢复；[[tasks/phase3-desktop/09-acceptance-and-docs.md|任务 09]] 收口全量回归 **48 passed / 0 failed / 0 flaky**（连续两轮全绿），既有 9 条 spec 无回归。）**
 
 ### 连接层（后端）
 
-- [ ] 未带令牌访问任何 `/api`（含 `/api/health`）一律 `401`，响应体是 `{"detail": "访问令牌无效或缺失"}`，不泄露令牌是否正确。
-- [ ] 令牌比较为常量时间（`hmac.compare_digest`），代码里不出现普通 `==` / `in` 比较令牌。
-- [ ] 日志里搜不到令牌：启动日志只打令牌文件路径；请求日志不打 `Authorization` 头；错误响应不回显令牌。
-- [ ] 令牌来源两条都成立：`SANDBOX_CONSOLE_TOKEN` 注入时用注入值；未注入时自动生成并落 `<数据根>/console-token.json`（权限 `0600`），服务正常启动。
-- [ ] `POST /api/auth/ticket` 必须带有效令牌；票据一次性、30 秒过期；用过即废；过期 / 伪造票据的 WebSocket 握手被拒。
-- [ ] 终端 WebSocket 在无票据 / 错票据时握手被拒；带有效票据时行为与二期一致（先回放缓冲再接实时流）。
-- [ ] ~~WebSocket 握手的 `Origin` 不在放行清单内时被拒。~~ **（2026-11-03 修订：该项作废——WS 握手不再校验 `Origin`，准入边界 = 令牌 + 票据；票据缺失 / 过期 / 伪造仍拒握手。）**
-- [ ] CORS 允许**任意来源**：`allow_origins=["*"]`、`allow_credentials=False`；方法与头白名单仍为 `GET/POST/DELETE/OPTIONS` 与 `Authorization/Content-Type`。（2026-11-03 修订：原「只放行三个白名单来源；不放行通配符；不放行任意来源」已作废。）
-- [ ] 绑非回环地址时的启动日志按新口径改写（不再宣称「完全信任」）。
+- [x] 未带令牌访问任何 `/api`（含 `/api/health`）一律 `401`，响应体是 `{"detail": "访问令牌无效或缺失"}`，不泄露令牌是否正确。**（[[tasks/phase3-desktop/02-backend-token-and-cors.md|任务 02]] 完成标准；负向用例常驻——无令牌 401 / 错令牌 401 / 有效令牌 200，见 [[tasks/phase3-desktop/07-acceptance-tokenization.md|任务 07]] 新增 `10-auth-connection.spec.ts`。）**
+- [x] 令牌比较为常量时间（`hmac.compare_digest`），代码里不出现普通 `==` / `in` 比较令牌。**（任务 02 完成标准；「不出现 `==` / `in`」由 **AST 白名单契约测试**断言，不靠字符串搜索——任务 02 修复轮。）**
+- [x] 日志里搜不到令牌：启动日志只打令牌文件路径；请求日志不打 `Authorization` 头；错误响应不回显令牌。**（任务 02 完成标准：启动日志只打路径，错误响应只回固定文案、不区分「缺失 / 错误」以免形成探测 oracle。）**
+- [x] 令牌来源两条都成立：`SANDBOX_CONSOLE_TOKEN` 注入时用注入值；未注入时自动生成并落 `<数据根>/console-token.json`（权限 `0600`），服务正常启动。**（任务 02 完成标准：令牌文件权限位不达标时读前收紧并告警、内容损坏时重新生成并告警——任务 02 修复轮。）**
+- [x] `POST /api/auth/ticket` 必须带有效令牌；票据一次性、30 秒过期；用过即废；过期 / 伪造票据的 WebSocket 握手被拒。**（任务 02 完成标准：票据进程内存态、过期判定走单调时钟；浏览器侧「无票据握手被拒（精确断言关闭码 1006）」与「带有效票据握手成功（正向对照）」两条用例常驻——任务 07。）**
+- [x] 终端 WebSocket 在无票据 / 错票据时握手被拒；带有效票据时行为与二期一致（先回放缓冲再接实时流）。**（任务 02 完成标准；WS scope 中间件 fail-closed，只放行显式登记的终端 WS 路径，由路由再核一道票据。）**
+- [x] ~~WebSocket 握手的 `Origin` 不在放行清单内时被拒。~~ **（2026-11-03 修订：该项作废——WS 握手不再校验 `Origin`，准入边界 = 令牌 + 票据；票据缺失 / 过期 / 伪造仍拒握手。**属「明确不做并已在文档写明」的非目标项**——[[architecture/decisions/0013-三期定位改定与认证重启.md|ADR 0013]] 第 4 节第二次修订 + 任务 02 文首修订注。）**
+- [x] CORS 允许**任意来源**：`allow_origins=["*"]`、`allow_credentials=False`；方法与头白名单仍为 `GET/POST/DELETE/OPTIONS` 与 `Authorization/Content-Type`。（2026-11-03 修订：原「只放行三个白名单来源；不放行通配符；不放行任意来源」已作废。）**（任务 02 完成标准：白名单不变，通配来源不带凭据——ADR 0013 第 4 节第二次修订。）**
+- [x] 绑非回环地址时的启动日志按新口径改写（不再宣称「完全信任」）。**（任务 02 完成标准：`warn_if_not_loopback()` 改为「已启用令牌认证」口径，README 与 API.md 同步。）**
 
 ### 连接层（前端）
 
-- [ ] `src/lib/connection.ts` 有单元测试：正常值往返、非法值回落默认、读取失败回落、存储不可用时不抛异常。
-- [ ] 请求基址可配置：同一份前端产物能分别连「本机后端（默认地址 `http://127.0.0.1:8000`）」与「远端后端」，两种形态下沙箱列表 / 详情 / 创建 / 终端全部可用。
-- [ ] 每个 API 请求都带 `Authorization: Bearer`；令牌缺失时不发请求（进入引导态）。
-- [ ] 终端 WebSocket 地址从连接配置推导（含 `http→ws` / `https→wss`），票据由前端自动获取并在每次重连时重新获取。
-- [ ] 未配置态有引导 UI（后端地址 + 令牌 + 保存并连接），且**不是路由**（地址栏仍是 `#/`）。
-- [ ] **后端地址默认 `http://127.0.0.1:8000`、可编辑、不可为空**；旧存储里基址为空的配置读取时归一为默认值；「空 = 同源」的逻辑链已删除（2026-11-03 决策 D）。
-- [ ] 设置抽屉有「连接配置」区，可改配置并「测试连接」；结果按 toast 规范反馈。
-- [ ] 前端改造不违反 [[conventions/console-frontend.md|网页控制台前端约定]] 的任何一条（Base UI、令牌色、toast、`data-testid`、ModalShell / DrawerShell 外壳、纯逻辑收敛在 `src/lib/`）。
+- [x] `src/lib/connection.ts` 有单元测试：正常值往返、非法值回落默认、读取失败回落、存储不可用时不抛异常。**（`src/lib/connection.test.ts` 四项逐条有用例（正常值往返 / 非法值回落默认 / 读取失败回落 / 存储不可用不抛异常），另含决策 D 的归一与基址校验用例；门禁 vitest 585 全绿。）**
+- [x] 请求基址可配置：同一份前端产物能分别连「本机后端（默认地址 `http://127.0.0.1:8000`）」与「远端后端」，两种形态下沙箱列表 / 详情 / 创建 / 终端全部可用。**（**远端形态**已 Windows 11 真机 + 真后端实测通过（任务 03 收口）；**本机形态（后端与桌面端同机）按用户拍板的「偏离记录」闭合、不单独实测**——本平台部署形态后端在 Linux 宿主、桌面端在 Windows，两者天然不同机，本机形态在目标部署中不存在，远端形态约束更强、机制上完全覆盖本机形态，留待该场景实际出现时再验证。）**
+- [x] 每个 API 请求都带 `Authorization: Bearer`；令牌缺失时不发请求（进入引导态）。**（任务 03 完成标准 + `connection.test.ts`「未配置判定：只看令牌」；任务 07 的「未配置态引导面板 + 工作台不挂载」用例常驻。）**
+- [x] 终端 WebSocket 地址从连接配置推导（含 `http→ws` / `https→wss`），票据由前端自动获取并在每次重连时重新获取。**（任务 03 完成标准：`terminalSocketUrl(sessionId, { baseUrl }, ticket?)` 恒从基址推导、推导不出返回 `null` 不猜地址；票据每次连接 / 重连前重取，不缓存。）**
+- [x] 未配置态有引导 UI（后端地址 + 令牌 + 保存并连接），且**不是路由**（地址栏仍是 `#/`）。**（任务 03 完成标准：`ConnectionSetup.tsx` 是页面状态不是路由，路由仍只有 `#/` 与 `#/sandboxes/<名>[/<会话>]` 两层；任务 07 用例覆盖。）**
+- [x] **后端地址默认 `http://127.0.0.1:8000`、可编辑、不可为空**；旧存储里基址为空的配置读取时归一为默认值；「空 = 同源」的逻辑链已删除（2026-11-03 决策 D）。**（任务 03 完成标准：决策 D 已落地（基址不可空 + 空值归一 + 归一分支 / 桌面守卫 / 推导回退 / 占位文案整条删除），用例见 `connection.test.ts`「存量配置里的空基址」「基址恒非空」。）**
+- [x] 设置抽屉有「连接配置」区，可改配置并「测试连接」；结果按 toast 规范反馈。**（任务 03 完成标准：测试连接打一次 `/api/health`，成功 / 失败各弹一条 toast（来源标识 `connection`）。）**
+- [x] 前端改造不违反 [[conventions/console-frontend.md|网页控制台前端约定]] 的任何一条（Base UI、令牌色、toast、`data-testid`、ModalShell / DrawerShell 外壳、纯逻辑收敛在 `src/lib/`）。**（任务 03 完成标准：新增标识按 `page-<页面>-<元素>` 规范并登记进 `apps/web/frontend/README.md` 标识表；[[tasks/phase3-desktop/09-acceptance-and-docs.md|任务 09]] 收口核对确认约定两节（连接配置与请求基址 / 端口转发）齐备。）**
 
 ### 端口转发
 
-- [ ] 转发容器由**沙箱自己的免 root 守护进程**启动并接入沙箱网络；**不发布任何端口**；沙箱容器与依赖容器零改动；用户的沙箱镜像零改动。
-- [ ] ~~宿主端口由平台自动分配并占位；端口被占时换端口重试，仍失败给出明确错误。~~ **（已按 2026-11-03 决策 C 废除：宿主侧无端口、无区间、无占位。）**
-- [ ] **隧道字节泵走 `docker exec -i <转发容器> socat - TCP:<沙箱容器名>:<端口>`**；连接断开后 exec 进程被回收。
-- [ ] 桌面端开启转发后，桌面机 `127.0.0.1:<本机端口>` 可访问沙箱内该端口上的服务；该监听**不出本机**（局域网不可达）。
-- [ ] **本机端口默认 = 容器端口、可编辑且不可为空、被占自动换空闲端口并显示实际值、允许 <1024**。
-- [ ] **后端宿主不持有任何转发端口**（既不发布也不监听）；转发记录与响应模型中**无 `host_port`**。
-- [ ] 同一沙箱的多个端口可同时转发，互不串扰；同一转发的多条并发连接互不串扰。
-- [ ] 转发 REST 三条接口行为正确：列表 / 建立（`{sandbox, port}`）/ 停止；建立时沙箱不存在或端口非法返回明确错误。
-- [ ] 沙箱删除时，转发容器与转发记录一并被回收，且出现在删除前的回收清单里。
-- [ ] 服务重启后：全部转发会话丢失、遗留转发容器被清理（与终端会话「服务重启即丢」同口径）。
-- [ ] 桌面端断开 / 停止转发后，本机监听被关闭，不留僵尸监听。
-- [ ] 端口转发相关能力落在核心包（`sandbox_platform`）可复用模块，服务端只做编排与转译。
+- [x] 转发容器由**沙箱自己的免 root 守护进程**启动并接入沙箱网络；**不发布任何端口**；沙箱容器与依赖容器零改动；用户的沙箱镜像零改动。**（[[tasks/phase3-desktop/04-port-forward-core.md|任务 04]] 完成标准：`PortForwardManager` 由沙箱的免 root 守护进程起容器、接沙箱网络、带三个平台标签；核心包用例断言 **run 参数无 `-p`**、镜像 ENTRYPOINT 被显式覆盖、容器常驻不监听——`apps/core/tests/test_forwarding.py`（转发用例 38 条）。）**
+- [x] ~~宿主端口由平台自动分配并占位；端口被占时换端口重试，仍失败给出明确错误。~~ **（已按 2026-11-03 决策 C 废除：宿主侧无端口、无区间、无占位。**属「明确不做并已在文档写明」的非目标项**——[[architecture/decisions/0014-端口转发机制选型.md|ADR 0014]] 第二次修订 + 任务 04 文首修订注；本机端口改由桌面端持有。）**
+- [x] **隧道字节泵走 `docker exec -i <转发容器> socat - TCP:<沙箱容器名>:<端口>`**；连接断开后 exec 进程被回收。**（[[tasks/phase3-desktop/05-port-forward-server-api.md|任务 05]] 完成标准：字节泵按**进程组**回收 exec 进程（不留僵尸与孤儿孙进程）、是上下文管理器（异常路径也回收），核心包有 `test_byte_pump_close_reaps_whole_process_group` / `test_byte_pump_context_manager_closes_process` 等用例。）**
+- [x] 桌面端开启转发后，桌面机 `127.0.0.1:<本机端口>` 可访问沙箱内该端口上的服务；该监听**不出本机**（局域网不可达）。**（2026-11-04 Windows 11 真机复验通过——用户开启转发后本机端口可访问沙箱内服务，监听只绑回环、不出本机；[[tasks/phase3-desktop/06-port-forward-desktop.md|任务 06]] 收口。）**
+- [x] **本机端口默认 = 容器端口、可编辑且不可为空、被占自动换空闲端口并显示实际值、允许 <1024**。**（任务 06 完成标准：默认 = 容器端口、表单层拦空值、被占从 18000 起扫空闲端口并**只显示实际生效值**、`<1024` 允许且 Linux 非 root 绑不上时明确报错；Rust 侧纯函数有单元测试。）**
+- [x] **后端宿主不持有任何转发端口**（既不发布也不监听）；转发记录与响应模型中**无 `host_port`**。**（任务 04 / 05 完成标准：`ForwardRecord` / `ForwardModel` 字段集为 id / sandbox / container_port / state / created_at / updated_at（另增 `host_pid`），**无 `host_port`**；服务端不监听任何转发用端口、不连 `127.0.0.1:<宿主端口>`。）**
+- [x] 同一沙箱的多个端口可同时转发，互不串扰；同一转发的多条并发连接互不串扰。**（任务 06 完成标准：每个「已开启的转发」= 一个本机 `TcpListener`，**每条 accept 到的连接各开一条隧道 WS**（一条 WS 对一条 TCP 连接、不做多路复用），服务端支持并发隧道；2026-11-04 真机整体验收由用户确认转发功能实际使用无问题。）**
+- [x] 转发 REST 三条接口行为正确：列表 / 建立（`{sandbox, port}`）/ 停止；建立时沙箱不存在或端口非法返回明确错误。**（任务 05 完成标准：`GET /api/forwards` 裸数组 / `POST /api/forwards` 入参 `{sandbox, port}` / `DELETE /api/forwards/{id}`；沙箱不存在、已停止、端口非法各有固定中文错误文案；服务端新增 44 条转发 / 鉴权用例。）**
+- [x] 沙箱删除时，转发容器与转发记录一并被回收，且出现在删除前的回收清单里。**（任务 04 完成标准：`reclaim_plan` 增列转发资源（排在网络删除之前），删除流程增回收；核心包用例 `test_reclaim_plan_lists_forward_resources` / `test_delete_sandbox_reclaims_forward_container_and_record`。）**
+- [x] 服务重启后：全部转发会话丢失、遗留转发容器被清理（与终端会话「服务重启即丢」同口径）。**（任务 04 / 05 完成标准：启动时调用核心包 `purge_leftover()` 清遗留容器 / 记录 / 临时文件残留（与 `purge_leftover_sessions` 同处同款语义）；核心包用例 `test_purge_leftover_cleans_containers_and_records` 等，另有跨实例保护（归属进程仍存活的转发不删）。）**
+- [x] 桌面端断开 / 停止转发后，本机监听被关闭，不留僵尸监听。**（**口径按实现修订判定**：「停止转发」= 先 `stop_forward` 收监听再 `DELETE` 记录（顺序不能反），收监听时取消信号覆盖**每条连接**的桥接 future、不留僵尸连接；**「隧道断开即关监听」一句已按实现修订为「单条隧道断开只关那一条连接、本机监听保留到用户显式停止」**——任务 06 文首修订注，同口径已同步进 [[conventions/console-frontend.md|前端约定]] 的「端口转发」小节。）**
+- [x] 端口转发相关能力落在核心包（`sandbox_platform`）可复用模块，服务端只做编排与转译。**（任务 04 / 05 完成标准：编排本体在 `apps/core/src/sandbox_platform/forwarding.py`，服务端 `forwards.py` 只做装配与转译；分层契约测试 **10 passed**、红线不触发。）**
 
 ### 打包与回归
 
-- [ ] Windows 安装包产出成功（NSIS），可在干净 Windows 机器上安装并启动。
-- [ ] 既有 9 条控制台验收用例在 token 模式下全量回归通过。
-- [ ] 新增负向用例：无令牌 / 错令牌访问 `/api` → 401；有效令牌 → 200。
-- [ ] 核心包 pytest、服务端 pytest、ruff（`E4/E7/E9/F`）、前端 vitest / typecheck / typecheck:tests / build 全绿。
-- [ ] 文档同步：`docs/current-state.md`、`docs/glossary.md`、`docs/architecture/overview.md`、三张 ADR 清单表、`docs/conventions/console-frontend.md`、`apps/web/backend/API.md`、`apps/web/frontend/README.md`、仓库根 `README.md` 全部更新到位。
+- [x] Windows 安装包产出成功（NSIS），可在干净 Windows 机器上安装并启动。**（Windows 11 产出 NSIS `setup.exe` 约 **3.7 MB**（默认路径、不入库），真机安装 + 启动 + 冒烟通过（[[tasks/phase3-desktop/08-windows-package.md|任务 08]] 收口；出包路径②见 [[tasks/phase3-desktop/RESULTS.md|三期留档]] 第七节）。**留白的数据项**：P4 记录模板里的「构建耗时」与「环境版本号」本轮未统计（用户明确接受、不再待补），「全新未装过本应用」这一「干净机」属性也未单独记录——不影响「产出成功 + 可安装可启动」这条判定。）**
+- [x] 既有 9 条控制台验收用例在 token 模式下全量回归通过。**（[[tasks/phase3-desktop/07-acceptance-tokenization.md|任务 07]] 收口：既有 9 条 spec 全部恢复（该轮全量 46 passed / 0 failed）；[[tasks/phase3-desktop/09-acceptance-and-docs.md|任务 09]] 收口全量 **48 passed / 0 failed / 0 flaky**（约 9.3 分钟、连续两轮全绿），基线无回归。）**
+- [x] 新增负向用例：无令牌 / 错令牌访问 `/api` → 401；有效令牌 → 200。**（任务 07 新增 `specs/10-auth-connection.spec.ts` **10 条**认证用例常驻：无令牌 401 / 错令牌 401 / 正确令牌 200 / 无票据 WS 握手被拒（精确断言关闭码 1006）/ 带有效票据 WS 握手成功（正向对照）/ 未配置态引导等；任务 09 回归含在内。）**
+- [x] 核心包 pytest、服务端 pytest、ruff（`E4/E7/E9/F`）、前端 vitest / typecheck / typecheck:tests / build 全绿。**（核心包 **292 passed** / 服务端 **289 passed** / ruff 退出码 **0** / 分层契约 10 passed；前端 vitest **585 passed**、typecheck 与 typecheck:tests 双零错、build 成功；桌面壳 `cargo test` **26 passed**——数字引自各任务当轮门禁留档，收口轮起后端与核心包零改动，见 [[tasks/phase3-desktop/RESULTS.md|三期留档]] 第二节验收数字表。）**
+- [x] 文档同步：`docs/current-state.md`、`docs/glossary.md`、`docs/architecture/overview.md`、三张 ADR 清单表、`docs/conventions/console-frontend.md`、`apps/web/backend/API.md`、`apps/web/frontend/README.md`、仓库根 `README.md` 全部更新到位。**（2026-11-04 逐项核对 + 本条补勾：清单项**全部更新到位**——词汇表新词齐备、总览三条核心模块与 0001~0015 决策表齐备、三张 ADR 清单表已登记、约定两节已补、`API.md` 第 14 / 15 章在、两个 README 均有对应章节（[[tasks/phase3-desktop/09-acceptance-and-docs.md|任务 09]] 收口核对表）；原唯一留白项「仓库根 `README.md` 的「目录结构」表未列 `apps/desktop/`」**已补齐**——根 `README.md` 的「目录结构」表现已列 `apps/desktop/` 行（并行改动完成，核销前已核对），09 轮登记的遗留随之闭合。）**
 
 ## 开放问题清单
 

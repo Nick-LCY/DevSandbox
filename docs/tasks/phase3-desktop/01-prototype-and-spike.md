@@ -66,5 +66,5 @@ status: done
 - **P3**（转发镜像经代理可拉）：本机实测通过，digest 已钉死（结论不变）。
 - **P4**（Windows 出包路径）：**路径②正式可交付**——Windows 11 本地构建，产出 NSIS `setup.exe` 约 3.7 MB；**构建耗时未统计**（环境版本号与产物形态已正式记录）。
 - **P5**（WebView2 运行时策略）：**无提装动作、直接可用**——Win11 系统自带 WebView2 运行时，属预期行为；`downloadBootstrapper` 取值保持不变。
-- **同轮附带**：**06 真机连通通过**（桌面端开启转发后本机端口可访问沙箱服务，见 [[tasks/phase3-desktop/06-port-forward-desktop.md|任务 06]]）；**03 全链路的远端形态通过**，本机形态待用户拍板（[[tasks/phase3-desktop/03-frontend-connection-layer.md|任务 03]] 仍为 doing）。
+- **同轮附带**：**06 真机连通通过**（桌面端开启转发后本机端口可访问沙箱服务，见 [[tasks/phase3-desktop/06-port-forward-desktop.md|任务 06]]）；**03 全链路的远端形态通过**（[[tasks/phase3-desktop/03-frontend-connection-layer.md|任务 03]] **已于 2026-11-04 按用户拍板的「偏离记录」口径闭合**：远端形态通过即闭合，本机形态不单独实测，留待该场景实际出现时再验证）。
 - 逐项结论、命令与关键输出见 [[tasks/phase3-desktop/RESULTS.md|三期留档]]（第五、七、八节为本次回填）。

@@ -1,11 +1,14 @@
 # 三期留档（打样与实测结论）
 
+> **PRD 验收清单核销（2026-11-04）**：[[prds/phase3-desktop.md|三期 PRD]] 的「验收标准」**39 条**已逐条比对实现与测试证据——**已全部核销（2026-11-04，38 勾选 + 本条补勾 = 39/39），原唯一留白项（根 README 目录结构表）已补齐**。**第二节「验收数字」表已按各任务当轮门禁留档回填**（此前多处为「待填」），数字来源见各任务文件的「门禁」段。
+>
 > **留档说明**
 > - 本文件是三期（桌面端打包 + 端口转发）的**打样与实测结论**留档，由 [[tasks/phase3-desktop/01-prototype-and-spike.md|任务 01]] 打样轮与 [[tasks/phase3-desktop/09-acceptance-and-docs.md|任务 09]] 收口轮填写。
 > - **当前状态（2026-11-04）**：**P1~P5 五项全部有结论**——P1 / P3 是本机（Linux）实测（见第四、六节）；**P2 / P4 / P5 已于 2026-11-04 在 Windows 11 真机上实测闭合**（见第五、七、八节）。
+> - **09 收口轮回填（2026-11-04）**：全量验收回归 **48 passed / 0 failed / 0 flaky**，约 **9.3 分钟**（Playwright，串行，含前端构建 + 真机沙箱 + 固定测试令牌），**连续两轮全绿**；较 07 轮基线（46 条）**无回归**，新增 `11-forward-web-notice.spec.ts` **2 条** web 形态端口转发用例。**桌面形态的完整管理 Playwright 覆盖不到**（要 Tauri IPC），**已由 Windows 真机验收替代**。
 > - **2026-11-03 决策 C 追加说明**：P1 的**实测结论依然成立**（`-p` 在本平台**可用**），但**该路径不再采用**——端口转发链路两点化、**后端宿主零端口**，Fallback B（`docker exec -i` 字节泵）升为**唯一路径**（[[architecture/decisions/0014-端口转发机制选型.md|ADR 0014]] 第二次修订）。本文件中「04/05/06 按主路径实现」一类的**执行指向**已失效，**实测数据与命令留档一律保留**。
 > - **首轮用户反馈（2026-11-03）已入档**：P4 的路径②部分闭合、P2 外观初测通过（详见第五、七、八节的「首轮反馈」小段）；P2 的三项控制台判定与 xterm 真渲染、P5 均未闭合。
-> - **正式回填（2026-11-04，Windows 11 真机 + 真后端）**：**P2 三项逐项通过**；**P4 路径②正式可交付**（NSIS `setup.exe` 约 3.7 MB，**构建耗时未统计**）；**P5 无提装动作、直接可用**（Win11 自带 WebView2 运行时）；**06 真机连通同轮通过**（结论见 [[tasks/phase3-desktop/06-port-forward-desktop.md|任务 06]]）。**03 全链路的远端形态通过、本机形态（连同机后端）本轮未单独实测**，口径待用户拍板（[[tasks/phase3-desktop/03-frontend-connection-layer.md|任务 03]] 状态仍为 doing）。
+> - **正式回填（2026-11-04，Windows 11 真机 + 真后端）**：**P2 三项逐项通过**；**P4 路径②正式可交付**（NSIS `setup.exe` 约 3.7 MB，**构建耗时未统计**）；**P5 无提装动作、直接可用**（Win11 自带 WebView2 运行时）；**06 真机连通同轮通过**（结论见 [[tasks/phase3-desktop/06-port-forward-desktop.md|任务 06]]）。**03 全链路的远端形态通过、本机形态（连同机后端）本轮未单独实测**，口径待用户拍板（[[tasks/phase3-desktop/03-frontend-connection-layer.md|任务 03]] 状态仍为 doing）。**（状态更新 2026-11-04：用户已拍板——03 按方案 A「偏离记录」闭合，任务状态置 done；本机形态不单独实测，留待该场景实际出现时再验证。）**
 > - 打样轮的产物：Tauri v2 工程骨架在 [[architecture/decisions/0015-桌面壳与连接配置抽象.md|ADR 0015]] 约定的位置 `apps/desktop/`；操作指引见 `apps/desktop/README.md`。
 > - 关联页面：[[tasks/phase3-desktop/README.md|三期任务集]]、[[prds/phase3-desktop.md|三期 PRD]]、[[architecture/decisions/0014-端口转发机制选型.md|0014 端口转发机制选型]]、[[current-state.md|当前状态]]。
 
@@ -23,14 +26,16 @@
 
 | 项目 | 结果 | 基线 |
 |---|---|---|
-| 核心包 pytest | 待填 | — |
-| 核心包 root 级用例 | 待填 | — |
-| 服务端 pytest | 待填 | — |
-| ruff（E4/E7/E9/F） | 待填 | — |
-| 前端 vitest | 待填 | — |
-| 前端 typecheck / typecheck:tests / build | 待填 | — |
-| Playwright 真机 | **46 passed / 0 failed**（约 8.6 分钟，2026-11-03，07 轮：既有 9 条 + 认证 10 条；端口转发用例待 06 真机后补） | 既有 9 条 + 认证用例 + 端口转发用例 |
-| Windows 冒烟结论 | **P2 三项全过**（`oklch` 配色正常 / `window.isSecureContext === true` / 剪贴板读写可用，用户原话「其他测试也都成功通过」）；**P4 路径②正式可交付**（Windows 11，NSIS `setup.exe` 约 3.7 MB，**构建耗时未统计**）；**P5 无提装**（Win11 自带 WebView2 运行时，直接可用）；**06 真机连通通过**（2026-11-04，桌面端开启转发后本机端口可访问沙箱服务） | P1~P5 逐项有结论 |
+| 核心包 pytest | **292 passed**（05 门禁；09 收口轮核对，含 root 级用例） | 04 轮 288 passed → 05 轮 292 passed（增量 = `BytePump` stderr 排空 4 条） |
+| 核心包 root 级用例 | **含在 292 passed 内**（09 完成标准口径：核心包 pytest「含 root 级用例」；`-m root` 子集同批跑，**未单独单列数字**） | — |
+| 服务端 pytest | **289 passed**（05 门禁；含新增 44 条转发 / 鉴权用例） | 02 轮 245 passed → 05 轮 289 passed |
+| ruff（E4/E7/E9/F） | **退出码 0**（02 / 04 / 05 各轮门禁） | — |
+| 前端 vitest | **585 passed**（2026-11-04 端口转发区 UI 重构轮） | 03 轮 493 → 06 轮 527 → UI 重构轮 585 |
+| 前端 typecheck / typecheck:tests / build | **typecheck 与 typecheck:tests 双零错；build 成功**（UI 重构轮） | — |
+| Rust cargo test（桌面壳） | **26 passed**（2026-11-04 桌面壳 dev 刷新修复轮） | 06 实现轮基线 20 passed |
+| 分层契约测试（代码分层红线） | **10 passed**，红线不触发（05 门禁） | — |
+| Playwright 真机 | **48 passed / 0 failed / 0 flaky**（约 **9.3 分钟**，2026-11-04，09 收口轮：既有 9 条 + 认证 10 条 + **web 形态端口转发 2 条**；**连续两轮全绿**，此前基线 46 条无回归） | 既有 9 条 + 认证用例 + 端口转发用例（web 形态已补 2 条；桌面形态完整管理由 Windows 真机验收替代） |
+| Windows 冒烟结论 | **P2 三项全过**（`oklch` 配色正常 / `window.isSecureContext === true` / 剪贴板读写可用，用户原话「其他测试也都成功通过」）；**P4 路径②正式可交付**（Windows 11，NSIS `setup.exe` 约 3.7 MB，**构建耗时未统计**）；**P5 无提装**（Win11 自带 WebView2 运行时，直接可用）；**06 真机连通通过**（2026-11-04，桌面端开启转发后本机端口可访问沙箱服务）；**08 Windows 打包与冒烟已闭合**（2026-11-04，用户确认冒烟通过：安装 / 启动 / 连接 / 使用均无问题；产物默认路径、不入库；未签名告警属预期） | P1~P5 逐项有结论 |
 
 ## 三、已知边界
 
@@ -38,7 +43,7 @@
 - **端口发布只绑回环**：实测确认 `-p 127.0.0.1:<宿主端口>:<容器端口>` 在宿主上只出现 `127.0.0.1:<端口>` 的监听（不是 `0.0.0.0`），不出本机、不出局域网。
 - **多路复用推迟**：一条 WebSocket 对一条 TCP 连接；高并发场景每条连接多一次握手。
 - **令牌轮换无 UI**：泄漏后只能删文件重启，本期接受。
-- **前端 `base` 已改为相对路径**（03 落地）：`apps/web/frontend/vite.config.ts` 现为 `base: './'`，`apps/web/frontend/dist/index.html` 里资源引用形如 `./assets/xxx.js`。相对引用在 Tauri 自定义协议（Windows 上是 `http://tauri.localhost` 根路径）与后端 `StaticFiles` 托管两种形态下都能解析；但这是一次**全量产物变更**，既有验收需重跑（PRD R12）——**状态更新（2026-11-03）：这 9 条 spec 的过渡态红已由 07（[[tasks/phase3-desktop/07-acceptance-tokenization.md|验收套件 token 化]]）恢复**，现全量 46 passed / 0 failed（约 8.6 分钟，含认证负向用例与带票正向对照）。
+- **前端 `base` 已改为相对路径**（03 落地）：`apps/web/frontend/vite.config.ts` 现为 `base: './'`，`apps/web/frontend/dist/index.html` 里资源引用形如 `./assets/xxx.js`。相对引用在 Tauri 自定义协议（Windows 上是 `http://tauri.localhost` 根路径）与后端 `StaticFiles` 托管两种形态下都能解析；但这是一次**全量产物变更**，既有验收需重跑（PRD R12）——**状态更新（2026-11-03）：这 9 条 spec 的过渡态红已由 07（[[tasks/phase3-desktop/07-acceptance-tokenization.md|验收套件 token 化]]）恢复**，含认证负向用例与带票正向对照；**状态更新（2026-11-04，09 收口轮）：全量 **48 passed / 0 failed / 0 flaky**（约 9.3 分钟，连续两轮全绿；新增 `11-forward-web-notice.spec.ts` 2 条 web 形态端口转发用例）**。
 - **桌面壳 CSP 不再是 `csp: null`**（03 落地）：已按 [[architecture/decisions/0015-桌面壳与连接配置抽象.md|ADR 0015]] 第 6 节收敛为「配置基线 + Rust 运行期 host 级动态生成」——`tauri.conf.json` 存基线策略（`connect-src` 只留 `'self'`），Rust 侧按当前后端主机动态补 `http(s)://<host>:*` 与 `ws(s)://<host>:*`；时序契约为「保存连接配置 → 同步 Rust 状态 → 按需重载主文档」。端口转发侧（任务 06）的同款闸门**已闭合**（06 完成标准已勾选）。
 
 ---
@@ -262,7 +267,7 @@ $ ss -ltn | grep 18000            → （空，端口已释放）
 **口径说明**：
 
 - ①与③的控制台判定取自真机（调试构建 `pnpm tauri dev`）的 DevTools；②的真渲染依赖后端连通，与 03 的**远端形态**全链路实测合并完成（见 [[tasks/phase3-desktop/03-frontend-connection-layer.md|任务 03]]）。
-- **03 的本机形态（连同机后端）本轮未单独实测**，口径待用户拍板——**该缺口不影响 P2 的判定**（P2 判的是 WebView2 的三项能力本身，不判后端部署形态）。
+- **03 的本机形态（连同机后端）本轮未单独实测**，口径待用户拍板——**该缺口不影响 P2 的判定**（P2 判的是 WebView2 的三项能力本身，不判后端部署形态）。**（状态更新 2026-11-04：用户已拍板按「偏离记录」闭合 03——远端形态真机通过即闭合，本机形态在目标部署中不存在，留待该场景实际出现时再验证。）**
 
 
 ---
