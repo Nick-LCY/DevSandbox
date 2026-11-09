@@ -85,6 +85,29 @@ class LifecycleError(SandboxError):
         super().__init__(f"步骤「{step}」失败：{message}")
 
 
+class TransferError(SandboxError):
+    """运行期文件传输操作失败。
+
+    与 :class:`NotFoundError` / :class:`ValidationError` 区分：前两者是「对象不存在」
+    与「入参非法」，本类是「传输本身跑不起来」——路径非法、父目录缺失、父目录不可写、
+    挂载只读、目标是目录、目标不是普通文件、容器内命令失败等。
+
+    属性
+    ----
+    reason : 失败分类码（见 ``transfer.REASON_*``）。服务端按它映射 HTTP 状态码，
+        不必去解析异常文案。**分类码与场景对应、文案按场景取**：同一个分类码
+        可能对应**两条场景文案**（如「目标是目录」在上传侧与下载侧措辞不同），
+        所以**不能反推**「分类码 ⇄ 文案一一对应」；调用方只按分类码映射状态码。
+
+    归属平台的业务异常都住在本模块：调用方（服务端）按异常类型映射 HTTP 状态码，
+    不必知道传输模块的内部结构。
+    """
+
+    def __init__(self, message: str, *, reason: str = "") -> None:
+        self.reason = reason
+        super().__init__(message)
+
+
 class ForwardError(SandboxError):
     """端口转发操作失败。
 
