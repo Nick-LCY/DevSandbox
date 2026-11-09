@@ -38,7 +38,7 @@ web 形态下载是标准浏览器行为（`fetch` → blob → `a[download]`）
 - [ ] 中途取消：上传中取消、下载中取消都干净收口（不留半截文件、不留挂死任务）。
 - [ ] 令牌无效 / 后端不可达：给出明确错误，不闪退。
 
-> 2026-11-09：本机 Linux **无法执行**本清单；已细化为 **15 条**全文收录于文末「进展」的「Windows 真机验证清单（15 条，待用户执行）」节，**待用户 Windows 真机执行，挂 06 轮**。**未验不宣称完成**：本机是 Linux，Playwright 覆盖不到 Tauri IPC 与原生对话框，**这一段只能由 Windows 真机补**。
+> 2026-11-09：本机 Linux **无法执行**本清单；已细化为 **15 条**全文收录于文末「进展」的「Windows 真机验证清单（15 条，待用户执行）」节。**06 轮已于 2026-11-09 收口**——但**本清单仍未验**（唯一开口），**待用户 Windows 真机执行**。**未验不宣称完成**：本机是 Linux，Playwright 覆盖不到 Tauri IPC 与原生对话框，**这一段只能由 Windows 真机补**。
 
 ## 完成标准
 
@@ -48,7 +48,7 @@ web 形态下载是标准浏览器行为（`fetch` → blob → `a[download]`）
 - [x] 新增 Rust 代码**无 unwrap / 越界索引**，错误一律 `Result` 收口（release `panic = "abort"` 下的硬要求）——非测试 Rust **零 `unwrap` / `expect`**。
 - [x] 命令已注册；前端 IPC 封装走 `window.__TAURI_INTERNALS__.invoke`（**不引 `@tauri-apps/api`**，保持 web 形态产物与依赖树不被 Tauri 污染）——抽公共层 `desktop-ipc.ts`，`desktop-forward` 改走该层（**行为零变化**）。
 - [x] 前端**形态分支**接通：桌面走 `invoke`、web 走 `fetch` + blob（**不导航 blob: URL**）；**上传路径两形态共用 `<input type="file">`，Rust 上传零改动**——`FileBrowserPanel` 桌面分支接线（关闭抽屉 / 切沙箱取消在途 + 退订）。
-- [ ] **Windows 真机验证清单已产出并逐条验过**（上传选文件 / 保存框 / 中文文件名 / 大文件 / 中途取消 / 错误路径），结果留档。——**清单已产出（15 条，见文末「进展」），但本机 Linux 无法验证，未验不计完成**；**待用户 Windows 真机执行，挂 06 轮**。
+- [ ] **Windows 真机验证清单已产出并逐条验过**（上传选文件 / 保存框 / 中文文件名 / 大文件 / 中途取消 / 错误路径），结果留档。——**清单已产出（15 条，见文末「进展」），但本机 Linux 无法验证，未验不计完成**；**06 轮已于 2026-11-09 收口，本清单仍待用户 Windows 真机执行**（全轮唯一开口）。
 - [x] 门禁：`cargo check` 零警告、`cargo test` 全绿；前端 vitest / typecheck / build 全绿——`cargo test` **47 passed**（基线 25 → +22，0 警告）；前端 **vitest 651 passed**（基线 633 → +18）、typecheck 双零错、build 成功；后端 / 核心包零改动。
 - [x] **命令行零改动**；**创建时注入通道零改动**——本轮只动 `apps/desktop/` 与 `apps/web/frontend/src/lib/`、`FileBrowserPanel`，后端 / 核心包 / CLI 零改动。
 
@@ -62,7 +62,7 @@ web 形态下载是标准浏览器行为（`fetch` → blob → `a[download]`）
 
 ## 进展（2026-11-09）
 
-> **本轮状态：doing（代码侧收口，Windows 真机待验）。** 完成标准含「Windows 真机验证清单已产出并逐条验过」——本机 Linux 只能验证代码门禁，**真机项未验，按纪律不宣称完成**；剩余 = Windows 真机清单（挂 06 轮 / 用户执行）。
+> **本轮状态：doing（代码侧收口，Windows 真机待验）。** 完成标准含「Windows 真机验证清单已产出并逐条验过」——本机 Linux 只能验证代码门禁，**真机项未验，按纪律不宣称完成**；剩余 = Windows 真机清单（**待用户执行**；**06 轮已于 2026-11-09 收口，本清单是其唯一开口**）。
 >
 > **Linux 侧已全绿**：`cargo test` **47 passed**（基线 25 → +22，0 警告）、前端 **vitest 651 passed**（基线 633 → +18）、typecheck 双零错、build 成功；后端 / 核心包零改动。
 
