@@ -6,7 +6,7 @@
 
 **与既有通道的分工**：本轮与「**创建时注入**」（[[architecture/decisions/0012-文件注入采用复制加改属主而非改造挂载预检.md|0012]]）是**两条独立通道**——注入在创建时、单向、只读副本；本轮在运行期、双向、覆盖语义。本轮对**注入通道零改动**、对**命令行零改动**（「sandboxctl 增加 `--file`」是创建时注入的**另一条独立待办**，见 [[current-state.md|当前状态]] 的 TODO 段）。
 
-**状态：01~04 done（01、02、03、04 均于 2026-11-09 收口），05~06 todo**。看板见 [[current-state.md|当前状态]]。
+**状态：01~04 done（均于 2026-11-09 收口），05 doing（代码侧已收口、Windows 真机待验），06 todo**。看板见 [[current-state.md|当前状态]]。
 
 **01 轮关键结论（一句话）**：主通道成立且**零新增依赖**（`docker exec -i` + `BytePump` 原样复用）——上传「同目录临时名 → `mv` 原子替换」实测字节精确、覆盖成立、rename 不跟随末端符号链接；下载的**前置分层探测是硬要求**（FIFO 会挂死 `cat`）；列表用 `find` 单次 exec 产出 **NUL 分隔**记录；**大小不限**（200 MiB 与 1 GiB 宿主峰值 RSS 相同 ≈ 23 MiB、曲线平坦）但**受反代读超时约束**（本机 Traefik 默认 `readTimeout=60s`，同一 200 MiB 慢上传直连 201.23 s 成功、经反代 61.13 s 被掐断）；**ADR 0018 已随本轮落档为已接受**。
 
@@ -16,6 +16,8 @@
 
 **04 轮关键结论（一句话）**：「文件」入口（与详情 / 停止同级）→ 独立文件抽屉——面包屑（纯交互）+ 三列列表（文件夹在前、隐藏文件显示）+ 上传（XHR 进度 / 多文件队列 / 120 s 无进度看门狗 / 行内取消 / 同名覆盖确认）+ 下载（点行即下载、`Content-Length` 流式进度、多文件并行）+ 关闭与切沙箱全量收口；图标 **113 个 SVG** 本地 vendor（material-icon-theme v5.40.0 的 111 个 + 兜底 `folder.svg` / `file.svg`，**运行时零 CDN**）；用户八条硬约束逐条核验成立；审查一轮「需修复后合入」的 **2 Critical**（`initialPath` 错拿宿主家目录、覆盖确认快照绕过）与 **12 项清单**全部修完；门禁：前端 **vitest 633 passed**（基线 584 → **+49**）、typecheck 双零错、build 成功，后端 **330 passed**（+1，CORS `expose_headers`）/ **ruff rc=0**；桌面下载留桩（`TODO(05)`）。
 
+**05 轮关键结论（一句话）**：桌面形态点文件行 → **原生「保存为」框**（默认名 = 条目名，取消静默）→ Rust 带令牌流式下载（`reqwest` **0.12** + `rustls-tls`，**不引 OpenSSL / aws-lc-rs**）→ 同目录临时名 + `rename` **原子写**；进度经 `download://<作用域>/<downloadId>` 事件回传（100 ms 节流）；`cancel_download` 幂等取消 + 删临时文件；令牌走 invoke 参数**不落盘 / 不进日志 / 不进 URL**；前端抽 `desktop-ipc.ts` 公共层（`desktop-forward` **行为零变化**）；**代码侧收口、Windows 真机待验**（15 条清单已产出，本机 Linux 无法验证）；审查一轮 **1 Critical + 5 Warning + 2 测试缺口**，修复 **9 项全部落地**；门禁：`cargo test` **47 passed**（基线 25 → +22，0 警告）、前端 **651 passed**（基线 633 → +18）、typecheck 双零错、build 成功，**后端 / 核心包零改动**。
+
 ## 任务清单
 
 | 编号 | 任务 | 状态 | 交付内容 |
@@ -24,7 +26,7 @@
 | [[tasks/runtime-file-transfer/02-core-transfer.md\|02]] | 核心包传输能力 | **done（2026-11-09）** | `transfer.py`：路径校验 / upload（临时名 + `mv` 覆盖）/ probe / 下载泵 / list + `TransferError` 与固定中文文案常量 + `__init__.py` 导出 + 单测 —— **93 项测试**（61 个测试函数）全绿，**审查修复一轮**（7 项必修全部完成） |
 | [[tasks/runtime-file-transfer/03-server-file-endpoints.md\|03]] | 服务端文件传输接口 | **done（2026-11-09）** | `routes/files.py` 三端点 + 流式装配（`TRANSFER_IO_EXECUTOR` 专用线程池）+ 错误文案表 + schemas + `API.md` 第 16 章 + 单测（**42 项**）+ **核心包回修**（`mv` 前核对期望字节数）+ **Traefik 入口点级读超时落地** —— 审查一轮「需修复后合入」的 **7 项必修全部完成**；门禁：服务端 **329 passed** / 核心包非 root **370 passed** + root **23 passed** / **ruff rc=0** |
 | [[tasks/runtime-file-transfer/04-frontend-file-panel.md\|04]] | 前端文件浏览面板 | **done（2026-11-09）** | 工作台「文件」入口 + 独立文件抽屉（面包屑 / 三列列表 / 上传队列 + 进度 + 取消 + 覆盖确认 / 点行下载 + 并行进度 / 关闭收口）+ `client.ts` 三种请求能力 + `lib/file-transfer.ts` 纯逻辑 + **图标 113 个 SVG 本地 vendor**（运行时零 CDN）+ 后端 CORS `expose_headers`——用户八条硬约束逐条核验成立，审查修复一轮（2 Critical + 12 项清单）；门禁：前端 **633 passed**（+49）/ typecheck 双零错 / build 过，后端 **330 passed**（+1）/ **ruff rc=0** |
-| [[tasks/runtime-file-transfer/05-desktop-download.md\|05]] | 桌面端下载落盘 | todo | `Cargo.toml` 加 `reqwest`（rustls-tls + stream）+ `tauri-plugin-dialog` + Rust 下载落盘命令 + 命令注册 + 前端桌面 IPC 封装与形态分支 + **Windows 真机验证清单** |
+| [[tasks/runtime-file-transfer/05-desktop-download.md\|05]] | 桌面端下载落盘 | **doing（代码收口，2026-11-09；Windows 真机待验）** | `Cargo.toml` 加 `reqwest` 0.12（rustls-tls，**不引 OpenSSL / aws-lc-rs**）+ `tauri-plugin-dialog` + Rust 下载落盘命令（同目录临时名 + `rename` 原子写）+ 命令注册 + 前端 `desktop-ipc.ts` 公共层与形态分支 + **Windows 真机验证清单 15 条** —— 审查修复一轮（1 Critical + 5 Warning + 2 测试缺口 = **9 项全部落地**）；门禁：`cargo test` **47 passed**（基线 25 → +22）/ 前端 **651 passed**（基线 633 → +18）；**真机未验不宣称完成** |
 | [[tasks/runtime-file-transfer/06-acceptance-and-docs.md\|06]] | 验收与文档收口 | todo | Playwright 真机 spec（主链路 + 负例）+ 文档同步（`API.md` / 约定 / 看板 / 词汇表）+ **ADR 0018 复核**（状态已是已接受，只复核不改状态） + 任务集收口留档 |
 
 ## 依赖顺序
@@ -37,7 +39,7 @@
 
 - **01 是硬前置**：机制验证不通过（exec 命令不成立 / 容器内缺 `sh`、`cat`、`wc` / 反代把大文件传输打断），**不进 02**——先改机制与方案，再谈实现。**01 已于 2026-11-09 通过（主通道成立、零新增依赖），02 可开工**（**02 已于 2026-11-09 收口**）。
 - **02 → 03 强顺序**：核心包能力先定（路径校验、覆盖语义、类型判定的口径），服务端再包 REST 与流式。（**03 已于 2026-11-09 收口**；本轮因“客户端中断上传”的半截文件缺陷**回头改了核心包**，已在 02 的能力上补了**期望字节数核对**。）
-- **03 → 04 / 05 强顺序**：接口契约先定，前端与桌面端各自对接。（**04 已于 2026-11-09 收口**；**05 仍待做**。）
+- **03 → 04 / 05 强顺序**：接口契约先定，前端与桌面端各自对接。（**04 已于 2026-11-09 收口**；**05 代码侧已于 2026-11-09 收口（doing），Windows 真机待验**。）
 - **04 与 05 可并行**：两者互不依赖（上传走浏览器侧，桌面端只新增下载落盘），但都依赖 03 的接口契约。
 - **06 收口**：等 03~05 全部就位。
 
@@ -59,6 +61,6 @@
 - [[tasks/runtime-file-transfer/02-core-transfer.md]] — 核心包传输能力（`transfer.py`）——**done（2026-11-09）**：93 项单测全绿、审查修复一轮（7 项必修全部完成）。
 - [[tasks/runtime-file-transfer/03-server-file-endpoints.md]] — 服务端文件传输接口（三端点）——**done（2026-11-09）**：服务端 **329 passed** / 核心包非 root **370 passed** + root **23 passed** / **ruff rc=0**；**核心包回修**（`mv` 前核对期望字节数 + 服务端计数兜底）；**Traefik 入口点级**读超时落地（真机 A/B：60.53 s 掐断 → 83.13 s 成功）。
 - [[tasks/runtime-file-transfer/04-frontend-file-panel.md]] — 前端文件浏览面板——**done（2026-11-09）**：入口 / 抽屉 / 面包屑 / 三列列表 / 上传下载进度与覆盖确认 / 图标 **113 个 SVG** 本地化；八条硬约束核验成立，审查修复一轮（2 Critical + 12 项清单）；门禁前端 **633 passed**（+49）/ 后端 **330 passed**（+1）。
-- [[tasks/runtime-file-transfer/05-desktop-download.md]] — 桌面端下载落盘。
+- [[tasks/runtime-file-transfer/05-desktop-download.md]] — 桌面端下载落盘——**doing（代码收口，2026-11-09；Windows 真机待验）**：原生「保存为」+ Rust 带令牌流式下载 + 同目录临时名 `rename` 原子写 + 进度事件（100 ms 节流）+ `cancel_download` 幂等取消；令牌走 invoke 参数不落盘；审查修复一轮 **9 项**；门禁 `cargo test` **47 passed**（+22）/ 前端 **651 passed**（+18）；**15 条 Windows 真机清单已产出，本机 Linux 无法验证**。
 - [[tasks/runtime-file-transfer/06-acceptance-and-docs.md]] — 验收与文档收口。
 - [[architecture/decisions/0018-运行期文件传输机制选型.md]] — **ADR 0018 运行期文件传输机制选型**（**已接受**，含 10 条被实测修正的设计口径与部署链反代约束）。

@@ -46,7 +46,7 @@
 - **不做文件管理操作**：重命名、删除、移动、复制等一律不做——本轮是「搬运」不是「文件管理器」。
 - **不做拖拽上传**：上传入口是文件选择控件。
 - **不做断点续传**：大文件靠流式一次性传完，失败重来。
-- **不做字节级双向进度**：上传进度用 XHR 的上传进度事件即可；下载进度按 `Content-Length` + 流式读取估算。
+- **不做字节级双向进度（web 形态）**：上传进度用 XHR 的上传进度事件即可；web 下载进度按 `Content-Length` + 流式读取估算。**桌面形态**的下载进度由 Rust 侧经 `download://` 事件回传（**100 ms 节流**），**不是**前端逐字节计算——两形态的进度语义刻意不同。
 - **不做「落到宿主文件系统」方向**：不提供把容器内文件直接写到**平台宿主**磁盘的通路（避免新增宿主攻击面）。下载落盘只发生在**用户机侧**（浏览器下载目录 / 桌面端用户自选路径）。
 - **不做跨账号隔离**：沿用既有口径「调用者视为受信主体」——拿到访问令牌即拥有平台全部能力，文件传输不额外分层。
 
@@ -141,7 +141,7 @@
   - **界面一律不加副标题 / 解释说明性文字**（见 [[conventions/console-frontend.md|前端约定]] 新增两条）。
 - **面包屑**各级可点击，**不重复展示纯文本形式的当前目录**（demo 反馈修正项）。
 - **上传**：只能传进**当前浏览目录**（要传别的路径先导航过去，**无手动路径输入框**）；行内**进度条** + **可取消**；目标同名时弹**覆盖确认框**（**同名目录除外**：不弹框，直接展示服务端 400 的固定中文文案）。
-- **进度条必须有**：上传用 **XHR**（fetch 拿不到上传进度事件）；下载按 `Content-Length` + 流式读取计算。
+- **进度条必须有**：上传用 **XHR**（fetch 拿不到上传进度事件）；**web 形态**下载按 `Content-Length` + 流式读取计算；**桌面形态**下载进度来自 Rust 侧 `download://<作用域>/<downloadId>` 事件（**100 ms 节流**），前端只消费事件、不自行逐字节计算。
 - **下载分形态**：
   - **web 形态** = 标准浏览器行为：`fetch` → `blob` → `a[download]`；**不得导航 blob: URL**（桌面 CSP 只在 `img-src` 放行 blob）。
   - **桌面形态** = **原生「保存为」对话框**（`tauri-plugin-dialog`）→ Rust 侧带令牌下载落盘。
@@ -150,7 +150,7 @@
 
 ### 桌面端
 
-- Rust：`reqwest`（**rustls-tls + stream 特性，不引 OpenSSL**，对齐既有 rustls 栈）实现下载落盘命令 + `tauri-plugin-dialog` 保存框；落盘路径 = **用户所选**；capabilities 补 dialog 权限。
+- Rust：`reqwest` **0.12**（`rustls-tls`，**不引 OpenSSL / aws-lc-rs**，对齐既有 `ring` rustls 栈；**`stream` 特性不需要**——`Response::chunk()` 在 0.12.28 不受它门控，0.13 又改了特性名且默认拉 `aws-lc-rs`）实现下载落盘命令 + `tauri-plugin-dialog` 保存框；**同目录临时名 + `rename` 原子写**；落盘路径 = **用户所选**；capabilities 补 `dialog:allow-save`（只放行 save）。
 - release profile `panic = "abort"`：新增 Rust 代码**禁 unwrap / 越界索引**，错误一律 `Result` 收口。
 - 本机无法验 WebView2 真机行为 → 必须产出 **Windows 真机验证清单**（上传选文件 / 保存框 / 中文文件名 / 大文件 / 中途取消），**未验不宣称完成**。
 
@@ -164,7 +164,7 @@
 | 02 | 核心包（**done，2026-11-09**） | `transfer.py`（路径校验 / upload / probe / 下载泵 / list）+ `TransferError` 与固定中文文案常量 + `__init__.py` 导出 + 单测 —— **93 项单测**全绿、**审查修复一轮**（7 项必修全部完成）；03 轮在此基础上**回修**了上传字节数核对 |
 | 03 | 服务端（**done，2026-11-09**） | `routes/files.py` 三端点 + 流式装配 + 错误文案表 + schemas + `API.md` 第 16 章 + 单测（**42 项**）；**raw 流式 body（禁 JSON body）**；**核心包回修**（`mv` 前核对期望字节数）+ **服务端字节计数兜底**；**Traefik 读超时的「入口点级」落地**（`websecure` 入口点 `readTimeout=0`；本机部署链属本平台自管的基础设施，属本轮落地范围）—— 门禁：服务端 **329 passed** / 核心包非 root **370 passed** + root **23 passed** / **ruff rc=0** |
 | 04 | 前端（**done，2026-11-09**） | `client.ts` 加 raw / blob / list 请求能力 + `lib/file-transfer.ts` 纯逻辑 + 文件面板组件（入口按钮 / 抽屉 / 面包屑 / 列表 / 上传 / 下载 / 进度 / 确认框）+ 图标资产 vendor（含根目录 `folder.svg` / `file.svg` 移入）+ 测试——门禁：前端 **vitest 633 passed**（基线 584 → +49）/ typecheck 双零错 / build 成功；后端配套 **330 passed**（+1，CORS `expose_headers`）；桌面下载留桩 `TODO(05)` |
-| 05 | 桌面端 | `Cargo.toml` 加 `reqwest` + dialog 插件 + Rust 下载落盘命令 + 命令注册 + 前端桌面 IPC 封装与形态分支 |
+| 05 | 桌面端（**doing，2026-11-09 代码侧收口；Windows 真机待验**） | `Cargo.toml` 加 `reqwest` 0.12（rustls-tls，**不引 OpenSSL / aws-lc-rs**）+ dialog 插件 + Rust 下载落盘命令（同目录临时名 + `rename` 原子写）+ 命令注册 + 前端 `desktop-ipc.ts` 公共层与形态分支 + 进度事件（100 ms 节流）+ `cancel_download` 幂等取消——门禁：`cargo test` **47 passed**（基线 25 → +22，0 警告）/ 前端 **651 passed**（基线 633 → +18）/ typecheck 双零错 / build 成功，后端 / 核心包零改动；审查修复一轮 **9 项**；**15 条 Windows 真机清单已产出，本机 Linux 无法验证** |
 | 06 | 验收与文档收口 | Playwright 真机 spec + 文档同步 + **ADR 0018 复核**（状态已是已接受，06 只复核不改状态） + 任务集收口留档 |
 
 依赖顺序：**01 → 02 → 03 → 04 → 05 → 06**，其中 **04 与 05 可并行**。
@@ -197,7 +197,7 @@
 - [ ] **界面一律不加副标题 / 解释说明性文字**（该约定已写进 [[conventions/console-frontend.md|前端约定]]）。
 - [ ] **面包屑**各级可点击，且**不重复展示纯文本形式的当前目录**。
 - [ ] 上传**只能传进当前浏览目录**（**无手动路径输入框**）；行内**进度条** + **可取消**；目标同名时弹**覆盖确认框**（同名**目录**不弹框，直接展示服务端 400 的固定中文文案）。
-- [ ] **进度条必须有**：上传用 XHR（fetch 拿不到上传进度事件）；下载按 `Content-Length` + 流式读取计算。
+- [ ] **进度条必须有**：上传用 XHR（fetch 拿不到上传进度事件）；**web 形态**下载按 `Content-Length` + 流式读取计算；**桌面形态**下载进度来自 Rust 侧 `download://<作用域>/<downloadId>` 事件（100 ms 节流），**不**由前端逐字节计算。
 - [ ] **反馈口径**：目录读取失败是**面板状态**（`page-file-browser-error`，`role="alert"`，就地展示后端 `detail`，**不弹 toast**）；上传 / 下载等**操作结果**走右上角 toast（来源 `file-browser`），**后端中文 `detail` 原样展示**。
 - [ ] 下载**分形态**：web 形态 = `fetch` → blob → `a[download]`（**不得导航 blob: URL**）；桌面形态 = **原生「保存为」对话框** → Rust 侧带令牌下载落盘。
 - [ ] 上传两形态**完全共用** `<input type="file">`；**Rust 上传零改动**。
@@ -205,9 +205,10 @@
 
 ### 桌面端
 
-- [ ] Rust 侧用 `reqwest`（**rustls-tls + stream 特性，不引 OpenSSL**）实现下载落盘命令；`tauri-plugin-dialog` 保存框可用，capabilities 已补 dialog 权限。
+- [ ] Rust 侧用 `reqwest` **0.12**（`rustls-tls`，**不引 OpenSSL / aws-lc-rs**；`stream` 特性不需要）实现下载落盘命令；`tauri-plugin-dialog` 保存框可用，capabilities 已补 `dialog:allow-save`。
+- [ ] 桌面形态下载进度来自 Rust 侧 `download://<作用域>/<downloadId>` 事件（100 ms 节流，载荷含 `phase` / `loaded` / `total` / `path` / `target_path`）；`cancel_download` 幂等取消 + 删临时文件；令牌走 invoke 参数、**不落盘 / 不进日志 / 不进 URL**。
 - [ ] 落盘路径 = **用户所选**；新增 Rust 代码**无 unwrap / 越界索引**（release profile `panic = "abort"` 下的硬要求），错误一律 `Result` 收口。
-- [ ] **Windows 真机验证清单**已产出并逐条验过：上传选文件 / 保存框 / 中文文件名 / 大文件 / 中途取消；**未验不宣称完成**。
+- [ ] **Windows 真机验证清单**已产出并逐条验过：上传选文件 / 保存框 / 中文文件名 / 大文件 / 中途取消；**未验不宣称完成**。——清单已细化为 **15 条**收录于 [[tasks/runtime-file-transfer/05-desktop-download.md|05 任务]] 的「进展」；**本机 Linux 无法验证，待用户 Windows 真机执行，挂 06 轮**。
 
 ### 验收、门禁与文档
 
