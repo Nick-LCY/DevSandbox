@@ -29,7 +29,6 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 
 from sandbox_platform import (
@@ -44,10 +43,8 @@ from starlette.concurrency import run_in_threadpool
 from .sessions import (
     SESSION_EXIT_REASON_CLOSED_BY_USER,
     SESSION_EXIT_REASON_EXITED,
-    SESSION_EXIT_REASON_RECLAIMED,
     SESSION_EXIT_REASON_SHUTDOWN,
     SESSION_STATE_EXITED,
-    SESSION_STATE_RUNNING,
     TerminalSessionRecord,
     TerminalSessionTable,
     new_session_record,
@@ -74,22 +71,17 @@ WAKE_TOKEN = b"\x01"
 # 回放快照的单帧上限（字节）：一帧太长会被中间代理截断
 SNAPSHOT_CHUNK = 64 * 1024
 
-# ---------------------------------------------------------------- 会话数量与回收
+# ---------------------------------------------------------------- 会话数量
 # 全部会话的总数上限
 DEFAULT_MAX_SESSIONS = 20
 # 单个沙箱的会话数上限
 DEFAULT_MAX_SESSIONS_PER_SANDBOX = 5
-# 无附着会话的空闲回收时长（秒）
-DEFAULT_IDLE_TIMEOUT = 30 * 60
-# 空闲回收的巡检间隔（秒）
-DEFAULT_IDLE_SWEEP_INTERVAL = 30
 # 落盘合并窗口（秒）：窗口内的多次变更合并成一次落盘
 SAVE_DEBOUNCE = 0.5
 
-# 上限与回收时长的环境变量（可覆盖默认值）
+# 会话数上限的环境变量（可覆盖默认值）
 ENV_MAX_SESSIONS = "SANDBOX_TERMINAL_MAX_SESSIONS"
 ENV_MAX_SESSIONS_PER_SANDBOX = "SANDBOX_TERMINAL_MAX_SESSIONS_PER_SANDBOX"
-ENV_IDLE_TIMEOUT = "SANDBOX_TERMINAL_IDLE_TIMEOUT"
 
 # ---------------------------------------------------------------- 帧类型
 # 输出字节
@@ -610,7 +602,6 @@ class TerminalSessionManager:
         ring_size: int = DEFAULT_RING_SIZE,
         max_sessions: int | None = None,
         max_sessions_per_sandbox: int | None = None,
-        idle_timeout: int | None = None,
     ) -> None:
         self.config = config
         self.service = service
@@ -625,11 +616,6 @@ class TerminalSessionManager:
             max_sessions_per_sandbox
             if max_sessions_per_sandbox is not None
             else _env_int(ENV_MAX_SESSIONS_PER_SANDBOX, DEFAULT_MAX_SESSIONS_PER_SANDBOX)
-        )
-        self.idle_timeout = (
-            idle_timeout
-            if idle_timeout is not None
-            else _env_int(ENV_IDLE_TIMEOUT, DEFAULT_IDLE_TIMEOUT)
         )
         self._spawner = spawner or self._spawn
         self._sessions: dict[str, TerminalSession] = {}
@@ -646,7 +632,6 @@ class TerminalSessionManager:
         self._save_event = threading.Event()
         self._stop = threading.Event()
         self._flusher: threading.Thread | None = None
-        self._reaper: threading.Thread | None = None
 
     # ---------------------------------------------------------------- 会话
     async def create(
@@ -663,8 +648,6 @@ class TerminalSessionManager:
         """
         loop = asyncio.get_running_loop()
         metadata = await run_in_threadpool(self.service.get, sandbox_name)
-        # 先回收空闲会话，给新会话腾位置
-        await run_in_threadpool(self.reap_idle_sessions)
         self._check_capacity(metadata.name)
         request = TerminalSpawnRequest(
             session_id=new_session_id(),
@@ -742,9 +725,8 @@ class TerminalSessionManager:
             with ThreadPoolExecutor(max_workers=min(8, len(sessions))) as pool:
                 for session in sessions:
                     pool.submit(self._close_quietly, session)
-        for thread in (self._flusher, self._reaper):
-            if thread is not None and thread.is_alive():
-                thread.join(timeout=2)
+        if self._flusher is not None and self._flusher.is_alive():
+            self._flusher.join(timeout=2)
 
     def _close_quietly(self, session: TerminalSession) -> None:
         """关掉一个会话并把异常吃掉（退出兜底路径不让异常冒到线程池外）。"""
@@ -796,12 +778,12 @@ class TerminalSessionManager:
             removed=removed,
         )
 
-    # ---------------------------------------------------------------- 上限与回收
+    # ---------------------------------------------------------------- 上限
     def _check_capacity(self, sandbox_name: str) -> None:
         """会话数超限时直接失败。
 
-        已退出的会话也占名额（它们不做自动清理），提示必须指向清理入口，
-        否则用户只看到「已达上限」却不知道去哪儿腾位置。
+        已退出的会话也占名额（它们不做自动清理），提示必须指向手动清理的
+        入口（终端标签条），否则用户只看到「已达上限」却不知道去哪儿腾位置。
         """
         with self._lock:
             sessions = list(self._sessions.values())
@@ -817,74 +799,32 @@ class TerminalSessionManager:
 
     @staticmethod
     def _capacity_message(limit: int, exited: int, sandbox_name: str | None = None) -> str:
-        """会话数超限的中文提示（带已退出的会话数与清理入口）。"""
+        """会话数超限的中文提示（带已退出的会话数与手动关闭指引）。
+
+        清理入口是**终端标签条**上的关闭按钮：平台不做任何自动清理（已退出的
+        会话也一直留着），腾位置只能由用户手动关掉不需要的会话。文案不写
+        「待清理」——那会让人以为平台会自己收走。
+        """
         scope = f"沙箱 {sandbox_name} 的" if sandbox_name else ""
         if exited > 0:
             return (
-                f"{scope}终端会话数已达上限（{limit} 个，其中 {exited} 个已退出待清理），"
-                f"请先在『后端保留的会话』列表中移除已退出的会话"
+                f"{scope}终端会话数已达上限（{limit} 个，其中 {exited} 个已退出、需手动移除），"
+                f"请在终端标签条上手动关闭不需要的会话"
             )
         return (
             f"{scope}终端会话数已达上限（{limit} 个），"
-            f"请先在『后端保留的会话』列表中移除不用的会话"
+            f"请在终端标签条上手动关闭不需要的会话"
         )
-
-    def reap_idle_sessions(self, *, now: datetime | None = None) -> list[str]:
-        """回收无附着且空闲超时的会话，返回被回收的会话标识。
-
-        只回收**运行中**的会话：已退出的会话不留任何现场（进程已死），保留
-        下来给用户自己删，不做自动清理。
-
-        回收走正常关闭流程：终止进程、收掉容器内残留进程、会话表更新为已退出。
-        """
-        moment = now or datetime.now(UTC)
-        with self._lock:
-            sessions = list(self._sessions.values())
-        reaped: list[str] = []
-        for session in sessions:
-            if session.record.attached_count > 0:
-                continue
-            if session.record.state != SESSION_STATE_RUNNING:
-                # 已退出的会话不纳入回收
-                continue
-            idle = _idle_seconds(session.record.last_attached_at, moment)
-            if idle < self.idle_timeout:
-                continue
-            reaped.append(session.session_id)
-            self._close_session(session.session_id)
-        if reaped:
-            logger.info("已回收空闲终端会话：%s", "、".join(reaped))
-        return reaped
-
-    def _close_session(self, session_id: str) -> None:
-        """关掉一个会话并从会话表里摘掉。"""
-        with self._lock:
-            session = self._sessions.pop(session_id, None)
-        if session is None:
-            return
-        try:
-            # 空闲回收：没有人主动关，是平台自己收走的
-            session.close(SESSION_EXIT_REASON_RECLAIMED)
-        except Exception as exc:
-            # 回收路径的异常不往上抛：否则一次失败的回收会连带新建会话失败
-            logger.warning(
-                "关闭空闲终端会话 %s 时出错：%s", session_id, exc, exc_info=True
-            )
 
     # ---------------------------------------------------------------- 后台线程
     def _ensure_background(self) -> None:
-        """确保后台线程已启动（落盘合并 + 空闲回收）。"""
+        """确保后台线程已启动（落盘合并）。"""
         with self._lock:
             if self._flusher is None or not self._flusher.is_alive():
                 self._flusher = threading.Thread(
                     target=self._flush_loop, name="terminal-flush", daemon=True
                 )
                 self._flusher.start()
-            if self._reaper is None or not self._reaper.is_alive():
-                self._reaper = threading.Thread(
-                    target=self._reap_loop, name="terminal-reap", daemon=True
-                )
-                self._reaper.start()
 
     def _flush_loop(self) -> None:
         """落盘线程：把会话记录的变更写进会话表。"""
@@ -951,15 +891,6 @@ class TerminalSessionManager:
             self._pending_later.pop(session_id, None)
             return self.table.delete(session_id)
 
-    def _reap_loop(self) -> None:
-        """空闲回收线程：定期回收无附着且空闲超时的会话。"""
-        interval = max(1.0, min(float(DEFAULT_IDLE_SWEEP_INTERVAL), self.idle_timeout / 4))
-        while not self._stop.wait(interval):
-            try:
-                self.reap_idle_sessions()
-            except Exception:  # pragma: no cover - 巡检失败不影响服务
-                logger.exception("回收空闲终端会话失败")
-
     # ---------------------------------------------------------------- 起会话
     def _spawn(self, request: TerminalSpawnRequest) -> PtyProcess:
         """默认起会话方式：容器内开一个带真实 TTY 的交互式 shell。
@@ -992,14 +923,3 @@ class TerminalSessionManager:
             )
             return
         daemon.kill_container_session(record.container_name, record.session_id)
-
-
-def _idle_seconds(last_attached_at: str, now: datetime) -> float:
-    """会话距上次附着的空闲秒数；时间戳坏了按 0 算（不当成空闲）。"""
-    try:
-        moment = datetime.fromisoformat(last_attached_at)
-    except (TypeError, ValueError):
-        return 0.0
-    if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=UTC)
-    return (now - moment).total_seconds()

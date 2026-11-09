@@ -41,7 +41,6 @@ SESSION_STATE_ORPHANED = "orphaned"
 # 客户端据此提示成功还是失败（主动关闭不该报成异常退出）。
 SESSION_EXIT_REASON_EXITED = "exited"  # 容器内进程自己退出
 SESSION_EXIT_REASON_CLOSED_BY_USER = "closed_by_user"  # 用户主动关闭
-SESSION_EXIT_REASON_RECLAIMED = "reclaimed"  # 空闲回收
 SESSION_EXIT_REASON_SHUTDOWN = "shutdown"  # 服务退出兜底
 
 # 清理遗留会话时可选的「容器内进程清理」回调：

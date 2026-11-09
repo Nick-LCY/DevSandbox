@@ -44,17 +44,6 @@ describe('feedbackForState', () => {
     });
   });
 
-  it('空闲回收（结束原因 reclaimed）：提示色，不是失败', () => {
-    expect(
-      feedbackForState({
-        status: 'closed',
-        message: '会话已回收',
-        exitCode: -1,
-        exitReason: 'reclaimed',
-      }),
-    ).toEqual({ kind: 'info', text: '终端会话已结束' });
-  });
-
   it('服务退出兜底（结束原因 shutdown）：提示色，不是失败', () => {
     expect(
       feedbackForState({

@@ -45,7 +45,6 @@ from sandbox_console.deps import get_terminal_manager, get_terminal_manager_ws
 from sandbox_console.sessions import (
     SESSION_EXIT_REASON_CLOSED_BY_USER,
     SESSION_EXIT_REASON_EXITED,
-    SESSION_EXIT_REASON_RECLAIMED,
     SESSION_STATE_EXITED,
     SESSION_STATE_ORPHANED,
     SESSION_STATE_RUNNING,
@@ -407,9 +406,12 @@ def test_create_session_fails_for_missing_sandbox(manager: TerminalSessionManage
 def test_attach_and_detach_update_counter(
     manager: TerminalSessionManager, config: PlatformConfig, loop
 ) -> None:
-    """附着与断开：连接数与最近附着时间按预期变化并落盘。"""
+    """附着与断开：连接数按预期变化，最近附着时间在附着时刷新，两者都落盘。"""
     session = create_session(manager, loop)
+    # 附着前的「最近附着时间」先推到远古：attach 必须把它刷新成「现在」
+    ancient = "2020-01-01T00:00:00+00:00"
     try:
+        session.record.last_attached_at = ancient
         session.attach()
         session.attach()
         stored = wait_record(
@@ -417,6 +419,8 @@ def test_attach_and_detach_update_counter(
         )
         assert stored is not None
         assert stored.attached_count == 2
+        # 最近附着时间随附着刷新（不再是远古那个值）
+        assert stored.last_attached_at > ancient
 
         session.detach()
         stored = wait_record(
@@ -424,6 +428,8 @@ def test_attach_and_detach_update_counter(
         )
         assert stored is not None
         assert stored.attached_count == 1
+        # 断开不改最近附着时间（那是最近一次「附着」的时间）
+        assert stored.last_attached_at > ancient
     finally:
         session.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
 
@@ -915,7 +921,7 @@ def test_terminate_pty_process_skips_process_without_marker() -> None:
         bystander.close()
 
 
-# ---------------------------------------------------------------- 会话上限与回收
+# ---------------------------------------------------------------- 会话上限
 def test_session_count_limits_are_enforced(
     config: PlatformConfig, fake_service: FakeService, loop
 ) -> None:
@@ -959,56 +965,37 @@ def test_session_count_limits_are_enforced(
         overall.close_all()
 
 
-def test_idle_sessions_are_reclaimed(
+def test_idle_sessions_are_not_reclaimed(
     config: PlatformConfig, fake_service: FakeService, loop
 ) -> None:
-    """无附着且空闲超时的会话被自动回收：走正常关闭流程 + 会话表更新。"""
-    manager = TerminalSessionManager(
-        config, fake_service, spawner=pty_spawner(["cat"]), idle_timeout=60
-    )
-    session = create_session(manager, loop)
+    """空闲会话不再被回收：新建会话也不触发任何自动清理。
+
+    会话只有三种用户可感知的结束方式：用户主动删除、容器内进程自己退出、沙箱删除。
+    「无附着且长时间没人用」不再是结束条件——新建第二个会话也不能把第一个收走。
+    """
+    manager = TerminalSessionManager(config, fake_service, spawner=pty_spawner(["cat"]))
+    first = create_session(manager, loop)
     try:
-        # 有浏览器连着的会话不回收
-        session.attach()
-        assert manager.reap_idle_sessions() == []
-        session.detach()
+        # 把最近附着时间推到远古：模拟长时间没人用（曾几何时这会触发回收）
+        first.record.last_attached_at = "2020-01-01T00:00:00+00:00"
 
-        # 把最近附着时间推到过去，模拟长时间没人用
-        session.record.last_attached_at = "2020-01-01T00:00:00+00:00"
-        assert manager.reap_idle_sessions() == [session.session_id]
-        assert manager.get(session.session_id) is None
-
-        stored = wait_record(
-            config, session.session_id, lambda item: item.state == SESSION_STATE_EXITED
-        )
-        assert stored is not None
-        assert stored.state == SESSION_STATE_EXITED
-    finally:
-        manager.close_all()
-
-
-def test_idle_reclaim_persists_reclaimed_reason(
-    config: PlatformConfig, fake_service: FakeService, loop
-) -> None:
-    """空闲回收：结束原因落库为 ``reclaimed``（不是失败，也不是正常退出）。"""
-    manager = TerminalSessionManager(
-        config, fake_service, spawner=pty_spawner(["cat"]), idle_timeout=60
-    )
-    session = create_session(manager, loop)
-    try:
-        # 把最近附着时间推到过去，模拟长时间没人用
-        session.record.last_attached_at = "2020-01-01T00:00:00+00:00"
-        assert manager.reap_idle_sessions() == [session.session_id]
-        assert manager.get(session.session_id) is None
-
-        stored = wait_record(
-            config,
-            session.session_id,
-            lambda item: item.exit_reason == SESSION_EXIT_REASON_RECLAIMED,
-        )
-        assert stored is not None
-        assert stored.state == SESSION_STATE_EXITED
-        assert stored.exit_reason == SESSION_EXIT_REASON_RECLAIMED
+        second = create_session(manager, loop)
+        try:
+            # 新建会话不触发惰性回收：第一个会话仍在内存里，且仍是运行中
+            assert manager.get(first.session_id) is not None
+            assert first.state == SESSION_STATE_RUNNING
+            assert first.exited is False
+            assert len(manager.list_records()) == 2
+            # 后台没有巡检回收线程：自动收走不该以线程的形式复活
+            assert [thread for thread in threading.enumerate() if "reap" in thread.name] == []
+            # 落盘记录也仍是运行中（没被任何自动清理改写成已退出）
+            stored = wait_record(
+                config, first.session_id, lambda item: item.state == SESSION_STATE_RUNNING
+            )
+            assert stored is not None
+            assert stored.state == SESSION_STATE_RUNNING
+        finally:
+            second.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
     finally:
         manager.close_all()
 
@@ -1355,29 +1342,6 @@ def test_removed_session_record_is_not_written_back(
     manager.close_all()
 
 
-def test_exited_sessions_are_not_idle_reaped(
-    config: PlatformConfig, fake_service: FakeService, loop
-) -> None:
-    """已退出的会话不纳入空闲回收：保留给用户手动删。"""
-    manager = TerminalSessionManager(
-        config,
-        fake_service,
-        spawner=pty_spawner(["sh", "-c", "exit 0"]),
-        idle_timeout=60,
-    )
-    session = create_session(manager, loop)
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline and not session.exited:
-        time.sleep(0.1)
-    assert session.exited
-
-    # 把最近附着时间推到过去，模拟长时间没人用
-    session.record.last_attached_at = "2020-01-01T00:00:00+00:00"
-    assert manager.reap_idle_sessions() == []
-    assert manager.get(session.session_id) is not None
-    manager.close_all()
-
-
 def test_http_delete_unknown_session_returns_404(client: TestClient) -> None:
     """删除不存在的会话：回 404 与固定中文提示（不回显用户输入）。"""
     response = client.delete("/api/terminal/sessions/0123456789abcdef")
@@ -1571,10 +1535,10 @@ def test_exit_frame_is_sent_before_container_cleanup(
 def test_capacity_error_points_to_cleanup_entry(
     config: PlatformConfig, fake_service: FakeService, loop
 ) -> None:
-    """会话数超限：提示里带上已退出的会话数，并指向清理入口。
+    """会话数超限：提示里带上已退出的会话数，并指向手动清理的入口。
 
     已退出的会话也占名额（它们不做自动清理），只说「已达上限」的话用户
-    不知道去哪儿腾位置。
+    不知道去哪儿腾位置。清理入口是终端标签条（平台不做任何自动清理）。
     """
     manager = TerminalSessionManager(
         config,
@@ -1593,15 +1557,15 @@ def test_capacity_error_points_to_cleanup_entry(
         asyncio.run_coroutine_threadsafe(manager.create("demo"), loop).result(timeout=30)
     message = str(excinfo.value)
     assert "沙箱 demo 的终端会话数已达上限" in message
-    assert "1 个已退出待清理" in message
-    assert "后端保留的会话" in message
+    assert "1 个已退出、需手动移除" in message
+    assert "终端标签条" in message
     manager.close_all()
 
 
 def test_global_capacity_error_mentions_limit(
     config: PlatformConfig, fake_service: FakeService, loop
 ) -> None:
-    """全局会话数超限：提示里带上上限与清理入口。"""
+    """全局会话数超限：提示里带上上限与手动清理的入口。"""
     manager = TerminalSessionManager(
         config,
         fake_service,
@@ -1616,6 +1580,6 @@ def test_global_capacity_error_mentions_limit(
             asyncio.run_coroutine_threadsafe(manager.create("demo"), loop).result(timeout=30)
         message = str(excinfo.value)
         assert "终端会话数已达上限（1 个" in message
-        assert "后端保留的会话" in message
+        assert "终端标签条" in message
     finally:
         manager.close_all()

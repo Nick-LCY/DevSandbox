@@ -129,11 +129,10 @@ Environment=SANDBOX_PLATFORM_HOME=/var/lib/sandbox-platform
 #   需要网页控制台时：自行构建前端，并把该行取消注释指向实际产物目录。
 # Environment=SANDBOX_CONSOLE_DIST=/opt/sandbox-platform/apps/web/frontend/dist
 
-# 终端会话上限：默认全部会话 20 个、单沙箱 5 个、空闲回收 1800 秒（30 分钟）。
-#   需要调整时用下面三个环境变量覆盖（一般不用改）：
+# 终端会话上限：默认全部会话 20 个、单沙箱 5 个。
+#   需要调整时用下面两个环境变量覆盖（一般不用改）：
 # Environment=SANDBOX_TERMINAL_MAX_SESSIONS=20
 # Environment=SANDBOX_TERMINAL_MAX_SESSIONS_PER_SANDBOX=5
-# Environment=SANDBOX_TERMINAL_IDLE_TIMEOUT=1800
 
 # 日志一律走标准输出，由 journald 收走
 StandardOutput=journal

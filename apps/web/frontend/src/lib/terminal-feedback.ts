@@ -36,7 +36,7 @@ export interface TerminalState {
    * 会话结束的原因（`closed` 时有值；null 表示后端没给或旧版本没带）。
    *
    * 取值与后端一致：`exited`（容器内进程自己退出）/ `closed_by_user`
-   * （用户主动关闭）/ `reclaimed`（空闲回收）/ `shutdown`（服务退出兜底）。
+   * （用户主动关闭）/ `shutdown`（服务退出兜底）。
    */
   exitReason?: string | null;
   /** 重连退避秒数（`reconnecting` 且确实在退避等待时有值）。 */
@@ -54,7 +54,7 @@ export interface StateFeedback {
  *
  * - `invalid` / `warning`：服务端报错帧与会话失效，失败 toast；
  * - `closed`：用户主动关的（结束原因 `closed_by_user`）是**成功** toast；
- *   空闲回收（`reclaimed`）与服务退出兜底（`shutdown`）是**提示** toast；
+ *   服务退出兜底（`shutdown`）是**提示** toast；
  *   容器内进程自己退出的，退出码 0 是正常收尾（提示蓝），非 0 是失败
  *   （提示红，文案带退出码）；
  * - `reconnecting`：退避等待中，提示蓝，文案带退避秒数；
@@ -71,9 +71,9 @@ export function feedbackForState(state: TerminalState): StateFeedback | null {
     if (state.exitReason === 'closed_by_user') {
       return { kind: 'success', text: '已关闭终端' };
     }
-    // 空闲回收与服务退出兜底：会话确实结束了，但不是异常退出。
+    // 服务退出兜底：会话确实结束了，但不是异常退出。
     // 报成失败会让用户以为终端崩了。
-    if (state.exitReason === 'reclaimed' || state.exitReason === 'shutdown') {
+    if (state.exitReason === 'shutdown') {
       return { kind: 'info', text: '终端会话已结束' };
     }
     if (state.exitCode === 0) {

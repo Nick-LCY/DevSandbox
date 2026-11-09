@@ -150,7 +150,7 @@ export interface TerminalSessionRecord {
   last_attached_at: string;
   state: string;
   exit_code: number | null;
-  /** 会话结束的原因（未结束为空）：exited / closed_by_user / reclaimed / shutdown。 */
+  /** 会话结束的原因（未结束为空）：exited / closed_by_user / shutdown。 */
   exit_reason: string | null;
   pid: number;
   cols: number;
