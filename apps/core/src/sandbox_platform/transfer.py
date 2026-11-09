@@ -8,7 +8,7 @@
 本模块是**能力本体**，与 ``forwarding.py`` 平级：路径校验、上传、探测、下载字节泵、
 目录列表都在这里；服务端（03 轮）只做编排与转译，命令行与创建时注入通道零改动。
 
-**四条硬口径（ADR 0018 第 7 节，逐条对应本模块实现）**：
+**五条硬口径（ADR 0018 第 7 节，逐条对应本模块实现）**：
 
 1. **路径一律 argv 直传**：``docker exec … cat -- <path>``、``rm -f -- <临时名>``，
    路径**绝不**拼进 ``sh -c`` 的脚本文本。``sh -c`` 只用于**固定脚本**，路径经
@@ -24,6 +24,14 @@
 4. **探测必须分层**：目录 / 普通文件 / FIFO·设备·套接字·其他特殊文件可区分，
    **特殊文件一律拒**（FIFO 会挂死 ``cat``，``/dev/null`` 会静默返回 0 字节空下载）。
    字节数取 ``stat -L -c %s``（O(1)），``wc -c < file`` 为兜底。
+5. **「cat 收到干净 EOF」≠「数据完整」**：宿主侧一旦关掉 exec 的 stdin（客户端
+   中断 / 管道断了），容器内的 ``cat`` 收到的是**干净 EOF**、退出码 0——此时若
+   无条件 ``mv``，**半截文件就落在目标路径上**（03 轮真机实测：250 MiB 上传
+   60 s 掐断后目标留下 189,726,720 字节）。因此上传脚本在 ``mv`` **之前**核对
+   临时文件的**实际字节数**与**期望字节数**（期望值经 argv 直传）：不符就删掉
+   临时名、打标记、**非零退出**，**目标路径原样不动**（保住「原子替换」承诺）。
+   **没有期望值**（调用方给不出长度）时**跳过校验**——此时仍有残余风险，见
+   :meth:`FileTransferManager.upload` 的说明。
 
 **符号链接语义（ADR 0018 第 7 节第 9 条，两处口径刻意不同，不得「顺手统一」）**：
 
@@ -43,6 +51,7 @@ ADR 第 3 节把 ``stat -c %s`` 列为取大小的首选，指的是「O(1) 的 
 from __future__ import annotations
 
 import logging
+import operator
 import os
 import posixpath
 import subprocess
@@ -116,6 +125,11 @@ REASON_NO_RUNTIME = "no_runtime"
 REASON_DAEMON_UNREACHABLE = "daemon_unreachable"
 #: 上传临时名已被占用（noclobber 撞名）：临时名不是我们建的
 REASON_TEMP_NAME_EXISTS = "temp_name_exists"
+#: **上传的字节数与期望值不符**：临时文件量到的字节数 ≠ 期望字节数
+#: （典型成因：客户端中断上传 / 请求体被截断）。临时名已删、**目标未被替换**
+REASON_SIZE_MISMATCH = "size_mismatch"
+#: 期望字节数本身非法（负数 / 不是整数）：调用方的参数错误
+REASON_INVALID_SIZE = "invalid_size"
 
 # ---------------------------------------------------------------- 固定中文文案
 # 错误文案**固定**：容器内的 stderr 原文只进日志，不回显调用方。
@@ -139,6 +153,10 @@ MSG_SANDBOX_STOPPED = "沙箱已停止，无法传输文件"
 MSG_NO_RUNTIME = "传输编排未装配沙箱侧能力，无法访问沙箱"
 MSG_DAEMON_UNREACHABLE = "守护进程无法连接 Docker，容器内命令未执行"
 MSG_TEMP_NAME_EXISTS = "目标目录里的临时文件名已被占用，请重试"
+#: 字节数不符的固定文案（**不透露容器内的 stderr 原文**，只说结果）
+MSG_SIZE_MISMATCH = "上传中断，目标文件未完整写入"
+#: 期望字节数非法的固定文案
+MSG_INVALID_SIZE = "期望字节数非法"
 
 #: stderr 关键词子串 → （失败分类码, 固定中文文案）。
 #:
@@ -180,6 +198,12 @@ _ERROR_KEYWORDS: tuple[tuple[str, str, str], ...] = (
         MSG_DAEMON_UNREACHABLE,
     ),
     # 容器内
+    #
+    # **字节数不符**：这条标记是**平台自己打的**（上传脚本里的 ``printf``），
+    # 不是容器内 shell 的措辞——所以它与其它关键词不一样，**任何镜像上都一样**。
+    # 排在容器内关键词的最前面：它是「上传被截断」的**确定性证据**，
+    # 不该被别的措辞盖掉。
+    ("size mismatch", REASON_SIZE_MISMATCH, MSG_SIZE_MISMATCH),
     ("read-only file system", REASON_READONLY, MSG_READONLY_FS),
     ("permission denied", REASON_PARENT_NOT_WRITABLE, MSG_PARENT_NOT_WRITABLE),
     # noclobber 撞名：临时名已存在（dash ``cannot create …: File exists`` /
@@ -241,17 +265,38 @@ else
 fi
 """
 
-# 上传脚本（固定）：``set -C`` + ``cat > "$1" && mv "$1" "$2"``。
-#   - ``$1`` = **与目标同目录**的临时名，``$2`` = 用户的目标路径；
+# 上传脚本（固定）：``set -C`` + ``cat > "$1"`` + **字节数核对** + ``mv "$1" "$2"``。
+#   - ``$1`` = **与目标同目录**的临时名，``$2`` = 用户的目标路径，
+#     ``$3`` = **期望字节数**（**可选**：不给 / 给空串就**跳过核对**）；
 #   - ``set -C``（noclobber）：重定向走 **O_EXCL**，**临时名已存在就不写**——
 #     实测 dash 与 busybox ash 都生效（``cannot create …: File exists`` /
 #     ``can't create '…': File exists``）。不加它时，若临时名被**预先放了个
 #     符号链接**（指向别处），``cat > "$1"`` 会**顺着链接写穿**到链接目标
 #     （实测：链接指向的文件被写脏）；
-#   - ``&&``：写入失败就不执行 ``mv``（不拿半截文件去覆盖目标）；
+#   - ``|| exit $?``：写入失败就不执行 ``mv``（不拿半截文件去覆盖目标），
+#     并**保留 cat 的退出码**（实测：dash 的重定向失败 rc=2 / busybox rc=1，
+#     与修复前一致）；
 #   - ``cat`` 从 exec 的 stdin 收字节（``docker exec -i``）；
+#   - **字节数核对（``$3`` 给了才做）**：``cat`` 写完后量临时文件的实际字节数
+#     （``wc -c < "$1"``），与期望值不等就 ``rm -f -- "$1"`` + 打标记
+#     （``size mismatch``）+ **非零退出**，**不执行 ``mv``**；
 #   - 临时名与目标同目录 ⇒ ``mv`` 是同设备 rename，**原子替换**；
 #   - rename **不跟随**末端符号链接 ⇒ 替换的是链接本身（防写穿）。
+#
+# **为什么必须有字节数核对**（03 轮真机实测暴露的缺陷）：宿主侧一旦关掉 exec 的
+# stdin（客户端中断上传 / 管道断了），容器内的 ``cat`` 收到的是**干净 EOF**、
+# **rc=0**——此时若无条件 ``mv``，**半截文件就落在目标路径上**（实测：250 MiB
+# 上传 60 s 掐断后目标留下 189,726,720 字节、临时名已清、无 exec 残留）。
+# 期望字节数由**调用方**（服务端从请求头 ``Content-Length`` 取）经 **argv 直传**
+# 进来，脚本是**固定文本**、**不拼接路径也不拼接数值**。
+#
+# **为什么用 ``wc -c < "$1"``**（而不是 ``stat -c %s``）：01 轮打样实测**四个镜像
+# 都有 ``wc``**（``sandbox-platform/base:0.3.0`` / ``debian:bookworm-slim`` /
+# ``alpine:latest`` / ``alpine/socat:1.8.1.3``），而 ``wc -c < file`` 是 **POSIX
+# 写法**、dash 与 busybox ash 行为一致。代价是**要读完整个文件**（O(n)，与探测
+# 脚本里 ``stat`` 的 O(1) 不同）——上传场景下文件刚写完、页缓存里，代价可接受。
+# ``wc`` 缺失 / 量不出来时 ``actual`` 为空 ⇒ **按不符处理**（fail-closed：
+# 宁可报错，也不把没核对过的文件 ``mv`` 到目标上）。
 #
 # **noclobber 撞名的处置**（临时名已存在）：走**既有错误路径**——按 stderr
 # 关键词归类成 :data:`REASON_TEMP_NAME_EXISTS`，不重试。**不重试**的理由：字节流
@@ -260,7 +305,17 @@ fi
 # 建的（可能是别人放的符号链接或文件），平台没有资格替用户删。
 UPLOAD_SCRIPT = """
 set -C
-cat > "$1" && mv "$1" "$2"
+cat > "$1" || exit $?
+if [ -n "$3" ]; then
+  actual=$(wc -c < "$1" 2>/dev/null) || actual=""
+  actual=${actual##* }
+  if [ -z "$actual" ] || [ "$actual" != "$3" ]; then
+    rm -f -- "$1"
+    printf 'rtf upload: size mismatch (expected %s, actual %s)\\n' "$3" "${actual:-unknown}" >&2
+    exit 1
+  fi
+fi
+mv "$1" "$2"
 """
 
 # 目录列表脚本（固定）：``find … -exec sh -c '…' sh {} +`` **单次 exec** 产出
@@ -517,6 +572,29 @@ def _parse_int(value: str) -> int | None:
     return int(text)
 
 
+def _normalize_expected_bytes(expected_bytes: int | None) -> int | None:
+    """把期望字节数规整成 ``int | None``（``None`` = 不做字节数核对）。
+
+    **非法值直接报错**（负数 / 不是整数）：期望字节数是要**拿进容器内做核对**的
+    契约值，放任一个负数进去会让容器内的比较永远不符（每次上传都失败），
+    或者让一个非整数（小数 / 字符串）把脚本的比较变成语义走样的字符串比较。
+    失败抛 :class:`TransferError`（固定中文文案 + :data:`REASON_INVALID_SIZE`）。
+
+    **只接受整数**：``operator.index`` 接受 ``int``（含 ``bool``）与其它实现了
+    ``__index__`` 的整数型对象，**拒绝**小数与字符串（``int(1.5)`` 会静默截断成
+    1——那是错值，不是调用方的意图）。
+    """
+    if expected_bytes is None:
+        return None
+    try:
+        value = operator.index(expected_bytes)
+    except TypeError as exc:
+        raise TransferError(MSG_INVALID_SIZE, reason=REASON_INVALID_SIZE) from exc
+    if value < 0:
+        raise TransferError(MSG_INVALID_SIZE, reason=REASON_INVALID_SIZE)
+    return value
+
+
 def _stderr_tail_with_drain(
     pump: BytePump, wait_seconds: float = STDERR_DRAIN_WAIT
 ) -> str:
@@ -600,7 +678,11 @@ class FileTransferManager:
 
     # ---------------------------------------------------------------- 上传
     def upload(
-        self, sandbox: str, target_path: str, chunks: Iterable[bytes]
+        self,
+        sandbox: str,
+        target_path: str,
+        chunks: Iterable[bytes],
+        expected_bytes: int | None = None,
     ) -> int:
         """把字节流写入容器内的目标路径，返回**写入的字节数**。
 
@@ -611,7 +693,25 @@ class FileTransferManager:
            rc=0 假成功，文件被搬进目录里 → 必须前置拦截，**不依赖 ``mv -T``**，
            busybox 不支持）；
         2. ``cat > 同目录临时名`` 写入字节（``docker exec -i``，stdin 收字节）；
-        3. ``mv 临时名 目标`` **原子替换**（同目录 ⇒ 同设备 rename）。
+        3. **核对字节数**（仅当 ``expected_bytes`` 给了）：临时文件的实际字节数
+           与期望值不等 ⇒ 删临时名 + 报错 + **不执行 ``mv``**；
+        4. ``mv 临时名 目标`` **原子替换**（同目录 ⇒ 同设备 rename）。
+
+        ``expected_bytes``：**期望写入的字节数**（调用方拿得到总长度时传入，
+        服务端从请求头 ``Content-Length`` 取）。它经 **argv 直传**给容器内的
+        上传脚本（脚本的 ``"$3"`` 位置参数），**不拼进脚本文本**。
+
+        - **给了期望值** ⇒ 容器内 ``cat`` 写完后先量临时文件的实际字节数
+          （``wc -c < 临时名``），**不等就不 ``mv``**：删临时名、打 ``size
+          mismatch`` 标记、非零退出 ⇒ 平台侧归类成
+          :data:`REASON_SIZE_MISMATCH`（固定文案「上传中断，目标文件未完整
+          写入」），**目标路径原样不动**（原文件保留，不会被半截内容覆盖）；
+        - **没给期望值**（``None``）⇒ **跳过核对**，行为与修复前完全一致
+          （argv 里也不带校验参数）。**残余风险**：**没有长度信息的中断仍可能在
+          目标路径留下半截文件**——客户端中断上传时宿主侧会关掉 exec 的 stdin，
+          容器内的 ``cat`` 收到**干净 EOF**、rc=0（03 轮真机实测：250 MiB 上传
+          60 s 掐断后目标留下 189,726,720 字节）。调用方拿得到总长度时
+          **应当传** ``expected_bytes``。
 
         语义：
 
@@ -637,6 +737,7 @@ class FileTransferManager:
         失败抛 :class:`TransferError`（固定中文文案 + 失败分类码）。
         """
         target = validate_container_path(target_path)
+        expected = _normalize_expected_bytes(expected_bytes)
         daemon, container = self._resolve(sandbox)
 
         # 前置探测一：父目录必须已存在（平台不主动创建父目录）
@@ -662,6 +763,8 @@ class FileTransferManager:
         temp = _temp_path(target)
         # 路径一律 argv 直传：临时名与目标路径各占一个 argv 元素，
         # 脚本文本是固定的（路径经 "$1" / "$2" 位置参数传入）。
+        # 期望字节数也走 argv（"$3" 位置参数）——**不给就不带这个参数**，
+        # 脚本里的 ``[ -n "$3" ]`` 为假 ⇒ 跳过字节数核对。
         argv = [
             "docker",
             "exec",
@@ -674,6 +777,8 @@ class FileTransferManager:
             temp,
             target,
         ]
+        if expected is not None:
+            argv.append(str(expected))
         process = daemon.spawn_stream(argv)
         pump = BytePump(process=process, forward_id=f"upload:{sandbox}")
         written = 0

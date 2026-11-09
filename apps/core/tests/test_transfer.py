@@ -58,9 +58,12 @@ from sandbox_platform.transfer import (
     MSG_TARGET_IS_DIR,
     MSG_TEMP_NAME_EXISTS,
     MSG_WRITE_FAILED,
+    MSG_INVALID_SIZE,
+    MSG_SIZE_MISMATCH,
     PROBE_SCRIPT,
     REASON_DAEMON_UNREACHABLE,
     REASON_EXEC_FAILED,
+    REASON_INVALID_SIZE,
     REASON_NOT_FOUND,
     REASON_NOT_REGULAR,
     REASON_NO_RUNTIME,
@@ -68,6 +71,7 @@ from sandbox_platform.transfer import (
     REASON_PARENT_NOT_DIRECTORY,
     REASON_PARENT_NOT_WRITABLE,
     REASON_READONLY,
+    REASON_SIZE_MISMATCH,
     REASON_TARGET_IS_DIR,
     REASON_TEMP_NAME_EXISTS,
     REASON_WRITE_FAILED,
@@ -762,7 +766,9 @@ def test_upload_script_structure_is_pinned() -> None:
     """上传脚本的**结构**钉死（不是「常量跟自己比」）。
 
     ``set -C``（noclobber 走 O_EXCL，挡符号链接写穿）**必须先于**写入；
-    ``cat > "$1"`` 与 ``mv "$1" "$2"`` 经位置参数拿路径，不拼进脚本文本。
+    ``cat > "$1"`` 与 ``mv "$1" "$2"`` 经位置参数拿路径，不拼进脚本文本；
+    **字节数核对夹在写入与 ``mv`` 之间**（03 轮真机实测的缺陷：客户端中断上传
+    ⇒ 容器内 ``cat`` 收到**干净 EOF**、rc=0 ⇒ 无条件 ``mv`` ⇒ 目标留下半截文件）。
     """
     assert "set -C" in UPLOAD_SCRIPT
     assert 'cat > "$1"' in UPLOAD_SCRIPT
@@ -770,7 +776,18 @@ def test_upload_script_structure_is_pinned() -> None:
     # noclobber 先于写入（否则不起作用）
     assert UPLOAD_SCRIPT.index("set -C") < UPLOAD_SCRIPT.index('cat > "$1"')
     # 写入失败就不 mv（不拿半截文件去覆盖目标）
-    assert 'cat > "$1" && mv "$1" "$2"' in UPLOAD_SCRIPT
+    assert UPLOAD_SCRIPT.index('cat > "$1"') < UPLOAD_SCRIPT.index('mv "$1" "$2"')
+    assert "&&" not in UPLOAD_SCRIPT
+    # **字节数核对在写入之后、mv 之前**（核对不过就不 mv）
+    assert UPLOAD_SCRIPT.index('cat > "$1"') < UPLOAD_SCRIPT.index('wc -c < "$1"')
+    assert UPLOAD_SCRIPT.index('wc -c < "$1"') < UPLOAD_SCRIPT.index('mv "$1" "$2"')
+    # 不符 ⇒ 删临时名 + 打标记 + 非零退出
+    assert 'rm -f -- "$1"' in UPLOAD_SCRIPT
+    assert "size mismatch" in UPLOAD_SCRIPT
+    assert "exit 1" in UPLOAD_SCRIPT
+    # 期望字节数走位置参数 "$3"（**可选**：不给就跳过核对）
+    assert '"$3"' in UPLOAD_SCRIPT
+    assert '[ -n "$3" ]' in UPLOAD_SCRIPT
     # 路径只经位置参数进入
     assert "$1" in UPLOAD_SCRIPT and "$2" in UPLOAD_SCRIPT
 
@@ -790,6 +807,142 @@ def test_upload_passes_paths_as_argv_not_shell_text(
     # 脚本文本是固定的：路径没被拼进去
     assert argv[argv.index("-c") + 1] == UPLOAD_SCRIPT
     assert tricky not in UPLOAD_SCRIPT
+
+
+# ---------------------------------------------------------------- 上传：字节数核对
+def test_upload_passes_the_expected_size_as_argv(
+    manager: FileTransferManager, daemon: FakeDaemon
+) -> None:
+    """期望字节数**argv 直传**（脚本的 ``"$3"`` 位置参数），不拼进脚本文本。"""
+    daemon.queue(0, b"dir\n")
+    daemon.queue(0, b"missing\n")
+    daemon.queue(0)
+
+    manager.upload("demo", "/workspace/a.bin", [b"hello"], expected_bytes=5)
+    argv = _upload_argv(daemon)
+    assert argv[-1] == "5"
+    assert argv[-2] == "/workspace/a.bin"
+    assert posixpath.basename(argv[-3]).startswith(TEMP_PREFIX)
+    # 脚本文本是固定的：期望值没被拼进去
+    assert argv[argv.index("-c") + 1] == UPLOAD_SCRIPT
+    assert "5" not in UPLOAD_SCRIPT
+
+
+def test_upload_without_expected_size_passes_no_check_argument(
+    manager: FileTransferManager, daemon: FakeDaemon
+) -> None:
+    """``expected_bytes=None`` ⇒ argv **不带校验参数**，行为与修复前一致。
+
+    argv 形状：``docker exec -i <容器> sh -c <脚本> sh <临时名> <目标>``——共 10 个
+    元素（多了期望字节数就变成 11 个）。
+    """
+    daemon.queue(0, b"dir\n")
+    daemon.queue(0, b"missing\n")
+    daemon.queue(0)
+
+    manager.upload("demo", "/workspace/a.bin", [b"hello"])
+    argv = _upload_argv(daemon)
+    assert len(argv) == 10
+    assert argv[-1] == "/workspace/a.bin"
+    assert posixpath.basename(argv[-2]).startswith(TEMP_PREFIX)
+
+
+def test_upload_with_a_matching_expected_size_moves_the_file(
+    manager: FileTransferManager, daemon: FakeDaemon
+) -> None:
+    """期望字节数**相符** ⇒ 正常 ``mv``（不报错、不清理临时文件）。"""
+    daemon.queue(0, b"dir\n")
+    daemon.queue(0, b"missing\n")
+    daemon.queue(0)
+
+    written = manager.upload("demo", "/workspace/a.bin", [b"hello"], expected_bytes=5)
+    assert written == 5
+    # 成功路径不跑 ``rm``
+    assert daemon.execs == []
+    assert _upload_argv(daemon)[-1] == "5"
+
+
+def test_upload_size_mismatch_is_classified_and_cleans_the_temp_file(
+    manager: FileTransferManager, daemon: FakeDaemon
+) -> None:
+    """字节数不符 ⇒ 分类码 + 固定中文文案 + **临时名被清**。
+
+    容器内脚本的处置：删临时名 + 打 ``size mismatch`` 标记 + 非零退出 ⇒
+    **不执行 ``mv``** ⇒ **目标路径原样不动**（不会把半截内容覆盖上去）。
+    """
+    daemon.queue(0, b"dir\n")
+    daemon.queue(0, b"missing\n")
+    daemon.queue(1, b"", "rtf upload: size mismatch (expected 100, actual 40)")
+
+    with pytest.raises(TransferError) as excinfo:
+        manager.upload("demo", "/workspace/a.bin", [b"x" * 40], expected_bytes=100)
+    assert excinfo.value.reason == REASON_SIZE_MISMATCH
+    assert str(excinfo.value).startswith(MSG_SIZE_MISMATCH)
+    # 文案指向用户的目标路径，不回显 stderr 原文与临时名
+    assert "/workspace/a.bin" in str(excinfo.value)
+    assert ".rtf-tmp-" not in str(excinfo.value)
+    assert "size mismatch" not in str(excinfo.value)
+    # 临时名被清（平台侧兜底 ``rm``，argv 直传）
+    assert len(daemon.execs) == 1
+    cleanup = daemon.execs[0]
+    assert cleanup[:3] == ["exec", CONTAINER, "rm"]
+    assert cleanup[-1] == _upload_argv(daemon)[-3]
+
+
+def test_upload_size_mismatch_is_classified_even_on_the_interruption_path(
+    manager: FileTransferManager, daemon: FakeDaemon
+) -> None:
+    """中断路径上也按 stderr 归类：容器内的 ``size mismatch`` 标记优先。
+
+    客户端中断上传 ⇒ 宿主侧关 stdin ⇒ 容器内 ``cat`` 收到干净 EOF ⇒ 字节数
+    不符 ⇒ 打标记。宿主侧同时可能抛出写入异常——**先按 stderr 归类**
+    （与既有的「容器内先失败」口径一致），不把分类码丢掉。
+    """
+    daemon.queue(0, b"dir\n")
+    daemon.queue(0, b"missing\n")
+    daemon.queue(1, b"", "rtf upload: size mismatch (expected 100, actual 40)")
+
+    def broken_chunks() -> object:
+        yield b"x" * 40
+        raise OSError("宿主侧写入断了")
+
+    with pytest.raises(TransferError) as excinfo:
+        manager.upload(
+            "demo", "/workspace/a.bin", broken_chunks(), expected_bytes=100
+        )  # type: ignore[arg-type]
+    assert excinfo.value.reason == REASON_SIZE_MISMATCH
+    assert str(excinfo.value).startswith(MSG_SIZE_MISMATCH)
+    assert len(daemon.execs) == 1
+
+
+def test_upload_rejects_an_invalid_expected_size(
+    manager: FileTransferManager, daemon: FakeDaemon
+) -> None:
+    """期望字节数非法（负数 / 非整数）⇒ 固定文案 + 分类码，**不落容器内副作用**。"""
+    for bad in (-1, "abc", 1.5):
+        with pytest.raises(TransferError) as excinfo:
+            manager.upload("demo", "/workspace/a.bin", [b"x"], expected_bytes=bad)  # type: ignore[arg-type]
+        assert excinfo.value.reason == REASON_INVALID_SIZE
+        assert str(excinfo.value).startswith(MSG_INVALID_SIZE)
+    assert daemon.spawned == []
+
+
+def test_upload_without_expected_size_keeps_the_previous_behaviour(
+    manager: FileTransferManager, daemon: FakeDaemon
+) -> None:
+    """``expected_bytes=None`` ⇒ **不核对字节数**（保留现状行为）。
+
+    残余风险（写进 docstring）：没有长度信息的中断**仍可能在目标留下半截文件**
+    （客户端中断 ⇒ 宿主关 stdin ⇒ 容器内 ``cat`` 收到干净 EOF、rc=0 ⇒
+    ``mv`` 照常执行）。这条用例把「**不给就不核对**」钉死。
+    """
+    daemon.queue(0, b"dir\n")
+    daemon.queue(0, b"missing\n")
+    daemon.queue(0)  # 容器内不报错（修复前：字节数不符也照样 mv）
+
+    written = manager.upload("demo", "/workspace/a.bin", [b"hello"])
+    assert written == 5
+    assert daemon.execs == []
 
 
 def test_upload_failure_cleans_the_temp_file(
@@ -889,6 +1042,12 @@ def test_upload_error_message_uses_the_target_path_not_the_temp_name(
             "sh: can't create '/workspace/.rtf-tmp-x': File exists",
             REASON_TEMP_NAME_EXISTS,
             MSG_TEMP_NAME_EXISTS,
+        ),
+        # 字节数不符（**平台自己打的标记**，任何镜像上措辞都一样）
+        (
+            "rtf upload: size mismatch (expected 262144000, actual 189726720)",
+            REASON_SIZE_MISMATCH,
+            MSG_SIZE_MISMATCH,
         ),
     ],
 )
