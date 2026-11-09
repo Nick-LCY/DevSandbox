@@ -510,6 +510,35 @@ class ForwardDeleteResponse(BaseModel):
     failed: list[str]
 
 
+class FileUploadResponse(BaseModel):
+    """上传的结果。
+
+    ``bytes`` 是**实际写入的字节数**（与写入容器的字节数一致）；``path`` 是
+    容器内的目标路径。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(description="容器内的目标路径")
+    bytes: int = Field(description="实际写入的字节数")
+
+
+class FileListEntry(BaseModel):
+    """目录列表的一条目。
+
+    ``kind`` 取 ``file`` / ``dir`` / ``special``（特殊文件：FIFO·设备·套接字·
+    其它）——目录列表**不做类型过滤**，特殊文件也列出来（前端自行决定怎么画）。
+    ``mtime`` 是**修改时间**（Unix epoch 秒）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(description="条目名称")
+    kind: str = Field(description="条目类型：file / dir / special")
+    size: int = Field(description="字节数（目录与特殊文件为 0）")
+    mtime: int = Field(description="修改时间（Unix epoch 秒）")
+
+
 class TerminalSessionCreateRequest(BaseModel):
     """新建终端会话的请求体。"""
 

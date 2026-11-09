@@ -11,7 +11,13 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from sandbox_platform import ConfigError, PlatformConfig, SandboxService, __version__
+from sandbox_platform import (
+    ConfigError,
+    FileTransferManager,
+    PlatformConfig,
+    SandboxService,
+    __version__,
+)
 
 from .auth import (
     CORS_ALLOWED_HEADERS,
@@ -146,6 +152,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     manager = TerminalSessionManager(config, service)
     app.state.terminal_manager = manager
+    # 运行期文件传输的编排入口（能力本体在核心包 ``sandbox_platform.transfer``）：
+    # 整个进程共用一个实例（与转发编排同款：生命周期服务持有，服务端只取引用）。
+    app.state.transfer_manager = FileTransferManager(service=service)
     try:
         yield
     finally:

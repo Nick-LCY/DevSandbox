@@ -677,8 +677,12 @@ docker exec -i <转发容器> socat - TCP:<沙箱容器名>:<容器端口>
 | DELETE | `/api/terminal/sessions/{session_id}` | — | `TerminalSessionDeleteResponse` | 终端会话管理器（见第 12 节） |
 | WS | `/api/terminal/sessions/{session_id}` | 帧协议见 12.3 | 二进制帧 + 文本帧 | 终端会话管理器（见第 12 节） |
 | GET / POST / DELETE | `/api/templates`、`/api/templates/{id}/rename` | `TemplateCreateRequest` / `TemplateRenameRequest` | `TemplateResponse[]` / `TemplateResponse` / `TemplateDeleteResponse` | 启动模板（见第 13 节） |
+| POST | `/api/sandboxes/{name}/files/upload` | **raw body**（`application/octet-stream`，**流式读**，无 multipart） | `FileUploadResponse` | 运行期文件传输（见第 16 章） |
+| GET | `/api/sandboxes/{name}/files/download` | 查询参数 `path` | `StreamingResponse`（字节流 + `Content-Disposition`） | 运行期文件传输（见第 16 章） |
+| GET | `/api/sandboxes/{name}/files/list` | 查询参数 `path` | `FileListEntry[]`（裸数组） | 运行期文件传输（见第 16 章） |
 
-> 三期新增的**端口转发接口**（三条 REST + 隧道 WebSocket）见**第 15 章**。
+> 三期新增的**端口转发接口**（三条 REST + 隧道 WebSocket）见**第 15 章**；
+> 运行期文件传输的**三个端点**（上传 / 下载 / 目录列表）见**第 16 章**。
 
 ### 11.2 请求字段
 
@@ -1332,3 +1336,173 @@ WS 握手通过
 | `sandbox_console/routes/forwards.py` | 三条转发管理 REST + 隧道 WebSocket（握手校验、字节泵桥接、控制帧处理） |
 | `sandbox_console/deps.py` | 转发编排入口（**取生命周期服务持有的那一个，不另建实例**）与活动隧道登记表的依赖注入（只有 WS 版：REST 侧用不到登记表） |
 
+
+---
+
+## 16. 运行期文件传输接口（上传 / 下载 / 目录列表）
+
+把文件搬进**运行中**的沙箱、或从里面取出来。与「创建时文件注入」是**两条独立
+通道**（时序、方向、生命周期都不同），与命令行也**互不影响**。
+
+机制依据 ADR 0018（运行期文件传输机制选型）：主通道是沙箱免 root 守护进程下的
+`docker exec -i` + 容器内 `sh` / `cat`，**复用端口转发轮已生产验证的字节泵资产**
+（stderr 排空 / 短写循环 / 进程组回收三个坑照抄）。**能力本体在核心包**
+`sandbox_platform.transfer`（路径校验 / 上传 / 分层探测 / 下载字节泵 / 目录列表），
+**服务端只做编排与转译**。
+
+**边界**：**单文件**粒度、双向；目录整体传输、多文件打包、文件管理操作
+（重命名 / 删除 / 移动 / 复制）**不做**；**命令行零改动**、**创建时注入通道零改动**。
+
+### 16.1 路由表
+
+| 方法 | 路径 | 入参 | 出参 | 说明 |
+|---|---|---|---|---|
+| POST | `/api/sandboxes/{name}/files/upload?path=<容器内绝对路径>` | **raw body**（`application/octet-stream`，**无 multipart`，**流式读**；**带 `Content-Length` 时核对字节数**，见 16.2） | `FileUploadResponse`（`{path, bytes}`） | 覆盖语义：写同目录临时名 → `mv` **原子替换**；**目标是已存在目录 → 前置拒绝**；父目录不自动创建 |
+| GET | `/api/sandboxes/{name}/files/download?path=<容器内绝对路径>` | 查询参数 `path` | `StreamingResponse`（`application/octet-stream` + `Content-Length` + `Content-Disposition`） | **前置分层探测**，只放行**普通文件**（目录 / FIFO·设备·套接字等特殊文件一律拒，防挂起）；**`Content-Length` = 探测值声明 + 服务端按声明长度裁剪**（实际流超出即截断，响应体**永不超过**声明长度，见 16.2） |
+| GET | `/api/sandboxes/{name}/files/list?path=<容器内目录>` | 查询参数 `path` | `FileListEntry[]`（**裸数组**，不包对象） | 名称 / 类型 / 大小 / 修改时间；**隐藏文件（`.` 开头）包含在内** |
+
+> 三条端点全挂在 `/api` 前缀下 ⇒ **被令牌中间件自动保护**（见 16.4）；
+> 本轮**只用 GET / POST** ⇒ **CORS 白名单零改动**；**不新增 WebSocket**。
+
+### 16.2 请求与响应字段
+
+上传的入参**只有查询参数 `path`**（容器内**绝对路径**）+ **raw body**（外加**可选的
+`Content-Length` 头**，语义见下）：
+
+| 项 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `path` | `str`（查询参数） | 是 | 容器内的**绝对路径**（词法校验：不解析符号链接、不跟随、无黑名单）；**无黑名单、全部允许**（容器内的权限由容器自身的用户与文件系统决定） |
+
+> **上传端点不用请求模型**：请求体是 raw 字节流，**不接 JSON 模型 / pydantic**
+> ——JSON body 会被整体缓冲进内存（见 16.5）。
+
+**上传的 `Content-Length` 语义（字节数核对）**：
+
+| 情形 | 服务端行为 |
+|---|---|
+| **有 `Content-Length` 头**（值合法） | 把它当**期望字节数**传给核心包（`expected_bytes`）⇒ **两道保险**核字节数（见下方说明）：**不符 ⇒ 400**（分类码 `size_mismatch`，固定文案「上传中断，目标文件未完整写入」），**目标文件保持原样**（旧内容**不被半截内容覆盖**），容器内临时名被清 |
+| **无 `Content-Length` 头**（chunked 传输） | **不核对**字节数（`expected_bytes` 传 `None`）⇒ 客户端中断时**目标路径可能留下半截文件**（**残余风险**：宿主侧关掉 exec 的 stdin 后容器内 `cat` 收到**干净 EOF**、rc=0 ⇒ 无条件 `mv`）——**调用方拿得到总长度时应当带上 `Content-Length`** |
+| **`Content-Length` 头非法**（不是数字 / 负数 / 小数 / 空串） | **直接 400**（`{"detail": "Content-Length 头非法：期望字节数必须是非负整数"}`），**不静默按「没有期望值」处理**——静默降级会把调用方声明的长度悄悄丢掉、字节数核对静默失效（用户以为有核对、实际没有）；此时**上传压根没发生**（body 未被读取） |
+| **`Content-Length` 头超长**（十进制超过 **20 位**） | **直接 400**（`{"detail": "Content-Length 头非法：期望字节数超出支持范围（最多 20 位十进制）"}`）——超长数字串会让 `int()` 抛 `ValueError`（CPython 3.12 的 4300 位上限），不拦住就是 **500**；此时**上传压根没发生** |
+
+> **字节数核对是两道保险**（任一命中 ⇒ 400 `size_mismatch`，**目标文件保持原样**）：
+>
+> 1. **容器内校验**（核心包）：`cat` 写完后量临时文件的实际字节数
+>    （`wc -c`）与期望值对比，不符就删临时名、打标记、**不 `mv`**；
+> 2. **服务端计数兜底**（服务端）：**核心包实际取走的字节数** ≠ 期望值 ⇒
+>    **直接归 `size_mismatch`**（400，固定文案「上传中断，目标文件未完整写入」），
+>    **不依赖容器内的 stderr 标记**——真机中断场景下那个标记会随 docker 客户端
+>    被杀而丢失（失败路径先回收 exec 进程、再读 stderr 尾部），此时核心包只能归
+>    `write_failed` / `exec_failed`（否则会误回 500，与本节的承诺不符）。
+>
+> **服务端兜底不改判的三种情形**：**没有期望值**（chunked 传输，无契约值可比）、
+> **取走的字节数 == 期望值**（字节数对得上）、**一个字节都没取走**（失败发生在
+> 写入之前：前置探测 / 路径校验 / 沙箱已停等）；核心包给出了**更精确的分类码**
+> （如「目标目录不可写」）时也**维持原分类**。
+>
+> 分类码与状态码见 16.3。
+
+`FileUploadResponse`（`extra="forbid"`）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `path` | `str` | 容器内的目标路径（与请求一致） |
+| `bytes` | `int` | **实际写入的字节数**（与写入容器的字节数一致） |
+
+`FileListEntry`（`extra="forbid"`，列表项）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `name` | `str` | 条目名称（**空格 / 中文 / 换行等保真**；隐藏文件包含在内） |
+| `kind` | `str` | 条目类型：`file` / `dir` / `special`（FIFO·设备·套接字·其它）——列表**不做类型过滤** |
+| `size` | `int` | 字节数（目录与特殊文件为 0） |
+| `mtime` | `int` | 修改时间（**Unix epoch 秒**） |
+
+下载的响应头：
+
+| 响应头 | 值 | 说明 |
+|---|---|---|
+| `Content-Type` | `application/octet-stream` | 固定（原始字节流，不做内容嗅探） |
+| `Content-Length` | 探测到的字节数（**声明值**） | **探测值声明 + 服务端裁剪保证不超出**：文件在探测与读取之间**变大**时，实际流会超出声明值——服务端**按声明长度裁剪**（超出部分丢弃并记告警）⇒ **响应体永不超过声明长度**（否则响应体长度与 `Content-Length` 冲突会触发 uvicorn / h11 的 `LocalProtocolError`，连接异常终止）。文件在传输中**变小**时按实际长度结束（body 短于声明值，由协议层按「短 body」处理，服务端记告警） |
+| `Content-Disposition` | `attachment; filename="<ASCII 回退>"; filename*=UTF-8''<百分号编码>` | **ASCII 回退 + UTF-8 百分号编码**（RFC 6266）：**中文文件名必须正确**（浏览器优先读 `filename*`） |
+
+### 16.3 错误码映射
+
+失败按核心包的**失败分类码**（`TransferError.reason`）映射状态码——服务端**只按
+分类码判**，不解析异常文案（措辞会变，分类码不会）。分类本身**只按容器内 stderr
+的关键词子串**归类（**不按整句、不按退出码**：dash 与 busybox ash 的措辞与退出码
+都不同）；**唯一例外**是上传的字节数核对——服务端用**自己的字节计数**兜底
+（`size_mismatch`，见 16.2），**不依赖容器内的 stderr 标记**。**认不出来的分类码
+⇒ 500 + 固定文案**（不猜）。
+
+| 失败分类码（`reason`） | 状态码 | 响应 `detail` | 触发场景 |
+|---|---|---|---|
+| `invalid_path` | 400 | 容器内路径必须是绝对路径 / 容器内路径不能为空 / 容器内路径不能包含空字节 | 路径不是绝对路径、空串、含 NUL |
+| `parent_missing` | 400 | 目标父目录不存在，请先创建 | 父目录缺失（**平台不主动创建**） |
+| `parent_not_directory` | 400 | 目标父目录不是目录 | 父路径不是目录 |
+| `parent_not_writable` | 400 | 目标目录不可写 | 父目录不可写（EACCES） |
+| `readonly` | 400 | 路径所在挂载为只读 | 只读挂载（EROFS） |
+| `target_is_dir` | 400 | 目标是一个目录，不能作为上传目标 / 目标是目录 | **上传**：目标是已存在目录（前置拒绝）；**下载**：目标是目录 |
+| `not_regular` | 400 | 目标不是普通文件，不能下载 / 目标不是目录，不能列目录 | **下载**：FIFO·设备·套接字等特殊文件；**列表**：目标不是目录 |
+| `size_mismatch` | 400 | 上传中断，目标文件未完整写入 | **上传**：实际字节数与 `Content-Length` 不符（客户端中断 / 请求体被截断）⇒ **目标文件保持原样**。**两道保险**：容器内校验（`wc -c` vs 期望值）+ **服务端字节计数兜底**（核心包取走的字节数 ≠ 期望值 ⇒ 直接归本码，**不依赖容器内 stderr 标记**，见 16.2） |
+| `invalid_size` | 400 | 期望字节数非法 | 期望字节数本身非法（负数 / 非整数）——服务端已在**请求头处前置拦截**（400），这里是兜底 |
+| `not_found` | 404 | 文件不存在 | 目标不存在 |
+| `sandbox_stopped` | 409 | 沙箱已停止，无法传输文件 | 沙箱已停止 |
+| `temp_name_exists` | 409 | 目标目录里的临时文件名已被占用，请重试 | 上传临时名撞名（`set -C` noclobber 撞名） |
+| `daemon_unreachable` | 502 | 守护进程无法连接 Docker，容器内命令未执行 | **宿主侧**失败：docker 客户端连不上守护进程（命令压根没在容器内执行） |
+| 其余（`exec_failed` / `write_failed` / `no_runtime`） | 500 | 平台内部错误，请查看服务日志 | 容器内命令失败 / 写入中断 / 编排未装配 |
+
+| 场景 | 状态码 | 响应体 |
+|---|---|---|
+| 沙箱不存在 | 404 | `{"detail": "沙箱不存在：<名字>"}` |
+| 缺 `path` 查询参数 | 400 | `{"detail": "请求参数不合法：path（必填）"}` |
+| `Content-Length` 头非法 | 400 | `{"detail": "Content-Length 头非法：期望字节数必须是非负整数"}` |
+| `Content-Length` 头超长（> 20 位） | 400 | `{"detail": "Content-Length 头非法：期望字节数超出支持范围（最多 20 位十进制）"}` |
+
+**文案口径**：400 / 404 / 409 / 502 回**固定中文文案**（核心包的文案常量 + 用户
+自己给的容器内路径，**不含任何宿主信息**）；**500 只给固定文案**
+（「平台内部错误，请查看服务日志」），异常原文只进日志。
+
+> **容器内的 stderr 原文只进日志，绝不进响应**：失败原因（容器客户端输出、
+> 宿主绝对路径、探测细节）一律不显给调用方。分类码的取用路径见
+> `sandbox_console/errors.py` 的 `TRANSFER_STATUS_BY_REASON` 与
+> `classify_transfer_error`（核心包的四个新分类码
+> `REASON_DAEMON_UNREACHABLE` / `REASON_TEMP_NAME_EXISTS` /
+> `REASON_SIZE_MISMATCH` / `REASON_INVALID_SIZE` **已进包导出**，服务端统一从
+> `sandbox_platform` 包根导入——不再从 `sandbox_platform.transfer` 模块内直取）。
+>
+> **入日志前单行化**：传输链路的异常原文带**用户给的容器内路径**（路径里可以
+> 塞换行）⇒ 原样入日志就是**日志伪造**（调用方能往服务端日志里塞任意行）⇒
+> 写入前把换行压成空格（**响应体不受影响**）。
+
+### 16.4 认证与跨源口径
+
+| 项 | 口径 |
+|---|---|
+| 鉴权 | 三条端点全挂在 `/api` 前缀下 ⇒ **被 Bearer 令牌中间件自动保护**（**不另写鉴权分支**）：无令牌 / 错令牌一律 **401**（缺失与错误不区分，同一句文案） |
+| 跨源 | **CORS 白名单零改动**：本轮只用 GET / POST（既有白名单已含），**不新增 WebSocket** |
+| 令牌 | 与其它 `/api` 接口同一套令牌（环境变量注入优先，否则平台数据根下的令牌文件），详见第 14 章 |
+
+### 16.5 流式与大小上限口径
+
+| 项 | 口径 |
+|---|---|
+| **大小不限** | 反代与后端**都没有 body 大小上限**（**不会 413**）；后端**全程流式、内存有界**：上传是 **raw 流式 body**（`request.stream()` 逐块消费，**不用** `request.body()`、不用 JSON 模型——实测 200 MiB 的 JSON body 让控制台进程 RSS 从 **44.5 MiB 涨到 433.9 MiB**），下载是 `StreamingResponse` 逐块吐。**但单次请求的总时长受部署链反代的读超时（`readTimeout`）约束**——见下一条 |
+| **反代读超时（硬约束）** | 本机 Traefik v3.7.13 的 `websecure` 入口点原先走默认 `transport.respondingTimeouts.readTimeout = 1m0s` ⇒ 慢速大上传在 60 s 后被反代掐断（客户端看到 502 / `ECONNRESET`）。**Traefik v3 的读超时只存在于「入口点」的 transport 上**（`entryPoints.<name>.transport.respondingTimeouts.readTimeout`，**静态**配置项；service 级的 `serversTransport` **没有** `respondingTimeouts` 字段）——本轮已把 **`websecure` 入口点**的读超时覆盖为 **0（不限时）**，**其它入口点（`:80` / `:8080`）与其它 service 一概不动**；空闲连接仍受既有 `idleTimeout = 180s` 约束，`writeTimeout` 不动。**本机结论不外推：远程部署必须自查自己的反代读超时**，否则「大文件慢速上传」会被掐断 |
+| 字节搬运线程 | 传输的字节搬运走**专用线程池** `TRANSFER_IO_EXECUTOR`（32 线程，模块级单例），**不进事件循环的默认执行器**（并发传输一多，默认池只有十几个，会互相等线程饿死、拖慢 REST 接口）。**下载收尾的关泵也在这个池里**（`stream.close()` 最坏可阻塞约 6 s：按进程组回收 SIGTERM→`wait(3)`→SIGKILL→`wait(3)`，再加 stderr 排空线程 `join(2)`）——同步关会把事件循环堵住 |
+| 客户端断开 | **上传**：终止读 body ⇒ 核心包走失败路径（**清容器内临时文件**、回收 exec 进程）；**下载**：**关泵回收 exec**（不留挂死的容器内进程与残骸；关泵丢进传输专用线程池，**不阻塞事件循环**） |
+| **字节数核对** | **有 `Content-Length`** ⇒ **两道保险**核字节数（容器内 `mv` **之前核对实际字节数** + **服务端字节计数兜底**，见 16.2）；不符 ⇒ 400、**目标保持原样**；**无 `Content-Length`（chunked）⇒ 不核对**，此时客户端中断**可能在目标路径留下半截文件**（残余风险，见 16.2） |
+| **下载长度声明** | `Content-Length` = **探测值声明**，服务端**按声明长度裁剪**（实际流超出即截断并记告警）⇒ 响应体**永不超过**声明长度（避免响应体长度与 `Content-Length` 冲突触发协议层 `LocalProtocolError`）；文件变小则按实际长度结束（协议层按「短 body」处理） |
+| 覆盖语义 | 目标已存在 = **覆盖**（写同目录临时名 → `mv` **原子替换**）；**目标文件自身只读（0444）不是错误**（父目录可写时被静默覆盖） |
+| 父目录 | **平台不主动创建父目录**：缺失即报错并给可行动的引导文案 |
+| 符号链接 | 探测**跟随**符号链接（按目标判类型与取大小）；上传的 `mv` **不跟随**末端符号链接（替换链接本身）——两处口径**刻意不同**，不「顺手统一」 |
+| 单文件粒度 | 只搬**单个普通文件**；目录整体传输与多文件打包本期不做 |
+
+### 16.6 服务层新增模块
+
+| 模块 | 职责 |
+|---|---|
+| `sandbox_console/transfers.py` | 传输服务端的装配层：传输 I/O **专用线程池**（32 线程）、**请求体桥接**（异步 body 流 ⇄ 同步字节块迭代器，**有界缓冲** ⇒ 端到端内存有界；**带字节计数**：投递侧 / 消费侧）、上传编排的并发装配、**期望字节数（`Content-Length`）的取用与非法头的前置 400**（含**超长数字串**）、**上传中断的服务端字节计数兜底**（改判 `size_mismatch`）、下载流的逐块读取（**按声明长度裁剪**）与收尾（**关泵走线程池**） |
+| `sandbox_console/routes/files.py` | 三个端点（上传 / 下载 / 目录列表）+ `Content-Disposition` 构造（ASCII 回退 + UTF-8 百分号编码）+ **下载的声明长度**（响应头与裁剪上限取同一个值） |
+| `sandbox_console/errors.py` | 传输链路的**失败分类码 → 状态码**映射表（`TRANSFER_STATUS_BY_REASON`）与文案口径（`classify_transfer_error`）+ `TransferError` 的异常处理器（含**日志单行化**）+ **上传请求头非法时的固定提示**（`INVALID_CONTENT_LENGTH_MESSAGE` / `INVALID_CONTENT_LENGTH_TOO_LONG_MESSAGE`） |
+| `sandbox_console/deps.py` | 传输编排入口的依赖注入（**取生命周期服务持有的那一个，不另建实例**） |

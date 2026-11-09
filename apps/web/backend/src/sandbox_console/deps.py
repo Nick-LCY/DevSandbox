@@ -7,7 +7,12 @@
 from __future__ import annotations
 
 from fastapi import Request, WebSocket
-from sandbox_platform import PlatformConfig, PortForwardManager, SandboxService
+from sandbox_platform import (
+    FileTransferManager,
+    PlatformConfig,
+    PortForwardManager,
+    SandboxService,
+)
 
 from .auth import TicketStore
 from .forwards import TunnelRegistry
@@ -31,6 +36,21 @@ def get_service(request: Request) -> SandboxService:
         service = SandboxService(get_config(request))
         request.app.state.sandbox_service = service
     return service
+
+
+def get_transfer_manager(request: Request) -> FileTransferManager:
+    """取应用级的运行期文件传输编排入口（整个进程共用一个实例）。
+
+    **不另建实例**：传输编排入口由生命周期服务持有（能力本体在核心包
+    ``sandbox_platform.transfer``），服务端只取引用。测试用
+    ``dependency_overrides`` 替换。
+    """
+    manager = getattr(request.app.state, "transfer_manager", None)
+    if manager is None:
+        service = get_service(request)
+        manager = FileTransferManager(service=service)
+        request.app.state.transfer_manager = manager
+    return manager
 
 
 def get_template_store(request: Request) -> TemplateStore:

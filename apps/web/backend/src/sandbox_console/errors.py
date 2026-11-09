@@ -1,7 +1,8 @@
 """HTTP 错误映射：平台异常 → 状态码 + ``{"detail": "中文消息"}``。
 
 映射固定：入参非法 400、缺必填镜像字段 422、沙箱不存在 404、沙箱已存在 409、
-镜像不存在 400、转发链路异常 409 / 502 / 503、其余平台异常 500。
+镜像不存在 400、转发链路异常 409 / 502 / 503、**文件传输失败按分类码 400 / 404 /
+409 / 502 / 500**、其余平台异常 500。
 
 消息策略：
 
@@ -11,6 +12,14 @@
 - **转发链路（409 / 502 / 503）**：只回**固定主干文案**（按情形给定，不从异常
   原文里截取）。核心异常原文（容器客户端输出、宿主绝对路径、探测细节）
   **只进日志**，不进 HTTP 响应，也不进隧道错误帧。
+- **文件传输链路（400 / 404 / 409 / 502）**：按核心包的**失败分类码**
+  （``TransferError.reason``）映射状态码，回核心包的**固定中文文案**
+  （常量 + 用户自己给的容器内路径）。**容器内的 stderr 原文只进日志**，
+  绝不进 HTTP 响应。
+
+**入日志前单行化**：传输链路的异常原文带**用户给的容器内路径**（路径里可以
+塞换行）⇒ 原样入日志就是**日志伪造**（调用方能往服务端日志里塞任意行）。
+所以传输链路的日志行在写入前**把换行压成空格**（见 :func:`single_line`）。
 
 镜像字段的 422 口径：镜像缺失、传 null、传空串或纯空白串，一律归入
 「必须显式指定沙箱镜像」语义（422）；镜像传错类型（如数字）仍算取值非法（400）。
@@ -24,11 +33,28 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sandbox_platform import (
+    REASON_DAEMON_UNREACHABLE,
+    REASON_EXEC_FAILED,
+    REASON_INVALID_PATH,
+    REASON_INVALID_SIZE,
+    REASON_NOT_FOUND,
+    REASON_NOT_REGULAR,
+    REASON_NO_RUNTIME,
+    REASON_PARENT_MISSING,
+    REASON_PARENT_NOT_DIRECTORY,
+    REASON_PARENT_NOT_WRITABLE,
+    REASON_READONLY,
+    REASON_SANDBOX_STOPPED,
+    REASON_SIZE_MISMATCH,
+    REASON_TARGET_IS_DIR,
+    REASON_TEMP_NAME_EXISTS,
+    REASON_WRITE_FAILED,
     AlreadyExistsError,
     ForwardError,
     ImageNotFoundError,
     NotFoundError,
     SandboxError,
+    TransferError,
 )
 from sandbox_platform import ValidationError as PlatformValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -68,6 +94,97 @@ FORWARD_UNAVAILABLE_MESSAGE = "端口转发链路不可用，请查看服务日�
 # 沙箱已删（记录在、容器删不掉时记录会留下）与记录损坏：固定文案，不回显宿主路径
 FORWARD_SANDBOX_MISSING = "沙箱不存在或已删除，端口转发已失效"
 FORWARD_RECORD_INVALID = "端口转发记录已损坏"
+
+# ---------------------------------------------------------------- 传输链路错误
+# 运行期文件传输（上传 / 下载 / 目录列表）的失败分类：核心包
+# ``sandbox_platform.transfer`` 按 **stderr 关键词子串**把失败归成
+# ``TransferError.reason``（**分类码**），服务端**只按分类码映射状态码**——
+# 不解析异常文案（措辞会变，分类码不会）。
+#
+# | 分类码 | 状态码 | 语义 |
+# |---|---|---|
+# | ``invalid_path`` / ``parent_*`` / ``readonly`` / ``target_is_dir`` / ``not_regular`` | 400 | 用户侧的路径或目标问题 |
+# | ``size_mismatch`` | 400 | 上传的字节数与期望值不符（客户端中断 / 请求体被截断）——**目标文件保持原样** |
+# | ``invalid_size`` | 400 | 期望字节数本身非法（负数 / 非整数）——服务端已在请求头处**前置拦截** |
+# | ``not_found`` | 404 | 目标不存在 |
+# | ``sandbox_stopped`` | 409 | 沙箱已停止（先启动沙箱） |
+# | ``temp_name_exists`` | 409 | 上传临时名撞名（换个名字或重试） |
+# | ``daemon_unreachable`` | 502 | 上游依赖侧故障（容器客户端连不上守护进程） |
+# | ``exec_failed`` / ``write_failed`` / ``no_runtime`` | 500 | 平台内部错误 |
+#
+# **文案口径**：400 / 404 / 409 / 502 回核心包的**固定中文文案**（常量 + 用户
+# 自己给的容器内路径，**不含任何宿主信息**）；**500 只给固定文案**
+# （``INTERNAL_ERROR_MESSAGE``），异常原文只进日志。
+#
+# **容器内的 stderr 原文只进日志**（核心包已按关键词归类并打日志），**绝不**
+# 进 HTTP 响应。
+#
+# **上传请求头 ``Content-Length`` 非法时的固定提示（400）**：服务端在**上传前**
+# 前置拦截（不是数字 / 负数 / 空串），**不静默降级成「没有期望值」**——静默
+# 降级会把调用方声明的长度悄悄丢掉、字节数核对静默失效（用户以为有核对、
+# 实际没有）。
+INVALID_CONTENT_LENGTH_MESSAGE = "Content-Length 头非法：期望字节数必须是非负整数"
+# **超长数字串的固定提示（400）**：``int()`` 对超过 ``sys.int_info.str_digits_check
+# _threshold``（CPython 3.12 默认 4300 位）的数字串抛 ``ValueError``——不拦住
+# 就是 **500**（未预期异常）。服务端**先按长度预判**（超过 20 位十进制直接
+# 400），再 ``try/except ValueError`` 兜底，两道闸都不放行超长数字串。
+INVALID_CONTENT_LENGTH_TOO_LONG_MESSAGE = (
+    "Content-Length 头非法：期望字节数超出支持范围（最多 20 位十进制）"
+)
+
+TRANSFER_STATUS_BY_REASON: dict[str, int] = {
+    # 路径与目标：用户侧可处理
+    REASON_INVALID_PATH: STATUS_BAD_REQUEST,
+    REASON_PARENT_MISSING: STATUS_BAD_REQUEST,
+    REASON_PARENT_NOT_DIRECTORY: STATUS_BAD_REQUEST,
+    REASON_PARENT_NOT_WRITABLE: STATUS_BAD_REQUEST,
+    REASON_READONLY: STATUS_BAD_REQUEST,
+    REASON_TARGET_IS_DIR: STATUS_BAD_REQUEST,
+    REASON_NOT_REGULAR: STATUS_BAD_REQUEST,
+    # 目标不存在
+    REASON_NOT_FOUND: STATUS_NOT_FOUND,
+    # 上传的字节数与期望值不符（客户端中断 / 请求体被截断）：**目标保持原样**
+    REASON_SIZE_MISMATCH: STATUS_BAD_REQUEST,
+    # 期望字节数本身非法：调用方的参数错误（服务端在请求头处已前置拦截，
+    # 这里兜底——认不出来就不是用户侧问题）
+    REASON_INVALID_SIZE: STATUS_BAD_REQUEST,
+    # 沙箱已停止：先启动沙箱
+    REASON_SANDBOX_STOPPED: STATUS_CONFLICT,
+    # 上传临时名撞名：不是平台建的文件，重试即可
+    REASON_TEMP_NAME_EXISTS: STATUS_CONFLICT,
+    # 上游依赖侧故障：容器客户端连不上守护进程（命令压根没在容器内执行）
+    REASON_DAEMON_UNREACHABLE: STATUS_BAD_GATEWAY,
+    # 其余：平台内部错误（容器内命令失败 / 写入中断 / 编排未装配）
+    REASON_EXEC_FAILED: STATUS_SERVER_ERROR,
+    REASON_WRITE_FAILED: STATUS_SERVER_ERROR,
+    REASON_NO_RUNTIME: STATUS_SERVER_ERROR,
+}
+
+
+def classify_transfer_error(exc: TransferError) -> tuple[int, str]:
+    """把传输失败映射成（状态码, 响应文案）。
+
+    **只按分类码**（``TransferError.reason``）判状态码，不解析文案。
+    分类码不在表里 → 500 + 固定文案（**不猜**：认不出来就不是用户侧问题）。
+    """
+    reason = getattr(exc, "reason", "") or ""
+    status_code = TRANSFER_STATUS_BY_REASON.get(reason, STATUS_SERVER_ERROR)
+    if status_code == STATUS_SERVER_ERROR:
+        # 500 分支：只给固定文案（异常原文可能带宿主细节），原文只进日志
+        return status_code, INTERNAL_ERROR_MESSAGE
+    return status_code, str(exc)
+
+
+def single_line(text: str) -> str:
+    """把文本压成**单行**（换行 / 回车换成空格）。
+
+    **为什么**：传输链路的异常原文里带**用户给的容器内路径**——路径里可以塞
+    换行（``/tmp/a\\n2026-01-01 注入日志``）。原样入日志 ⇒ **日志伪造**
+    （调用方能往服务端的日志里塞任意行，污染审计与告警）。所以入日志前先
+    单行化：**响应体不受影响**（响应里回的是固定文案 + 用户自己的路径）。
+    """
+    return text.replace("\r", " ").replace("\n", " ")
+
 
 # 请求体校验失败的常见类型 → 中文提示
 _VALIDATION_MESSAGES = {
@@ -289,6 +406,36 @@ def install_exception_handlers(app: FastAPI) -> None:
                 request.url.path,
                 exc,
                 exc_info=exc,
+            )
+        return error_response(status_code, detail)
+
+    @app.exception_handler(TransferError)
+    async def _handle_transfer_error(
+        request: Request, exc: TransferError
+    ) -> JSONResponse:
+        """运行期文件传输失败：按**失败分类码**映射状态码（见上表）。
+
+        **响应只给固定中文文案**：容器内的 stderr 原文只进日志，不回显。
+
+        **入日志前单行化**：异常原文带**用户给的容器内路径**（路径里可以塞
+        换行）⇒ 原样入日志就是**日志伪造**（见 :func:`single_line`）。
+        """
+        status_code, detail = classify_transfer_error(exc)
+        message = single_line(str(exc))
+        if status_code >= STATUS_SERVER_ERROR:
+            logger.error(
+                "文件传输失败[transfer-error]：%s %s：%s",
+                request.method,
+                request.url.path,
+                message,
+                exc_info=exc,
+            )
+        else:
+            logger.info(
+                "文件传输失败：%s %s：%s",
+                request.method,
+                request.url.path,
+                message,
             )
         return error_response(status_code, detail)
 
