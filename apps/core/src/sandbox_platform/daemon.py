@@ -114,9 +114,9 @@ class UserDaemon:
 
         身份切换前缀按运行身份分两种，行为等价：
 
-        - 非 root：``sudo -n -u <用户> env -i …``；
-        - 进程本身是 root（控制台服务以 root 跑）：``setpriv --reuid <uid>
-          --regid <gid> --clear-groups env -i …``。
+        - 进程本身是 root（root 直跑模式）：``setpriv --reuid <uid>
+          --regid <gid> --clear-groups env -i …``；
+        - 非 root（默认）：``sudo -n -u <用户> env -i …``。
 
         root 分支不能省掉前缀：``sudo`` 未必存在，省掉后 ``-u <用户>``
         会被当成外层命令的参数，产出非法命令行。

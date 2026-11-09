@@ -92,7 +92,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except OSError as exc:
         raise ConfigError(
             f"平台数据目录不可写：{config.home}（{exc}）。"
-            "请以 root 运行控制面，或用 SANDBOX_PLATFORM_HOME 指向可写目录"
+            "请确保运行用户对数据根目录可写（目录须已存在），"
+            "或用 SANDBOX_PLATFORM_HOME 指向可写目录"
         ) from exc
     logger.info("平台数据目录已就绪：%s", config.home)
 
@@ -103,7 +104,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except OSError as exc:
         raise ConfigError(
             f"访问令牌文件不可写：{token_file_path(config)}（{exc}）。"
-            "请以 root 运行控制面，或用 SANDBOX_PLATFORM_HOME 指向可写目录，"
+            "请确保运行用户对数据根目录可写（目录须已存在），"
+            "或用 SANDBOX_PLATFORM_HOME 指向可写目录，"
             f"或用 {TOKEN_ENV_VAR} 注入令牌"
         ) from exc
     app.state.console_token = source.token

@@ -2,9 +2,9 @@
 
 两条路径：
 
-- 非 root（命令行常规用法）：``sudo -n -u <用户> env -i …``；
-- 进程本身是 root（控制台服务以 root 跑）：``setpriv --reuid <uid>
-  --regid <gid> --clear-groups env -i …``。
+- 进程本身是 root（root 直跑模式）：``setpriv --reuid <uid>
+  --regid <gid> --clear-groups env -i …``；
+- 非 root（默认）：``sudo -n -u <用户> env -i …``。
 
 root 分支必须自带提权前缀：root 环境下 ``sudo`` 未必存在，
 省掉前缀后 ``-u <用户>`` 会被外层命令当成自己的参数，产出非法命令行。

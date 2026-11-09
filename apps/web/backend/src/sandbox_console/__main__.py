@@ -1,4 +1,8 @@
-"""服务启动入口：``uv run --project apps/web/backend python -m sandbox_console``。
+"""服务启动入口：``/opt/sandbox-platform/apps/.venv/bin/python -m sandbox_console``。
+
+上面是快照部署的启动方式，与 systemd 单元 ``sandbox-console.service`` 的
+``ExecStart`` 逐字一致（直调快照 venv 里的解释器：不依赖 uv、不回落源码
+仓库）；开发态可用 ``uv run --project apps/web/backend python -m sandbox_console``。
 
 监听地址默认 ``127.0.0.1:8000``，可用环境变量 ``SANDBOX_CONSOLE_HOST`` /
 ``SANDBOX_CONSOLE_PORT`` 覆盖。服务以宿主特权身份运行：进程本身是 root 时

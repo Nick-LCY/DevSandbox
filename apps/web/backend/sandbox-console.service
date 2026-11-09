@@ -1,29 +1,106 @@
 # 沙箱平台控制台服务（systemd 单元模板）
 #
 # 本文件只是模板：不自动安装、不自动启用。
-# 安装方式（按实际部署路径改下面的两处路径）：
+#
+# 【快照部署语义】
+# 本模板假设**代码以快照形式部署在独立目录**（默认 /opt/sandbox-platform）：
+#   · 快照由 `git archive <提交>` 导出，**不随源码仓库变动**（仓库后续提交、
+#     切分支、改工作区都不影响已部署的这份代码）；
+#   · 首次部署：在快照的 apps/ 下执行
+#       UV_PYTHON=3.12 uv sync --all-packages --no-dev --frozen
+#     建出快照自带的虚拟环境（建议指定 Python 3.12，与锁文件口径一致）；
+#   · ExecStart **直调快照 venv 里的解释器**：运行期不依赖 uv、不回落到
+#     源码仓库、也不改动任何已部署文件；
+#   · 升级 = 重新导出快照 + 重建快照内的运行环境，然后 restart 本服务
+#     （换提交 → 重新 archive → 重新 sync → systemctl restart）；
+#   · 模板里的路径是**占位**，按实际部署位置调整（下方的 User=、
+#     WorkingDirectory、ExecStart、以及 SANDBOX_PLATFORM_HOME 四处）。
+#
+# 安装方式（按实际部署位置改下面的四处：User=、WorkingDirectory、ExecStart、
+# SANDBOX_PLATFORM_HOME）：
 #   sudo cp apps/web/backend/sandbox-console.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now sandbox-console.service
 #
-# 服务以宿主特权身份运行：单元里用 root 直接跑，核心包在需要宿主特权时
-# 直接执行（进程本身是 root）；若改成非 root 用户运行，核心包会自动走免密 sudo。
+# 运行身份：单元**默认以 sankabox（非 root）** 运行，核心包在需要宿主特权时
+# 自动改走免密 sudo 前缀（`sudo -n`），无需改任何代码。
+#   · 前提一：**免密 sudo 覆盖两条通道**（见下方「免密 sudo 的授权范围」）；
+#   · 前提二：平台数据根（SANDBOX_PLATFORM_HOME）**必须已存在**且属主为该
+#     运行用户（见下方「数据根前提」）；
+#   · 前提三：控制台监听端口 **> 1024**（非 root 不能绑特权端口）；
+#   · 前提四：`~` 展开目标是**运行用户的家目录**（sankabox → /home/sankabox），
+#     内置模板 tpl_pi_dev 需要的凭证放在该家目录下（~/.ssh、~/.pi/agent/）。
+#   · 前提五：快照目录与快照里的 venv 对该运行用户**可读可执行**（见下方
+#     「部署产物的可读性」）。
+#   · root 直跑仍是受支持的路径：把 User 改回 root 即可（此时 `~` 展开回
+#     /root，命中核心包的宿主敏感目录拒绝清单，创建沙箱返回 400——既有契约，
+#     不是缺陷）。
+#
+# 【免密 sudo 的授权范围】
+# 平台在非 root 下要走**两条** sudo 通道，授权必须同时覆盖：
+#   ① `sudo -n <宿主特权命令>`：以 root 跑宿主特权操作（docker、useradd/
+#      userdel、install -d、chmod、tee 写 /etc/subuid、loginctl 等）；
+#   ② `sudo -n -u <任意沙箱用户> <命令>`：以沙箱用户身份执行（免 root
+#      Docker 守护进程那一侧的命令都走这条）。
+# 最常见的 `sankabox ALL=(root) NOPASSWD: ALL` **只覆盖 ①**：`(root)` 把可
+# 切换的目标用户限定为 root，`sudo -n -u sandbox-demo …` 会被 sudo 拒掉。
+# 可抄的两种片段（用 `sudo visudo` 写入，别直接改 /etc/sudoers）：
+#   sankabox ALL=(ALL) NOPASSWD: ALL
+#       —— 一条覆盖 ①②（runas 可为任意用户）：最省事，代价是**等价 root**
+#          （拿到该账号即能做任何宿主操作）；
+#   sankabox ALL=(ALL, !root) NOPASSWD: ALL
+#       —— 只允许切换到**非 root** 目标用户：覆盖 ②，但 ①（以 root 跑特权
+#          命令）被拒，平台起不来——仅作对照，实际要用的就是上面那条。
+# 最小化取舍：只放 `ALL` 最省事但等价 root；要收敛就把命令范围收窄到平台
+# 真正用到的那几类（docker、useradd/userdel/usermod/groupadd、install、
+# chmod/chown、tee、loginctl、systemctl --user 等），逐条列进 NOPASSWD 列表
+# ——代价是以后新增宿主命令必须同步补规则，漏一条就报权限错。
+# 校验：`sudo -n true`（无输出即通过）与 `sudo -n -u <某个沙箱用户> id`。
+#
+# 【数据根前提】
+#   · 平台数据根（默认 /var/lib/sandbox-platform）**必须已存在**：非 root 下
+#     平台**不会代建**它（配置层是普通 mkdir，父目录 /var/lib 不可写），
+#     目录不存在或不可写会**启动即报错**；
+#   · 属主须为运行用户（从 root 切过来时尤其重要，否则会出现锁文件 /
+#     元数据读写失败——数据根里残留 root 属主的模板记录就是这种现场）；
+#   · 数据根**之下**的子目录（沙箱目录、锁目录、临时目录等）由平台经特权
+#     install -d 创建，属主为运行用户。
+# 切换运行身份前先把数据根属主交给新用户：
+#   sudo find /var/lib/sandbox-platform -path '*/registry-proxy*' -prune \
+#     -o ! -user sankabox -print0 | xargs -0 -r chown sankabox:sankabox
+# （registry-proxy 子树属主保持原样：它经特权通道创建/读写，证书直读失败
+#  时自动回退 sudo）
+#
+# 【部署产物的可读性】
+#   · 快照目录与快照里的 venv 须对**运行用户可读可执行**：root 建的 venv 若
+#     umask 收紧（目录 0700 / 文件 0600），非 root 的服务进程会
+#     Permission denied 起不来；必要时 `sudo chmod -R a+rX <快照目录>`。
+#
+# 【身份切换通道】
+#   · 非 root（默认）：以沙箱用户身份执行走 `sudo -n -u <用户>`；
+#   · root 直跑模式：才用 setpriv（`util-linux` 自带，宿主需装 util-linux）。
+#
+# `~` 展开依赖 systemd 按 User= 注入 HOME：用 systemd-run 临时起（未指定
+# User=）或手工前台跑时 HOME 可能缺失，`~` 会回落到其他查询结果，展开目标
+# 不再是运行用户的家目录。
 #
 # 安全边界：全部 /api（含终端 WebSocket）受访问令牌保护。令牌是**单一凭据**：
 # 拿到它即拥有平台的全部能力，不做账号体系与多用户隔离。网络边界是第二层防线。
+#
+# 接口文档：/docs 与 /openapi.json **默认关闭**（接口清单不外泄）。
+# 需要交互式文档时设 SANDBOX_CONSOLE_DOCS=1 再重启（临时排查用，排查完关掉）。
 
 [Unit]
 Description=Sandbox Platform Console（沙箱平台控制台服务）
-Documentation=https://127.0.0.1:8000/docs
 After=network-online.target docker.service
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
+User=sankabox
 WorkingDirectory=/opt/sandbox-platform/apps/web/backend
-# 依赖用 uv 管理：在工作区根 uv sync --all-packages --all-groups 后 uv run 启动
-ExecStart=/usr/local/bin/uv run --project /opt/sandbox-platform/apps/web/backend python -m sandbox_console
+# 直调快照自带的 venv 解释器：运行期不依赖 uv、不触碰源码仓库
+ExecStart=/opt/sandbox-platform/apps/.venv/bin/python -m sandbox_console
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30
@@ -31,17 +108,32 @@ TimeoutStopSec=30
 # 只绑回环地址；要给内网访问改成内网地址，不要暴露公网
 Environment=SANDBOX_CONSOLE_HOST=127.0.0.1
 Environment=SANDBOX_CONSOLE_PORT=8000
-# 平台数据根目录（与命令行一致）
+# 平台数据根目录（与命令行一致）：令牌文件、会话目录、模板库都落在这里
 Environment=SANDBOX_PLATFORM_HOME=/var/lib/sandbox-platform
 
 # 访问令牌（三期）：
 #   · 下面这行注释掉的写法是**注入**令牌：用环境变量提供自己的令牌，
 #     服务直接用它，且**不落盘**（磁盘上不留令牌痕迹）。
+#   · 注入的令牌建议**不少于 16 个字符**；比这更短只告警、不拒绝启动
+#     （熵不足容易被猜中）。
 #   · 不注入时，服务启动会在平台数据根生成令牌文件
 #     <SANDBOX_PLATFORM_HOME>/console-token.json（权限 0600），
 #     启动日志只打文件路径、不打令牌本体。
 #   · 轮换令牌：删掉令牌文件后重启服务，或改环境变量后重启。
-# Environment=SANDBOX_CONSOLE_TOKEN=换成你自己的令牌
+# Environment=SANDBOX_CONSOLE_TOKEN=换成你自己的令牌（建议 16 位以上）
+
+# 前端托管（SANDBOX_CONSOLE_DIST）：不设时默认找**源码树**里的前端产物目录
+#   （apps/web/frontend/dist）。快照部署导出的代码里**不含 dist**
+#   （git archive 不含被 gitignore 的产物），因此快照部署会自动跳过前端托管：
+#   /api/health 的 console_mounted=false，控制台网页打不开、但后端接口照常可用。
+#   需要网页控制台时：自行构建前端，并把该行取消注释指向实际产物目录。
+# Environment=SANDBOX_CONSOLE_DIST=/opt/sandbox-platform/apps/web/frontend/dist
+
+# 终端会话上限：默认全部会话 20 个、单沙箱 5 个、空闲回收 1800 秒（30 分钟）。
+#   需要调整时用下面三个环境变量覆盖（一般不用改）：
+# Environment=SANDBOX_TERMINAL_MAX_SESSIONS=20
+# Environment=SANDBOX_TERMINAL_MAX_SESSIONS_PER_SANDBOX=5
+# Environment=SANDBOX_TERMINAL_IDLE_TIMEOUT=1800
 
 # 日志一律走标准输出，由 journald 收走
 StandardOutput=journal

@@ -98,7 +98,7 @@ uv run --project apps/web/backend python -m sandbox_console   # 启动服务
 | **网络边界是第二层** | 令牌是硬需求，但令牌是**单一凭据**（不做账号体系与多用户隔离）：拿到它即拥有平台的全部能力。可以改成内网地址，**仍不得暴露公网**；绑非回环地址时启动会打醒目告警 |
 | **跨源口径** | **CORS 放行任意来源**（响应头 `Access-Control-Allow-Origin: *`）；终端 WebSocket 握手**不再校验 `Origin`**。来源不是安全边界（同源判定基于可伪造的 `Host` 头），**准入边界只有令牌与票据**（2026-11-03 用户决策，详见 `apps/web/backend/API.md` 14.4） |
 | 平台数据根 | 仍走 `SANDBOX_PLATFORM_HOME`（默认 `/var/lib/sandbox-platform`），与命令行一致 |
-| 权限要求 | 与一期命令行一致：进程本身是 root 时直接执行，否则走免密 `sudo` |
+| 权限要求 | 与一期命令行一致：进程本身是 root 时直接执行，否则走免密 `sudo`。**仓库单元默认以非 root 用户（`User=sankabox`）运行**（root 直跑仍是受支持的路径），前提清单见下方「运行前提」 |
 | 前端托管 | `apps/web/frontend/dist` 由同一进程在 `/` 路径托管；目录不存在时跳过静态托管并告警（`/api/health` 的 `console_mounted` 为 false），不影响服务启动；部署路径不同时用 `SANDBOX_CONSOLE_DIST` 覆盖 |
 | 网页终端 | WebSocket 端点需要 `websockets` 库（uvicorn 的 WebSocket 实现）；未安装时握手会被拒（HTTP 404），终端会话建得起来但连不上。握手还要带**一次性票据**（`POST /api/auth/ticket` 换，30 秒内有效、用过即废）：浏览器 `WebSocket` 不能设自定义头，长期令牌不进 URL |
 | 接口文档 | `apps/web/backend/API.md` 的「二期 HTTP 接口」章节；运行时的交互式文档在 `/docs`，**默认关闭**，需要时用 `SANDBOX_CONSOLE_DOCS=1` 开启 |
@@ -148,8 +148,24 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/api/prox
 
 - 宿主已安装 Docker 与 `dockerd-rootless.sh`、`newuidmap`/`newgidmap`（`uidmap` 包）。
 - 宿主操作（建用户、写 `/etc/subuid`、写用户单元、启停用户级守护进程）需要特权：进程本身是 root 时直接执行，否则走免密 `sudo`。
-- 以沙箱用户身份执行命令时：非 root 走免密 `sudo`；**进程本身是 root 时走 `setpriv`**（`util-linux` 自带，宿主需已安装）切换身份——root 环境下 `sudo` 未必存在。
-- 平台数据根目录默认 `/var/lib/sandbox-platform`，可用环境变量 `SANDBOX_PLATFORM_HOME` 重定向到可写路径。目录由平台用 `install -d` 创建，属主为首次创建它的那个用户；同一台机器请固定用同一种身份操作控制面。
+- 以沙箱用户身份执行命令时：非 root 走免密 `sudo -n -u <用户>`；**仅 root 直跑模式才走 `setpriv`**（`util-linux` 自带，宿主需已安装）切换身份——root 环境下 `sudo` 未必存在。
+- 平台数据根目录默认 `/var/lib/sandbox-platform`，可用环境变量 `SANDBOX_PLATFORM_HOME` 重定向到可写路径。**数据根本身须预先存在且属主为运行用户**（非 root 下平台无法在 `/var/lib` 下建目录，目录不存在会启动即报错）；数据根**之下**的子目录（沙箱目录、锁目录、临时目录等）由平台经特权 `install -d` 创建，属主为运行用户。同一台机器请固定用同一种身份操作控制面。
+- **非 root 运行控制台的前提清单**（仓库单元默认 `User=sankabox`；与单元文件头注释同一口径）：
+  ① **免密 sudo，且授权覆盖两条通道**——`sudo -n <宿主特权命令>`（以 root 跑 docker / useradd / install -d 等）与 `sudo -n -u <任意沙箱用户> <命令>`（以沙箱用户身份执行）都要能过；最常见的 `sankabox ALL=(root) NOPASSWD: ALL` **只覆盖前者**（`(root)` 把可切换的目标用户限定为 root），须用可抄的片段（`sudo visudo` 写入）：
+  ```
+  sankabox ALL=(ALL) NOPASSWD: ALL
+  ```
+  这一条覆盖两条通道（runas 可为任意用户），最省事，代价是**等价 root**；要收敛就把命令范围收窄到平台真正用到的那几类（docker、useradd/userdel、install、chmod、tee、loginctl 等）逐条列进 `NOPASSWD` 列表——代价是以后新增宿主命令必须同步补规则。校验：`sudo -n true` 与 `sudo -n -u <某个沙箱用户> id`。
+  ② **平台数据根目录须已存在且属主为该运行用户**（非 root 下平台不会代建 `/var/lib/sandbox-platform`，目录不存在或不可写会启动即报错；从 root 切过来时尤其重要：否则会出现锁文件 / 元数据读写失败）——改属主用**排除 `registry-proxy` 子树**的写法（裸 `chown -R` 会把 CA 私钥一起改属主）：
+  ```
+  sudo find /var/lib/sandbox-platform -path '*/registry-proxy*' -prune \
+    -o ! -user <运行用户> -print0 | xargs -0 -r chown <运行用户>:<运行用户>
+  ```
+  （`registry-proxy` 子树属主保持原样：它经特权通道创建/读写，证书直读失败时自动回退 `sudo`）。
+  ③ 控制台监听端口须 **> 1024**（非 root 不能绑特权端口）。
+  ④ `~` 展开目标是**运行用户的家目录**（`sankabox` → `/home/sankabox`），内置模板 `tpl_pi_dev` 需要的凭证放在该家目录下（`~/.ssh`、`~/.pi/agent/`）。
+  ⑤ **部署快照与快照里的 venv 对该运行用户可读可执行**（root 建的 venv 若 umask 收紧会 Permission denied，必要时 `sudo chmod -R a+rX <快照目录>`）。
+- **安全口径提醒**：**非 root 默认不等于降权**——宿主操作经免密 `sudo` 执行，实际权限 ≈ root；要收敛权限，请按上一条①**收窄 sudoers 规则范围**（而不是靠改运行用户）。
 - **统一镜像代理**：创建沙箱时平台会拉起代理容器（`rpardini/docker-registry-proxy:0.8.0`，宿主回环 `127.0.0.1:3128`）并做健康检查；代理不可达则创建直接失败，**不降级直连**。缓存与 CA 目录在 `<平台数据根>/registry-proxy/`。
 - 镜像来源优先级：镜像来源 `auto`（默认值）一律**先经统一镜像代理拉取**（命中代理缓存走本地）→ 代理拉取失败且宿主本地有该镜像才**回退宿主导出注入**（本地构建镜像不在任何仓库，代理必然拉不到，只有这条路径能拿到）→ 两条途径都失败直接报错，**不降级直连外网**。镜像来源 `host` 表示强制从宿主导出注入，宿主没有该镜像直接报错、不经镜像代理。平台不再维护任何离线镜像包。
 

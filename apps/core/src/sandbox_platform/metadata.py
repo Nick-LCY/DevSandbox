@@ -174,7 +174,8 @@ class MetadataStore:
         except PermissionError as exc:
             raise ConfigError(
                 f"平台数据根目录不可写：{self.root}。"
-                "请以 root 运行控制面，或用 SANDBOX_PLATFORM_HOME 指向当前用户可写目录"
+                "请确保运行用户对数据根目录可写（目录须已存在），"
+                "或用 SANDBOX_PLATFORM_HOME 指向当前用户可写目录"
             ) from exc
         target = self.path_for(metadata.name)
         payload = json.dumps(metadata.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
