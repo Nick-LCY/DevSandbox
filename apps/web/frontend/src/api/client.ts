@@ -18,6 +18,8 @@ import type {
   CreateSandboxRequest,
   CreateSandboxResponse,
   DeleteSandboxResponse,
+  FileListEntry,
+  FileUploadResponse,
   ForwardDeleteResponse,
   ForwardModel,
   HealthResponse,
@@ -163,6 +165,231 @@ export async function fetchAuthTicket(): Promise<string> {
   return response.ticket;
 }
 
+/** 一次传输的进度：`total` 为 `null` 表示总长度未知（无 `Content-Length`）。 */
+export interface TransferProgress {
+  loaded: number;
+  total: number | null;
+}
+
+/** 上传 / 下载的可选参数。 */
+export interface TransferOptions {
+  /** 进度回调（上传靠 XHR 的 progress 事件；下载靠流式读取 + `Content-Length`）。 */
+  onProgress?: (progress: TransferProgress) => void;
+  /** 取消信号（上传的「取消」按钮用它 abort XHR）。 */
+  signal?: AbortSignal;
+}
+
+/** 下载结果：字节本体 + 原始 `Content-Disposition`（文件名解析在纯逻辑层做）。 */
+export interface DownloadFileResult {
+  blob: Blob;
+  contentDisposition: string | null;
+}
+
+function transferUrl(config: ConnectionConfig, path: string): string {
+  return `${resolveApiBaseUrl(config.backendBaseUrl)}${path}`;
+}
+
+function filesPath(name: string, action: 'upload' | 'download' | 'list'): string {
+  return `${pathOf(name)}/files/${action}`;
+}
+
+/** 从 XHR 的错误响应里取后端 `detail`；取不到用状态码兜底。 */
+function readXhrDetail(xhr: XMLHttpRequest): string {
+  try {
+    const body = JSON.parse(xhr.responseText) as { detail?: unknown };
+    if (typeof body?.detail === 'string' && body.detail.length > 0) {
+      return body.detail;
+    }
+  } catch {
+    // 响应体不是 JSON：用状态码兜底。
+  }
+  return `请求失败（HTTP ${xhr.status}）`;
+}
+
+/**
+ * 上传停滞阈值（毫秒）：**连续这么久没有任何 progress 事件**就取消上传。
+ *
+ * 不用 `xhr.timeout`：那是「整个请求的总时长」上限，与「文件大小不限」冲突——
+ * 大文件只要还在持续传，就该继续跑。这里看的是**进度是否还在动**。
+ */
+const UPLOAD_STALL_TIMEOUT_MS = 120_000;
+
+/** 上传停滞时给用户看的话（不是后端 detail，属于本地判定）。 */
+const UPLOAD_STALL_MESSAGE = '上传停滞，已取消（120 秒无进度）';
+
+/** 上传一次文件（raw body，`application/octet-stream`）。 */
+function uploadFileWithXhr(
+  sandbox: string,
+  path: string,
+  file: File,
+  options: TransferOptions = {},
+): Promise<FileUploadResponse> {
+  return new Promise<FileUploadResponse>((resolve, reject) => {
+    const config = getConnectionConfig();
+    if (config.token.trim() === '') {
+      reject(new ConnectionNotConfiguredError(NOT_CONFIGURED_MESSAGE));
+      return;
+    }
+    if (options.signal?.aborted) {
+      reject(new DOMException('上传已取消', 'AbortError'));
+      return;
+    }
+
+    const url = transferUrl(
+      config,
+      `${filesPath(sandbox, 'upload')}?path=${encodeURIComponent(path)}`,
+    );
+    const xhr = new XMLHttpRequest();
+    let stallTimer: ReturnType<typeof setTimeout> | undefined;
+    let stalled = false;
+    const cleanup = (): void => {
+      options.signal?.removeEventListener('abort', handleAbort);
+      if (stallTimer !== undefined) {
+        clearTimeout(stallTimer);
+        stallTimer = undefined;
+      }
+    };
+    const handleAbort = (): void => {
+      xhr.abort();
+    };
+    /** 收到 progress 就重新计时：慢速但持续有进度的上传不会被误杀。 */
+    const armStallTimer = (): void => {
+      if (stallTimer !== undefined) {
+        clearTimeout(stallTimer);
+      }
+      stallTimer = setTimeout(() => {
+        stalled = true;
+        // 先给出可读的本地错误，再 abort（abort 事件里的「已取消」不会盖掉它）。
+        cleanup();
+        reject(new ApiError(UPLOAD_STALL_MESSAGE, 0));
+        xhr.abort();
+      }, UPLOAD_STALL_TIMEOUT_MS);
+    };
+
+    xhr.open('POST', url);
+    xhr.setRequestHeader('Authorization', `Bearer ${config.token}`);
+    // **显式 octet-stream**：既有的 `request()` 会给带 body 的请求写死 JSON。
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+
+    xhr.upload.addEventListener('progress', (event) => {
+      armStallTimer();
+      const total = event.lengthComputable ? event.total : file.size;
+      options.onProgress?.({ loaded: event.loaded, total: total > 0 ? total : null });
+    });
+
+    xhr.addEventListener('load', () => {
+      cleanup();
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const body = JSON.parse(xhr.responseText) as FileUploadResponse;
+          resolve(body);
+        } catch {
+          reject(new ApiError('上传响应格式不正确', xhr.status));
+        }
+        return;
+      }
+      reject(new ApiError(readXhrDetail(xhr), xhr.status));
+    });
+    xhr.addEventListener('error', () => {
+      cleanup();
+      reject(new ApiError(NETWORK_ERROR_MESSAGE, 0));
+    });
+    xhr.addEventListener('abort', () => {
+      cleanup();
+      if (stalled) {
+        return;
+      }
+      reject(new DOMException('上传已取消', 'AbortError'));
+    });
+
+    options.signal?.addEventListener('abort', handleAbort);
+    xhr.send(file);
+    armStallTimer();
+  });
+}
+
+/** 下载一次文件（流式读取，按 `Content-Length` 算进度）→ Blob。 */
+async function downloadFileWithProgress(
+  sandbox: string,
+  path: string,
+  options: TransferOptions = {},
+): Promise<DownloadFileResult> {
+  const config = getConnectionConfig();
+  if (config.token.trim() === '') {
+    throw new ConnectionNotConfiguredError(NOT_CONFIGURED_MESSAGE);
+  }
+
+  const url = transferUrl(
+    config,
+    `${filesPath(sandbox, 'download')}?path=${encodeURIComponent(path)}`,
+  );
+  const headers = new Headers({ Authorization: `Bearer ${config.token}` });
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      credentials: 'same-origin',
+      headers,
+      signal: options.signal,
+    });
+  } catch {
+    if (options.signal?.aborted) {
+      throw new DOMException('下载已取消', 'AbortError');
+    }
+    throw new ApiError(NETWORK_ERROR_MESSAGE, 0);
+  }
+
+  if (!response.ok) {
+    throw new ApiError(await readDetail(response), response.status);
+  }
+
+  const lengthHeader = response.headers.get('Content-Length');
+  const declared =
+    lengthHeader === null || lengthHeader.trim() === '' ? Number.NaN : Number(lengthHeader);
+  const total = Number.isFinite(declared) && declared >= 0 ? declared : null;
+  const contentType = response.headers.get('Content-Type') ?? 'application/octet-stream';
+  const contentDisposition = response.headers.get('Content-Disposition');
+
+  let blob: Blob;
+  if (response.body) {
+    const reader = response.body.getReader();
+    const chunks: BlobPart[] = [];
+    let loaded = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        if (value) {
+          chunks.push(value as unknown as BlobPart);
+          loaded += value.byteLength;
+          options.onProgress?.({ loaded, total });
+        }
+      }
+    } catch (exc) {
+      // 进度回调抛错 / 读流失败时也要把 reader 收掉：不 cancel 会一直占着连接。
+      try {
+        await reader.cancel();
+      } catch {
+        // 连接已断时 cancel 也会抛：忽略，保留原始错误。
+      }
+      if (options.signal?.aborted) {
+        throw new DOMException('下载已取消', 'AbortError');
+      }
+      throw exc;
+    }
+    blob = new Blob(chunks, { type: contentType });
+    // 收尾再报一次：读到 EOF 与「进度到 100%」不必依赖最后一帧的大小。
+    options.onProgress?.({ loaded, total: total ?? loaded });
+  } else {
+    blob = await response.blob();
+    options.onProgress?.({ loaded: blob.size, total: total ?? blob.size });
+  }
+
+  return { blob, contentDisposition };
+}
+
 export const api = {
   /**
    * 后端健康自检。给了连接配置就用它（设置抽屉的「测试连接」用草稿值试），
@@ -296,4 +523,32 @@ export const api = {
     request<ForwardDeleteResponse>(`/api/forwards/${encodeURIComponent(forwardId)}`, {
       method: 'DELETE',
     }),
+
+  /** 列出沙箱容器内某个目录（后端返回裸数组；隐藏文件也在内）。 */
+  listFiles: (name: string, path: string) =>
+    request<FileListEntry[]>(
+      `${filesPath(name, 'list')}?path=${encodeURIComponent(path)}`,
+    ),
+
+  /**
+   * 上传文件到容器内目标路径。
+   *
+   * **走 XHR**：fetch 拿不到上传进度事件。请求体是 raw `File`（浏览器自动带
+   * `Content-Length`，服务端据此核对字节数），`Content-Type` 显式
+   * `application/octet-stream`（绕开 `request()` 固定 JSON 的坑）。
+   */
+  uploadFile: (name: string, path: string, file: File, options?: TransferOptions) =>
+    uploadFileWithXhr(name, path, file, options),
+
+  /**
+   * 下载容器内文件：fetch → 流式读 → Blob。
+   *
+   * 进度按响应 `Content-Length` 计算；返回 Blob 与原始 `Content-Disposition`
+   * （文件名解析在 `src/lib/file-transfer.ts`）。
+   *
+   * **内存上限**：整份文件会先读进内存再落盘，能下多大受浏览器 Blob 上限与
+   * 可用内存约束（超出时这里会失败，不会写坏目标文件）。
+   */
+  downloadFile: (name: string, path: string, options?: TransferOptions) =>
+    downloadFileWithProgress(name, path, options),
 };

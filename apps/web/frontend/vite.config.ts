@@ -45,6 +45,9 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
     sourcemap: false,
+    // 文件图标是运行时按需加载的本地 SVG：不内联成 data URI。
+    // 内联会把 100+ 个图标全塞进主 chunk（+~400KB），而界面上一次只显示十几个。
+    assetsInlineLimit: 0,
     rollupOptions: {
       output: {
         // xterm.js 体积不小，单独切一个 chunk，主包只留页面代码

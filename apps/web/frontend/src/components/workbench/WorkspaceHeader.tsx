@@ -1,4 +1,4 @@
-import { Info, Play, RefreshCw, Square, Trash2 } from 'lucide-react';
+import { Folder, Info, Play, RefreshCw, Square, Trash2 } from 'lucide-react';
 
 import type { SandboxDetail } from '../../api/types';
 import { cn } from '../../lib/cn';
@@ -12,6 +12,8 @@ interface WorkspaceHeaderProps {
   /** 点「停止」：打开停止确认弹窗（不在这里直接停）。 */
   onStop: () => void;
   onOpenDetail: () => void;
+  /** 点「文件」：打开独立的文件浏览抽屉。 */
+  onOpenFiles: () => void;
   onDelete: () => void;
 }
 
@@ -43,6 +45,7 @@ export function WorkspaceHeader({
   onStart,
   onStop,
   onOpenDetail,
+  onOpenFiles,
   onDelete,
 }: WorkspaceHeaderProps) {
   const running = detail?.state === 'running';
@@ -121,6 +124,15 @@ export function WorkspaceHeader({
         >
           <Info className="size-4" aria-hidden="true" />
           详情
+        </button>
+        <button
+          type="button"
+          onClick={onOpenFiles}
+          data-testid="page-sandbox-detail-files-button"
+          className={actionClass}
+        >
+          <Folder className="size-4" aria-hidden="true" />
+          文件
         </button>
         <button
           type="button"

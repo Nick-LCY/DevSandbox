@@ -40,6 +40,7 @@ const mocks = vi.hoisted(() => ({
   getSandbox: vi.fn(),
   listForwards: vi.fn(),
   createForward: vi.fn(),
+  listFiles: vi.fn(),
   listTerminalSessions: vi.fn(),
   stopSandbox: vi.fn(),
   reclaimSandbox: vi.fn(),
@@ -57,6 +58,7 @@ vi.mock('../../api/client', async (importOriginal) => {
       getSandbox: mocks.getSandbox,
       listForwards: mocks.listForwards,
       createForward: mocks.createForward,
+      listFiles: mocks.listFiles,
       listTerminalSessions: mocks.listTerminalSessions,
       stopSandbox: mocks.stopSandbox,
       reclaimSandbox: mocks.reclaimSandbox,
@@ -101,6 +103,7 @@ afterEach(() => {
   mocks.getSandbox.mockReset();
   mocks.listForwards.mockReset();
   mocks.createForward.mockReset();
+  mocks.listFiles.mockReset();
   mocks.listTerminalSessions.mockReset();
   mocks.stopSandbox.mockReset();
   mocks.reclaimSandbox.mockReset();
@@ -150,6 +153,7 @@ beforeEach(() => {
     JSON.stringify({ backendBaseUrl: DEFAULT_BACKEND_BASE_URL, token: 'sbx_test' }),
   );
   mocks.listForwards.mockResolvedValue([]);
+  mocks.listFiles.mockResolvedValue([]);
   mocks.createForward.mockResolvedValue({
     id: 'abc123def456',
     sandbox: 'acc-demo',
@@ -402,6 +406,23 @@ describe('沙箱详情与转发记录的合并轮询', () => {
     await vi.advanceTimersByTimeAsync(DETAIL_POLL_INTERVAL);
     expect(toastsOf('error')).toHaveLength(1);
     expect(toastsOf('error')[0].textContent).toContain('连续 3 次轮询');
+  });
+});
+
+describe('运行期文件入口', () => {
+  it('沙箱操作区「文件」按钮打开独立抽屉，并只从容器内 workdir 起读目录', async () => {
+    mockRunningSandbox();
+
+    renderWorkbench();
+
+    const filesButton = await screen.findByTestId('page-sandbox-detail-files-button');
+    expect(filesButton.textContent).toContain('文件');
+    fireEvent.click(filesButton);
+
+    expect(await screen.findByTestId('page-file-browser-dialog')).toBeTruthy();
+    // makeDetail 的 workdir 为空：home 是**宿主侧**路径（容器里不存在），
+    // 不能拿来做起始目录；兜底用任何镜像都有的根目录 `/`。
+    await waitFor(() => expect(mocks.listFiles).toHaveBeenCalledWith('acc-demo', '/'));
   });
 });
 

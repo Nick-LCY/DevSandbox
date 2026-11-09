@@ -278,3 +278,23 @@ export interface AuthTicketResponse {
   /** 有效期（秒）。 */
   expires_in: number;
 }
+
+/** 目录列表的一项（`GET /api/sandboxes/{name}/files/list`）。 */
+export interface FileListEntry {
+  /** 条目名称（空格 / 中文 / 换行保真；隐藏文件也在内）。 */
+  name: string;
+  /** 条目类型：file / dir / special（FIFO·设备·套接字·其它）。 */
+  kind: 'file' | 'dir' | 'special';
+  /** 字节数（目录与特殊文件为 0）。 */
+  size: number;
+  /** 修改时间（Unix epoch 秒）。 */
+  mtime: number;
+}
+
+/** 上传结果（`POST /api/sandboxes/{name}/files/upload`）。 */
+export interface FileUploadResponse {
+  /** 容器内目标路径（与请求一致）。 */
+  path: string;
+  /** 实际写入的字节数。 */
+  bytes: number;
+}
