@@ -55,5 +55,5 @@ web 形态下载是标准浏览器行为（`fetch` → blob → `a[download]`）
 ## 依赖
 
 - 依赖 [[tasks/runtime-file-transfer/03-server-file-endpoints.md|03 服务端文件传输接口]]（下载端点与响应头）。
-- 与 [[tasks/runtime-file-transfer/04-frontend-file-panel.md|04 前端文件浏览面板]] **可并行**；形态分支需与 04 的面板对接。
+- 与 [[tasks/runtime-file-transfer/04-frontend-file-panel.md|04 前端文件浏览面板]] **可并行**；形态分支需与 04 的面板对接——**04 已于 2026-11-09 收口**，`FileBrowserPanel` 的 `desktop` 分支是留桩（`TODO(05)`，不发请求、无行为），本任务接线时替换该分支。
 - rustls 栈与 CSP 约束见 [[architecture/decisions/0015-桌面壳与连接配置抽象.md|0015 桌面壳与连接配置抽象]]。
