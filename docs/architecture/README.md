@@ -25,6 +25,7 @@
 | 0013 | [[architecture/decisions/0013-三期定位改定与认证重启.md\|三期定位改定与认证重启]] | 已接受 |
 | 0014 | [[architecture/decisions/0014-端口转发机制选型.md\|端口转发机制选型]] | 已接受 |
 | 0015 | [[architecture/decisions/0015-桌面壳与连接配置抽象.md\|桌面壳与连接配置抽象]] | 已接受 |
+| 0016 | [[architecture/decisions/0016-控制台默认运行用户改为非root.md\|控制台默认运行用户改为非 root]] | 已接受 |
 
 结论摘要见 [[architecture/overview.md#关键决策]]，决策背景与代价见 [[architecture/decisions/README.md|ADR 清单]]。
 
