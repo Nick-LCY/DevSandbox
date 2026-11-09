@@ -6,16 +6,18 @@
 
 **与既有通道的分工**：本轮与「**创建时注入**」（[[architecture/decisions/0012-文件注入采用复制加改属主而非改造挂载预检.md|0012]]）是**两条独立通道**——注入在创建时、单向、只读副本；本轮在运行期、双向、覆盖语义。本轮对**注入通道零改动**、对**命令行零改动**（「sandboxctl 增加 `--file`」是创建时注入的**另一条独立待办**，见 [[current-state.md|当前状态]] 的 TODO 段）。
 
-**状态：01 done（2026-11-09 收口），02~06 todo**。看板见 [[current-state.md|当前状态]]。
+**状态：01~02 done（01、02 均于 2026-11-09 收口），03~06 todo**。看板见 [[current-state.md|当前状态]]。
 
 **01 轮关键结论（一句话）**：主通道成立且**零新增依赖**（`docker exec -i` + `BytePump` 原样复用）——上传「同目录临时名 → `mv` 原子替换」实测字节精确、覆盖成立、rename 不跟随末端符号链接；下载的**前置分层探测是硬要求**（FIFO 会挂死 `cat`）；列表用 `find` 单次 exec 产出 **NUL 分隔**记录；**大小不限**（200 MiB 与 1 GiB 宿主峰值 RSS 相同 ≈ 23 MiB、曲线平坦）但**受反代读超时约束**（本机 Traefik 默认 `readTimeout=60s`，同一 200 MiB 慢上传直连 201.23 s 成功、经反代 61.13 s 被掐断）；**ADR 0018 已随本轮落档为已接受**。
+
+**02 轮关键结论（一句话）**：核心包 `transfer.py`（路径校验 / upload / probe / 下载泵 / list）+ `TransferError` 与固定中文文案常量落地，**93 项单测**全绿，**审查修复一轮**（结论「需修复后合入」的 **7 项必修全部完成**，含 `set -C` + 16 位十六进制临时名**防写穿**的真机实测验证）；门禁：核心包非 root **362 passed**（基线 292 → 本轮 +70）、root **23 passed**（11m38s）、**ruff rc=0**，服务端基线 **287 passed** 未动；**`forwarding.py` 零改动**、CLI 与创建时注入通道零改动。
 
 ## 任务清单
 
 | 编号 | 任务 | 状态 | 交付内容 |
 |---|---|---|---|
 | [[tasks/runtime-file-transfer/01-prototype-and-mechanism.md\|01]] | 打样与机制验证 | **done（2026-11-09）** | 真沙箱实测 exec 命令（上传临时名 + `mv` / `cat` 流出 / **分层探测** / 只读目标报错归类）、反代缓冲与超时核对、200MB 级内存曲线与耗时、容器内 `sh` / `cat` / `wc` / `stat` / `find` 存在性核对、**ADR 0018 已落档为已接受** |
-| [[tasks/runtime-file-transfer/02-core-transfer.md\|02]] | 核心包传输能力 | todo | `transfer.py`：路径校验 / upload（临时名 + `mv` 覆盖）/ probe / 下载泵 / list + `TransferError` 与固定中文文案常量 + `__init__.py` 导出 + 单测 |
+| [[tasks/runtime-file-transfer/02-core-transfer.md\|02]] | 核心包传输能力 | **done（2026-11-09）** | `transfer.py`：路径校验 / upload（临时名 + `mv` 覆盖）/ probe / 下载泵 / list + `TransferError` 与固定中文文案常量 + `__init__.py` 导出 + 单测 —— **93 项测试**（61 个测试函数）全绿，**审查修复一轮**（7 项必修全部完成） |
 | [[tasks/runtime-file-transfer/03-server-file-endpoints.md\|03]] | 服务端文件传输接口 | todo | `routes/files.py` 三端点 + 流式装配（`TRANSFER_IO_EXECUTOR` 专用线程池）+ 错误文案表 + schemas + `API.md` 新章节 + 单测 |
 | [[tasks/runtime-file-transfer/04-frontend-file-panel.md\|04]] | 前端文件浏览面板 | todo | `client.ts` raw / blob / list 请求能力 + `lib/file-transfer.ts` 纯逻辑 + 入口按钮 + 抽屉 + 面包屑 + 列表 + 上传 / 下载 / 进度 / 覆盖确认框 + 图标资产 vendor（含根目录 `folder.svg` / `file.svg` 移入） |
 | [[tasks/runtime-file-transfer/05-desktop-download.md\|05]] | 桌面端下载落盘 | todo | `Cargo.toml` 加 `reqwest`（rustls-tls + stream）+ `tauri-plugin-dialog` + Rust 下载落盘命令 + 命令注册 + 前端桌面 IPC 封装与形态分支 + **Windows 真机验证清单** |
@@ -29,7 +31,7 @@
           └──▶ 05 ─────────┘
 ```
 
-- **01 是硬前置**：机制验证不通过（exec 命令不成立 / 容器内缺 `sh`、`cat`、`wc` / 反代把大文件传输打断），**不进 02**——先改机制与方案，再谈实现。**01 已于 2026-11-09 通过（主通道成立、零新增依赖），02 可开工。**
+- **01 是硬前置**：机制验证不通过（exec 命令不成立 / 容器内缺 `sh`、`cat`、`wc` / 反代把大文件传输打断），**不进 02**——先改机制与方案，再谈实现。**01 已于 2026-11-09 通过（主通道成立、零新增依赖），02 可开工**（**02 已于 2026-11-09 收口**）。
 - **02 → 03 强顺序**：核心包能力先定（路径校验、覆盖语义、类型判定的口径），服务端再包 REST 与流式。
 - **03 → 04 / 05 强顺序**：接口契约先定，前端与桌面端各自对接。
 - **04 与 05 可并行**：两者互不依赖（上传走浏览器侧，桌面端只新增下载落盘），但都依赖 03 的接口契约。
@@ -50,7 +52,7 @@
 ## 任务文件
 
 - [[tasks/runtime-file-transfer/01-prototype-and-mechanism.md]] — 打样与机制验证（**硬前置**）。
-- [[tasks/runtime-file-transfer/02-core-transfer.md]] — 核心包传输能力（`transfer.py`）。
+- [[tasks/runtime-file-transfer/02-core-transfer.md]] — 核心包传输能力（`transfer.py`）——**done（2026-11-09）**：93 项单测全绿、审查修复一轮（7 项必修全部完成）。
 - [[tasks/runtime-file-transfer/03-server-file-endpoints.md]] — 服务端文件传输接口（三端点）。
 - [[tasks/runtime-file-transfer/04-frontend-file-panel.md]] — 前端文件浏览面板。
 - [[tasks/runtime-file-transfer/05-desktop-download.md]] — 桌面端下载落盘。

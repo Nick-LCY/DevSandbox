@@ -39,6 +39,7 @@ status: todo
 - **专用线程池**：字节搬运走 `TRANSFER_IO_EXECUTOR`（对齐转发轮的 `PUMP_IO_EXECUTOR` 惯例），**不进事件循环**。
 - **客户端断开** → 关泵 + 清容器内临时文件。
 - **错误文案**：固定中文，形状 `{"detail": "<中文>"}`；**容器内 stderr 原文只进日志**；**错误分类只按 stderr 关键词子串**（不按整句、不按退出码）。
+- **错误分类码的取用路径（02 轮接线提示）**：02 轮新增的两个分类码 `REASON_DAEMON_UNREACHABLE`（**宿主侧**失败：守护进程不可达）与 `REASON_TEMP_NAME_EXISTS`（上传**临时名撞名**）住在 **`sandbox_platform.transfer` 模块内**、**尚未进 `__init__.py` 导出**——本轮从 `sandbox_platform.transfer` 直接 import，**或届时顺带补 `__init__.py` 导出**。状态码映射建议见 [[architecture/decisions/0018-运行期文件传输机制选型.md|ADR 0018]] 第 8 节（守护进程不可达 → **502** 一类；撞名 → **400 / 409** 一类），**关键词匹配顺序即优先级**（宿主侧关键词必须排在 `permission denied` 之前）。
 - **鉴权**：端点挂在 `/api` 下即被**令牌中间件自动保护**，不另写鉴权分支。
 - **不新增 WebSocket**；只用 GET / POST → **CORS 白名单零改动**。
 
@@ -74,6 +75,6 @@ status: todo
 
 ## 依赖
 
-- 依赖 [[tasks/runtime-file-transfer/02-core-transfer.md|02 核心包传输能力]]。
+- 依赖 [[tasks/runtime-file-transfer/02-core-transfer.md|02 核心包传输能力]]（**已于 2026-11-09 收口（done）**——落地结论、分类码清单与两处偏离见该文件文末「进展（2026-11-09）」）。
 - 鉴权与 CORS 口径沿用 [[tasks/phase3-desktop/02-backend-token-and-cors.md|三期任务 02]]；流式装配可参考 [[tasks/phase3-desktop/05-port-forward-server-api.md|三期任务 05]]。
 - 机制与口径依据：[[architecture/decisions/0018-运行期文件传输机制选型.md|ADR 0018 运行期文件传输机制选型]]（第 5 节 raw 流式 body 的前提、第 6 节部署链约束）。
