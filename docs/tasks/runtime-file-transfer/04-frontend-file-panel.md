@@ -158,3 +158,9 @@ status: done
 - **上传看的是「进度停顿」不是总时长**：不用 `xhr.timeout`（那会与「大小不限」冲突）；连续 **120 s 无 progress 事件**才取消，慢而持续有进度的上传不会被误杀。
 - **按声明长度裁剪在服务端**：前端按读到的字节累计进度，不重复裁剪；响应体与 `Content-Length` 的一致性由 03 轮的下载流裁剪保证（`iter_download_chunks`）。
 - **关闭抽屉 / 切沙箱全量收口**：`abortTransfers()` 递增**会话代次** → abort 全部在途上传 / 下载 → 清队列、覆盖确认框与进度行；旧代次的异步收尾（成功提示 / 列表刷新 / 进度清理）据此静默退出，不会串到重开后的抽屉。切沙箱时工作台先 `setFilesOpen(false)`，走同一条收口路径。
+
+---
+
+## 收口后修复（2026-11-09）
+
+> **本轮状态：done（收口后缺陷修复轮，1 个功能 bug + 4 项样式 / 交互全部闭合）。** 用户真机验收反馈「**已在根目录时点根目录面包屑 → 列表变空**」（点当前层级 crumb 同源），根因是 **React 同值 setState bailout**——`navigateToRoot` **先清列表再 `setPath('/')`**，路径同值 ⇒ 加载 effect 不重跑 ⇒ `entries` 停在空数组；修法是**统一导航入口 `goToPath`**——**同路径直接强制重读**（绕开 setState）、`depth < 0` 显式归一 `/`。审查修复轮另抓出**裁剪链路死代码**（抽屉关闭时 Base UI portal 不渲染内容，量宽 ref 与 `ResizeObserver` 只在常驻面板挂载时取一次 ⇒ 永不挂载）⇒ 改**回调 ref**（打开即挂观察器并量宽、关闭即断开）。**五条用户要求全部落实**（面包屑固定底色 / 根图标钮 hover 变色 + 文字层级钮下划线 / 单行溢出保留右侧深层级且头部省略号不可点、变宽恢复 / 上传按钮与面包屑同行同高 `h-8` / 列表内部滚动且表头 sticky、抽屉本体无滚动条、`DrawerShell` 未动），其余修复含根图标钮 hover 反馈恢复、量宽行改 `span`（a11y）、`overflow-x-auto`、量宽单位统一小数、结构测试去字面量化、极窄保留省略号、`document.fonts.ready` 补量、rAF 去抖、e2e 断言硬化。门禁：前端 vitest **664 passed**（基线 651 → **+13**）/ typecheck 双零错 / build 成功；e2e 全量 **51 passed / 0 failed / 0 flaky**（10.0 分钟，新增 1 条「再次点根 crumb」真机回归），**e2e gate 通过**。结论与证据见 [[tasks/runtime-file-transfer/RESULTS.md|运行期文件传输全轮留档]] 第十一节。
