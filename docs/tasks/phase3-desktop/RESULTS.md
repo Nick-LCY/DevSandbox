@@ -9,6 +9,7 @@
 > - **2026-11-03 决策 C 追加说明**：P1 的**实测结论依然成立**（`-p` 在本平台**可用**），但**该路径不再采用**——端口转发链路两点化、**后端宿主零端口**，Fallback B（`docker exec -i` 字节泵）升为**唯一路径**（[[architecture/decisions/0014-端口转发机制选型.md|ADR 0014]] 第二次修订）。本文件中「04/05/06 按主路径实现」一类的**执行指向**已失效，**实测数据与命令留档一律保留**。
 > - **首轮用户反馈（2026-11-03）已入档**：P4 的路径②部分闭合、P2 外观初测通过（详见第五、七、八节的「首轮反馈」小段）；P2 的三项控制台判定与 xterm 真渲染、P5 均未闭合。
 > - **正式回填（2026-11-04，Windows 11 真机 + 真后端）**：**P2 三项逐项通过**；**P4 路径②正式可交付**（NSIS `setup.exe` 约 3.7 MB，**构建耗时未统计**）；**P5 无提装动作、直接可用**（Win11 自带 WebView2 运行时）；**06 真机连通同轮通过**（结论见 [[tasks/phase3-desktop/06-port-forward-desktop.md|任务 06]]）。**03 全链路的远端形态通过、本机形态（连同机后端）本轮未单独实测**，口径待用户拍板（[[tasks/phase3-desktop/03-frontend-connection-layer.md|任务 03]] 状态仍为 doing）。**（状态更新 2026-11-04：用户已拍板——03 按方案 A「偏离记录」闭合，任务状态置 done；本机形态不单独实测，留待该场景实际出现时再验证。）**
+> - **收口后缺陷修复（2026-11-09）**：三期收口（2026-11-04）后暴露一条**潜伏缺陷**——`https://` 后端下的 **wss 隧道建连即 panic**（根因：`rustls` 缺进程级 crypto provider）。**已修复**（提交 `da36940`）并经 **Windows 真机复测通过**；定性为**潜伏缺陷、非回归**（验收盲区：三期只测过 `http://` 后端的 ws 明文路径，wss 路径从未被测）。结论与证据见**第十节**。
 > - 打样轮的产物：Tauri v2 工程骨架在 [[architecture/decisions/0015-桌面壳与连接配置抽象.md|ADR 0015]] 约定的位置 `apps/desktop/`；操作指引见 `apps/desktop/README.md`。
 > - 关联页面：[[tasks/phase3-desktop/README.md|三期任务集]]、[[prds/phase3-desktop.md|三期 PRD]]、[[architecture/decisions/0014-端口转发机制选型.md|0014 端口转发机制选型]]、[[current-state.md|当前状态]]。
 
@@ -499,3 +500,65 @@ Tauri v2 的 `bundle.windows.webviewInstallMode` 取值与 PRD 的三选一对�
 - **未完成的（截至 2026-11-03 打样轮）**：Windows 上的运行行为、NSIS 出包、WebView2 三项冒烟（见第五、七、八节）——**已于 2026-11-04 在 Windows 11 真机上全部闭合**（P2 三项通过 / P4 路径②正式可交付 / P5 无提装；06 真机连通同轮通过）。
 
 **Linux 侧的限制**：本机无 WebView2，也无显示环境（`DISPLAY` 为空、无 Xvfb），因此**无法在 Linux 上启动应用做真机冒烟**；三项冒烟必须在 Windows 真机上做。
+
+---
+
+## 十、收口后缺陷修复（2026-11-09）：https 后端下的 wss 隧道建连即 panic
+
+> **定性：潜伏缺陷、非回归。** 三期真机验收（2026-11-04）只覆盖了后端地址为 `http://` 的转发路径（隧道走 **ws 明文**），**`https://` 后端（wss）路径从未被测过**。2026-11-05 控制台迁至 `https://sandbox-api.sankabox.com`（traefik → 28642）后，该路径**首次被真实使用**，缺陷随之暴露（2026-11-09 排障确认）。
+
+### 10.1 现象
+
+- 桌面端**监听绿灯正常**（本机 `127.0.0.1:<port>` 确实起来了），但**本机连接被接受后秒级 reset**，**没有任何失败提示**，**后端零隧道痕迹**（服务端看不到任何隧道接入）。
+- **环境干扰项（同期真实存在，排障的主要弯路）**：Windows 上 **VS Code 的自动端口转发**以**地址重用方式双绑** `127.0.0.1:8000`——**绑定不报错**，但**连接被编辑器抢走**。换到 **9000** 端口后排除该干扰，**真因才暴露**。此项**不是本缺陷的成因**，但必须留档：它与真缺陷的现象高度相似（都是「连上就被重置」），排障时须先排除。
+
+### 10.2 根因
+
+`tokio-tungstenite` 0.30 以 `default-features = false` 引 `rustls` / `tokio-rustls`，**整棵依赖树上不带任何 crypto provider**（`ring` 与 `aws-lc-rs` **均未启用**）；**dev 与 release 的特性集一致**（不是「只在发布版缺 provider」）。
+
+wss 建连时，`rustls` 0.23.46 在 **`ClientConfig::builder()`** 处 panic（`crypto/mod.rs:249`）。**桥接任务 panic → 失败上报（`report_tunnel_failure`）不执行 → 全部症状闭环**（静默 reset、无失败提示、后端零痕迹）。
+
+> **独立风险点（本次未发生）**：release profile 配了 **`panic = "abort"`**，若**打包版**命中同类 panic，会**整进程闪退**（不是只挂那一条桥接）。本次**未发生**——复现走的是 dev 构建、**未触达打包版的 TLS 路径**；但该风险独立存在，处置**待拍板**（见 10.8 与 [[current-state.md|当前状态]] 的 TODO 条目）。
+
+### 10.3 修复
+
+- **提交**：`da36940` —— `fix(desktop): 显式安装 rustls ring provider——修复 https 后端下 wss 隧道建连即 panic`
+- **改动规模**：**3 文件 +15 行**
+  - `apps/desktop/src-tauri/Cargo.toml`：显式声明 `rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }`；
+  - `apps/desktop/src-tauri/src/main.rs`：`main()` 顶部装 provider——`get_default()` 为 `None` 时才 `install_default()`（进程级 provider **只能装一次**，且必须**早于任何 TLS 使用**；TLS 只在 `forward.rs::bridge()` 建 wss 隧道时才用到）；
+  - `apps/desktop/src-tauri/Cargo.lock`：随上述依赖声明新增 **2 行依赖边**（包数不变）。
+- **选 ring 的理由**：① **锁文件零新增包**（`ring` 0.17.14 已在依赖树里）；② **Windows MSVC 走预汇编目标文件**，**无需 NASM / CMake**。
+
+### 10.4 验证证据
+
+| 项 | 结果 |
+|---|---|
+| `cargo tree`（默认形态 / `--no-default-features` 形态） | 两棵树上均出现 rustls feature **`"ring"`** |
+| `Cargo.lock` 差异 | 仅 **+2 行**预期依赖边（rustls deps 加 ring、根包 deps 加 rustls）；包数 **453 → 453**（**零新增包**） |
+| `cargo check`（默认形态 / `--no-default-features` 形态） | 均**通过** |
+| `cargo test` | **26 passed**，与基线一致（**无回归**） |
+| 临时运行时探针 | 确认 `ClientConfig::builder()` **不再 panic**（探针**已删**，不入库） |
+
+### 10.5 真机复测（2026-11-09 02:00 前后，Windows dev + 真后端）
+
+- 用户改用本地端口 **9000** 后测试通过（换端口同时排除了 VS Code 抢占干扰）。
+- **服务端日志完整证据**：
+  - `WebSocket /api/forward/tunnel/f11a398299e1` **[accepted] ×2**；
+  - 已登记转发隧道 **`tun-000001` / `tun-000002`**；
+  - 字节泵 **`docker exec -i formulationpbpk-fwd-8000 socat - TCP:sandbox-formulationpbpk:8000`** **随每条连接拉起**。
+
+### 10.6 修复后行为
+
+**panic 路径消除后，隧道失败恢复正常上报**——行内**红字** + **error toast**，**不再静默 reset**。
+
+### 10.7 新确认的已知边界
+
+1. **桌面端 TLS 只认公共根证书**：桌面端 TLS 的信任根是 **webpki-roots**（公共根证书集），**私有 CA / 自签证书的后端走不了 wss 隧道**（建连失败）。后端公网入口现为 **Let's Encrypt** 证书，**不受影响**。
+2. **后端地址必须带 `https://` 前缀**：**裸域名会被前端补成 `http://`**（归一化规则见 `apps/web/frontend/src/lib/connection.ts` 的 `normalizeBaseUrl`）；此时 webview 侧的 **REST / 终端照常工作**（它们走 https），但**隧道会以明文 `ws` 打 443，必败**——**极具迷惑性**。
+
+### 10.8 遗留风险指针（均**待拍板**，不阻断使用）
+
+- **`release` 的 `panic = "abort"` 处置**：桥接任务 panic 在**发布版会闪退整个应用**（本次未发生，见 10.2）。候选方案：**去掉 abort**（改回 unwind，panic 只挂当前任务），或**对桥接任务做 panic 兜底转失败上报**。
+- **绿灯语义**：界面上的**监听绿灯只表示「本机监听已建立」，不表示「隧道可用」**——隧道可用性要等首条连接真正打通才知道；叠加 VS Code 端口抢占（绑定不报错、连接被抢走）后，界面上分不出「已就绪 / 端口被抢 / 隧道不通」。候选方案：**监听开启后做自连探测**，在 UI 上区分这三种状态。
+
+两条的登记与状态见 [[current-state.md|当前状态]] 的「TODO / 阻塞」区；操作层面的坑（端口抢占、公共根证书、scheme 前缀）见 `apps/desktop/README.md` 的「环境注意」与「已知边界」小节。

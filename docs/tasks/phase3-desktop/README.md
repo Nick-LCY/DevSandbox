@@ -28,6 +28,7 @@
 
 - **端口转发区 UI 重构轮（2026-11-04，前端单侧改造）**：转发列表由卡片行改为五列表格（本地端口 / 容器端口 / 本地状态 / 容器状态 / 操作：同步·编辑·删除三个单 icon 按钮），状态改为小圆点 + Tooltip（「未开启」映射为红），行 = 后端记录 ∪ 本机监听并集（孤儿行可见、可同步重建）；本机监听改全手动生命周期（无任何自动开关），本机端口与转发同建同删（编辑仅监听中可用）；新增工作台层 10 秒合并轮询（沙箱详情 + 转发记录一拍双刷）。门禁：前端 vitest 585 passed / typecheck 0 / build 过，经审查修复轮闭合 4 项必修（web 形态白跑转发请求、删无监听行误报、Esc 冒泡关抽屉、迁移 stop 无兜底）；后端 / Rust / CLI 零改动。本轮不属 01~09 编号序列、不新建任务文件，也不改 9 个任务的状态字段；进展见 [[current-state.md|当前状态]]。
 - **桌面壳 dev 刷新修复轮（2026-11-04）**：needs_csp_reload 桌面端 dev 恒 false，切断 dev 启动无限整页刷新；cargo test 26 passed；前端 / CLI 零改动；本轮不属 01~09 编号序列、不新建任务文件，也不改 9 个任务的状态字段；详见 `apps/desktop/README.md` 的「时序契约（CSP 与主文档重载）」小节与 [[current-state.md|当前状态]]。
+- **收口后缺陷修复轮（2026-11-09，Rust 侧单点修复 + 文档入档）**：三期收口后在真实 `https://` 后端下暴露一条**潜伏缺陷**——**wss 隧道建连即 panic**（根因：`tokio-tungstenite` 以 `default-features = false` 引 `rustls` / `tokio-rustls`，**不携带任何 crypto provider**，在 `ClientConfig::builder()` 处 panic；定性为**非回归**，验收盲区是 wss 路径从未被测）。修复：提交 `da36940`——`Cargo.toml` 显式声明 `rustls`（`features = ["ring", "std", "tls12"]`）+ `main()` 顶部 `install_default()`（3 文件 +15 行，锁文件零新增包）。验证：`cargo tree` 双形态出现 ring feature、`cargo check` 双形态过、`cargo test` 26 passed 无回归、临时探针确认不再 panic；**Windows dev + 真后端复测通过**（服务端 `[accepted] ×2`、`tun-000001/2`、字节泵随连接拉起）。**ADR 取舍：依赖级 provider 选型不单开 ADR**（TLS 栈与地址推导口径由 ADR 0015 定，provider 缺失属实现缺陷而非决策偏离；候选方案 ring 相对 aws-lc-rs 两项均占优、无长期分歧）。本轮不属 01~09 编号序列、不新建任务文件，也不改 9 个任务的状态字段；留档见 [[tasks/phase3-desktop/RESULTS.md|三期留档]] 第十节，两条待拍板项（release `panic = "abort"` 处置、自连探测）见 [[current-state.md|当前状态]] 的 TODO 区。
 
 ## 依赖顺序
 
@@ -78,4 +79,4 @@
 - [[tasks/phase3-desktop/07-acceptance-tokenization.md]] — 既有验收套件 token 化改造。
 - [[tasks/phase3-desktop/08-windows-package.md]] — Windows 打包产物与冒烟。
 - [[tasks/phase3-desktop/09-acceptance-and-docs.md]] — 验收回归与文档收口。
-- [[tasks/phase3-desktop/RESULTS.md]] — 打样与实测结论留档（P1~P5 全部有结论：P1 / P3 本机实测，P2 / P4 / P5 于 2026-11-04 Windows 11 真机实测闭合）。
+- [[tasks/phase3-desktop/RESULTS.md]] — 打样与实测结论留档（P1~P5 全部有结论：P1 / P3 本机实测，P2 / P4 / P5 于 2026-11-04 Windows 11 真机实测闭合；**另含 2026-11-09 收口后 wss 隧道缺陷修复留档**——定性、根因、修复提交 `da36940`、验证证据与新确认的已知边界）。

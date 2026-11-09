@@ -60,7 +60,7 @@ status: todo        # todo | doing | done | blocked
 - [[tasks/phase3-desktop/07-acceptance-tokenization.md]] — 既有验收套件 token 化改造（done：测试令牌单一来源 `helpers/auth.ts`、页面侧 `storageState` 预置 + 运行期注入、新增 `10-auth-connection.spec.ts` 10 条认证用例含 401 负向、无票据 WS 被拒与带票正向对照；门禁：全量套件 **46 passed / 0 failed**（约 8.6 分钟；**09 收口轮后全量为 48 passed / 0 failed**），**产品源码零改动**；「验收套件为红」的过渡态到此结束）
 - [[tasks/phase3-desktop/08-windows-package.md]] — Windows 打包产物与冒烟（done：NSIS `setup.exe` 约 3.7 MB，**默认路径**、**不入库**；**构建耗时未统计**，用户明确接受不再待补；**冒烟通过**——用户确认安装 / 启动 / 连接 / 使用均无问题；冒烟环境为用户自有 Windows 11，是否全新未另行记录；未签名告警属预期；README 构建说明齐备，**未签名 / SmartScreen 与仅 Windows 承诺两条限制说明已由并行改动补齐**）
 - [[tasks/phase3-desktop/09-acceptance-and-docs.md]] — 验收回归与文档收口（done：全量回归 **48 passed / 0 failed / 0 flaky**，约 **9.3 分钟**，**连续两轮全绿**；新增 `11-forward-web-notice.spec.ts` **2 条** web 形态端口转发用例——桌面形态的完整管理 Playwright 覆盖不到，已由 Windows 真机验收替代；三篇 ADR 0013 / 0014 / 0015 期中已落档；看板 / 词汇 / 总览 / 约定 / API.md 核对同步完成；**三期整体收口**）
-- [[tasks/phase3-desktop/RESULTS.md]] — 三期打样与实测结论留档（P1~P5 全部有结论：P1 / P3 本机实测；P2 / P4 / P5 于 2026-11-04 Windows 11 真机实测闭合；06 真机连通、08 打包与冒烟同轮闭合）
+- [[tasks/phase3-desktop/RESULTS.md]] — 三期打样与实测结论留档（P1~P5 全部有结论：P1 / P3 本机实测；P2 / P4 / P5 于 2026-11-04 Windows 11 真机实测闭合；06 真机连通、08 打包与冒烟同轮闭合；**另含 2026-11-09 收口后缺陷修复留档**——`https://` 后端下的 wss 隧道建连 panic，修复提交 `da36940`，Windows 真机复测通过）
 
 ## 看板
 任务状态汇总见 [[current-state.md]]，由人维护。
