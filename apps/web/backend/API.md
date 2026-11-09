@@ -1040,7 +1040,7 @@ TTY 负责（容器内拿到的是真实 TTY，默认 termios 生效）。
 | 票据 | `POST /api/auth/ticket` → `{"ticket": "...", "expires_in": 30}`；一次性、30 秒过期、进程内存态 |
 | 票据过期判定 | 单调时钟（`time.monotonic`），不受系统时间调整影响 |
 | CORS 放行来源 | **任意来源**（`allow_origins=["*"]`）：响应头是 `Access-Control-Allow-Origin: *` |
-| CORS 其余项 | `allow_credentials=False`（不用 Cookie 认证，凭据走显式的 `Authorization` 头）；方法 `GET` / `POST` / `DELETE` / `OPTIONS`；头 `Authorization` / `Content-Type`（**这两份白名单不变**） |
+| CORS 其余项 | `allow_credentials=False`（不用 Cookie 认证，凭据走显式的 `Authorization` 头）；方法 `GET` / `POST` / `DELETE` / `OPTIONS`；头 `Authorization` / `Content-Type`（**这两份白名单不变**）；**暴露响应头 `Content-Disposition`**（下载文件名，否则跨源时前端 JS 读不到） |
 | WebSocket Origin | **已取消校验**（2026-11-03 用户决策）：握手不再看 `Origin`，只认票据。见 14.4 |
 
 ### 14.1 令牌来源与落盘

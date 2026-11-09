@@ -22,6 +22,7 @@ from sandbox_platform import (
 from .auth import (
     CORS_ALLOWED_HEADERS,
     CORS_ALLOWED_METHODS,
+    CORS_EXPOSED_HEADERS,
     TOKEN_ENV_VAR,
     WEBSOCKET_BEARER_PATHS,
     WEBSOCKET_EXEMPT_PATHS,
@@ -260,6 +261,9 @@ def _install_connection_middleware(app: FastAPI) -> None:
         allow_credentials=False,
         allow_methods=list(CORS_ALLOWED_METHODS),
         allow_headers=list(CORS_ALLOWED_HEADERS),
+        # 下载接口的文件名走 `Content-Disposition`：不 expose 的话跨源时
+        # 浏览器不会把这个头交给前端 JS（文件名解析会一直是死代码）。
+        expose_headers=list(CORS_EXPOSED_HEADERS),
     )
 
 

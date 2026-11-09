@@ -34,6 +34,7 @@ from sandbox_console.auth import (
     CLOSE_CODE_UNAUTHORIZED,
     CORS_ALLOWED_HEADERS,
     CORS_ALLOWED_METHODS,
+    CORS_EXPOSED_HEADERS,
     TICKET_TTL_SECONDS,
     TOKEN_ENV_VAR,
     TOKEN_FILENAME,
@@ -609,6 +610,26 @@ def test_cors_method_and_header_allowlists_are_unchanged(auth_client: TestClient
     assert allowed_headers == {item.lower() for item in CORS_ALLOWED_HEADERS} | {
         item.lower() for item in SAFELISTED_HEADERS
     }
+
+
+def test_cors_exposes_content_disposition_for_downloads(auth_client: TestClient) -> None:
+    """跨源时浏览器要能从 JS 读到下载文件名（`Content-Disposition`）。
+
+    这个头不在 CORS 安全列表里：不登记 ``expose_headers``，前端拿到的永远是
+    空值，「从响应头解析文件名」就是死代码。
+    """
+    assert set(CORS_EXPOSED_HEADERS) == {"Content-Disposition"}
+
+    response = auth_client.get(
+        "/api/health", headers={"Origin": "http://localhost:5173"}
+    )
+    assert response.status_code == 200
+    exposed = {
+        item.strip().lower()
+        for item in response.headers["access-control-expose-headers"].split(",")
+        if item.strip()
+    }
+    assert exposed == {item.lower() for item in CORS_EXPOSED_HEADERS}
 
 
 # ---------------------------------------------------------------- 路径前缀边界
