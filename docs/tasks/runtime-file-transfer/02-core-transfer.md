@@ -89,7 +89,7 @@ status: done
 - [x] 门禁：核心包 **pytest 全绿**、**ruff（`E4/E7/E9/F`）退出码 0**。
 - [x] **命令行零改动**；**创建时注入通道零改动**。
 
-> **逐条核销与证据见文末「进展（2026-11-09）」**。其中三条的口径在实现中被收窄或加严（探测取大小统一用 `stat -L`、下载侧不产生临时文件、两个新分类码暂未进包导出），已在核销表内逐条说明。
+> **逐条核销与证据见文末「进展（2026-11-09）」**。其中三条的口径在实现中被收窄或加严（探测取大小统一用 `stat -L`、下载侧不产生临时文件、两个新分类码暂未进包导出——**该例外已于 03 轮消解**），已在核销表内逐条说明。
 
 ## 依赖
 
@@ -127,7 +127,7 @@ status: done
 | 8 | 下载：字节流式流出、**内存有界**；客户端断开 → 关泵 + 清临时文件 | ✅（口径收窄） | `test_download_starts_a_cat_pump` / `test_download_rejects_a_directory` / `test_download_rejects_special_files` / `test_download_rejects_a_symlink_that_does_not_resolve` / `test_download_failure_waits_for_the_stderr_drain` / `test_download_status_gives_up_when_the_process_never_exits`。**下载侧不产生容器内临时文件**（`cat` 直出），故「清临时文件」一条**只对上传成立**；断开时的关泵与进程组回收由 `DownloadStream.close()` 负责 |
 | 9 | 列表：名称 / 类型 / 大小 / 修改时间；隐藏文件包含；`find` 单次 exec NUL 分隔；两种镜像正确；怪名字不乱 | ✅ | `test_list_keeps_awkward_names` / `test_list_marks_special_entries` / `test_list_uses_a_single_find_exec` / `test_list_empty_directory_is_an_empty_list` / `test_list_skips_malformed_records` / `test_list_rejects_a_path_that_is_not_a_directory`；busybox / GNU 输出格式一致沿用 01 轮实测（脚本结构被钉死） |
 | 10 | `TransferError` 与固定中文文案常量集中在核心包；stderr 原文只进日志 | ✅ | `test_transfer_error_lives_in_errors_module`（`TransferError` 住在 `errors.py`，`reason` 属性承载分类码）；文案常量 `MSG_*` 集中在 `transfer.py`；`test_unknown_stderr_falls_back_to_a_fixed_message` 断言文案**不含** stderr 原文 |
-| 11 | `__init__.py` 导出新入口；单测覆盖上述各条 | ✅（**两处例外**） | `test_package_exports_the_transfer_entry_points`。**例外**：新增的 `REASON_DAEMON_UNREACHABLE` / `REASON_TEMP_NAME_EXISTS` **暂未进包导出**（住在 `sandbox_platform.transfer` 模块内）——03 轮从 `sandbox_platform.transfer` 取，或届时顺带补 `__init__.py` 导出 |
+| 11 | `__init__.py` 导出新入口；单测覆盖上述各条 | ✅（**两处例外**） | `test_package_exports_the_transfer_entry_points`。**例外**：新增的 `REASON_DAEMON_UNREACHABLE` / `REASON_TEMP_NAME_EXISTS` **暂未进包导出**（住在 `sandbox_platform.transfer` 模块内）——03 轮从 `sandbox_platform.transfer` 取，或届时顺带补 `__init__.py` 导出。**（03 轮已消解：四个新分类码 + `MSG_SIZE_MISMATCH` 均已进包导出，服务端从包根导入）** |
 | 12 | 门禁：核心包 **pytest 全绿**、**ruff 退出码 0** | ✅ | 非 root **362 passed** / root **23 passed**（11m38s）/ **ruff rc=0** |
 | 13 | **命令行零改动**；**创建时注入通道零改动** | ✅ | 本轮改动仅限核心包四个文件（见上表「本轮改动面」）；CLI 与创建时注入通道未触碰 |
 
@@ -159,7 +159,7 @@ status: done
 
 1. **撞名不重试**——`set -C` 撞名走**既有错误路径**、**不重试**：字节流是**流式**的（内存有界、不整文件进内存），已写出去的字节**无法重放**，重试就得整份缓冲，与「大文件不占内存」的硬前提冲突；同时**也不删**那个路径（不是平台建的）。
 2. **`list()` 多一次探测 exec**——`find <普通文件> -maxdepth 1 -mindepth 1` **静默返回空**（rc=0、无输出），调用方会把「列了一个文件」误读成「目录是空的」⇒ `list()` 先做一次「目标必须是目录」的**前置探测 exec**。**ADR 0018 §4 的「单次 exec」现义为「单次 `find` exec」**，已在 ADR 记修订。
-3. **两个新分类码暂未进 `__init__.py` 导出**——`REASON_DAEMON_UNREACHABLE` / `REASON_TEMP_NAME_EXISTS` 住在 `sandbox_platform.transfer` 模块内，**未进包导出**；03 轮从 `sandbox_platform.transfer` 取，或届时顺带补 `__init__.py` 导出（已写进 [[tasks/runtime-file-transfer/03-server-file-endpoints.md|任务 03]]）。
+3. **两个新分类码暂未进 `__init__.py` 导出**——`REASON_DAEMON_UNREACHABLE` / `REASON_TEMP_NAME_EXISTS` 住在 `sandbox_platform.transfer` 模块内，**未进包导出**；03 轮从 `sandbox_platform.transfer` 取，或届时顺带补 `__init__.py` 导出（已写进 [[tasks/runtime-file-transfer/03-server-file-endpoints.md|任务 03]]）。**（03 轮已消解：四个新分类码——含新增的 `size_mismatch` / `invalid_size`——与 `MSG_SIZE_MISMATCH` 均已进包导出，服务端从包根 `sandbox_platform` 导入）**
 4. **口径说明（非行为偏离）**：探测取大小统一用 **`stat -L -c %s`**（跟随符号链接）——ADR §3 字面写 `stat -c %s`（不跟随），但同节 §7 第 9 条要求「跟随」。本轮取**跟随**：`test` 系列本来就跟随，`stat` 不带 `-L` 会取到**链接自身**的大小与时间戳；模块 docstring 已写明取舍（保留 O(1) 属性的前提下的口径统一）。
 
 ### 文档漂移（本轮补）
@@ -171,6 +171,8 @@ status: done
 
 ### 留给 03 轮
 
-- 从 `sandbox_platform.transfer` 取 `REASON_DAEMON_UNREACHABLE` / `REASON_TEMP_NAME_EXISTS`（或届时补 `__init__.py` 导出），并按 ADR 第 8 节的「建议错误码」映射 HTTP 状态码。
-- 落地 Traefik `sandbox-api-service` 的 `transport.respondingTimeouts.readTimeout` 调整（ADR 第 6 节的部署侧硬要求）。
+> **03 轮已收口（2026-11-09）**，两条的落点见下：
+
+- ~~从 `sandbox_platform.transfer` 取 `REASON_DAEMON_UNREACHABLE` / `REASON_TEMP_NAME_EXISTS`（或届时补 `__init__.py` 导出），并按 ADR 第 8 节的「建议错误码」映射 HTTP 状态码。~~ → **已完成**：四个新分类码（守护进程不可达 / 临时名已存在 / **字节数不符** / **期望值非法**）**已全部进 `__init__.py` 包导出**，服务端**从包根 `sandbox_platform` import**；状态码映射见 [[tasks/runtime-file-transfer/03-server-file-endpoints.md|任务 03]] 的「失败分类码 → HTTP 状态码映射」表。
+- ~~落地 Traefik `sandbox-api-service` 的 `transport.respondingTimeouts.readTimeout` 调整（ADR 第 6 节的部署侧硬要求）。~~ → **已完成，但落点与原写法不同**：**Traefik v3 没有 service 级 `serversTransport.respondingTimeouts`**（按 service 级写会被反代拒收）⇒ 实际落地为**入口点级覆盖**（`websecure` 入口点 `readTimeout=0`，`:80` / `:8080` 与其它 service / router 不动；infra 提交 `529ac29`）；真机 A/B：改前 **60.53 s 被 502 掐断** → 改后 **83.13 s 200 成功**、sha256 一致。**勘误见 ADR 0018 §6**。
 

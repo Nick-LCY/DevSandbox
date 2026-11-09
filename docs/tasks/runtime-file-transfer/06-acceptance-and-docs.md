@@ -37,7 +37,7 @@ status: todo
 
 **部署链（过 Traefik）**：
 
-- **经域名**（`sandbox-api.sankabox.com`，过 Traefik）做一次**慢速大上传**（限速使单次请求超过 60 s）→ **不再被 60 s 掐断**（03 轮已调 `sandbox-api-service` 的 `transport.respondingTimeouts.readTimeout`）。
+- **经域名**（`sandbox-api.sankabox.com`，过 Traefik）做一次**慢速大上传**（限速使单次请求超过 60 s）→ **不再被 60 s 掐断**。**03 轮已真机验证过**（A/B：改前 **60.53 s 被 502 掐断** → 改后 **83.13 s 200 成功**、sha256 一致；落地方式为**入口点级**——Traefik v3 **没有** service 级 `serversTransport.respondingTimeouts` ⇒ 只动 `websecure` 入口点 `readTimeout=0`，`:80` / `:8080` 与其它 service / router 不动；infra 提交 `529ac29`；**勘误见 [[architecture/decisions/0018-运行期文件传输机制选型.md|ADR 0018]] §6**）——**本轮复验可直接引用 03 轮的证据**（见 [[tasks/runtime-file-transfer/03-server-file-endpoints.md|任务 03]] 的「真机验证」）。
 
 ## 文档同步清单
 
@@ -52,9 +52,9 @@ status: todo
 
 - [ ] Playwright 真机 spec 覆盖**主链路**（上传 → 容器内校验内容与属主 → 下载 → 字节比对）。
 - [ ] Playwright 真机 spec 覆盖**负例**：下载目录 400 / 沙箱停止 409 / 非法路径 400。
-- [ ] 质量基线全绿并记录数字：核心包 pytest + ruff；服务端 pytest + ruff；前端 vitest + typecheck + build；`cargo check` / `cargo test`；Playwright 全量。
+- [ ] 质量基线全绿并记录数字：核心包 pytest + ruff；服务端 pytest + ruff；前端 vitest + typecheck + build；`cargo check` / `cargo test`；Playwright 全量。**基线参照（03 轮收口时的实测值）**：服务端 **329 passed**、核心包非 root **370 passed** / root **23 passed**（11m20s）、**ruff rc=0**。
 - [ ] **200MB 级**传输的**后端内存曲线与耗时**在验收轮再留一份证据（01 轮那份是对机制，本轮是对实现）。
-- [ ] **经域名（过 Traefik）的慢速大上传不再被 60 s 掐断**（03 轮已落地的 `readTimeout` 调整在本轮得到验证）。
+- [ ] **经域名（过 Traefik）的慢速大上传不再被 60 s 掐断**（**03 轮已落地并真机验证**——**入口点级**覆盖 `websecure` 的 `readTimeout=0`（v3 无 service 级 `respondingTimeouts`，勘误见 ADR 0018 §6）；A/B：改前 60.53 s 被 502 掐断 → 改后 83.13 s 200 成功、sha256 一致；本轮**复验**并把证据挂到收口留档）。
 - [ ] **ADR 0018 复核通过**（机制选型 + 四条否决理由 + 覆盖 / 类型 / 路径 / 大小四条口径 + 10 条实测修正口径 + 代价），**状态维持「已接受」**（01 轮落档，06 轮不改）。
 - [ ] 文档同步清单逐条完成（`API.md` / 约定 / 词汇表 / 看板 / PRD 验收清单）。
 - [ ] [[tasks/runtime-file-transfer/README.md|任务集 README]] 与六个任务文件的 `status` 更新为 `done`。

@@ -93,7 +93,7 @@ status: done
 | 只读目标报错归类 | 三类分清：**父目录缺失 / 父目录不可写（EACCES）/ 只读挂载（EROFS）**；**目标文件自身 `0444` 不是错误**（被静默覆盖，root 与 uid=1000 同） |
 | 下载链路（`cat` 流出） | 200 MiB 下行 sha256 与宿主一致；rc=0、stderr 空、EOF 语义干净 |
 | 探测链路 | **分层探测**可区分 `dir / file / fifo / chardev / blockdev / socket / symlink / missing`；大小取 **`stat -c %s`**（O(1)），`wc -c` 兜底 |
-| 部署链反代缓冲与超时 | 本机 Traefik **v3.7.13**：`sandbox-api.sankabox.com` → `192.168.2.135:28642`，service **无 transport 覆盖** ⇒ 默认 `readTimeout=60s`；**无 body 大小上限**（不会 413）；响应不缓冲（`flushInterval 100ms`）。结论：**要调 / 调 Traefik 该 service 的 `transport.respondingTimeouts.readTimeout`（`0` 或大值）/ 不动后端与其他路由** |
+| 部署链反代缓冲与超时 | 本机 Traefik **v3.7.13**：`sandbox-api.sankabox.com` → `192.168.2.135:28642`，service **无 transport 覆盖** ⇒ 默认 `readTimeout=60s`；**无 body 大小上限**（不会 413）；响应不缓冲（`flushInterval 100ms`）。结论：**要调 / 调 Traefik 该 service 的 `transport.respondingTimeouts.readTimeout`（`0` 或大值）/ 不动后端与其他路由** —— **（03 轮勘误：Traefik v3 没有 service 级 `serversTransport.respondingTimeouts`，实际落点改为「入口点级」——只动 `websecure` 入口点 `readTimeout=0`；见 ADR 0018 §6）** |
 | 200MB 级内存曲线与耗时 | 宿主进程峰值 RSS：下载 200 MiB **23.2 MiB**、下载 1 GiB **23.3 MiB**、上传 200 MiB **24.7 MiB**、上传 1 GiB **25.0 MiB**——**几乎相同、曲线平坦、不随大小线性增长**；`docker exec` 客户端同样平坦（采样 6.4 MiB / 峰值 27–28 MiB）；吞吐 571.0–1300.8 MiB/s |
 | 工具存在性 | `sh` / `cat` / `wc` / `tar` / `find` / `stat` / `mv` / `ln` / `mkfifo` / `readlink` / `ls` / `od` / `printf` 在**平台基础镜像 `sandbox-platform/base:0.3.0`（dash）/ `debian:bookworm-slim`（dash）/ `alpine:latest`（busybox ash）/ `alpine/socat:1.8.1.3`（busybox ash）全部存在** ⇒ **无降级口径** |
 | ADR 0018 | 已落档：**[[architecture/decisions/0018-运行期文件传输机制选型.md\|0018 运行期文件传输机制选型]]**，状态**已接受**（含 10 条实测修正口径与部署链约束） |
