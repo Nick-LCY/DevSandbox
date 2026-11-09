@@ -13,6 +13,10 @@
 #     源码仓库、也不改动任何已部署文件；
 #   · 升级 = 重新导出快照 + 重建快照内的运行环境，然后 restart 本服务
 #     （换提交 → 重新 archive → 重新 sync → systemctl restart）；
+#   · **venv 须在最终部署路径下构建**：先 mv 到位、再执行 uv sync；
+#   · 临时路径（如 /opt/sandbox-platform.new）sync 过的，改名后须重做 sync
+#     （或对 venv 内 .pth / direct_url.json / script shebang 做路径重定位）
+#     ——否则 editable 安装失效（No module named sandbox_console）、服务起不来；
 #   · 模板里的路径是**占位**，按实际部署位置调整（下方的 User=、
 #     WorkingDirectory、ExecStart、以及 SANDBOX_PLATFORM_HOME 四处）。
 #
