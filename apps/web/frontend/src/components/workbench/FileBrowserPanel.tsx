@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Folder, Loader2, Upload, X } from 'lucide-react';
 
 import { api } from '../../api/client';
@@ -24,6 +24,8 @@ import {
   sortFileEntries,
   splitContainerPath,
   transferPercent,
+  trimBreadcrumbLevels,
+  type BreadcrumbTrim,
 } from '../../lib/file-transfer';
 import { useToast } from '../Toast';
 import { DrawerShell } from './DrawerShell';
@@ -122,6 +124,56 @@ function saveBlob(blob: Blob, filename: string): void {
 }
 
 const rowGrid = 'grid grid-cols-[minmax(0,1fr)_86px_126px] items-center gap-3';
+
+/**
+ * 面包屑层级之间的间距（`gap-1` = 0.25rem = 4px）。
+ *
+ * 量宽模型里要用到它（省略号也是一格，格子之间同样有间距），所以写成常量：
+ * 改布局时**这里要跟着改**，否则裁剪口径与实际渲染对不上。
+ */
+const CRUMB_GAP_PX = 4;
+
+/**
+ * 面包屑三个按钮（根图标钮 / 层级钮 / 量宽行）**共用**的类名片段。
+ *
+ * 抽成常量是为了消除手抄漂移：三处必须保持同一套焦点环与过渡节奏，
+ * 改一处就要改三处。
+ *
+ * 两句口径（写在代码里，免得下次又踩）：
+ * - **类名的书写顺序与谁覆盖谁无关**：Tailwind 变体之间的覆盖由**特异度**决定
+ *   （`hover:` 与 `aria-[current=page]:` 同特异度时看样式表里的先后），
+ *   不是看 className 里谁写在后面；
+ * - **jsdom 用例只能钉类名字符串**，验不了视觉（下划线画没画出来、底色亮不亮
+ *   都验不了）——所以单测只钉「关系」（同高、有变体、无第二套真值），
+ *   视觉口径靠 e2e 与人眼。
+ */
+const CRUMB_LINK_CLASS =
+  'transition-colors focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none';
+
+/**
+ * 有文字的层级按钮的链接样式（可见行与量宽行共用）。
+ *
+ * **只给有文字的元素用**：`text-decoration` 不向 flex item 的后代传播，
+ * 根图标钮（`inline-flex` + 纯图标）挂 `hover:underline` 也**画不出下划线**
+ * ——根钮的 hover 反馈走 `hover:bg-muted hover:text-foreground`（底色 / 变色）。
+ */
+const CRUMB_TEXT_LINK_CLASS = 'text-primary underline-offset-4 hover:underline';
+
+/**
+ * 层级按钮的类名（可见行与量宽行**必须同一套**，量到的才是真实宽度）。
+ *
+ * 样式口径：
+ * - **父级用链接样式**（`CRUMB_TEXT_LINK_CLASS`，对齐 `ui/button.tsx` 的
+ *   link variant），不再用按钮底色 hover；
+ * - **当前层级**由 `aria-current` 变体驱动高亮（`aria-[current=page]:…`），
+ *   JS 侧不再另写一套「是不是当前级」的样式真值；
+ * - 分隔符 `/` 与省略号用 `text-faint`。
+ */
+const CRUMB_BUTTON_CLASS =
+  'max-w-48 truncate rounded-md px-1.5 py-0.5 ' +
+  CRUMB_TEXT_LINK_CLASS +
+  ' aria-[current=page]:bg-muted aria-[current=page]:text-foreground' +
+  ' aria-[current=page]:hover:no-underline';
 
 /**
  * 运行期文件浏览面板（独立抽屉）。
@@ -293,26 +345,239 @@ export function FileBrowserPanel({
 
   /* ---------------------------------------------------------------- 导航 */
 
-  const enterDirectory = useCallback((name: string) => {
-    const next = childContainerPath(pathRef.current, name);
-    if (next !== null) {
+  /**
+   * 统一导航入口。
+   *
+   * **同路径必须强制重读**：`setPath` 传同值时 React 会 bail out（不重渲染），
+   * 于是「当前目录变化就重读列表」的 effect 不会重跑——列表被清空成
+   * 「空目录」（点根 crumb 回根、点当前层级 crumb 都会踩到：先 `setEntries([])`，
+   * 路径又没变，列表就永远停在空数组上）。
+   * 所以同路径时**绕开 setState，直接重读一次**。
+   */
+  const goToPath = useCallback(
+    (next: string): void => {
+      const target = next === '' ? '/' : next;
+      if (target === pathRef.current) {
+        void loadDirectory(target);
+        return;
+      }
       setEntries([]);
-      setPath(next);
+      // 清空的同时进加载态：不让「空目录」在换目录的间隙闪一下。
+      setLoading(true);
+      setPath(target);
+    },
+    [loadDirectory],
+  );
+
+  const enterDirectory = useCallback(
+    (name: string) => {
+      const next = childContainerPath(pathRef.current, name);
+      if (next !== null) {
+        goToPath(next);
+      }
+    },
+    [goToPath],
+  );
+
+  const navigateToDepth = useCallback(
+    (depth: number) => {
+      const current = splitContainerPath(pathRef.current);
+      // depth < 0 = 根目录（显式归一，不靠 slice 的巧合）。
+      const next = depth < 0 ? '/' : joinContainerPath(current.slice(0, depth + 1));
+      goToPath(next);
+    },
+    [goToPath],
+  );
+
+  const navigateToRoot = useCallback(() => {
+    goToPath('/');
+  }, [goToPath]);
+
+  const segments = splitContainerPath(path);
+
+  /* ---------------------------------------------------------- 面包屑排版 */
+
+  /** 可见层级区（同时是量宽基准）：`flex-1 min-w-0` → 宽度 = 导航行剩下的空间。 */
+  const crumbLevelsRef = useRef<HTMLDivElement | null>(null);
+  /** 量宽用的隐藏行：渲染**全部**层级，量完再决定可见行留哪些。 */
+  const crumbMeasureRef = useRef<HTMLDivElement | null>(null);
+  /** 观察可见层级区宽度变化的观察器（**节点挂上才建**、节点卸载就收）。 */
+  const crumbObserverRef = useRef<ResizeObserver | null>(null);
+  /** 量宽去抖的 rAF 句柄（拖拽调宽时每帧最多量一次）。 */
+  const crumbFrameRef = useRef<number | null>(null);
+  /** 最新的量宽函数（回调 ref 与观察器回调都读它）。 */
+  const crumbLayoutRef = useRef<() => void>(() => {});
+  const [crumbTrim, setCrumbTrim] = useState<BreadcrumbTrim | null>(null);
+
+  /**
+   * 量宽 → 裁剪（面包屑的溢出逻辑在 `trimBreadcrumbLevels` 里，这里只喂数据）。
+   *
+   * - 可用宽度：可见层级区的**边框盒宽度**（`getBoundingClientRect().width`）。
+   *   用它而不是 `clientWidth`：后者是**取整的整数**，与下面量到的元素宽度
+   *   （小数）不是同一口径，会带来 0.5px 级的误差；
+   * - 各级宽度：隐藏量宽行里**同一套类名**的整格宽度。
+   *   用 `offsetWidth` 而不是 `scrollWidth`：层级名带 `truncate`，
+   *   `scrollWidth` 是**未截断**的内容宽度，量它会把长名字算宽。
+   */
+  const applyCrumbLayout = useCallback((): void => {
+    const levelsBox = crumbLevelsRef.current;
+    const measureBox = crumbMeasureRef.current;
+    if (!levelsBox || !measureBox) {
+      return;
+    }
+    const available = levelsBox.getBoundingClientRect().width;
+    if (!Number.isFinite(available) || available <= 0) {
+      // 宽度还没量出来（首帧 / 未布局）：不裁剪，等下一次量。
+      return;
+    }
+    const widthOf = (node: HTMLElement | null): number => {
+      if (!node) {
+        return 0;
+      }
+      const rect = node.getBoundingClientRect();
+      return rect.width > 0 ? rect.width : node.offsetWidth;
+    };
+    const widths: number[] = [];
+    measureBox.querySelectorAll<HTMLElement>('[data-crumb-level]').forEach((node) => {
+      widths.push(widthOf(node));
+    });
+    const next = trimBreadcrumbLevels(available, widths, {
+      ellipsisWidth: widthOf(measureBox.querySelector<HTMLElement>('[data-crumb-ellipsis]')),
+      gapWidth: CRUMB_GAP_PX,
+    });
+    setCrumbTrim((prev) => {
+      if (prev === null) {
+        return next;
+      }
+      return prev.start === next.start && prev.end === next.end && prev.ellipsis === next.ellipsis
+        ? prev
+        : next;
+    });
+  }, []);
+
+  /**
+   * 渲染期同步「最新量宽函数」。
+   *
+   * 为什么不能放进 effect：回调 ref 在 **commit 阶段**就跑（早于 passive effect），
+   * 放进 effect 会让「节点一挂上就量一次」拿到的是**上一次**的实现。
+   * 赋的是同一份稳定引用，渲染期赋值是幂等的。
+   */
+  crumbLayoutRef.current = applyCrumbLayout;
+
+  /** 去抖后的量宽（拖拽调宽时每帧只量一次，避免每帧强制回流）。 */
+  const scheduleCrumbLayout = useCallback((): void => {
+    if (crumbFrameRef.current !== null) {
+      return;
+    }
+    crumbFrameRef.current = window.requestAnimationFrame(() => {
+      crumbFrameRef.current = null;
+      crumbLayoutRef.current();
+    });
+  }, []);
+
+  /**
+   * 量宽基准节点的**回调 ref**。
+   *
+   * 为什么不能用 `useRef` + effect：抽屉关闭时 Base UI 的 portal **不渲染内容**
+   * （`keepMounted=false`），而面板是**常驻挂载**的 ⇒ 面板挂载那一刻节点还不存在
+   * ⇒ effect 里的 `ref.current` 恒为 `null` ⇒ 观察器**永远建不起来**，
+   * 首次打开也不量宽（deps 再也不变 ⇒ effect 不会重跑）。
+   *
+   * 回调 ref 拿到的正是「节点真正出现的时刻」：
+   * - 节点挂上（= 抽屉打开、DOM 出现）→ 挂观察器 + **立即量一次**；
+   * - 节点卸载（= 抽屉关闭）→ `disconnect` 并清引用。
+   */
+  const attachLevelsBox = useCallback(
+    (node: HTMLDivElement | null): void => {
+      // 旧观察器收掉（节点换掉 / 抽屉关闭 / 量宽实现换了）。
+      crumbObserverRef.current?.disconnect();
+      crumbObserverRef.current = null;
+      crumbLevelsRef.current = node;
+      if (node === null) {
+        return;
+      }
+      if (typeof ResizeObserver !== 'undefined') {
+        const observer = new ResizeObserver(() => {
+          scheduleCrumbLayout();
+        });
+        observer.observe(node);
+        crumbObserverRef.current = observer;
+      }
+      // 节点刚出现：立刻量一次（不等 ResizeObserver 的首拍）。
+      crumbLayoutRef.current();
+    },
+    [scheduleCrumbLayout],
+  );
+
+  /**
+   * 量宽行的回调 ref：它与层级区是**兄弟节点**、挂得更晚 ⇒ 挂上时补量一次
+   * （否则层级区先挂上那一刻量宽行还不存在，量不到任何东西）。
+   */
+  const attachMeasureBox = useCallback((node: HTMLDivElement | null): void => {
+    crumbMeasureRef.current = node;
+    if (node !== null) {
+      crumbLayoutRef.current();
     }
   }, []);
 
-  const navigateToDepth = useCallback((depth: number) => {
-    const segments = splitContainerPath(pathRef.current);
-    setEntries([]);
-    setPath(joinContainerPath(segments.slice(0, depth + 1)));
-  }, []);
+  // 路径变了要重量一次（层级宽度变了）：先按「全部保留」画，再量。
+  useLayoutEffect(() => {
+    setCrumbTrim(null);
+    applyCrumbLayout();
+  }, [path, applyCrumbLayout]);
 
-  const navigateToRoot = useCallback(() => {
-    setEntries([]);
-    setPath('/');
-  }, []);
+  /**
+   * 量宽实现换了（依赖变化）→ **旧观察器换新**：用新实现重建观察器并重量一次。
+   *
+   * 当前 `applyCrumbLayout` 的依赖为空（实现是稳定的），这条路径平时不跑；
+   * 但它保证了「实现变了就换观察器」这条约束不靠口头约定。
+   */
+  const prevCrumbLayoutRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    const previous = prevCrumbLayoutRef.current;
+    prevCrumbLayoutRef.current = applyCrumbLayout;
+    if (previous === null || previous === applyCrumbLayout) {
+      return;
+    }
+    const node = crumbLevelsRef.current;
+    if (node === null) {
+      return;
+    }
+    attachLevelsBox(node);
+  }, [applyCrumbLayout, attachLevelsBox]);
 
-  const segments = splitContainerPath(path);
+  // 自托管字体 swap 晚到会让量到的宽度失真（量的是回退字形的宽度）：
+  // 字体就绪后补量一次（照 TerminalView 的现成处理）。
+  useEffect(() => {
+    if (!document.fonts) {
+      return;
+    }
+    let cancelled = false;
+    void document.fonts.ready
+      .then(() => {
+        if (cancelled) {
+          return;
+        }
+        applyCrumbLayout();
+      })
+      .catch(() => {
+        // 字体加载失败：保持现状，等下一次观察器回调。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [applyCrumbLayout]);
+
+  // 卸载时收掉 rAF（别让回调落在已卸载的组件上）。
+  useEffect(
+    () => () => {
+      if (crumbFrameRef.current !== null) {
+        window.cancelAnimationFrame(crumbFrameRef.current);
+        crumbFrameRef.current = null;
+      }
+    },
+    [],
+  );
 
   /* ---------------------------------------------------------------- 上传 */
 
@@ -763,57 +1028,122 @@ export function FileBrowserPanel({
         widthVw={widthVw}
         onWidthChange={onWidthChange}
       >
-        <div className="flex min-h-0 flex-col gap-3">
-          <nav
-            aria-label="路径"
-            data-testid="page-file-browser-crumbs"
-            className="flex flex-wrap items-center gap-1 text-[12.5px]"
-          >
-            <button
-              type="button"
-              onClick={navigateToRoot}
-              title="根目录"
-              aria-label="根目录"
-              aria-current={segments.length === 0 ? 'page' : undefined}
-              data-testid="page-file-browser-crumb"
-              data-depth="-1"
-              className={cn(
-                'inline-flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground',
-                segments.length === 0 && 'bg-muted text-foreground',
-              )}
+        {/*
+          面板根：**撑满抽屉正文**（`h-full`）+ 列表自己内部滚动，
+          抽屉本体不再被内容撑出滚动条。
+        */}
+        <div className="flex h-full min-h-0 flex-col gap-3">
+          {/* 行：面包屑（占满剩余宽度）+ 上传按钮（定宽，同高 h-8） */}
+          <div className="flex flex-none items-center gap-2">
+            <nav
+              aria-label="路径"
+              data-testid="page-file-browser-crumbs"
+              className="relative flex h-8 min-w-0 flex-1 items-center gap-1 overflow-hidden rounded-lg border border-border bg-muted/40 px-2 text-[12.5px]"
             >
-              <Folder className="size-3.5" aria-hidden="true" />
-            </button>
-            {segments.map((segment, index) => (
-              <span key={`${index}-${segment}`} className="flex items-center gap-1">
-                <span aria-hidden="true" className="text-faint">
-                  /
-                </span>
-                <button
-                  type="button"
-                  onClick={() => navigateToDepth(index)}
-                  aria-current={index === segments.length - 1 ? 'page' : undefined}
-                  data-testid="page-file-browser-crumb"
-                  data-depth={index}
-                  className={cn(
-                    'max-w-48 truncate rounded-md px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground',
-                    index === segments.length - 1 && 'bg-muted text-foreground',
-                  )}
-                >
-                  {segment}
-                </button>
-              </span>
-            ))}
-          </nav>
+              {/* 根目录（父级 → hover 底色 / 变色；当前级由 aria-current 变体高亮） */}
+              <button
+                type="button"
+                onClick={navigateToRoot}
+                title="根目录"
+                aria-label="根目录"
+                aria-current={segments.length === 0 ? 'page' : undefined}
+                data-testid="page-file-browser-crumb"
+                data-depth="-1"
+                className={cn(
+                  'inline-flex size-6 shrink-0 items-center justify-center rounded-md',
+                  CRUMB_LINK_CLASS,
+                  // 纯图标钮**挂不出下划线**（`text-decoration` 不向 flex item
+                  // 的后代传播）→ hover 反馈走底色 / 变色。
+                  'text-muted-foreground hover:bg-muted hover:text-foreground',
+                  'aria-[current=page]:bg-muted aria-[current=page]:text-foreground',
+                )}
+              >
+                <Folder className="size-3.5" aria-hidden="true" />
+              </button>
 
-          <div>
+              {/*
+                层级区：`flex-1 min-w-0` → 宽度 = 导航行剩下的空间（量宽基准）。
+                放不下时浅层级收进省略号，**保留靠近当前目录的深层级**。
+              */}
+              <div
+                ref={attachLevelsBox}
+                className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden"
+              >
+                {crumbTrim?.ellipsis === true && (
+                  <span
+                    aria-hidden="true"
+                    data-testid="page-file-browser-crumb-ellipsis"
+                    className="shrink-0 text-faint"
+                  >
+                    …
+                  </span>
+                )}
+                {segments.slice(crumbTrim?.start ?? 0).map((segment, offset) => {
+                  const index = (crumbTrim?.start ?? 0) + offset;
+                  return (
+                    <span
+                      key={`${index}-${segment}`}
+                      className="flex min-w-0 items-center gap-1"
+                    >
+                      <span aria-hidden="true" className="shrink-0 text-faint">
+                        /
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => navigateToDepth(index)}
+                        aria-current={index === segments.length - 1 ? 'page' : undefined}
+                        data-testid="page-file-browser-crumb"
+                        data-depth={index}
+                        className={cn(CRUMB_LINK_CLASS, CRUMB_BUTTON_CLASS)}
+                      >
+                        {segment}
+                      </button>
+                    </span>
+                  );
+                })}
+              </div>
+
+              {/*
+                量宽用的隐藏行：渲染**全部**层级（可见行只留裁剪后的那些），
+                量到的宽度与可见行同一套类名 ⇒ 同一套渲染宽度。
+                `visibility: hidden` 不参与布局但保留盒子尺寸（可量）。
+
+                a11y：整行 `aria-hidden` + `pointer-events-none`，里面**不放可聚焦
+                元素**——层级名用 `<span>`（配 `inline-block` 与按钮同宽），
+                不是真 `<button>`（`aria-hidden` 里有可聚焦元素是 a11y 硬伤）。
+              */}
+              <div
+                ref={attachMeasureBox}
+                aria-hidden="true"
+                className="pointer-events-none invisible absolute left-0 top-0 flex h-0 w-max items-center gap-1 overflow-hidden"
+              >
+                <span data-crumb-ellipsis className="shrink-0 text-faint">
+                  …
+                </span>
+                {segments.map((segment, index) => (
+                  <span
+                    key={`measure-${index}-${segment}`}
+                    data-crumb-level={index}
+                    className="flex items-center gap-1"
+                  >
+                    <span aria-hidden="true" className="shrink-0 text-faint">
+                      /
+                    </span>
+                    <span className={cn(CRUMB_LINK_CLASS, CRUMB_BUTTON_CLASS, 'inline-block')}>
+                      {segment}
+                    </span>
+                  </span>
+                ))}
+              </div>
+            </nav>
+
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
               disabled={preparingUpload}
               aria-busy={preparingUpload}
               data-testid="page-file-browser-upload-button"
-              className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-transparent bg-primary px-2.5 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/80 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+              className="inline-flex h-8 flex-none items-center justify-center gap-1.5 rounded-lg border border-transparent bg-primary px-2.5 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/80 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60"
             >
               {preparingUpload ? (
                 <Loader2 className="size-4 animate-spin" aria-hidden="true" />
@@ -834,14 +1164,20 @@ export function FileBrowserPanel({
             />
           </div>
 
+          {/*
+            列表：**自己内部滚动**（`flex-1 min-h-0 overflow-y-auto`），
+            表头 sticky 住（行内进度行随列表滚动，不固定）。
+            横向用 `overflow-x-auto`（不是 `hidden`）：窄抽屉（1280px 视口下
+            256px 宽）里 `hidden` 会把「修改时间」列直接切掉，滚动兜底更稳。
+          */}
           <div
             data-testid="page-file-browser-list"
-            className="overflow-hidden rounded-lg border border-border bg-card"
+            className="min-h-0 flex-1 overflow-x-auto overflow-y-auto rounded-lg border border-border bg-card"
           >
             <div
               className={cn(
                 rowGrid,
-                'border-b border-border bg-muted/50 px-3 py-2 text-[11.5px] text-muted-foreground',
+                'sticky top-0 z-10 border-b border-border bg-card px-3 py-2 text-[11.5px] text-muted-foreground',
               )}
             >
               <span>名称</span>

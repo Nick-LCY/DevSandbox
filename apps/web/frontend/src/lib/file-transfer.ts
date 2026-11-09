@@ -72,6 +72,100 @@ export function parentContainerPath(path: string): string {
   return joinContainerPath(segments.slice(0, -1));
 }
 
+/* -------------------------------------------------------------- 面包屑排版 */
+
+/**
+ * 面包屑溢出裁剪的结果。
+ *
+ * `start` / `end` 是**保留区间**（含两端）：浅层级被收进省略号时 `start > 0`，
+ * `end` 恒为最后一级（当前目录）。
+ */
+export interface BreadcrumbTrim {
+  /** 保留区间的起始下标（含）。 */
+  start: number;
+  /** 保留区间的结束下标（含）；恒为最后一级（当前目录）。 */
+  end: number;
+  /** 左侧是否显示省略号（被收起来的浅层级的标记，纯展示、不可点）。 */
+  ellipsis: boolean;
+}
+
+/** 面包屑排版的可调参数（单位：像素）。 */
+export interface BreadcrumbTrimOptions {
+  /** 省略号标记自身的宽度。 */
+  ellipsisWidth?: number;
+  /** 格子之间的间距（flex gap）。 */
+  gapWidth?: number;
+}
+
+/**
+ * 面包屑溢出裁剪：**宽度不够时优先保留右侧（靠近当前目录的深层级）**，
+ * 左侧浅层级逐步收进省略号「…」。
+ *
+ * 宽度口径：
+ * - `levelWidths[i]` 是第 i 级（浅 → 深）的**整格宽度**（含它自己的分隔符）；
+ * - 一行的总宽 = 各格宽度之和 + 格子之间的间距 × (格子数 - 1)，
+ *   **省略号本身也算一格**；
+ * - `availableWidth ≤ 0`（宽度未知 / 还没布局）时**不裁剪**：全部保留
+ *   （宁可多显示，也不要在没量到宽度时先把浅层级收起来）；
+ * - 当前级（最后一级）**永远保留**：实在放不下时也留着（配合 CSS 截断兜底）；
+ * - 极窄（连「省略号 + 当前级」都放不下）时：**只留当前级，但保留省略号提示**
+ *   ——浅层级确实被收起来了，提示不能丢；当前级由 CSS 截断兜底
+ *   （宁可当前级被 truncate，也不丢「还有浅层级」的提示）。
+ */
+export function trimBreadcrumbLevels(
+  availableWidth: number,
+  levelWidths: readonly number[],
+  options?: BreadcrumbTrimOptions,
+): BreadcrumbTrim {
+  const widths = levelWidths.map((width) =>
+    typeof width === 'number' && Number.isFinite(width) && width > 0 ? width : 0,
+  );
+  const end = widths.length - 1;
+  if (end < 0) {
+    return { start: 0, end: -1, ellipsis: false };
+  }
+  const limit =
+    typeof availableWidth === 'number' && Number.isFinite(availableWidth) && availableWidth > 0
+      ? availableWidth
+      : 0;
+  if (limit <= 0) {
+    // 宽度未知：不做裁剪。
+    return { start: 0, end, ellipsis: false };
+  }
+  const ellipsisWidth =
+    typeof options?.ellipsisWidth === 'number' &&
+    Number.isFinite(options.ellipsisWidth) &&
+    options.ellipsisWidth > 0
+      ? options.ellipsisWidth
+      : 0;
+  const gapWidth =
+    typeof options?.gapWidth === 'number' && Number.isFinite(options.gapWidth) && options.gapWidth > 0
+      ? options.gapWidth
+      : 0;
+
+  /** 保留 `[start, end]` 时这一行要占的宽度。 */
+  const widthOf = (start: number): number => {
+    let sum = 0;
+    for (let index = start; index <= end; index += 1) {
+      sum += widths[index];
+    }
+    const cells = end - start + 1 + (start > 0 ? 1 : 0);
+    return sum + (start > 0 ? ellipsisWidth : 0) + gapWidth * (cells - 1);
+  };
+
+  // 从浅到深逐级试：**第一个放得下的起点**就是最终保留区间
+  // （放不下就往右收，浅层级退进省略号）。
+  for (let start = 0; start <= end; start += 1) {
+    if (widthOf(start) <= limit) {
+      return { start, end, ellipsis: start > 0 };
+    }
+  }
+  // 连当前级都放不下（极窄）：只留当前级。
+  // **省略号仍要留**：浅层级确实被收起来了（提示不能丢），当前级由 CSS 截断兜底。
+  // 只有一级时没有浅层级可收 → 不出省略号。
+  return { start: end, end, ellipsis: end > 0 };
+}
+
 /* -------------------------------------------------------------- 文件名解析 */
 
 /**

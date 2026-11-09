@@ -25,6 +25,7 @@ import {
   sortFileEntries,
   splitContainerPath,
   transferPercent,
+  trimBreadcrumbLevels,
 } from './file-transfer';
 
 function entry(overrides: Partial<FileListEntry>): FileListEntry {
@@ -126,6 +127,109 @@ describe('格式化', () => {
     expect(transferPercent(120, 100)).toBe(100);
     expect(transferPercent(10, null)).toBeNull();
     expect(transferPercent(10, 0)).toBeNull();
+  });
+});
+
+describe('面包屑溢出裁剪', () => {
+  const widths = [100, 100, 100];
+  const options = { ellipsisWidth: 16, gapWidth: 4 };
+
+  it('宽度足够：全部层级都保留（无省略号）', () => {
+    expect(trimBreadcrumbLevels(500, widths, options)).toEqual({
+      start: 0,
+      end: 2,
+      ellipsis: false,
+    });
+  });
+
+  it('放不下：浅层级收进省略号，优先保留靠近当前目录的深层级', () => {
+    // 只放得下「省略号 + 当前级」：100 + 16 + 4 = 120
+    expect(trimBreadcrumbLevels(120, widths, options)).toEqual({
+      start: 2,
+      end: 2,
+      ellipsis: true,
+    });
+    // 放得下「省略号 + 最近两级」：200 + 16 + 8 = 224
+    expect(trimBreadcrumbLevels(250, widths, options)).toEqual({
+      start: 1,
+      end: 2,
+      ellipsis: true,
+    });
+  });
+
+  it('窗口变宽：恢复全部层级（省略号消失）', () => {
+    const narrow = trimBreadcrumbLevels(120, widths, options);
+    expect(narrow.ellipsis).toBe(true);
+    expect(narrow.start).toBe(2);
+    const wide = trimBreadcrumbLevels(500, widths, options);
+    expect(wide).toEqual({ start: 0, end: 2, ellipsis: false });
+  });
+
+  it('宽度未知（≤ 0 / 非有限）：不裁剪，全部保留', () => {
+    expect(trimBreadcrumbLevels(0, widths, options)).toEqual({
+      start: 0,
+      end: 2,
+      ellipsis: false,
+    });
+    expect(trimBreadcrumbLevels(-10, widths, options)).toEqual({
+      start: 0,
+      end: 2,
+      ellipsis: false,
+    });
+    expect(trimBreadcrumbLevels(Number.NaN, widths, options)).toEqual({
+      start: 0,
+      end: 2,
+      ellipsis: false,
+    });
+  });
+
+  it('当前级永远保留：连当前级都放不下时只留它', () => {
+    expect(trimBreadcrumbLevels(50, widths, options)).toEqual({
+      start: 2,
+      end: 2,
+      ellipsis: true,
+    });
+  });
+
+  it('极窄：当前级被截断也不丢省略号提示（浅层级确实被收起来了）', () => {
+    // 「省略号 + 当前级」都放不下（100 + 16 + 4 = 120 > 110）：只留当前级，
+    // 但**保留省略号**——浅层级确实被收起来了，提示不能丢；
+    // 当前级由 CSS 截断兜底（宁可 truncate，也不丢提示）。
+    expect(trimBreadcrumbLevels(110, widths, options)).toEqual({
+      start: 2,
+      end: 2,
+      ellipsis: true,
+    });
+    // 只有一级时没有浅层级可收 → 不出省略号。
+    expect(trimBreadcrumbLevels(10, [100], options)).toEqual({
+      start: 0,
+      end: 0,
+      ellipsis: false,
+    });
+  });
+
+  it('单级 / 空级：分别返回自身 / 空区间', () => {
+    expect(trimBreadcrumbLevels(500, [80], options)).toEqual({
+      start: 0,
+      end: 0,
+      ellipsis: false,
+    });
+    expect(trimBreadcrumbLevels(500, [], options)).toEqual({
+      start: 0,
+      end: -1,
+      ellipsis: false,
+    });
+  });
+
+  it('非法宽度当作 0；不修改入参数组', () => {
+    expect(trimBreadcrumbLevels(500, [Number.NaN, -5, 100], options)).toEqual({
+      start: 0,
+      end: 2,
+      ellipsis: false,
+    });
+    const input = [100, 100, 100];
+    trimBreadcrumbLevels(120, input, options);
+    expect(input).toEqual([100, 100, 100]);
   });
 });
 

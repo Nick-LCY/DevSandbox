@@ -127,6 +127,73 @@ function chooseFiles(...files: File[]): void {
   });
 }
 
+/** className 拆成 token 列表（断言只认 token，不认整串）。 */
+function classTokens(node: Element): string[] {
+  return node.className.split(/\s+/).filter(Boolean);
+}
+
+/**
+ * jsdom 没有布局：所有元素的 `getBoundingClientRect()` 都是 0。
+ *
+ * 这里按「角色」给一份假尺寸，让量宽逻辑能跑出**可判定**的结果：
+ * - 可见层级区（`aria-label="路径"` 的 nav 的直接子 div）= 100px
+ *   （放不下两级 60px ⇒ 浅层级收进省略号）；
+ * - 量宽行里的每个层级格 = 60px、省略号 = 16px。
+ */
+function stubCrumbLayout(): ReturnType<typeof vi.spyOn> {
+  return vi
+    .spyOn(Element.prototype, 'getBoundingClientRect')
+    .mockImplementation(function (this: Element) {
+      let width = 300;
+      if (this.hasAttribute('data-crumb-level')) {
+        width = 60;
+      } else if (this.hasAttribute('data-crumb-ellipsis')) {
+        width = 16;
+      } else if (this.parentElement?.getAttribute('aria-label') === '路径') {
+        width = 100;
+      }
+      return {
+        width,
+        height: 20,
+        top: 0,
+        left: 0,
+        right: width,
+        bottom: 20,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      } as DOMRect;
+    });
+}
+
+/**
+ * 可观测的 `ResizeObserver` 替身（jsdom 没有实现）。
+ *
+ * **按实例留档**：Base UI 的抽屉自己也在用 ResizeObserver（量弹层与视口），
+ * 所以不能只看「全局调用了几次」——要按实例分辨**谁观察了哪个节点**、
+ * **谁被 disconnect 了**。
+ */
+function stubResizeObserver(): {
+  instances: Array<{ observed: Element[]; disconnected: boolean }>;
+} {
+  const instances: Array<{ observed: Element[]; disconnected: boolean }> = [];
+  class FakeResizeObserver {
+    private readonly record = { observed: [] as Element[], disconnected: false };
+    constructor() {
+      instances.push(this.record);
+    }
+    observe(node: Element): void {
+      this.record.observed.push(node);
+    }
+    unobserve(): void {}
+    disconnect(): void {
+      this.record.disconnected = true;
+    }
+  }
+  vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+  return { instances };
+}
+
 let clickedAnchors: HTMLAnchorElement[] = [];
 
 beforeEach(() => {
@@ -171,6 +238,7 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe('列表与导航', () => {
@@ -216,6 +284,177 @@ describe('列表与导航', () => {
     await waitFor(() =>
       expect(mocks.listFiles).toHaveBeenLastCalledWith('demo-01', '/home'),
     );
+  });
+
+  it('面包屑与上传按钮同一行、同高；当前级高亮只由 aria-current 变体驱动', () => {
+    renderPanel();
+    const nav = screen.getByTestId('page-file-browser-crumbs');
+    const upload = screen.getByTestId('page-file-browser-upload-button');
+
+    // 同一行 = 同一个父容器（面包屑 flex-1 占剩余宽度，上传按钮 flex-none 定宽）。
+    expect(upload.parentElement).toBe(nav.parentElement);
+
+    // 两者**同高**：各自 className 里抽高度类（`h-*` 一类）必须相等。
+    // 只钉「相等」这个关系，不钉死具体数值（钉死数值 = 钉死实现细节）。
+    const heightClassOf = (node: HTMLElement): string | undefined =>
+      classTokens(node).find((token) => /^h-\S+$/.test(token));
+    expect(heightClassOf(nav)).toBeDefined();
+    expect(heightClassOf(upload)).toBeDefined();
+    expect(heightClassOf(nav)).toBe(heightClassOf(upload));
+
+    // 面包屑区域**固定底色**（不靠 hover 出底色）：存在**非 hover 条件**的
+    // 底色类（`bg-muted/40` 一类）。
+    expect(
+      classTokens(nav).some((token) => /^bg-muted/.test(token) && !token.includes(':')),
+      `面包屑没有固定底色类：${nav.className}`,
+    ).toBe(true);
+
+    // 当前级高亮**只**由 aria-current 变体驱动：JS 侧不再另写一套
+    // 「是不是当前级」的样式真值 ⇒ 当前级与父级的 className **完全一致**，
+    // 差异只来自 `aria-current` 属性。
+    const current = crumbAt(1);
+    expect(current.getAttribute('aria-current')).toBe('page');
+    const parent = crumbAt(0);
+    expect(parent.getAttribute('aria-current')).toBeNull();
+    expect([...classTokens(current)].sort()).toEqual([...classTokens(parent)].sort());
+    // 变体在（当前级的高亮样式确实存在）。
+    expect(
+      classTokens(current).some((token) => token.startsWith('aria-[current=page]:')),
+      `当前级没有 aria-current 变体：${current.className}`,
+    ).toBe(true);
+    // 父级走链接样式（不是按钮底色 hover）。
+    expect(classTokens(parent)).not.toContain('hover:bg-muted');
+
+    // 链接样式（`text-primary` + `hover:underline`）在**有文字**的层级按钮上。
+    expect(classTokens(parent)).toContain('text-primary');
+    expect(classTokens(parent)).toContain('hover:underline');
+
+    // 根图标钮是纯图标：下划线**画不出来**（`text-decoration` 不向 flex item
+    // 的后代传播）⇒ 不挂 hover:underline，hover 反馈走底色 / 变色。
+    const root = crumbAt(-1);
+    const rootTokens = classTokens(root);
+    expect(rootTokens).not.toContain('hover:underline');
+    expect(
+      rootTokens.some((token) => /^hover:(bg|text)-/.test(token)),
+      `根图标钮没有 hover 反馈：${root.className}`,
+    ).toBe(true);
+
+    // 分隔符保持 text-faint。
+    const separators = Array.from(
+      nav.querySelectorAll<HTMLSpanElement>('span[aria-hidden="true"]'),
+    ).filter((node) => node.textContent === '/');
+    expect(separators.length).toBeGreaterThan(0);
+    expect(classTokens(separators[0])).toContain('text-faint');
+  });
+
+  it('量宽行是内部隐藏行：aria-hidden + 不可聚焦 + 不含交互元素', () => {
+    renderPanel();
+    const nav = screen.getByTestId('page-file-browser-crumbs');
+    // 量宽行 = 挂着 `data-crumb-level` 的那些格子的父节点。
+    const measureRow = nav.querySelector('[data-crumb-level]')?.parentElement;
+    expect(measureRow, '找不到量宽行').toBeTruthy();
+    expect(measureRow?.getAttribute('aria-hidden')).toBe('true');
+    expect(classTokens(measureRow as Element)).toContain('pointer-events-none');
+    // `aria-hidden` 的子树里不能有可聚焦元素（量宽行原来放的是真 `<button>`）。
+    expect(measureRow?.querySelectorAll('button').length).toBe(0);
+    expect(measureRow?.querySelectorAll('a, [tabindex]').length).toBe(0);
+    // 量宽属性只出现在量宽行里，不漏到可见行。
+    const levelCells = Array.from(nav.querySelectorAll('[data-crumb-level]'));
+    expect(levelCells.length).toBeGreaterThan(0);
+    expect(levelCells.every((cell) => measureRow?.contains(cell))).toBe(true);
+  });
+
+  it('量宽基准节点后到（抽屉关闭时面板已挂载）：首次打开即挂观察器并量宽；关闭再打开会重挂', async () => {
+    const observer = stubResizeObserver();
+    const rect = stubCrumbLayout();
+    /** 观察了某个节点的观察器实例（Base UI 自己的观察器不算）。 */
+    const observersOf = (node: Element) =>
+      observer.instances.filter((record) => record.observed.includes(node));
+
+    const view = renderPanel({ open: false });
+
+    // 抽屉关闭：Base UI 的 portal **不渲染内容** ⇒ 量宽基准节点还不存在，
+    // 观察器也就无处可挂（修前：面板常驻挂载 ⇒ 观察器**永远建不起来**）。
+    expect(screen.queryByTestId('page-file-browser-crumbs')).toBeNull();
+
+    // 打开：DOM 出现 ⇒ 回调 ref 触发 ⇒ 挂观察器 + 立即量一次。
+    view.rerender(panelElement({ open: true }));
+    await screen.findByTestId('page-file-browser-crumbs');
+
+    const levelsBox = crumbAt(1).parentElement?.parentElement as Element;
+    expect(levelsBox, '找不到可见层级区').toBeTruthy();
+    await waitFor(() => expect(observersOf(levelsBox)).toHaveLength(1));
+    expect(observersOf(levelsBox)[0].disconnected).toBe(false);
+
+    // 量宽真的跑了：可用宽度 100px 放不下两级（60 + 60 + 4）⇒ 浅层级收进省略号。
+    expect(
+      rect.mock.instances.some((instance) => instance === levelsBox),
+      '量宽函数没有在可见层级区上跑过',
+    ).toBe(true);
+    expect(screen.getByTestId('page-file-browser-crumb-ellipsis')).toBeTruthy();
+    expect(
+      screen.getAllByTestId('page-file-browser-crumb').map((node) => node.getAttribute('data-depth')),
+    ).toEqual(['-1', '1']);
+
+    // 关闭：DOM 卸载 ⇒ 回调 ref 收到 null ⇒ disconnect。
+    view.rerender(panelElement({ open: false }));
+    await waitFor(() => expect(observersOf(levelsBox)[0].disconnected).toBe(true));
+
+    // 再打开：重新 observe（不是拿已断开的旧观察器凑数）。
+    view.rerender(panelElement({ open: true }));
+    await screen.findByTestId('page-file-browser-crumbs');
+    const reopenedBox = crumbAt(1).parentElement?.parentElement as Element;
+    await waitFor(() => expect(observersOf(reopenedBox)).toHaveLength(1));
+    expect(observersOf(reopenedBox)[0].disconnected).toBe(false);
+  });
+
+  it('回归：当前已是根目录时点根 crumb → 强制重读列表，不出「空目录」', async () => {
+    // 根因：`setPath('/')` 传同值时 React bailout → 加载 effect 不重跑，
+    // 而 `setEntries([])` 已经把列表清空了 ⇒ 停在「空目录」。
+    mocks.listFiles.mockResolvedValue([entry({ name: 'workspace', kind: 'dir' })]);
+    renderPanel({ initialPath: '/' });
+
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+    expect(mocks.listFiles).toHaveBeenCalledTimes(1);
+    expect(mocks.listFiles).toHaveBeenLastCalledWith('demo-01', '/');
+
+    fireEvent.click(crumbAt(-1));
+
+    // 同路径点击必须**再读一次**（参数不变）。
+    await waitFor(() => expect(mocks.listFiles).toHaveBeenCalledTimes(2));
+    expect(mocks.listFiles).toHaveBeenLastCalledWith('demo-01', '/');
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+    expect(screen.queryByTestId('page-file-browser-empty')).toBeNull();
+  });
+
+  it('回归：进入子目录后点当前层级 crumb → 重读该目录，列表不变', async () => {
+    mocks.listFiles.mockImplementation((_sandbox: string, directory: string) =>
+      Promise.resolve(
+        directory === '/home/acc-demo/sub'
+          ? [entry({ name: 'inner.txt', kind: 'file' })]
+          : [entry({ name: 'sub', kind: 'dir' })],
+      ),
+    );
+    renderPanel();
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+
+    fireEvent.click(rowOf('sub'));
+    await waitFor(() =>
+      expect(mocks.listFiles).toHaveBeenLastCalledWith('demo-01', '/home/acc-demo/sub'),
+    );
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+    expect(rowOf('inner.txt')).toBeTruthy();
+    // 当前层级 crumb = 最深一级（aria-current="page"）。
+    expect(crumbAt(2).getAttribute('aria-current')).toBe('page');
+
+    fireEvent.click(crumbAt(2));
+
+    // 当前层级也要能点：重读该目录（参数不变），列表不被清空。
+    await waitFor(() => expect(mocks.listFiles).toHaveBeenCalledTimes(3));
+    expect(mocks.listFiles).toHaveBeenLastCalledWith('demo-01', '/home/acc-demo/sub');
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+    expect(rowOf('inner.txt')).toBeTruthy();
+    expect(screen.queryByTestId('page-file-browser-empty')).toBeNull();
   });
 
   it('目录行点击进入；文件行点击下载（行本身就是操作）', async () => {

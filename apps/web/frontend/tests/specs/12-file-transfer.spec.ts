@@ -798,6 +798,58 @@ test.describe('运行期文件传输', () => {
     }
   });
 
+  test('面包屑回根后再点根 crumb：强制重读当前目录，列表不清空', async ({ page }) => {
+    await gotoDetail(page, SANDBOX_MAIN);
+    await openFileBrowser(page);
+    // 起手是 /workspace（根 crumb + workspace 一级）
+    await expect(crumbs(page)).toHaveCount(2);
+    await expect(crumbs(page).nth(1)).toHaveText('workspace');
+
+    // 列目录请求 / 响应的监听器：**必须在第一次点击之前挂上**
+    // （请求只在发出时触发，响应只在其回来时触发）。
+    const listRequests: string[] = [];
+    const listResponses: string[] = [];
+    page.on('request', (request) => {
+      if (request.url().includes('/files/list')) {
+        listRequests.push(request.url());
+      }
+    });
+    page.on('response', (response) => {
+      if (response.url().includes('/files/list')) {
+        listResponses.push(response.url());
+      }
+    });
+
+    // 点根 crumb → 回根目录（列表里出现 workspace 目录条目）
+    await crumbs(page).first().click();
+    await expect(crumbs(page)).toHaveCount(1);
+    await expect(crumbs(page).first()).toHaveAttribute('aria-current', 'page');
+    await expect(fileRow(page, 'workspace')).toHaveCount(1, { timeout: 60_000 });
+    // 列表已经渲染出来 ⇒ 第一轮列目录的**响应**已经回来（基线取响应数）。
+    const beforeReload = listResponses.length;
+    const beforeReloadRequests = listRequests.length;
+    expect(beforeReload, '点根 crumb 没有跑出列目录响应').toBeGreaterThan(0);
+
+    // **再次**点根 crumb（当前已是根）：必须**强制重读**同目录。
+    // 修前：setPath('/') 同值 bailout → 加载 effect 不重跑 → 列表停在空数组
+    //      → 「空目录」（这里会红）。
+    //
+    // **判据数的是响应而不是请求**：请求发出去 ≠ 服务端应答了；数响应才证明
+    // 「真的又跑了一轮列目录」（这正是「同路径强制重读」的口径）。
+    await crumbs(page).first().click();
+    await expect
+      .poll(() => listResponses.length, {
+        timeout: 30_000,
+        message: '再次点根 crumb 没有重新跑一轮列目录（同路径没有强制重读）',
+      })
+      .toBeGreaterThan(beforeReload);
+    // 旁证：请求侧也涨了（主判据仍是响应数）。
+    expect(listRequests.length).toBeGreaterThan(beforeReloadRequests);
+    // 重读之后列表没被清空。
+    await expect(fileRow(page, 'workspace'), '再次点根 crumb 后列表被清空了').toHaveCount(1);
+    await expect(page.getByTestId('page-file-browser-empty')).toHaveCount(0);
+  });
+
   test('负例：下载目录 400 / 上传到目录 400 / 非法路径 400 / 沙箱停止 409 / 无令牌 401', async ({
     page,
   }) => {
