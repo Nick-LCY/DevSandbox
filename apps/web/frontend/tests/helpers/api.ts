@@ -94,6 +94,105 @@ function baseUrl(): string {
   return `http://${host}:${port}`;
 }
 
+/** 运行期文件传输的目录条目（与后端 `FileListEntry` 同名同字段）。 */
+export interface SandboxFileEntry {
+  name: string;
+  kind: 'file' | 'dir' | 'special';
+  size: number;
+  mtime: number;
+}
+
+/** 文件端点的一次原始响应（**不抛错**：负例要看状态码与 detail 原文）。 */
+export interface SandboxFileResponse {
+  status: number;
+  /** 失败时的后端 `detail` 原文（成功时为空串）。 */
+  detail: string;
+  /** 响应体字节（下载 / 列表用）。 */
+  body: Buffer;
+  /** 响应头（下载的文件名与长度在这里）。 */
+  headers: Headers;
+}
+
+/**
+ * 直调三个文件端点（上传 / 下载 / 列表）里的一个。
+ *
+ * **不抛错**：负例要拿状态码与 `detail` 原文做断言，所以这里把响应原样交回。
+ * 不带 `withToken` 时**不发认证头**（401 负例用）；其余口径与 `request()` 一致
+ * （同一个测试服务、同一份令牌）。
+ */
+export async function sandboxFileRequest(
+  name: string,
+  action: 'upload' | 'download' | 'list',
+  path: string,
+  options: { body?: Uint8Array; withToken?: boolean } = {},
+): Promise<SandboxFileResponse> {
+  const headers: Record<string, string> = {};
+  if (options.withToken !== false) {
+    Object.assign(headers, authHeaders());
+  }
+  if (options.body !== undefined) {
+    // raw 字节流（**不是** multipart）：服务端按 `request.stream()` 逐块消费。
+    headers['Content-Type'] = 'application/octet-stream';
+  }
+  const response = await fetch(
+    `${baseUrl()}/api/sandboxes/${encodeURIComponent(name)}/files/${action}?path=${encodeURIComponent(path)}`,
+    {
+      method: action === 'upload' ? 'POST' : 'GET',
+      headers,
+      // 类型转换说明：`@types/node` 的 `Uint8Array<ArrayBufferLike>` 与 DOM 的
+      // `BodyInit` 在 TS 5.9 下不直接兼容（Buffer 同时是请求体也是好的 `BodyInit`，
+      // 运行时是同一份字节）。不额外包 Blob：包一层会丢掉 `Content-Length`
+      // 的自动计算，而上传的字节数核对正是靠它。
+      body: options.body as unknown as BodyInit | undefined,
+    },
+  );
+  const body = Buffer.from(await response.arrayBuffer());
+  let detail = '';
+  if (!response.ok) {
+    try {
+      const parsed = JSON.parse(body.toString('utf-8')) as { detail?: unknown };
+      detail = typeof parsed.detail === 'string' ? parsed.detail : '';
+    } catch {
+      detail = body.toString('utf-8');
+    }
+  }
+  return { status: response.status, detail, body, headers: response.headers };
+}
+
+/** 列容器内目录（失败抛错）。 */
+export async function listSandboxFiles(name: string, path: string): Promise<SandboxFileEntry[]> {
+  const result = await sandboxFileRequest(name, 'list', path);
+  if (result.status !== 200) {
+    throw new Error(`列出 ${path} 失败（HTTP ${result.status}）：${result.detail}`);
+  }
+  return JSON.parse(result.body.toString('utf-8')) as SandboxFileEntry[];
+}
+
+/** 上传字节到容器内路径（失败抛错）。 */
+export async function uploadSandboxFile(
+  name: string,
+  path: string,
+  body: Uint8Array,
+): Promise<{ path: string; bytes: number }> {
+  const result = await sandboxFileRequest(name, 'upload', path, { body });
+  if (result.status !== 200) {
+    throw new Error(`上传到 ${path} 失败（HTTP ${result.status}）：${result.detail}`);
+  }
+  return JSON.parse(result.body.toString('utf-8')) as { path: string; bytes: number };
+}
+
+/** 下载容器内文件（失败抛错）。 */
+export async function downloadSandboxFile(
+  name: string,
+  path: string,
+): Promise<{ bytes: Buffer; contentDisposition: string | null }> {
+  const result = await sandboxFileRequest(name, 'download', path);
+  if (result.status !== 200) {
+    throw new Error(`下载 ${path} 失败（HTTP ${result.status}）：${result.detail}`);
+  }
+  return { bytes: result.body, contentDisposition: result.headers.get('Content-Disposition') };
+}
+
 /** 发一个 JSON 请求。 */
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${baseUrl()}${path}`, {
