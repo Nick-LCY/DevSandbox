@@ -61,6 +61,13 @@ status: todo        # todo | doing | done | blocked
 - [[tasks/phase3-desktop/08-windows-package.md]] — Windows 打包产物与冒烟（done：NSIS `setup.exe` 约 3.7 MB，**默认路径**、**不入库**；**构建耗时未统计**，用户明确接受不再待补；**冒烟通过**——用户确认安装 / 启动 / 连接 / 使用均无问题；冒烟环境为用户自有 Windows 11，是否全新未另行记录；未签名告警属预期；README 构建说明齐备，**未签名 / SmartScreen 与仅 Windows 承诺两条限制说明已由并行改动补齐**）
 - [[tasks/phase3-desktop/09-acceptance-and-docs.md]] — 验收回归与文档收口（done：全量回归 **48 passed / 0 failed / 0 flaky**，约 **9.3 分钟**，**连续两轮全绿**；新增 `11-forward-web-notice.spec.ts` **2 条** web 形态端口转发用例——桌面形态的完整管理 Playwright 覆盖不到，已由 Windows 真机验收替代；三篇 ADR 0013 / 0014 / 0015 期中已落档；看板 / 词汇 / 总览 / 约定 / API.md 核对同步完成；**三期整体收口**）
 - [[tasks/phase3-desktop/RESULTS.md]] — 三期打样与实测结论留档（P1~P5 全部有结论：P1 / P3 本机实测；P2 / P4 / P5 于 2026-11-04 Windows 11 真机实测闭合；06 真机连通、08 打包与冒烟同轮闭合；**另含 2026-11-09 收口后缺陷修复留档**——`https://` 后端下的 wss 隧道建连 panic，修复提交 `da36940`，Windows 真机复测通过）
+- [[tasks/runtime-file-transfer/README.md]] — 运行期文件传输轮（运行中沙箱的单文件上传 / 下载，类 `docker cp`）任务集索引，含 6 个任务、依赖顺序与硬前置说明（**01 打样与机制验证是硬前置，不通过不进 02**；**01 已于 2026-11-09 收口（done）**，主通道成立、零新增依赖，机制落 [[architecture/decisions/0018-运行期文件传输机制选型.md|ADR 0018]]）
+- [[tasks/runtime-file-transfer/01-prototype-and-mechanism.md]] — 打样与机制验证：真沙箱 exec 命令实测（临时名 + `mv` / `cat` / 分层探测 / 只读目标报错归类）、反代缓冲与超时核对、200MB 级内存曲线与耗时、容器内 `sh` / `cat` / `wc` / `stat` / `find` 存在性、**ADR 0018 落档（已接受）**（done：2026-11-09 收口——主通道成立、**10 条实测修正口径**、反代 `readTimeout=60s` 硬约束已定位）
+- [[tasks/runtime-file-transfer/02-core-transfer.md]] — 核心包传输能力：`transfer.py`（路径校验 / upload / probe / 下载泵 / list）+ `TransferError` 与固定中文文案常量 + 单测
+- [[tasks/runtime-file-transfer/03-server-file-endpoints.md]] — 服务端文件传输接口：三个端点（upload / download / list）+ 流式装配（专用线程池）+ 错误文案表 + `API.md` 新章节 + 单测
+- [[tasks/runtime-file-transfer/04-frontend-file-panel.md]] — 前端文件浏览面板：入口按钮 + 独立抽屉 + 面包屑 + 三列列表 + 上传 / 下载 / 进度 / 覆盖确认框 + 图标资产 vendor
+- [[tasks/runtime-file-transfer/05-desktop-download.md]] — 桌面端下载落盘：`reqwest`（rustls-tls）+ `tauri-plugin-dialog` 原生「保存为」+ Rust 命令 + 形态分支 + Windows 真机验证清单
+- [[tasks/runtime-file-transfer/06-acceptance-and-docs.md]] — 验收与文档收口：Playwright 真机 spec（主链路 + 负例）+ 文档同步 + **ADR 0018 复核**（状态已是已接受，只复核不改状态） + 收口留档
 
 ## 看板
 任务状态汇总见 [[current-state.md]]，由人维护。

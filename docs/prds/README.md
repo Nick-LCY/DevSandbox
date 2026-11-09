@@ -29,3 +29,4 @@
 - [[prds/console-templates.md]] — 控制台模板轮：基础镜像 0.3.0 通用工具层 + 网页控制台启动模板（存一套沙箱启动配置，下次一键回填）
 - [[prds/file-injection.md]] — 文件注入轮：创建沙箱时把宿主文件复制进沙箱（复制 + chown，敏感凭证不经权限放开即可进容器）
 - [[prds/phase3-desktop.md]] — 三期：桌面端打包（Tauri）与端口转发（桌面壳 + token 认证连接层 + 沙箱端口转发，决策依据见 ADR 0013 / 0014 / 0015）
+- [[prds/runtime-file-transfer.md]] — 运行期文件传输轮：为**运行中的沙箱**提供类 `docker cp` 的**单文件**上传 / 下载双向通路（web + 桌面两形态，CLI 零改动；与「创建时文件注入」是两条独立通道）

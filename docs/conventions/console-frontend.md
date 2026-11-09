@@ -50,6 +50,11 @@
 - 纯数据转换逻辑（路由解析、挂载声明、环境变量、格式化、终端帧协议、终端状态提示口径与去重、终端选中会话解析、终端焦点回填门控、终端尺寸自适应去抖、代理文案、主题存取、侧栏折叠存取、抽屉宽度的存取与换算、会话定序、轮询失败计数）收敛在 `src/lib/`，并有单元测试。
 - **交互组件的 pointer 光标由 `src/styles/globals.css` 的 base 层统一兜底**（Tailwind v4 的 preflight 把 button 等元素的默认光标改成了 `default`，v3 时代是 `pointer`）：新增交互原语不必逐个补 `cursor-pointer`；要别的光标语义就用工具类覆盖（工具类层级高于 base）。**兜底清单里的 `[role=option]` 会被组件层的工具类盖住**：可搜索选择器的候选项渲染成 `role="option"` 的 div，组件层自己写了 `cursor-pointer`（工具类层级更高，与 base 层那条不冲突，只是它不决定最终光标）。
 
+## 界面文案与操作语义
+
+- **界面不写副标题、不写解释说明性文字**：面板 / 抽屉 / 区块的标题就是标题，**不加副标题、不加「这一段是干什么的」说明段**。功能由文档解释，界面不重复解释（既有「界面不重复解释模板」是这条的一个具体实例，现升格为**通用口径**，新增面板一律适用）。
+- **操作即本体**：可交互元素本身承担操作语义——**点击文件行即下载**，不再另加下载按钮，也不在行内补「点击下载」这类说明文字；确实需要的额外操作走**独立的图标按钮**并带 `aria-label` / tooltip，不与行本身的点击语义重复。
+
 ## 抽屉外壳
 
 - **三件套**：统一外壳 `src/components/workbench/DrawerShell.tsx` + 原语封装 `src/components/ui/drawer.tsx` + 宽度存取 `src/lib/drawer-width.ts`。原语是 `@base-ui/react` 自带的 Drawer（**零新增依赖**），页面里不自己拼 Drawer。
@@ -165,3 +170,4 @@
 - [[tasks/phase2-console/07-console-ui-overhaul.md|07 控制台 UI 全面改造]] — 本套约定的由来（单页工作台与新视觉底座的落地任务）。
 - [[tasks/phase2-console/04-console-frontend.md|04 网页控制台前端]] — 前端工程的首个落地任务。
 - [[tasks/phase3-desktop/06-port-forward-desktop.md|06 端口转发桌面侧]] — 端口转发区（本机端口规则、两形态差异）与桌面 IPC 的落地任务。
+- [[tasks/runtime-file-transfer/04-frontend-file-panel.md|04 前端文件浏览面板]] — 文件浏览面板（入口按钮 / 抽屉 / 面包屑 / 三列列表 / 上传下载进度）的落地任务；「界面文案与操作语义」一节的两条约定出自该轮。
