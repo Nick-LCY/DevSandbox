@@ -9,7 +9,8 @@
  * - 同名普通文件先弹覆盖确认（确认 / 取消跳过并 toast）；同名目录不弹框，
  *   服务端 400 的 detail 原样 toast；
  * - 下载进度按 `Content-Length` 算，web 落 blob → a[download]（不导航 blob: URL）；
- * - 桌面分支本轮留桩（不调下载接口）。
+ * - 桌面分支：原生保存框（取消静默 / 确认后 invoke Rust 落盘）、进度事件、失败 toast；
+ *   关闭抽屉取消在途下载。
  */
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -23,6 +24,25 @@ const mocks = vi.hoisted(() => ({
   listFiles: vi.fn(),
   uploadFile: vi.fn(),
   downloadFile: vi.fn(),
+}));
+
+/**
+ * 桌面分支的 IPC 替身。面板只关心「调用链」，invoke 的真实形状在
+ * `src/lib/desktop-file.test.ts` 里逐条钉。
+ */
+const desktopMocks = vi.hoisted(() => ({
+  pickDownloadPath: vi.fn(),
+  downloadToDisk: vi.fn(),
+  listenDownloadEvents: vi.fn(),
+  cancelDesktopDownload: vi.fn(),
+}));
+
+vi.mock('../../lib/desktop-file', () => ({
+  CANCELLED_MESSAGE: '下载已取消',
+  pickDownloadPath: desktopMocks.pickDownloadPath,
+  downloadToDisk: desktopMocks.downloadToDisk,
+  listenDownloadEvents: desktopMocks.listenDownloadEvents,
+  cancelDownload: desktopMocks.cancelDesktopDownload,
 }));
 
 vi.mock('../../api/client', async (importOriginal) => {
@@ -113,6 +133,17 @@ beforeEach(() => {
   mocks.listFiles.mockReset();
   mocks.uploadFile.mockReset();
   mocks.downloadFile.mockReset();
+  desktopMocks.pickDownloadPath.mockReset();
+  desktopMocks.downloadToDisk.mockReset();
+  desktopMocks.listenDownloadEvents.mockReset();
+  desktopMocks.cancelDesktopDownload.mockReset();
+  desktopMocks.pickDownloadPath.mockResolvedValue(null);
+  desktopMocks.downloadToDisk.mockResolvedValue({
+    target_path: 'C:\\Users\\me\\a.txt',
+    bytes: 1,
+  });
+  desktopMocks.listenDownloadEvents.mockResolvedValue(() => {});
+  desktopMocks.cancelDesktopDownload.mockResolvedValue(undefined);
   mocks.listFiles.mockResolvedValue([]);
   mocks.uploadFile.mockResolvedValue({ path: '/home/acc-demo/a.txt', bytes: 3 });
   mocks.downloadFile.mockResolvedValue({
@@ -665,14 +696,178 @@ describe('下载', () => {
     );
   });
 
-  it('桌面分支留桩：本轮不调下载接口（05 轮接原生保存框 + Rust 落盘）', async () => {
+  it('桌面形态：保存框取消 → 静默返回，不发下载命令、不弹 toast', async () => {
     mocks.listFiles.mockResolvedValue([entry({ name: 'a.txt', kind: 'file' })]);
     renderPanel({ desktop: true });
     await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
 
     fireEvent.click(rowOf('a.txt'));
 
-    await waitFor(() => expect(mocks.listFiles).toHaveBeenCalled());
+    await waitFor(() => expect(desktopMocks.pickDownloadPath).toHaveBeenCalledWith('a.txt'));
+    expect(desktopMocks.downloadToDisk).not.toHaveBeenCalled();
     expect(mocks.downloadFile).not.toHaveBeenCalled();
+    expect(screen.queryAllByTestId('page-toast-item')).toHaveLength(0);
+    expect(screen.queryByTestId('page-file-browser-download-progress')).toBeNull();
+  });
+
+  it('桌面形态：保存框确认 → invoke 参数正确、进度事件走到行内、成功 toast 带落盘路径', async () => {
+    mocks.listFiles.mockResolvedValue([entry({ name: '报告.txt', kind: 'file', size: 200 })]);
+    desktopMocks.pickDownloadPath.mockResolvedValue('C:\\Users\\me\\报告.txt');
+    let report: ((event: unknown) => void) | undefined;
+    desktopMocks.listenDownloadEvents.mockImplementation(
+      (_sandbox: string, _id: string, handler: (event: unknown) => void) => {
+        report = handler;
+        return Promise.resolve(() => {});
+      },
+    );
+    let resolveDownload: ((value: { target_path: string; bytes: number }) => void) | undefined;
+    desktopMocks.downloadToDisk.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveDownload = resolve;
+        }),
+    );
+
+    renderPanel({ desktop: true });
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+
+    fireEvent.click(rowOf('报告.txt'));
+
+    await waitFor(() => expect(desktopMocks.listenDownloadEvents).toHaveBeenCalledTimes(1));
+    const [sandboxArg, idArg] = desktopMocks.listenDownloadEvents.mock.calls[0] as [string, string];
+    expect(sandboxArg).toBe('demo-01');
+    expect(idArg).toMatch(/^dl-/);
+
+    await waitFor(() => expect(desktopMocks.downloadToDisk).toHaveBeenCalledTimes(1));
+    expect(desktopMocks.downloadToDisk).toHaveBeenCalledWith({
+      sandbox: 'demo-01',
+      path: '/home/acc-demo/报告.txt',
+      targetPath: 'C:\\Users\\me\\报告.txt',
+      downloadId: idArg,
+    });
+    expect(mocks.downloadFile).not.toHaveBeenCalled();
+
+    act(() =>
+      report?.({
+        download_id: idArg,
+        sandbox: 'demo-01',
+        path: '/home/acc-demo/报告.txt',
+        phase: 'progress',
+        loaded: 80,
+        total: 200,
+        message: '',
+        target_path: null,
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        within(rowOf('报告.txt'))
+          .getByTestId('page-file-browser-download-progress')
+          .getAttribute('aria-valuenow'),
+      ).toBe('40'),
+    );
+
+    act(() =>
+      resolveDownload?.({
+        target_path: 'C:\\Users\\me\\报告.txt',
+        bytes: 200,
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        toastsOf('success').some((node) =>
+          node.textContent?.includes('C:\\Users\\me\\报告.txt'),
+        ),
+      ).toBe(true),
+    );
+    await waitFor(() =>
+      expect(screen.queryByTestId('page-file-browser-download-progress')).toBeNull(),
+    );
+  });
+
+  it('桌面形态：下载失败 → 失败 toast 用 Rust 固定中文文案', async () => {
+    mocks.listFiles.mockResolvedValue([entry({ name: 'a.txt', kind: 'file' })]);
+    desktopMocks.pickDownloadPath.mockResolvedValue('C:\\Users\\me\\a.txt');
+    desktopMocks.downloadToDisk.mockRejectedValue(new Error('访问令牌无效，请检查连接配置'));
+
+    renderPanel({ desktop: true });
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+
+    fireEvent.click(rowOf('a.txt'));
+
+    await waitFor(() =>
+      expect(
+        toastsOf('error').some((node) =>
+          node.textContent?.includes('访问令牌无效，请检查连接配置'),
+        ),
+      ).toBe(true),
+    );
+  });
+
+  it('桌面形态：关闭抽屉 → 取消在途下载并退掉进度订阅（不留半截文件）', async () => {
+    mocks.listFiles.mockResolvedValue([entry({ name: 'a.txt', kind: 'file' })]);
+    desktopMocks.pickDownloadPath.mockResolvedValue('C:\\Users\\me\\a.txt');
+    const unsubscribe = vi.fn();
+    desktopMocks.listenDownloadEvents.mockResolvedValue(unsubscribe);
+    desktopMocks.downloadToDisk.mockImplementation(() => new Promise(() => {}));
+
+    const view = renderPanel({ desktop: true });
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+    fireEvent.click(rowOf('a.txt'));
+    await waitFor(() => expect(desktopMocks.downloadToDisk).toHaveBeenCalledTimes(1));
+    const downloadId = (
+      desktopMocks.downloadToDisk.mock.calls[0][0] as { downloadId: string }
+    ).downloadId;
+
+    view.rerender(panelElement({ desktop: true, open: false }));
+
+    await waitFor(() =>
+      expect(desktopMocks.cancelDesktopDownload).toHaveBeenCalledWith(downloadId),
+    );
+    expect(unsubscribe).toHaveBeenCalled();
+  });
+
+  it('桌面形态：订阅 IPC 往返期间关闭抽屉 → 退订且不发下载命令', async () => {
+    mocks.listFiles.mockResolvedValue([entry({ name: 'a.txt', kind: 'file' })]);
+    desktopMocks.pickDownloadPath.mockResolvedValue('C:\\Users\\me\\a.txt');
+    const unsubscribe = vi.fn();
+    let resolveListen: ((off: () => void) => void) | undefined;
+    desktopMocks.listenDownloadEvents.mockImplementation(
+      () =>
+        new Promise<() => void>((resolve) => {
+          resolveListen = resolve;
+        }),
+    );
+
+    const view = renderPanel({ desktop: true });
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+    fireEvent.click(rowOf('a.txt'));
+    await waitFor(() => expect(desktopMocks.listenDownloadEvents).toHaveBeenCalledTimes(1));
+
+    // 订阅还没回来，用户就把抽屉关了。
+    view.rerender(panelElement({ desktop: true, open: false }));
+    await act(async () => {
+      resolveListen?.(unsubscribe);
+    });
+
+    await waitFor(() => expect(unsubscribe).toHaveBeenCalledTimes(1));
+    expect(desktopMocks.downloadToDisk).not.toHaveBeenCalled();
+    expect(desktopMocks.cancelDesktopDownload).not.toHaveBeenCalled();
+  });
+
+  it('桌面形态：以「下载已取消」收口 → 静默，不弹失败 toast', async () => {
+    mocks.listFiles.mockResolvedValue([entry({ name: 'a.txt', kind: 'file' })]);
+    desktopMocks.pickDownloadPath.mockResolvedValue('C:\\Users\\me\\a.txt');
+    desktopMocks.downloadToDisk.mockRejectedValue(new Error('下载已取消'));
+
+    renderPanel({ desktop: true });
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+    fireEvent.click(rowOf('a.txt'));
+
+    await waitFor(() => expect(desktopMocks.downloadToDisk).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(screen.queryByTestId('page-file-browser-download-progress')).toBeNull(),
+    );
+    expect(toastsOf('error')).toHaveLength(0);
   });
 });

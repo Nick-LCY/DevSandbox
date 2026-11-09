@@ -18,11 +18,12 @@ apps/desktop/
     ├── Cargo.toml            # tauri = "2"（开 config-json5：tauri.conf.json 能写注释）+ tauri-build
     ├── build.rs
     ├── tauri.conf.json       # productName / identifier / frontendDist / bundle.targets / app.security.csp
-    ├── src/main.rs           # 窗口与 webview 创建（在这里注入运行期 CSP）+ 连接配置命令 + 转发命令注册
+    ├── src/main.rs           # 窗口与 webview 创建（在这里注入运行期 CSP）+ 连接配置 / 转发 / 下载命令与 dialog 插件注册
     ├── src/csp.rs            # CSP 基线策略与运行期改写（纯函数 + 单元测试）
     ├── src/forward.rs        # 端口转发：本机 TCP 监听 + 隧道 WS 桥接（纯函数 + 单元测试）
     ├── src/commands.rs       # 端口转发的 Tauri 命令（start_forward / stop_forward / forward_listeners）
-    ├── capabilities/         # ACL 能力清单（default.json：放行 core:event 的 listen / unlisten）
+    ├── src/download.rs       # 运行期文件下载落盘：带令牌流式 GET → 临时名 + rename 原子写（事件进度 / 取消）
+    ├── capabilities/         # ACL 能力清单（default.json：放行 core:event 的 listen / unlisten 与 dialog 的 save）
     └── icons/                # 图标（source.png 是源图，其余由 `pnpm tauri icon` 生成）
 ```
 

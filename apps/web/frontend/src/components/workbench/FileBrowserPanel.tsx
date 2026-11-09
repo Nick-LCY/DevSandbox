@@ -4,6 +4,13 @@ import { Folder, Loader2, Upload, X } from 'lucide-react';
 import { api } from '../../api/client';
 import type { FileListEntry } from '../../api/types';
 import { cn } from '../../lib/cn';
+import {
+  CANCELLED_MESSAGE,
+  cancelDownload as cancelDesktopDownload,
+  downloadToDisk,
+  listenDownloadEvents,
+  pickDownloadPath,
+} from '../../lib/desktop-file';
 import { fileIconUrl } from '../../lib/file-icon-assets';
 import {
   childContainerPath,
@@ -33,7 +40,7 @@ interface FileBrowserPanelProps {
   widthVw: number;
   /** 宽度变化回调（工作台负责持久化）。 */
   onWidthChange: (vw: number) => void;
-  /** 是否运行在桌面壳里（桌面下载分支在 05 轮接通，本轮留桩）。 */
+  /** 是否运行在桌面壳里（桌面形态下载 = 原生保存框 + Rust 落盘，见 `desktop-file.ts`）。 */
   desktop: boolean;
 }
 
@@ -68,6 +75,26 @@ let uploadSeq = 0;
 function nextUploadId(): string {
   uploadSeq += 1;
   return `upload-${uploadSeq}`;
+}
+
+/**
+ * 桌面下载标识的序号（**模块级**：面板重挂载后仍继续递增）。
+ *
+ * 不能放在组件 ref 里：卸载时取消是异步的（`cancel_download` 发出去就返回），
+ * 重挂载再从 `dl-1` 开始会撞上「上一个 `dl-1` 还在收尾」——Rust 侧按标识登记
+ * 在途任务，重复标识会直接报错。
+ */
+let desktopDownloadSeq = 0;
+
+/**
+ * 本次**页面会话**的随机前缀：整页刷新会重置模块级计数器，但 Rust 侧上一个
+ * 下载可能还在收尾——加随机前缀保证「刷新前后」的下载标识也不撞。
+ */
+const desktopDownloadSessionPrefix = Math.random().toString(36).slice(2, 8);
+
+function nextDesktopDownloadId(): string {
+  desktopDownloadSeq += 1;
+  return `dl-${desktopDownloadSessionPrefix}-${desktopDownloadSeq}`;
 }
 
 function errorMessage(exc: unknown): string {
@@ -137,6 +164,12 @@ export function FileBrowserPanel({
   const cancelledRef = useRef<Set<string>>(new Set());
   const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const downloadControllersRef = useRef<Map<string, AbortController>>(new Map());
+  /** 桌面形态在途下载（文件名 → 下载标识 + 取消订阅）。 */
+  const desktopDownloadsRef = useRef<Map<string, { id: string; unsubscribe: () => void }>>(
+    new Map(),
+  );
+  /** 桌面形态正在弹保存框的文件名（防重复点击开出两个保存框）。 */
+  const desktopPendingRef = useRef<Set<string>>(new Set());
   const overwriteResolverRef = useRef<((ok: boolean) => void) | null>(null);
   const overwriteItemIdRef = useRef<string | null>(null);
   /** 抽屉是否还开着（异步收尾时判断要不要再弹提示）。 */
@@ -217,6 +250,15 @@ export function FileBrowserPanel({
       controller.abort();
     }
     downloadControllersRef.current.clear();
+    // 桌面形态在途下载：退掉进度订阅 + 让 Rust 侧停流并删临时文件。
+    for (const item of desktopDownloadsRef.current.values()) {
+      item.unsubscribe();
+      void cancelDesktopDownload(item.id).catch(() => {
+        // 收口阶段失败不提示：任务可能已经自己结束了（幂等取消）。
+      });
+    }
+    desktopDownloadsRef.current.clear();
+    desktopPendingRef.current.clear();
     queueRef.current = [];
     cancelledRef.current.clear();
     processingRef.current = false;
@@ -486,6 +528,134 @@ export function FileBrowserPanel({
 
   /* ---------------------------------------------------------------- 下载 */
 
+  /**
+   * 桌面形态下载：原生保存框选路径 → Rust 带令牌流式下载落盘。
+   *
+   * - 保存框取消 = **静默返回**（不弹提示、不发下载命令）；
+   * - 进度走同一个行内 `downloads` Map（事件驱动，载荷里带已写 / 总字节）；
+   * - 成功 toast 带**落盘路径**；失败 toast 用 Rust 的固定中文文案；
+   * - 关闭抽屉 / 切沙箱时由 `abortTransfers` 调 `cancel_download` 收口
+   *   （临时文件由 Rust 侧删除，不留半截文件）。
+   */
+  const startDesktopDownload = useCallback(
+    async (entry: FileListEntry, targetPath: string): Promise<void> => {
+      if (desktopDownloadsRef.current.has(entry.name) || desktopPendingRef.current.has(entry.name)) {
+        return;
+      }
+      desktopPendingRef.current.add(entry.name);
+      const generation = generationRef.current;
+      const downloadId = nextDesktopDownloadId();
+
+      let target: string | null;
+      try {
+        target = await pickDownloadPath(entry.name);
+        if (target === null) {
+          // 用户取消保存框：静默返回。
+          return;
+        }
+        if (generation !== generationRef.current || !openRef.current) {
+          return;
+        }
+
+        // 先订阅事件再发命令：大文件的第一块可能在命令返回前就到了。
+        let unsubscribe: () => void = () => {};
+        try {
+          unsubscribe = await listenDownloadEvents(sandbox, downloadId, (event) => {
+            if (event.phase !== 'progress' && event.phase !== 'done') {
+              return;
+            }
+            setDownloads((current) => {
+              if (!current.has(entry.name)) {
+                return current;
+              }
+              const next = new Map(current);
+              next.set(entry.name, {
+                name: entry.name,
+                loaded: event.loaded,
+                total: event.total,
+              });
+              return next;
+            });
+          });
+        } catch (exc) {
+          // 进度订阅失败不拦死下载：降级成「只有开始 / 结束」，但要留痕。
+          console.warn(
+            '[file-browser] 订阅桌面下载进度失败，进度显示降级（下载仍会执行）。',
+            exc,
+          );
+        }
+
+        // 订阅是 IPC 往返：这段窗口里抽屉可能已经关了 / 换了沙箱。此时**不发下载命令**
+        // （否则会凭空起一个没人要的下载，也没人给它发取消），退订后直接退出。
+        if (generation !== generationRef.current || !openRef.current) {
+          unsubscribe();
+          return;
+        }
+
+        const slot = { id: downloadId, unsubscribe };
+        desktopDownloadsRef.current.set(entry.name, slot);
+        setDownloads((current) => {
+          const next = new Map(current);
+          next.set(entry.name, {
+            name: entry.name,
+            loaded: 0,
+            total: entry.size > 0 ? entry.size : null,
+          });
+          return next;
+        });
+
+        try {
+          const result = await downloadToDisk({
+            sandbox,
+            path: targetPath,
+            targetPath: target,
+            downloadId,
+          });
+          if (
+            generation === generationRef.current &&
+            openRef.current &&
+            desktopDownloadsRef.current.get(entry.name) === slot
+          ) {
+            show('success', `已下载 ${entry.name} 到 ${result.target_path || target}`, {
+              source: 'file-browser',
+            });
+          }
+        } catch (exc) {
+          // 抽屉关了 / 切了沙箱 / 主动取消：静默收口（Rust 的取消文案不弹失败 toast）。
+          if (
+            generation === generationRef.current &&
+            openRef.current &&
+            desktopDownloadsRef.current.get(entry.name) === slot &&
+            errorMessage(exc) !== CANCELLED_MESSAGE
+          ) {
+            show('error', errorMessage(exc), { source: 'file-browser' });
+          }
+        } finally {
+          unsubscribe();
+          if (desktopDownloadsRef.current.get(entry.name) === slot) {
+            desktopDownloadsRef.current.delete(entry.name);
+            setDownloads((current) => {
+              if (!current.has(entry.name)) {
+                return current;
+              }
+              const next = new Map(current);
+              next.delete(entry.name);
+              return next;
+            });
+          }
+        }
+      } catch (exc) {
+        // 保存框自身失败（桌面壳缺 dialog 权限 / 老版本没有这条命令）。
+        if (generation === generationRef.current && openRef.current) {
+          show('error', errorMessage(exc), { source: 'file-browser' });
+        }
+      } finally {
+        desktopPendingRef.current.delete(entry.name);
+      }
+    },
+    [sandbox, show],
+  );
+
   const startDownload = useCallback(
     async (entry: FileListEntry): Promise<void> => {
       if (downloadControllersRef.current.has(entry.name)) {
@@ -497,8 +667,8 @@ export function FileBrowserPanel({
       }
 
       if (desktop) {
-        // TODO(05): 桌面形态下载 = 原生「保存为」对话框（tauri-plugin-dialog）
-        // → Rust 侧带令牌下载落盘。本轮只留分支位，不写死行为。
+        // 桌面形态：原生保存框 + Rust 落盘（见 `startDesktopDownload`）。
+        void startDesktopDownload(entry, targetPath);
         return;
       }
 
@@ -567,7 +737,7 @@ export function FileBrowserPanel({
         }
       }
     },
-    [desktop, sandbox, show],
+    [desktop, sandbox, show, startDesktopDownload],
   );
 
   const activateEntry = useCallback(

@@ -1,7 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "桌面壳的默认能力：前端订阅端口转发事件（forward://state / forward://connection）需要 core:event 的 listen / unlisten 权限。",
+  "description": "桌面壳的默认能力：前端订阅端口转发事件（forward://state / forward://connection）与下载进度事件（download://…）需要 core:event 的 listen / unlisten 权限；下载落盘的原生「保存为」框需要 dialog 的 save 权限（只放行 save，open / message 一律不放）。",
   "windows": ["main"],
-  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "dialog:allow-save"
+  ]
 }

@@ -32,7 +32,15 @@
  * 2. **`target` 的形状**：Rust 侧的 `EventTarget` 是**带标签的枚举**
  *    （`#[serde(tag = "kind")]`），「任意目标」是 `{"kind":"Any"}`——
  *    传裸字符串 `"Any"` 会被反序列化拒掉。
+ *
+ * 通道底座（`internals` / `toError` / `invokeDesktop` / `listenDesktopEvent`）在
+ * `desktop-ipc.ts`：下载落盘（`desktop-file.ts`）共用同一层。
  */
+
+import { desktopInternals, invokeDesktop, listenDesktopEvent, toError } from './desktop-ipc';
+
+// 兼容既有入口：`toError` 原先定义在本模块、测试也直接从这里取。
+export { toError } from './desktop-ipc';
 
 /** 一条转发的本机监听状态（Rust 侧 `ForwardListener`，字段是蛇形命名）。 */
 export interface ForwardListener {
@@ -72,66 +80,6 @@ export interface ForwardConnectionEvent {
   local_port: number;
   /** 面向用户的中文说明。 */
   message: string;
-}
-
-/** Tauri 注入的内部对象（只用 `invoke` 与 `transformCallback`）。 */
-interface TauriInternals {
-  invoke?: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
-  transformCallback?: (callback: (payload: unknown) => void) => number;
-}
-
-/** 取 Tauri 内部对象（web 形态下是 undefined）。 */
-function internals(): TauriInternals | null {
-  if (typeof window === 'undefined') {
-    return null;
-  }
-  const value = (window as unknown as { __TAURI_INTERNALS__?: TauriInternals }).__TAURI_INTERNALS__;
-  return value ?? null;
-}
-
-/**
- * 把任意抛出值收口成 `Error`。
- *
- * **Tauri 的 `invoke` 拒绝值可能是裸字符串**：Rust 侧命令返回的
- * `Result<_, String>` 到了前端就是字符串（不是 `Error`）。不收口的话，
- * 调用方的 `exc instanceof Error` 恒为假，Rust 侧的固定中文文案
- * （如「本机端口 80 小于 1024，当前系统不允许普通用户绑定低端口」）
- * 会被兜底文案顶掉——用户看不到真正的原因。
- */
-export function toError(value: unknown): Error {
-  if (value instanceof Error) {
-    return value;
-  }
-  if (typeof value === 'string') {
-    return new Error(value);
-  }
-  try {
-    const text = JSON.stringify(value);
-    return new Error(text === undefined ? String(value) : text);
-  } catch {
-    // 循环引用等序列化不了的取值：退成字符串描述。
-    return new Error(String(value));
-  }
-}
-
-/**
- * 调一条桌面壳命令。
- *
- * 桌面壳没有这条命令（老版本）或不在桌面形态时抛错——调用方负责兜。
- *
- * **失败一律收口成 `Error`**（见 `toError`）：调用方只读 `exc.message`
- * 就能拿到 Rust 侧的原文，不必再写「取不到原因就显示某句兜底文案」的分支。
- */
-async function invokeDesktop<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  const api = internals();
-  if (typeof api?.invoke !== 'function') {
-    throw new Error('当前不是桌面形态，无法调用桌面端命令');
-  }
-  try {
-    return (await api.invoke(cmd, args)) as T;
-  } catch (exc) {
-    throw toError(exc);
-  }
 }
 
 /**
@@ -181,55 +129,32 @@ export async function listenForwardEvents(handlers: {
   onState?: (event: ForwardStateEvent) => void;
   onConnection?: (event: ForwardConnectionEvent) => void;
 }): Promise<() => void> {
-  const api = internals();
+  // web 形态下没有 Tauri 内部对象：静默返回空退订（不刷无效的降级告警）。
+  const api = desktopInternals();
   if (typeof api?.invoke !== 'function' || typeof api.transformCallback !== 'function') {
     return () => {};
   }
-  const invoke = api.invoke.bind(api);
-  const transform = api.transformCallback.bind(api);
-
-  const stateHandler = transform((raw) => {
-    const payload = (raw as { payload?: unknown } | null)?.payload;
-    const event = payload as ForwardStateEvent | undefined;
-    if (event && typeof event.forward_id === 'string') {
-      handlers.onState?.(event);
-    }
-  });
-  const connectionHandler = transform((raw) => {
-    const payload = (raw as { payload?: unknown } | null)?.payload;
-    const event = payload as ForwardConnectionEvent | undefined;
-    if (event && typeof event.forward_id === 'string') {
-      handlers.onConnection?.(event);
-    }
-  });
-
-  // **`target` 是对象不是字符串**：Rust 侧的 `EventTarget` 是带标签的枚举
-  // （`{"kind":"Any"}`），传裸字符串会被拒。
-  const target = { kind: 'Any' };
-  let stateId: unknown;
+  let offState: (() => void) | undefined;
   try {
-    stateId = await invoke('plugin:event|listen', {
-      event: 'forward://state',
-      target,
-      handler: stateHandler,
+    offState = await listenDesktopEvent('forward://state', (payload) => {
+      const event = payload as ForwardStateEvent | undefined;
+      if (event && typeof event.forward_id === 'string') {
+        handlers.onState?.(event);
+      }
     });
-    const connectionId = await invoke('plugin:event|listen', {
-      event: 'forward://connection',
-      target,
-      handler: connectionHandler,
+    const offConnection = await listenDesktopEvent('forward://connection', (payload) => {
+      const event = payload as ForwardConnectionEvent | undefined;
+      if (event && typeof event.forward_id === 'string') {
+        handlers.onConnection?.(event);
+      }
     });
     return () => {
-      void invoke('plugin:event|unlisten', { event: 'forward://state', eventId: stateId });
-      void invoke('plugin:event|unlisten', {
-        event: 'forward://connection',
-        eventId: connectionId,
-      });
+      offState?.();
+      offConnection();
     };
   } catch (exc) {
     // 订阅失败：把已订阅的那条退掉，再降级（状态同步靠命令返回值兜底）。
-    if (stateId !== undefined) {
-      void invoke('plugin:event|unlisten', { event: 'forward://state', eventId: stateId });
-    }
+    offState?.();
     console.warn(
       '[port-forward] 订阅端口转发事件失败，状态同步降级为「命令返回值 + 手动刷新」。' +
         '若桌面壳缺少 core:event 的 listen 权限（capabilities 清单），事件通道会整体不通。',

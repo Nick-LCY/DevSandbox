@@ -1,7 +1,7 @@
 // 沙箱控制台桌面端（Tauri v2）——纯连接器。
 //
 // 桌面壳是「纯连接器」：装载前端静态产物、按连接配置设定 CSP、维护端口转发的
-// 本机监听与隧道桥接。三件事：
+// 本机监听与隧道桥接、把下载写到用户所选路径。四件事：
 //   - 前端产物来自 `../../web/frontend/dist`（与网页形态同一份，不复制第二份）；
 //   - **CSP 由 Rust 侧在主文档被请求时注入**（见 `csp` 模块）：静态策略枚举
 //     不完用户运行期才配出来的后端地址，`connect-src` 因此按**当前后端主机**
@@ -9,11 +9,14 @@
 //   - **端口转发**（见 `forward` 模块）：本机 `127.0.0.1` 监听 + 隧道 WS 桥接。
 //     隧道 WS 走的是 `ws(s)://<后端host>:*`，**已经在动态 CSP 的放行范围内**，
 //     不需要再改 CSP 口径。
+//   - **下载落盘**（见 `download` 模块）：原生「保存为」框（dialog 插件）+ 带令牌
+//     流式下载 → 原子写用户所选路径。浏览器形态不经过它（web 走 fetch + blob）。
 // Windows 下发布版不弹控制台窗口。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
 mod csp;
+mod download;
 mod forward;
 
 use std::sync::{Arc, Mutex};
@@ -25,6 +28,7 @@ use tauri::WebviewUrl;
 use csp::{
     apply_dynamic_csp, connect_sources, needs_csp_reload, normalize_base_url, BASE_CSP,
 };
+use download::DownloadManager;
 use forward::ForwardManager;
 
 /// 主窗口的标签（与 `tauri.conf.json` 里原来的窗口配置同名同义）。
@@ -94,16 +98,34 @@ fn main() {
     let csp_state: SharedCspState = Arc::new(Mutex::new(CspState::default()));
     // 端口转发的本机监听管理器（进程内单例）。
     let forward_manager: forward::SharedForwardManager = Arc::new(ForwardManager::new());
+    // 下载落盘的取消信号管理器（进程内单例；只存取消信号，不存令牌）。
+    let download_manager: download::SharedDownloadManager = Arc::new(DownloadManager::new());
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
+        // 原生「保存为」对话框（下载落盘选路径）。能力清单见 capabilities/default.json
+        // 的 `dialog:allow-save`（只放行 save，不放 message / open）。
+        .plugin(tauri_plugin_dialog::init())
         .manage(csp_state.clone())
         .manage(forward_manager.clone())
+        .manage(download_manager.clone())
+        // 窗口被销毁时把在途下载一次性取消：进程还在（其它窗口 / 托盘），
+        // 但不能让下载任务挂在没有窗口的壳里继续跑。
+        .on_window_event({
+            let download_manager = download_manager.clone();
+            move |_window, event| {
+                if matches!(event, tauri::WindowEvent::Destroyed) {
+                    download_manager.cancel_all();
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             set_backend_base_url,
             csp_needs_reload,
             commands::start_forward,
             commands::stop_forward,
-            commands::forward_listeners
+            commands::forward_listeners,
+            download::download_to_disk,
+            download::cancel_download
         ])
         .setup(move |app| {
             let csp_state = csp_state.clone();
@@ -165,6 +187,19 @@ fn main() {
                 .build()?;
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("沙箱控制台启动失败");
+        .build(tauri::generate_context!());
+
+    let app = match app {
+        Ok(app) => app,
+        Err(err) => {
+            eprintln!("[main] 沙箱控制台启动失败：{err}");
+            std::process::exit(1);
+        }
+    };
+    app.run(move |_app, event| {
+        // 进程要退了：取消全部在途下载（临时文件由各自的守卫清掉）。
+        if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
+            download_manager.cancel_all();
+        }
+    });
 }

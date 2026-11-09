@@ -20,9 +20,10 @@ tauri = { version = "2", features = ["config-json5"] }
 # serde / serde_json：端口转发的命令入参、事件载荷与隧道控制帧都要读写 JSON。
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# tokio：本机 TCP 监听（tokio::net）与隧道桥接的异步运行时。
-# Tauri 自带的异步运行时就是 tokio，这里显式声明我们直接用到的那些能力。
-tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
+# tokio：本机 TCP 监听（tokio::net）、隧道桥接与下载落盘的异步运行时。
+# Tauri 自带的异步运行时就是 tokio，这里显式声明我们直接用到的那些能力
+# （fs = 下载落盘的临时名 / rename / 清理）。
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "fs", "macros", "sync", "time"] }
 # tokio-tungstenite：隧道 WebSocket 客户端（ws / wss 都走它）。
 # rustls-tls-webpki-roots：wss 时的 TLS（纯 Rust，不依赖系统 OpenSSL，Windows 出包省事）。
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
@@ -34,8 +35,18 @@ tokio-tungstenite = { version = "0.30", default-features = false, features = ["c
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 # futures-util：隧道流的 split / SinkExt / StreamExt（字节泵用）。
 futures-util = { version = "0.3", features = ["sink"] }
-# tokio-util：CancellationToken——停止转发时一次性收掉监听与全部连接。
+# tokio-util：CancellationToken——停止转发时一次性收掉监听与全部连接；
+# 下载落盘也用它做「中途取消」的单向信号（`download.rs`）。
 tokio-util = { version = "0.7", features = ["rt"] }
+# reqwest：桌面端下载落盘的 HTTP 客户端（流式 GET → 写盘）。
+# - `rustls-tls` = rustls + webpki 根证书（**纯 Rust，不引 OpenSSL**），与 forward.rs 的
+#   `tokio-tungstenite/rustls-tls-webpki-roots` + `rustls(ring)` 是同一套 TLS 栈；
+# - **不要 `stream` 特性**：流式读用的 `Response::chunk()` 在 reqwest 0.12.28 里
+#   不受 `stream` 门控（只有 `bytes_stream()` 要），我们没用到后者；
+# - `default-features = false`：不要 native-tls / 系统代理 / charset / http2。
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# tauri-plugin-dialog：下载落盘的**原生「保存为」对话框**（用户在框里选路径）。
+tauri-plugin-dialog = "2"
 
 [profile.release]
 codegen-units = 1
