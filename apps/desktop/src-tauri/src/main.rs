@@ -84,6 +84,13 @@ fn csp_needs_reload(state: tauri::State<'_, SharedCspState>) -> bool {
 }
 
 fn main() {
+    // rustls 的进程级 crypto provider：只能装一次，且必须在任何 TLS 使用之前。
+    // TLS 只在 forward.rs::bridge() 建 wss 隧道时才用到（tokio-tungstenite →
+    // tokio-rustls → rustls::ClientConfig::builder()）。
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+
     let csp_state: SharedCspState = Arc::new(Mutex::new(CspState::default()));
     // 端口转发的本机监听管理器（进程内单例）。
     let forward_manager: forward::SharedForwardManager = Arc::new(ForwardManager::new());

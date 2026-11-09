@@ -26,6 +26,12 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macro
 # tokio-tungstenite：隧道 WebSocket 客户端（ws / wss 都走它）。
 # rustls-tls-webpki-roots：wss 时的 TLS（纯 Rust，不依赖系统 OpenSSL，Windows 出包省事）。
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
+# rustls：显式指定唯一的 crypto provider（ring）。
+# tokio-tungstenite 只以 default-features = false 引 rustls / tokio-rustls，
+# 不会带进任何 provider；不显式声明的话，wss 建连时 rustls 0.23 会在
+# ClientConfig::builder() 处 panic（Could not automatically determine the
+# process-level CryptoProvider）。
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 # futures-util：隧道流的 split / SinkExt / StreamExt（字节泵用）。
 futures-util = { version = "0.3", features = ["sink"] }
 # tokio-util：CancellationToken——停止转发时一次性收掉监听与全部连接。
