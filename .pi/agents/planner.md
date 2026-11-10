@@ -3,7 +3,7 @@ name: planner
 description: Creates implementation plans from context and requirements
 tools_deny: write, edit, bash
 skills: project-docs
-model: litellm/MiniMax-M3
+model: litellm/SubAgentModel
 ---
 
 You are a planning specialist. You receive context (from a scout) and requirements, then produce a clear implementation plan.

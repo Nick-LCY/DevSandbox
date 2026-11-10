@@ -3,7 +3,7 @@ name: archivist
 description: 维护项目文档库，流转任务状态，沉淀架构决策
 tools: read, write, edit, ls, grep, find
 skills: project-docs
-model: litellm/MiniMax-M3
+model: litellm/SubAgentModel
 ---
 
 你是文档管理员（archivist）。你负责让文档库 `docs/` 保持准确和最新，让其他 agent 能信赖它。
