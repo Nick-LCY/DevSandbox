@@ -134,14 +134,17 @@ const rowGrid = 'grid grid-cols-[minmax(0,1fr)_86px_126px] items-center gap-3';
 const CRUMB_GAP_PX = 4;
 
 /**
- * 面包屑三个按钮（根图标钮 / 层级钮 / 量宽行）**共用**的类名片段。
+ * 面包屑里**可点元素**（根图标钮 / 父级层级钮 / 量宽行里的对应格）**共用**的
+ * 类名片段。
  *
  * 抽成常量是为了消除手抄漂移：三处必须保持同一套焦点环与过渡节奏，
  * 改一处就要改三处。
  *
+ * **只给可点元素用**：当前层级是**纯文本**（不可点、无焦点环、不进 tab 序），
+ * 不挂这套类名。
+ *
  * 两句口径（写在代码里，免得下次又踩）：
- * - **类名的书写顺序与谁覆盖谁无关**：Tailwind 变体之间的覆盖由**特异度**决定
- *   （`hover:` 与 `aria-[current=page]:` 同特异度时看样式表里的先后），
+ * - **类名的书写顺序与谁覆盖谁无关**：Tailwind 变体之间的覆盖由**特异度**决定，
  *   不是看 className 里谁写在后面；
  * - **jsdom 用例只能钉类名字符串**，验不了视觉（下划线画没画出来、底色亮不亮
  *   都验不了）——所以单测只钉「关系」（同高、有变体、无第二套真值），
@@ -160,20 +163,30 @@ const CRUMB_LINK_CLASS =
 const CRUMB_TEXT_LINK_CLASS = 'text-primary underline-offset-4 hover:underline';
 
 /**
- * 层级按钮的类名（可见行与量宽行**必须同一套**，量到的才是真实宽度）。
+ * **父级**层级（有文字、可点）的类名（可见行与量宽行**必须同一套**，
+ * 量到的才是真实宽度）。
  *
  * 样式口径：
  * - **父级用链接样式**（`CRUMB_TEXT_LINK_CLASS`，对齐 `ui/button.tsx` 的
  *   link variant），不再用按钮底色 hover；
- * - **当前层级**由 `aria-current` 变体驱动高亮（`aria-[current=page]:…`），
- *   JS 侧不再另写一套「是不是当前级」的样式真值；
+ * - **当前层级不用这套**（见 `CRUMB_CURRENT_TEXT_CLASS`）：当前级是纯文本，
+ *   不可点 ⇒ 没有 hover / 下划线 / 底色 / 焦点环；
  * - 分隔符 `/` 与省略号用 `text-faint`。
  */
 const CRUMB_BUTTON_CLASS =
-  'max-w-48 truncate rounded-md px-1.5 py-0.5 ' +
-  CRUMB_TEXT_LINK_CLASS +
-  ' aria-[current=page]:bg-muted aria-[current=page]:text-foreground' +
-  ' aria-[current=page]:hover:no-underline';
+  'max-w-48 truncate rounded-md px-1.5 py-0.5 ' + CRUMB_TEXT_LINK_CLASS;
+
+/**
+ * **当前层级**的纯文本样式（可见行与量宽行**必须同一套**，量到的才是真实宽度）。
+ *
+ * 口径（用户拍板）：当前层级**不是按钮**——不可点、无 hover / 无下划线 /
+ * 无底色 / 无焦点环 / 不进 tab 序 ⇒ 只留可读文字色（`text-foreground`）与
+ * `truncate`。
+ *
+ * **按钮的 padding（`px-1.5 py-0.5`）也一并去掉**：量宽行同步去掉（同一套
+ * 类名）⇒ 两侧宽度基准一致，省略号的裁剪口径不漂。
+ */
+const CRUMB_CURRENT_TEXT_CLASS = 'max-w-48 truncate text-foreground';
 
 /**
  * 运行期文件浏览面板（独立抽屉）。
@@ -183,7 +196,7 @@ const CRUMB_BUTTON_CLASS =
  * - **点击文件行本身即下载**（没有下载按钮）；
  * - 上传只进**当前浏览目录**（无路径输入框）；多文件排队逐个传，行内进度 + 可取消；
  * - 同名**文件**先弹覆盖确认；同名**目录**交给服务端 400（不弹确认框）；
- * - 面包屑各级可点击，**不重复展示纯文本当前目录**；
+ * - 面包屑**父级**可点击；**当前层级是纯文本**（不可点、无按钮样式）；
  * - 界面没有副标题 / 解释说明性文字。
  */
 export function FileBrowserPanel({
@@ -1040,26 +1053,45 @@ export function FileBrowserPanel({
               data-testid="page-file-browser-crumbs"
               className="relative flex h-8 min-w-0 flex-1 items-center gap-1 overflow-hidden rounded-lg border border-border bg-muted/40 px-2 text-[12.5px]"
             >
-              {/* 根目录（父级 → hover 底色 / 变色；当前级由 aria-current 变体高亮） */}
-              <button
-                type="button"
-                onClick={navigateToRoot}
-                title="根目录"
-                aria-label="根目录"
-                aria-current={segments.length === 0 ? 'page' : undefined}
-                data-testid="page-file-browser-crumb"
-                data-depth="-1"
-                className={cn(
-                  'inline-flex size-6 shrink-0 items-center justify-center rounded-md',
-                  CRUMB_LINK_CLASS,
-                  // 纯图标钮**挂不出下划线**（`text-decoration` 不向 flex item
-                  // 的后代传播）→ hover 反馈走底色 / 变色。
-                  'text-muted-foreground hover:bg-muted hover:text-foreground',
-                  'aria-[current=page]:bg-muted aria-[current=page]:text-foreground',
-                )}
-              >
-                <Folder className="size-3.5" aria-hidden="true" />
-              </button>
+              {/*
+                根目录：
+                - **父级**（当前不在根）→ 可点按钮：hover 底色 / 变色
+                  （纯图标钮挂不出下划线 ⇒ hover 反馈走底色 / 变色）；
+                - **当前级**（当前就在根）→ **静态图标**（span 包 icon）：
+                  不可点、无 hover 变色、无下划线、不进 tab 序；
+                  `aria-current="page"` 仍留在 span 上（e2e 断言依赖它），
+                  `data-testid` / `data-depth` 保持原值。
+              */}
+              {segments.length === 0 ? (
+                <span
+                  title="根目录"
+                  aria-label="根目录"
+                  aria-current="page"
+                  data-testid="page-file-browser-crumb"
+                  data-depth="-1"
+                  className="inline-flex size-6 shrink-0 items-center justify-center text-foreground"
+                >
+                  <Folder className="size-3.5" aria-hidden="true" />
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={navigateToRoot}
+                  title="根目录"
+                  aria-label="根目录"
+                  data-testid="page-file-browser-crumb"
+                  data-depth="-1"
+                  className={cn(
+                    'inline-flex size-6 shrink-0 items-center justify-center rounded-md',
+                    CRUMB_LINK_CLASS,
+                    // 纯图标钮**挂不出下划线**（`text-decoration` 不向 flex item
+                    // 的后代传播）→ hover 反馈走底色 / 变色。
+                    'text-muted-foreground hover:bg-muted hover:text-foreground',
+                  )}
+                >
+                  <Folder className="size-3.5" aria-hidden="true" />
+                </button>
+              )}
 
               {/*
                 层级区：`flex-1 min-w-0` → 宽度 = 导航行剩下的空间（量宽基准）。
@@ -1080,6 +1112,7 @@ export function FileBrowserPanel({
                 )}
                 {segments.slice(crumbTrim?.start ?? 0).map((segment, offset) => {
                   const index = (crumbTrim?.start ?? 0) + offset;
+                  const isCurrent = index === segments.length - 1;
                   return (
                     <span
                       key={`${index}-${segment}`}
@@ -1088,16 +1121,33 @@ export function FileBrowserPanel({
                       <span aria-hidden="true" className="shrink-0 text-faint">
                         /
                       </span>
-                      <button
-                        type="button"
-                        onClick={() => navigateToDepth(index)}
-                        aria-current={index === segments.length - 1 ? 'page' : undefined}
-                        data-testid="page-file-browser-crumb"
-                        data-depth={index}
-                        className={cn(CRUMB_LINK_CLASS, CRUMB_BUTTON_CLASS)}
-                      >
-                        {segment}
-                      </button>
+                      {isCurrent ? (
+                        /*
+                          **当前层级**：纯文本（span）——不可点、无 hover /
+                          下划线 / 底色 / 焦点环、不进 tab 序；
+                          `aria-current="page"` 留在 span 上（e2e 断言依赖它），
+                          `data-testid` / `data-depth` 保持原值。
+                        */
+                        <span
+                          aria-current="page"
+                          data-testid="page-file-browser-crumb"
+                          data-depth={index}
+                          className={CRUMB_CURRENT_TEXT_CLASS}
+                        >
+                          {segment}
+                        </span>
+                      ) : (
+                        /* 父级：可点的链接样式钮（`text-primary` + hover 下划线）。 */
+                        <button
+                          type="button"
+                          onClick={() => navigateToDepth(index)}
+                          data-testid="page-file-browser-crumb"
+                          data-depth={index}
+                          className={cn(CRUMB_LINK_CLASS, CRUMB_BUTTON_CLASS)}
+                        >
+                          {segment}
+                        </button>
+                      )}
                     </span>
                   );
                 })}
@@ -1111,6 +1161,10 @@ export function FileBrowserPanel({
                 a11y：整行 `aria-hidden` + `pointer-events-none`，里面**不放可聚焦
                 元素**——层级名用 `<span>`（配 `inline-block` 与按钮同宽），
                 不是真 `<button>`（`aria-hidden` 里有可聚焦元素是 a11y 硬伤）。
+
+                **当前层级在量宽行里也用同一套纯文本类名**
+                （`CRUMB_CURRENT_TEXT_CLASS`，与可见侧一致）⇒ 按钮 padding
+                两侧都去掉，量到的宽度 = 真实渲染宽度，省略号口径不漂。
               */}
               <div
                 ref={attachMeasureBox}
@@ -1120,20 +1174,34 @@ export function FileBrowserPanel({
                 <span data-crumb-ellipsis className="shrink-0 text-faint">
                   …
                 </span>
-                {segments.map((segment, index) => (
-                  <span
-                    key={`measure-${index}-${segment}`}
-                    data-crumb-level={index}
-                    className="flex items-center gap-1"
-                  >
-                    <span aria-hidden="true" className="shrink-0 text-faint">
-                      /
+                {segments.map((segment, index) => {
+                  const isCurrent = index === segments.length - 1;
+                  return (
+                    <span
+                      key={`measure-${index}-${segment}`}
+                      data-crumb-level={index}
+                      className="flex items-center gap-1"
+                    >
+                      <span aria-hidden="true" className="shrink-0 text-faint">
+                        /
+                      </span>
+                      {isCurrent ? (
+                        /*
+                          当前层级：与可见侧**同一套**纯文本类名
+                          （`CRUMB_CURRENT_TEXT_CLASS`）⇒ 量到的宽度 =
+                          真实渲染宽度（按钮 padding 两侧都去掉了）。
+                        */
+                        <span className={CRUMB_CURRENT_TEXT_CLASS}>{segment}</span>
+                      ) : (
+                        <span
+                          className={cn(CRUMB_LINK_CLASS, CRUMB_BUTTON_CLASS, 'inline-block')}
+                        >
+                          {segment}
+                        </span>
+                      )}
                     </span>
-                    <span className={cn(CRUMB_LINK_CLASS, CRUMB_BUTTON_CLASS, 'inline-block')}>
-                      {segment}
-                    </span>
-                  </span>
-                ))}
+                  );
+                })}
               </div>
             </nav>
 

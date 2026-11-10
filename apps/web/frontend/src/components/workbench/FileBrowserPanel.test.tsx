@@ -4,7 +4,7 @@
  *
  * 覆盖用户拍板的交互口径：
  * - 三列列表：文件夹在前、隐藏文件显示；点击文件行即下载（没有下载按钮）；
- * - 面包屑各级可点击、不重复展示纯文本当前目录；
+ * - 面包屑**父级**可点击、**当前层级是纯文本**（不可点、无按钮样式）；
  * - 上传只进当前目录、多文件逐个传、行内进度 + 取消；
  * - 同名普通文件先弹覆盖确认（确认 / 取消跳过并 toast）；同名目录不弹框，
  *   服务端 400 的 detail 原样 toast；
@@ -273,11 +273,14 @@ describe('列表与导航', () => {
     expect(screen.queryByText(/上传文件到当前目录/)).toBeNull();
   });
 
-  it('面包屑各级可点击，点上级目录重新读取列表', async () => {
+  it('面包屑父级可点击，点上级目录重新读取列表', async () => {
     renderPanel();
     expect(screen.getAllByTestId('page-file-browser-crumb')).toHaveLength(3);
     expect(crumbAt(-1).getAttribute('aria-current')).toBeNull();
     expect(crumbAt(1).getAttribute('aria-current')).toBe('page');
+
+    // 父级仍是按钮（当前层级已是纯文本 span）。
+    expect(crumbAt(0).tagName).toBe('BUTTON');
 
     fireEvent.click(crumbAt(0));
 
@@ -286,7 +289,7 @@ describe('列表与导航', () => {
     );
   });
 
-  it('面包屑与上传按钮同一行、同高；当前级高亮只由 aria-current 变体驱动', () => {
+  it('面包屑与上传按钮同一行、同高；当前级是纯文本（无按钮样式）', () => {
     renderPanel();
     const nav = screen.getByTestId('page-file-browser-crumbs');
     const upload = screen.getByTestId('page-file-browser-upload-button');
@@ -309,20 +312,41 @@ describe('列表与导航', () => {
       `面包屑没有固定底色类：${nav.className}`,
     ).toBe(true);
 
-    // 当前级高亮**只**由 aria-current 变体驱动：JS 侧不再另写一套
-    // 「是不是当前级」的样式真值 ⇒ 当前级与父级的 className **完全一致**，
-    // 差异只来自 `aria-current` 属性。
+    // **当前层级去按钮化**：纯文本（span）——不可点、无 hover / 无下划线 /
+    // 无底色 / 无焦点环 / 不进 tab 序；只留可读文字色与截断。
     const current = crumbAt(1);
     expect(current.getAttribute('aria-current')).toBe('page');
+    expect(current.tagName).toBe('SPAN');
+    const currentTokens = classTokens(current);
+    expect(
+      currentTokens.filter((token) => token.startsWith('hover:')),
+      `当前级不该有 hover 样式：${current.className}`,
+    ).toEqual([]);
+    expect(
+      currentTokens.filter((token) => token.startsWith('focus-visible:')),
+      `当前级不该有焦点环：${current.className}`,
+    ).toEqual([]);
+    expect(
+      currentTokens.some((token) => token.includes('underline')),
+      `当前级不该有下划线：${current.className}`,
+    ).toBe(false);
+    expect(
+      currentTokens.some((token) => /^bg-/.test(token)),
+      `当前级不该有底色：${current.className}`,
+    ).toBe(false);
+    // 按钮的 padding 也去掉了（量宽行同步去掉 ⇒ 宽度基准一致）。
+    expect(
+      currentTokens.some((token) => /^p[xy]-/.test(token)),
+      `当前级不该有按钮 padding：${current.className}`,
+    ).toBe(false);
+    // 只读样式：可读文字色 + 截断。
+    expect(currentTokens).toContain('text-foreground');
+    expect(currentTokens).toContain('truncate');
+
+    // 父级仍是按钮（可点），走链接样式（不是按钮底色 hover）。
     const parent = crumbAt(0);
     expect(parent.getAttribute('aria-current')).toBeNull();
-    expect([...classTokens(current)].sort()).toEqual([...classTokens(parent)].sort());
-    // 变体在（当前级的高亮样式确实存在）。
-    expect(
-      classTokens(current).some((token) => token.startsWith('aria-[current=page]:')),
-      `当前级没有 aria-current 变体：${current.className}`,
-    ).toBe(true);
-    // 父级走链接样式（不是按钮底色 hover）。
+    expect(parent.tagName).toBe('BUTTON');
     expect(classTokens(parent)).not.toContain('hover:bg-muted');
 
     // 链接样式（`text-primary` + `hover:underline`）在**有文字**的层级按钮上。
@@ -331,8 +355,10 @@ describe('列表与导航', () => {
 
     // 根图标钮是纯图标：下划线**画不出来**（`text-decoration` 不向 flex item
     // 的后代传播）⇒ 不挂 hover:underline，hover 反馈走底色 / 变色。
+    // （当前不在根时根 crumb 是**父级** ⇒ 维持现状：按钮 + hover 反馈。）
     const root = crumbAt(-1);
     const rootTokens = classTokens(root);
+    expect(root.tagName).toBe('BUTTON');
     expect(rootTokens).not.toContain('hover:underline');
     expect(
       rootTokens.some((token) => /^hover:(bg|text)-/.test(token)),
@@ -408,9 +434,9 @@ describe('列表与导航', () => {
     expect(observersOf(reopenedBox)[0].disconnected).toBe(false);
   });
 
-  it('回归：当前已是根目录时点根 crumb → 强制重读列表，不出「空目录」', async () => {
-    // 根因：`setPath('/')` 传同值时 React bailout → 加载 effect 不重跑，
-    // 而 `setEntries([])` 已经把列表清空了 ⇒ 停在「空目录」。
+  it('回归：当前已是根目录时根 crumb 是静态（不可点）——点它不重读，列表不清空', async () => {
+    // 口径：**当前层级去按钮化**（纯文本、不可点）⇒ 「当前就是根目录」时
+    // 根 crumb 也是静态元素，**不再有**「点根 crumb 变空目录」这条交互路径。
     mocks.listFiles.mockResolvedValue([entry({ name: 'workspace', kind: 'dir' })]);
     renderPanel({ initialPath: '/' });
 
@@ -418,16 +444,24 @@ describe('列表与导航', () => {
     expect(mocks.listFiles).toHaveBeenCalledTimes(1);
     expect(mocks.listFiles).toHaveBeenLastCalledWith('demo-01', '/');
 
-    fireEvent.click(crumbAt(-1));
+    // 根 crumb = 当前层级 ⇒ 静态 span（不是按钮），`aria-current` 仍在。
+    const root = crumbAt(-1);
+    expect(root.tagName).toBe('SPAN');
+    expect(root.getAttribute('aria-current')).toBe('page');
+    // 静态：没有 hover 样式、没有焦点环、不进 tab 序。
+    const rootTokens = classTokens(root);
+    expect(rootTokens.filter((token) => token.startsWith('hover:'))).toEqual([]);
+    expect(rootTokens.filter((token) => token.startsWith('focus-visible:'))).toEqual([]);
+    expect(root.getAttribute('tabindex')).toBeNull();
 
-    // 同路径点击必须**再读一次**（参数不变）。
-    await waitFor(() => expect(mocks.listFiles).toHaveBeenCalledTimes(2));
-    expect(mocks.listFiles).toHaveBeenLastCalledWith('demo-01', '/');
-    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+    // 点它**不触发**任何请求（不可点），列表也不被清空。
+    fireEvent.click(root);
+    expect(mocks.listFiles).toHaveBeenCalledTimes(1);
+    expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1);
     expect(screen.queryByTestId('page-file-browser-empty')).toBeNull();
   });
 
-  it('回归：进入子目录后点当前层级 crumb → 重读该目录，列表不变', async () => {
+  it('回归：进入子目录后当前层级 crumb 是纯文本（不可点）——点它不重读，列表不变', async () => {
     mocks.listFiles.mockImplementation((_sandbox: string, directory: string) =>
       Promise.resolve(
         directory === '/home/acc-demo/sub'
@@ -444,15 +478,15 @@ describe('列表与导航', () => {
     );
     await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
     expect(rowOf('inner.txt')).toBeTruthy();
-    // 当前层级 crumb = 最深一级（aria-current="page"）。
-    expect(crumbAt(2).getAttribute('aria-current')).toBe('page');
+    // 当前层级 crumb = 最深一级（aria-current="page"）：**纯文本 span**，不可点。
+    const current = crumbAt(2);
+    expect(current.getAttribute('aria-current')).toBe('page');
+    expect(current.tagName).toBe('SPAN');
 
-    fireEvent.click(crumbAt(2));
-
-    // 当前层级也要能点：重读该目录（参数不变），列表不被清空。
-    await waitFor(() => expect(mocks.listFiles).toHaveBeenCalledTimes(3));
+    // 点它**不触发**任何请求（不可点），列表不被清空。
+    fireEvent.click(current);
+    expect(mocks.listFiles).toHaveBeenCalledTimes(2);
     expect(mocks.listFiles).toHaveBeenLastCalledWith('demo-01', '/home/acc-demo/sub');
-    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
     expect(rowOf('inner.txt')).toBeTruthy();
     expect(screen.queryByTestId('page-file-browser-empty')).toBeNull();
   });

@@ -8,8 +8,9 @@
  * 钉的行为（主链路，正向）：
  * 一、工作区头部的「文件」按钮与「详情」「停止」**同级**（同一个操作区容器），
  *    打开**独立的文件抽屉**；
- * 二、抽屉按沙箱的容器内 workdir 起手（本 spec 用 `/workspace`），**面包屑**各级
- *    可点击（根目录 crumb 的 `data-depth="-1"`），点目录行即进入该目录；
+ * 二、抽屉按沙箱的容器内 workdir 起手（本 spec 用 `/workspace`），**面包屑**父级
+ *    可点击（根目录 crumb 的 `data-depth="-1"`；当前层级是纯文本、不可点），
+ *    点目录行即进入该目录；
  * 三、上传只能进**当前浏览目录**：面板的上传按钮 → 原生文件选择框 → 行内进度
  *    出现并走完 → 列表出现该条目（名称 / 大小列都正确）；
  * 四、**容器内校验**：上传后容器里的文件字节数与内容摘要都与本地一致，属主是
@@ -798,7 +799,7 @@ test.describe('运行期文件传输', () => {
     }
   });
 
-  test('面包屑回根后再点根 crumb：强制重读当前目录，列表不清空', async ({ page }) => {
+  test('面包屑回根后根 crumb 变静态：不可点、不触发重读，列表不清空', async ({ page }) => {
     await gotoDetail(page, SANDBOX_MAIN);
     await openFileBrowser(page);
     // 起手是 /workspace（根 crumb + workspace 一级）
@@ -830,23 +831,21 @@ test.describe('运行期文件传输', () => {
     const beforeReloadRequests = listRequests.length;
     expect(beforeReload, '点根 crumb 没有跑出列目录响应').toBeGreaterThan(0);
 
-    // **再次**点根 crumb（当前已是根）：必须**强制重读**同目录。
-    // 修前：setPath('/') 同值 bailout → 加载 effect 不重跑 → 列表停在空数组
-    //      → 「空目录」（这里会红）。
-    //
-    // **判据数的是响应而不是请求**：请求发出去 ≠ 服务端应答了；数响应才证明
-    // 「真的又跑了一轮列目录」（这正是「同路径强制重读」的口径）。
+    // 当前已是根目录 ⇒ 根 crumb 就是**当前层级**：静态元素（span）——
+    // 不可点、无 hover、无下划线 ⇒ 再点它**不会**触发列目录请求，
+    // 列表也不会被清空（不再有「同路径强制重读」这条交互路径）。
+    await expect(crumbs(page).first()).toHaveJSProperty('tagName', 'SPAN');
     await crumbs(page).first().click();
-    await expect
-      .poll(() => listResponses.length, {
-        timeout: 30_000,
-        message: '再次点根 crumb 没有重新跑一轮列目录（同路径没有强制重读）',
-      })
-      .toBeGreaterThan(beforeReload);
-    // 旁证：请求侧也涨了（主判据仍是响应数）。
-    expect(listRequests.length).toBeGreaterThan(beforeReloadRequests);
-    // 重读之后列表没被清空。
-    await expect(fileRow(page, 'workspace'), '再次点根 crumb 后列表被清空了').toHaveCount(1);
+    expect(
+      listResponses.length,
+      '静态根 crumb 不该触发新的列目录响应',
+    ).toBe(beforeReload);
+    expect(
+      listRequests.length,
+      '静态根 crumb 不该触发新的列目录请求',
+    ).toBe(beforeReloadRequests);
+    // 列表没被清空。
+    await expect(fileRow(page, 'workspace'), '点静态根 crumb 后列表被清空了').toHaveCount(1);
     await expect(page.getByTestId('page-file-browser-empty')).toHaveCount(0);
   });
 
