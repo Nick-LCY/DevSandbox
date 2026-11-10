@@ -56,6 +56,10 @@
 - **界面不写副标题、不写解释说明性文字**：面板 / 抽屉 / 区块的标题就是标题，**不加副标题、不加「这一段是干什么的」说明段**。功能由文档解释，界面不重复解释（既有「界面不重复解释模板」是这条的一个具体实例，现升格为**通用口径**，新增面板一律适用）。
 - **操作即本体**：可交互元素本身承担操作语义——**点击文件行即下载**，不再另加下载按钮，也不在行内补「点击下载」这类说明文字；确实需要的额外操作走**独立的图标按钮**并带 `aria-label` / tooltip，不与行本身的点击语义重复。
 
+## 交互与状态
+
+- **同路径导航必须强制重读，不依赖 effect 因同值 state 不重跑**：导航入口对**同路径**也必须**重新触发数据加载**——要么在导航入口**直接调用加载函数**，要么用**递增序号**驱动 effect；**不得依赖「state 值变化触发 effect」**（同值 `setState` 会被 React bailout 跳过，effect 不重跑 ⇒ 界面停在旧数据甚至空列表）。背景：文件面板的面包屑同路径点击曾把列表渲染成**空**，根因正是同值 `setState` bailout。
+
 ## 抽屉外壳
 
 - **三件套**：统一外壳 `src/components/workbench/DrawerShell.tsx` + 原语封装 `src/components/ui/drawer.tsx` + 宽度存取 `src/lib/drawer-width.ts`。原语是 `@base-ui/react` 自带的 Drawer（**零新增依赖**），页面里不自己拼 Drawer。
@@ -171,4 +175,4 @@
 - [[tasks/phase2-console/07-console-ui-overhaul.md|07 控制台 UI 全面改造]] — 本套约定的由来（单页工作台与新视觉底座的落地任务）。
 - [[tasks/phase2-console/04-console-frontend.md|04 网页控制台前端]] — 前端工程的首个落地任务。
 - [[tasks/phase3-desktop/06-port-forward-desktop.md|06 端口转发桌面侧]] — 端口转发区（本机端口规则、两形态差异）与桌面 IPC 的落地任务。
-- [[tasks/runtime-file-transfer/04-frontend-file-panel.md|04 前端文件浏览面板]] — 文件浏览面板（入口按钮 / 抽屉 / 面包屑 / 三列列表 / 上传下载进度）的落地任务；「界面文案与操作语义」一节的两条约定出自该轮。
+- [[tasks/runtime-file-transfer/04-frontend-file-panel.md|04 前端文件浏览面板]] — 文件浏览面板（入口按钮 / 抽屉 / 面包屑 / 三列列表 / 上传下载进度）的落地任务；「界面文案与操作语义」一节的两条约定与「交互与状态」一节的**同路径强制重读**约定均出自该轮（含收口后修复轮）。
