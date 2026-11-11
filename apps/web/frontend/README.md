@@ -41,6 +41,7 @@ pnpm run build      # = tsc --noEmit && vite build
 产物落在 `apps/web/frontend/dist`，由独立静态源伺服；后端只提供 `/api`：
 
 ```bash
+pnpm run preview --host 127.0.0.1 --port 8200 --strictPort   # 本地伺服 dist（绑 127.0.0.1 才有安全上下文）
 uv run --project apps/web/backend python -m sandbox_console        # 默认监听 127.0.0.1:8000
 ```
 
@@ -78,12 +79,15 @@ pnpm run test:acceptance    # 一条命令跑完全部用例，退出码 0 = 通
 宿主 8000 端口被无关进程占用时用环境变量换端口（默认 8100）：
 
 ```bash
-CONSOLE_TEST_PORT=8200 pnpm run test:acceptance
+CONSOLE_TEST_PORT=8300 pnpm run test:acceptance
 ```
+
+**别拿 8200**：那是静态源的默认端口（`CONSOLE_STATIC_PORT`），两处撞车会让静态源
+压根起不来（`--strictPort` 直接失败），验收白等 60 秒。后端换端口用 8300 这样的空闲端口。
 
 环境前提：Playwright chromium 1.64.1、免密 sudo、宿主 Docker、镜像代理在跑。
 验收脚本自己会先跑 `cd apps && uv sync --all-packages --all-groups` 同步 Python 工作区环境（核心包与服务端包共用同一个虚拟环境），
-再构建前端产物、构建一个「不存在于任何仓库」的测试镜像、拉起控制台服务并在收尾时清理干净。
+再构建前端产物、**拉起独立静态源**（页面基址）、构建一个「不存在于任何仓库」的测试镜像、拉起控制台服务并在收尾时清理干净。
 用例清单、断言口径与产物位置见 `apps/web/frontend/tests/README.md`；实测数据见 `apps/web/frontend/RESULTS.md`。
 
 ## 目录结构
