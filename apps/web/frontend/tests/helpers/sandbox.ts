@@ -18,10 +18,12 @@ export function platformHome(): string {
   return (process.env.SANDBOX_PLATFORM_HOME ?? '').trim() || '/var/lib/sandbox-platform';
 }
 
-/** 读运行期信息（端口、测试镜像）。 */
+/** 读运行期信息（端口、静态源端口、测试镜像）。 */
 export function readFixtures(): {
   port: number;
   host: string;
+  /** 静态源端口（页面基址所在处，与后端不同源）。 */
+  staticPort: number;
   localImage: {
     reference: string;
     imageId: string;
@@ -34,6 +36,12 @@ export function readFixtures(): {
     throw new Error(`读不到运行期信息：${FIXTURES_FILE} 不存在`);
   }
   return JSON.parse(fs.readFileSync(FIXTURES_FILE, 'utf-8'));
+}
+
+/** 静态源基址（页面所在处：前端产物由它伺服，后端只提供 `/api`）。 */
+export function staticBaseUrl(): string {
+  const { staticPort } = readFixtures();
+  return `http://127.0.0.1:${staticPort}`;
 }
 
 /** 删掉所有验收前缀的残留沙箱。 */

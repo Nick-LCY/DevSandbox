@@ -1,7 +1,8 @@
 /**
  * 边界验收：
  * 一、沙箱内的依赖镜像拉取仍统一经统一镜像代理（代理访问日志 + 守护进程单元环境变量取证）；
- * 二、控制台服务只监听回环地址、接口要令牌、不暴露公网。
+ * 二、控制台服务只监听回环地址、接口要令牌、不暴露公网；
+ * 三、后端只提供 `/api`：根路径与静态资源路径一律 404，前端由独立静态源托管。
  *
  * 注：二期口径是「不做认证」，三期起后端对全部 `/api` 生效令牌认证
  * （`apps/web/backend/API.md` 第 14 章）——「不带凭据也能拿到数据」那条口径
@@ -14,7 +15,7 @@ import { backendBaseUrl, createSandbox, health, listSandboxes } from '../helpers
 import { AUTH_FAILED_DETAIL, authHeaders } from '../helpers/auth';
 import { gotoDetail } from '../helpers/console';
 import { run, sandboxExec, userUid } from '../helpers/host';
-import { readFixtures } from '../helpers/sandbox';
+import { readFixtures, staticBaseUrl } from '../helpers/sandbox';
 
 const SANDBOX_NAME = 'acc-proxy';
 const IMAGE = 'sandbox-platform/base:0.2.0';
@@ -108,7 +109,23 @@ test.describe('边界', () => {
     expect((await page.request.get(`${backendBaseUrl()}/docs`)).status()).toBe(404);
     expect((await page.request.get(`${backendBaseUrl()}/openapi.json`)).status()).toBe(404);
 
-    // ④ 网页确实挂在同一个端口上（单端口对外）
+    // ④ 后端只提供 /api：根路径与静态资源路径一律 404（前端由独立静态源托管）
+    const root = await page.request.get(`${backendBaseUrl()}/`);
+    expect(root.status(), '后端根路径不该返回页面').toBe(404);
+    expect((await root.text()).toLowerCase(), '后端根路径不该吐 HTML').not.toContain('<html');
+
+    const asset = await page.request.get(`${backendBaseUrl()}/assets/whatever.js`);
+    expect(asset.status(), '后端不该提供静态资源').toBe(404);
+
+    // ⑤ **正向对照**：静态源根确实出页面（防上面两条负向断言恒绿——
+    //    「后端返回 404」也可能只是「静态源压根没起」造成的）
+    const staticRoot = await page.request.get(staticBaseUrl());
+    expect(staticRoot.status(), '静态源根路径该出页面').toBe(200);
+    expect(await staticRoot.text(), '静态源根页面不该缺 page-layout-title').toContain(
+      'page-layout-title',
+    );
+
+    // ⑥ 页面照常进沙箱详情（页面 origin 已是静态源，与后端**不同源**）
     await gotoDetail(page, SANDBOX_NAME);
     await expect(page.getByTestId('page-sandbox-detail-title')).toBeVisible();
   });
