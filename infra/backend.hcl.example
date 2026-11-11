@@ -1,0 +1,38 @@
+# Terraform 远端状态后端配置模板（S3 兼容对象存储 = MinIO）。
+#
+# 用法：
+#   cp backend.hcl.example backend.hcl   # backend.hcl 不入库（.gitignore 已忽略）
+#   # 把下面的占位值替换成真实值（**待用户提供**）
+#   terraform init                        # 初始化后端（需要 AWS_* 凭据环境变量）
+#
+# ⚠️ 本文件**全部是占位值**，直接拿去 init 会失败——这是有意为之：
+#    凭据与端点信息尚未到位（见 README「待用户提供」清单）。
+
+# MinIO 桶名（远端状态所在桶）。待用户提供。
+bucket = "console-cloudflare-tfstate"
+
+# 状态对象键。**带 workspace 前缀**：本项目是「单 root module + workspace」用法，
+# 不做多环境矩阵；不同 workspace 的状态对象按前缀隔离。
+# 注意：S3 后端在非 default workspace 下会在 key 后再追加 `env:/<workspace>`，
+# 例如 key = "console-cloudflare/default/terraform.tfstate" + workspace "dev"
+# ⇒ 实际对象 "console-cloudflare/default/terraform.tfstate/env:/dev/terraform.tfstate"。
+# 待用户提供（桶名 / 路径前缀）。
+key = "console-cloudflare/<workspace>/terraform.tfstate"
+
+# 区域。MinIO 不校验区域，任意稳定值即可（通常填 us-east-1）。待用户提供。
+region = "us-east-1"
+
+# MinIO 端点 URL。待用户提供（示例：https://minio.sankabox.com —— 尚未确认）。
+endpoint = "https://minio.sankabox.com"
+
+# MinIO 必须用 path style：否则桶名会被当成域名的一部分（bucket.minio.host），
+# MinIO 侧解析不到，直接 404 / SignatureDoesNotMatch。
+use_path_style = true
+
+# ── 以下四个 skip_* 是 MinIO（非 AWS）的硬要求 ──────────────────────────────
+# 不设它们，terraform init 会去 AWS 官方端点做凭证 / 区域 / 账号校验，
+# 直接卡住（连不上 AWS metadata 服务、报 NoCredentialProviders 等）。
+skip_credentials_validation = true
+skip_region_validation      = true
+skip_requesting_account_id  = true
+skip_metadata_api_check     = true

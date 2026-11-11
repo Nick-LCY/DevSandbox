@@ -1,0 +1,27 @@
+# Terraform 本地缓存与状态文件——绝不入库
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+
+# 变量文件与覆盖文件——真实 tfvars / 覆盖配置绝不入库
+# （terraform.tfvars.example 不受影响：本条只匹配 *.tfvars 结尾）
+*.tfvars
+*.tfvars.json
+override.tf
+override.tf.json
+
+# plan 产物
+terraform.tfplan
+tfplan
+
+# 后端配置（含 MinIO 端点与桶名，真实文件不入库；模板 backend.hcl.example 入库）
+backend.hcl
+
+# Node / Wrangler（infra/worker/ 在任务 03 轮填充）
+node_modules/
+.wrangler/
+
+# 注意：.terraform.lock.hcl **必须入库**（锁 provider 版本与哈希，防上游漂移），
+# 故此处刻意不忽略它。

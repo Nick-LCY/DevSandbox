@@ -1,0 +1,20 @@
+# 变量取值样例（非敏感）。**所有值都是占位，真实 tfvars 不入库。**
+#
+# 用法：
+#   cp terraform.tfvars.example terraform.tfvars   # terraform.tfvars 已被 .gitignore 忽略
+#   # 填入真实值后： terraform plan
+#
+# 敏感变量 cloudflare_api_token **不在这里出现**——它只经环境变量注入：
+#   export TF_VAR_cloudflare_api_token=<API Token>
+
+# Cloudflare Account ID（非机密；须与创建 Worker 的账号一致）——待用户提供。
+cloudflare_account_id = "00000000000000000000000000000000"
+
+# 承载自定义域名的 zone 名（待确认与账号同账号）。
+cloudflare_zone_name = "sankabox.com"
+
+# 目标 Worker 名——须与 infra/worker/wrangler.toml 的 name 一致。
+worker_name = "sandbox-console-web"
+
+# 绑定的自定义域名。
+worker_domain = "dev.sankabox.com"
