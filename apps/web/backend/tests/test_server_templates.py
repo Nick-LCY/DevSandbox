@@ -59,7 +59,6 @@ PI_TEMPLATE_FILES = [
 @pytest.fixture
 def templates_client(
     platform_home: Path,
-    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> TestClient:
     """测试客户端（模板库落在临时平台数据根里）。
@@ -69,8 +68,6 @@ def templates_client(
     环境里多出来的那条内置模板顶掉。把内置清单常量替成空元组，既有用例的
     断言一字不动；真实清单由 ``builtin_seed_client`` 那组用例单独验。
     """
-    # 前端目录指向不存在的路径：静态托管是否挂载的断言才稳定
-    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     monkeypatch.setattr(BUILTIN_TARGET, ())
     app = create_app()
     return TestClient(app, headers=auth_headers())
@@ -79,15 +76,12 @@ def templates_client(
 @pytest.fixture
 def builtin_seed_client(
     platform_home: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> TestClient:
     """测试客户端（**不替换内置清单常量**：真实内置模板照常注入）。
 
     数据根仍是临时目录（``platform_home`` 夹具）：注入、墓碑都落在临时目录里，
     不碰真实环境的数据根。
     """
-    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     app = create_app()
     return TestClient(app, headers=auth_headers())
 
@@ -342,12 +336,10 @@ def test_builtin_template_is_injected_on_list(
 
 def test_builtin_template_is_injected_on_startup(
     platform_home: Path,
-    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """内置种子：服务启动时注入一次。"""
     monkeypatch.setattr(BUILTIN_TARGET, (BUILTIN_FIXTURE,))
-    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     app = create_app()
     with TestClient(app, headers=auth_headers()) as client:
         items = client.get("/api/templates").json()
@@ -488,7 +480,6 @@ def test_list_templates_survives_seed_failure(
 
 def test_lifespan_survives_seed_failure(
     platform_home: Path,
-    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """启动钩子里的种子注入意外失败：服务照常启动（不阻断）。"""
@@ -496,7 +487,6 @@ def test_lifespan_survives_seed_failure(
     def raise_runtime_error(config: PlatformConfig) -> list[str]:
         raise RuntimeError("种子注入炸了")
 
-    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     monkeypatch.setattr("sandbox_console.app.ensure_builtin_templates", raise_runtime_error)
     app = create_app()
     with TestClient(app, headers=auth_headers()) as client:
@@ -537,8 +527,6 @@ def test_builtin_pi_template_is_listed(builtin_seed_client: TestClient) -> None:
 def test_builtin_pi_template_injection_is_idempotent(
     builtin_seed_client: TestClient,
     platform_home: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """注入幂等：连读两次列表、重建服务再读，都只出现一份。
 
@@ -550,7 +538,6 @@ def test_builtin_pi_template_injection_is_idempotent(
     assert [item["id"] for item in second].count(PI_TEMPLATE_ID) == 1
 
     # 重建服务（走启动钩子那条注入路径）再读：仍然只有一份。
-    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     with TestClient(create_app(), headers=auth_headers()) as restarted:
         third = restarted.get("/api/templates").json()
     assert [item["id"] for item in third].count(PI_TEMPLATE_ID) == 1
@@ -690,11 +677,8 @@ def test_new_template_id_format() -> None:
 
 
 # ---------------------------------------------------------------- 启动钩子
-def test_lifespan_prepares_templates_dir(
-    platform_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_lifespan_prepares_templates_dir(platform_home: Path) -> None:
     """启动钩子：准备模板库目录。"""
-    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     app = create_app()
     with TestClient(app, headers=auth_headers()) as client:
         assert client.get("/api/templates").status_code == 200

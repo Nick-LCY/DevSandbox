@@ -236,11 +236,8 @@ def manager() -> FakeForwardManager:
 def client(
     manager: FakeForwardManager,
     platform_home: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ):
     """测试客户端（转发编排入口整体替换）。"""
-    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     app = create_app()
     app.dependency_overrides[get_forward_manager] = lambda: manager
     app.dependency_overrides[get_forward_manager_ws] = lambda: manager
@@ -543,14 +540,13 @@ def test_tunnel_with_wrong_bearer_is_rejected(client: TestClient) -> None:
 
 
 def test_unregistered_websocket_route_is_rejected_even_with_a_valid_token(
-    platform_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    platform_home: Path,
 ) -> None:
     """未登记的 WS 路由：即便带着有效令牌也拒握手（fail-closed 默认）。
 
     两份准入清单（豁免清单 / Bearer 清单）都没登记的路径一律拒握手：
     新增 WS 路由而忘了写鉴权时，默认被拒，不是裸奔。
     """
-    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     app = create_app()
 
     from starlette.websockets import WebSocket
@@ -793,11 +789,8 @@ def test_tunnel_uses_a_dedicated_thread_pool_for_the_byte_pump(
 def test_tunnels_are_closed_when_the_service_stops(
     manager: FakeForwardManager,
     platform_home: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """服务退出：活动隧道全部关掉（字节泵进程一并回收）。"""
-    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     app = create_app()
     app.dependency_overrides[get_forward_manager] = lambda: manager
     app.dependency_overrides[get_forward_manager_ws] = lambda: manager
@@ -812,10 +805,9 @@ def test_tunnels_are_closed_when_the_service_stops(
 
 # ---------------------------------------------------------------- 生命周期
 def test_startup_purges_leftover_forwards(
-    platform_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    platform_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """服务启动：清理上次遗留的转发容器与记录（与终端会话同款语义）。"""
-    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     calls: list[int] = []
 
     def fake_purge(self) -> ForwardOpResult:
@@ -829,11 +821,8 @@ def test_startup_purges_leftover_forwards(
     assert calls, "启动时必须调用 purge_leftover 清理遗留转发"
 
 
-def test_tunnel_registry_is_shared_by_the_app(
-    platform_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_tunnel_registry_is_shared_by_the_app(platform_home: Path) -> None:
     """活动隧道登记表挂在应用状态上（整个进程共用一个，依赖注入取的就是它）。"""
-    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     app = create_app()
     registry = app.state.tunnel_registry
     assert registry is not None

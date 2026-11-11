@@ -634,7 +634,7 @@ docker exec -i <转发容器> socat - TCP:<沙箱容器名>:<容器端口>
 | 前缀 | `/api` |
 | 启动入口 | `uv run --project apps/web/backend python -m sandbox_console` |
 | 监听地址 | 默认 `127.0.0.1:8000`，用 `SANDBOX_CONSOLE_HOST` / `SANDBOX_CONSOLE_PORT` 覆盖；非回环地址启动时打醒目告警（口径：**已启用令牌认证**，但令牌是单一凭据） |
-| 前端目录 | 默认 `apps/web/frontend/dist`（前端与后端同在 `apps/web/` 下），用 `SANDBOX_CONSOLE_DIST` 覆盖；目录不存在时跳过静态托管并告警（`/api/health` 的 `console_mounted` 为 false） |
+| 前端托管 | **无**：后端只提供 `/api`，不托管前端静态资源（前端由 Cloudflare Workers 独立托管，根路径 `/` 返回 404） |
 | 接口文档 | `/docs` 与 `/openapi.json` **默认关闭**；用 `SANDBOX_CONSOLE_DOCS=1` 显式开启（接口清单不外泄）。**开启后 `/docs` 与 `/openapi.json` 不受令牌保护**（中间件只拦 `/api` 前缀），仅限本机排查时临时开启，排查完关掉 |
 | 错误响应体 | 统一 `{"detail": "中文消息"}`；400 / 404 / 409 保留平台异常原文，500 只给固定文案（原文只进日志） |
 | 鉴权 | **全部 `/api`（含终端 WebSocket）受访问令牌保护**；`/api/health` **不豁免**；详见第 14 章 |
@@ -660,7 +660,7 @@ docker exec -i <转发容器> socat - TCP:<沙箱容器名>:<容器端口>
 
 | 方法 | 路径 | 请求体 | 响应体 | 对应的核心接口 |
 |---|---|---|---|---|
-| GET | `/api/health` | — | 服务自检（版本、数据根是否就绪、前端是否挂载） | — |
+| GET | `/api/health` | — | 服务自检（版本、数据根是否就绪） | — |
 | POST | `/api/auth/ticket` | —（`Authorization: Bearer <令牌>`，**受令牌保护**） | `{"ticket": "...", "expires_in": 30}` | 一次性票据（见第 14 章；30 秒有效、用过即废） |
 | POST | `/api/sandboxes` | `CreateSandboxRequest` | 201 + `CreateSandboxResponse` | `SandboxService.create` |
 | GET | `/api/sandboxes` | — | `SandboxSummary[]` | `SandboxService.list` |
@@ -717,7 +717,7 @@ docker exec -i <转发容器> socat - TCP:<沙箱容器名>:<容器端口>
 | `CreateSandboxResponse` | `metadata`、`connection`、`steps` | 创建结果：`steps` 是固定 7 步名称，`connection` 含套接字路径与进入沙箱的命令提示 |
 | `ReclaimPlanModel` | `sandbox_name`、`items`、`untouched_note`、`user_mounts`、`incomplete` | 删除前的回收清单；`untouched_note` 固定为「用户挂载的宿主机目录不受影响」；`incomplete` 表示依赖容器清单可能不完整 |
 | `DeleteSandboxResponse` | `name`、`existed`、`removed`、`failed`、`plan` | 删除结果；`removed` 是确实回收掉的资源，`failed` 是尝试过但没成功的条目 |
-| `HealthResponse` | `status`、`version`、`data_root_configured`、`console_mounted` | 服务自检；**不回显宿主平台数据根的绝对路径**，只给「数据根是否就绪」与「前端是否挂载」 |
+| `HealthResponse` | `status`、`version`、`data_root_configured` | 服务自检；**不回显宿主平台数据根的绝对路径**，只给「数据根是否就绪」 |
 | `HostImageModel` | `reference`、`image_id`、`size_bytes`、`created_at` | 宿主本地镜像项：`reference` 是 `仓库:标签` 形式的镜像引用，`size_bytes` 是体积（字节），`created_at` 是创建时间；悬空镜像不进列表 |
 | `ProxyContainerStatusModel` | `exists`、`running` | 代理容器是否存在 / 是否运行中 |
 | `ProxyStatusModel` | `container`、`healthy`、`tcp_ok`、`ca_fetchable`、`detail`、`cache_size_bytes`、`certificate_ready`、`proxy_url` | 代理状态：容器运行状态、健康状态（端口可连 / 能取到证书 / 明细）、缓存目录占用字节数、代理 CA 证书就绪状态、代理访问地址；**代理没起来不是错误**：如实回报「不健康」与明细（明细区分「容器不存在」「容器未运行」「端口不通」），不报 4xx / 500 |
@@ -1033,7 +1033,7 @@ TTY 负责（容器内拿到的是真实 TTY，默认 termios 生效）。
 | 令牌比对 | 一律 `hmac.compare_digest`（常量时间）；源码里不出现对令牌的 `==` / `in` 比较 |
 | 请求头 | `Authorization: Bearer <令牌>` |
 | 认证失败 | `401` + `{"detail": "访问令牌无效或缺失"}`；**缺失与错误不区分**，不回显令牌，不把令牌写进日志 |
-| 拦截范围 | **只拦 `/api` 前缀**：静态资源（`/`、`/assets/*`、`/fonts/*`）与 `/docs`、`/openapi.json` 不拦 |
+| 拦截范围 | **只拦 `/api` 前缀**：根路径等非 `/api` 路径（`/`、`/docs`、`/openapi.json`）不拦——本服务不再托管静态资源 |
 | 接口文档开关 | `/docs` 与 `/openapi.json` **默认关闭**，用 `SANDBOX_CONSOLE_DOCS=1` 显式开启。**开启时这两个路径不受令牌保护**（令牌闸只拦 `/api` 前缀），且 CORS 已放行任意来源 → **现已跨源可读**（任意网页都能拿到接口清单）。**仅限本机排查时临时开启，排查完关掉** |
 | `/api/health` | **不豁免**：没令牌同样 401。401 也是健康口径的一部分——前端靠它区分「后端不可达」与「令牌无效」 |
 | WebSocket 路由准入 | 中间件对 WS scope **默认拒绝**（fail-closed）：只有显式登记的 WS 路由才放行到路由层——终端 WS 登记在**豁免清单**（票据闸在路由侧），隧道 WS 登记在 **Bearer 清单**（中间件校验 `Authorization: Bearer`，桌面端 Rust 客户端能设请求头）。**两份清单都没登记的 WS 路由一律拒握手**：将来新增 WS 路由而忘了写鉴权时，默认被拒（不是裸奔） |

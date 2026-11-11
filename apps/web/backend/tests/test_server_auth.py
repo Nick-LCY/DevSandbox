@@ -66,11 +66,8 @@ class StubService:
 @pytest.fixture
 def auth_client(
     platform_home: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ):
     """带认证的测试客户端（生命周期服务整体桩掉）。"""
-    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     app = create_app()
     app.dependency_overrides[get_service] = lambda: StubService(PlatformConfig.from_env())
     with TestClient(app, headers=auth_headers()) as client:
@@ -124,26 +121,20 @@ def test_auth_failure_does_not_echo_the_token(auth_client: TestClient) -> None:
     assert "sbx_guess_me" not in response.text
 
 
-def test_static_assets_are_not_blocked_by_auth(
-    platform_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """静态资源不拦：网页本体（/）没令牌也能拿到。"""
-    dist = tmp_path / "dist"
-    dist.mkdir()
-    (dist / "index.html").write_text("<html>console</html>", encoding="utf-8")
-    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(dist))
+def test_non_api_path_is_not_blocked_by_auth(platform_home: Path) -> None:
+    """非 /api 路径不拦令牌闸；但根路径本身是 404（后端不托管前端）。"""
     app = create_app()
     with TestClient(app) as client:
         response = client.get("/")
-    assert response.status_code == 200
-    assert "console" in response.text
+    # 不是 401：令牌闸只管 /api 前缀，根路径压根不进闸。
+    assert response.status_code == 404
+    assert "<html" not in response.text.lower()
 
 
 def test_openapi_docs_are_not_blocked_by_auth(
-    platform_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    platform_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """/docs 与 /openapi.json 不拦（是否开放由 SANDBOX_CONSOLE_DOCS 决定）。"""
-    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     monkeypatch.setenv("SANDBOX_CONSOLE_DOCS", "1")
     app = create_app()
     with TestClient(app) as client:
@@ -201,7 +192,6 @@ def test_startup_log_shows_token_path_but_not_token(
 ) -> None:
     """启动日志只出现令牌文件路径，不出现令牌本体。"""
     monkeypatch.delenv(TOKEN_ENV_VAR, raising=False)
-    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(platform_home / "no-console-dist"))
     app = create_app()
     with caplog.at_level(logging.INFO):
         with TestClient(app) as client:
@@ -272,13 +262,11 @@ def test_short_injected_token_warns_but_still_resolves(
 
 def test_request_time_fallback_never_generates_or_writes_a_token(
     platform_home: Path,
-    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """请求期的回退路径**只读**：取不到令牌就报 ERROR + 401，不现场生成、不落盘。"""
     monkeypatch.delenv(TOKEN_ENV_VAR, raising=False)
-    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     app = create_app()
     # 不进生命周期钩子（不进 ``with TestClient(app)``）：模拟令牌未初始化的场景
     client = TestClient(app)
@@ -314,7 +302,6 @@ def test_unwritable_data_root_fails_startup_without_leaving_leftovers(
     readonly.chmod(0o500)
     home = readonly / "platform-home"
     monkeypatch.setenv("SANDBOX_PLATFORM_HOME", str(home))
-    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     app = create_app()
     try:
         with pytest.raises(ConfigError):
@@ -449,7 +436,7 @@ def test_websocket_rejects_any_origin_without_a_valid_ticket(auth_client: TestCl
 
 
 def test_unregistered_websocket_route_is_rejected_by_default(
-    platform_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    platform_home: Path,
 ) -> None:
     """中间件对 WebSocket 是 fail-closed：没登记的 WS 路由一律拒握手。
 
@@ -457,7 +444,6 @@ def test_unregistered_websocket_route_is_rejected_by_default(
     验证它被令牌闸在 accept 之前就拒掉——将来新增 WS 路由漏写鉴权时，
     默认是被拒，而不是裸奔。
     """
-    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     app = create_app()
 
     @app.websocket("/api/not-registered/ws")
@@ -474,10 +460,9 @@ def test_unregistered_websocket_route_is_rejected_by_default(
 
 
 def test_registered_websocket_route_is_exempt_from_the_middleware(
-    platform_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    platform_home: Path,
 ) -> None:
     """登记在豁免清单里的 WS 路由（终端 WS）能过中间件：鉴权由路由自己做。"""
-    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     app = create_app()
     assert "/api/terminal/sessions" in WEBSOCKET_EXEMPT_PATHS
 

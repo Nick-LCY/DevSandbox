@@ -1,4 +1,8 @@
-"""应用工厂：装配路由、错误映射、前端静态目录与生命周期钩子。"""
+"""应用工厂：装配路由、错误映射与生命周期钩子。
+
+本服务是**纯 API 服务**：只提供 ``/api``，不再托管前端静态资源
+（前端由 Cloudflare Workers 独立托管）。
+"""
 
 from __future__ import annotations
 
@@ -6,11 +10,9 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from sandbox_platform import (
     ConfigError,
     FileTransferManager,
@@ -42,43 +44,10 @@ logger = logging.getLogger(__name__)
 
 API_PREFIX = "/api"
 
-# 服务端包所在目录：apps/web/backend/src/sandbox_console/app.py
-#   parents[0] = sandbox_console（包目录）
-#   parents[1] = src
-#   parents[2] = backend
-BACKEND_DIR = Path(__file__).resolve().parents[2]
-# 网页控制台前端与后端同在 apps/web/ 下：apps/web/frontend
-WEB_DIR = BACKEND_DIR.parent
-# 前端构建产物默认位置：apps/web/frontend/dist
-FRONTEND_DIST_DIR = WEB_DIR / "frontend" / "dist"
-
-# 前端构建产物目录覆盖（默认 apps/web/frontend/dist）
-ENV_CONSOLE_DIST = "SANDBOX_CONSOLE_DIST"
 # 接口文档开关：默认关闭（接口清单不外泄），显式开启才暴露
 ENV_CONSOLE_DOCS = "SANDBOX_CONSOLE_DOCS"
 
 TRUTHY_VALUES = ("1", "true", "yes", "on")
-
-
-def default_console_dist_dir() -> Path:
-    """前端构建产物目录的默认位置。
-
-    固定为同工作区里的 ``apps/web/frontend/dist``：前端与后端同在
-    ``apps/web/`` 下（后端在 ``backend/``、前端在 ``frontend/``）。
-    """
-    return FRONTEND_DIST_DIR
-
-
-def console_dist_dir() -> Path:
-    """前端构建产物目录。
-
-    默认取 ``apps/web/frontend/dist``（前端是二期任务 04 的产物，
-    二进制安装时用环境变量 ``SANDBOX_CONSOLE_DIST`` 指到实际位置）。
-    """
-    raw = os.environ.get(ENV_CONSOLE_DIST, "").strip()
-    if raw:
-        return Path(raw)
-    return default_console_dist_dir()
 
 
 def docs_enabled() -> bool:
@@ -208,6 +177,9 @@ def create_app(config: PlatformConfig | None = None) -> FastAPI:
     连接层的两道闸在这里装上：外层跨源放行（CORS，任意来源）、内层令牌认证
     （只拦 ``/api`` 前缀）。令牌本身在生命周期钩子里解析（见 ``lifespan``）。
 
+    本服务是**纯 API 服务**：只提供 ``/api``，不再托管前端静态资源
+    （前端由 Cloudflare Workers 独立托管）。
+
     生命周期服务不在这里注入：路由通过依赖注入取整个进程共用的实例，
     测试用 ``dependency_overrides`` 替换。
     """
@@ -227,7 +199,6 @@ def create_app(config: PlatformConfig | None = None) -> FastAPI:
     install_exception_handlers(app)
     app.include_router(api_router, prefix=API_PREFIX)
     _install_connection_middleware(app)
-    _mount_console(app)
     return app
 
 
@@ -237,7 +208,8 @@ def _install_connection_middleware(app: FastAPI) -> None:
     顺序要紧：跨源放行在外层，预检请求（``OPTIONS``）由它直接应答，不会落到
     内层的令牌认证上——预检请求本来就不带 ``Authorization`` 头。
 
-    两道闸各管一段：令牌认证只拦 ``/api`` 前缀（静态资源与 ``/docs`` 不拦），
+    两道闸各管一段：令牌认证只拦 ``/api`` 前缀（根路径等非 ``/api`` 路径
+    （``/``、``/docs``、``/openapi.json``）不拦——本服务不再托管静态资源），
     跨源放行只管来源（**任意来源都放行**，2026-11-03 用户决策：来源不是安全
     边界，准入边界只有令牌与票据）。
 
@@ -265,19 +237,3 @@ def _install_connection_middleware(app: FastAPI) -> None:
         # 浏览器不会把这个头交给前端 JS（文件名解析会一直是死代码）。
         expose_headers=list(CORS_EXPOSED_HEADERS),
     )
-
-
-def _mount_console(app: FastAPI) -> None:
-    """挂载前端构建产物；目录不存在时跳过并记日志，不报错。"""
-    dist = console_dist_dir()
-    if not dist.is_dir():
-        app.state.console_mounted = False
-        logger.warning(
-            "未挂载前端：目录不存在（%s）。请设置 %s 指向前端构建产物目录",
-            dist,
-            ENV_CONSOLE_DIST,
-        )
-        return
-    app.mount("/", StaticFiles(directory=str(dist), html=True), name="console")
-    app.state.console_mounted = True
-    logger.info("已挂载前端静态目录：%s", dist)

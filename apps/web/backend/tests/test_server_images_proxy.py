@@ -899,7 +899,6 @@ def api_client(
     system_ca = tmp_path / "system-ca.crt"
     system_ca.write_text(SYSTEM_CA, encoding="utf-8")
     monkeypatch.setenv("SANDBOX_PLATFORM_SYSTEM_CA_BUNDLE", str(system_ca))
-    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
 
     app = create_app()
     service = SandboxService(app.state.platform_config)

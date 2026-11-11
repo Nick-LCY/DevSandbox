@@ -12,6 +12,8 @@
 全部 ``/api``（含终端 WebSocket）受访问令牌保护：令牌由环境变量
 ``SANDBOX_CONSOLE_TOKEN`` 注入，或由服务在平台数据根生成
 （``console-token.json``，权限 0600）。启动日志只打令牌来源与路径，不打令牌本体。
+
+本服务只提供 ``/api``；网页控制台由 Cloudflare Workers 独立托管。
 """
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
 [project]
 name = "sandbox-console-backend"
 version = "0.1.0"
-description = "沙箱平台控制台服务端（HTTP 接口、网页终端桥接、前端构建产物托管）"
+description = "沙箱平台控制台服务端（HTTP 接口、网页终端桥接）"
 requires-python = ">=3.12"
 dependencies = [
     # 核心包：服务端只做编排与转译，生命周期逻辑全在核心包内

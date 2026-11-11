@@ -190,11 +190,8 @@ def manager() -> FakeTransferManager:
 def client(
     manager: FakeTransferManager,
     platform_home: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ):
     """测试客户端（传输编排入口整体替换）。"""
-    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     app = create_app()
     app.dependency_overrides[get_transfer_manager] = lambda: manager
     with TestClient(app, headers=auth_headers()) as http_client:
@@ -205,11 +202,8 @@ def client(
 def test_endpoints_require_a_token(
     manager: FakeTransferManager,
     platform_home: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """无令牌：三个端点一律 401（**不另写鉴权分支**，靠 /api 中间件）。"""
-    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     app = create_app()
     app.dependency_overrides[get_transfer_manager] = lambda: manager
     with TestClient(app) as http_client:

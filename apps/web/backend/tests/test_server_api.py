@@ -34,7 +34,6 @@ from sandbox_platform import (
     parse_mount_declaration,
 )
 from sandbox_console import create_app
-from sandbox_console.app import default_console_dist_dir
 from sandbox_console.deps import get_service
 
 from conftest import auth_headers
@@ -195,12 +194,8 @@ def _core_create_error(
 def client(
     fake_service: FakeSandboxService,
     platform_home: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
 ) -> TestClient:
     """测试客户端（生命周期服务已整体桩掉）。"""
-    # 前端目录指向不存在的路径：静态托管是否挂载的断言才稳定
-    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     app = create_app()
     app.dependency_overrides[get_service] = lambda: fake_service
     return TestClient(app, headers=auth_headers())
@@ -713,19 +708,31 @@ def test_delete_sandbox_returns_removed_and_failed(client: TestClient) -> None:
 
 
 def test_health_endpoint(client: TestClient) -> None:
-    """服务自检：版本、数据根是否就绪、前端是否挂载；不回显宿主路径。"""
+    """服务自检：版本、数据根是否就绪；不回显宿主路径。"""
     response = client.get("/api/health")
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
     assert body["data_root_configured"] is True
-    assert body["console_mounted"] is False
     assert "platform_home" not in body
     assert "/var/lib" not in response.text
 
-    # 前端产物目录的默认位置锁死：服务端包在 apps/web/backend/src/sandbox_console/，
-    # 前端在同工作区的 apps/web/frontend/ —— 两边的目录层级不许漂。
-    assert default_console_dist_dir() == Path(__file__).resolve().parents[2] / "frontend" / "dist"
+    # 响应字段集锁死：只给「状态 / 版本 / 数据根是否就绪」三样，
+    # 不多不少（前端按这个形状读，多一个字段就会在前端被当成契约的一部分）。
+    assert set(body) == {"status", "version", "data_root_configured"}
+
+
+def test_root_path_returns_404(client: TestClient) -> None:
+    """根路径 404：本服务是纯 API 服务，不托管前端（根路径没有页面）。"""
+    response = client.get("/")
+    assert response.status_code == 404
+    assert "<html" not in response.text.lower()
+
+
+def test_static_assets_return_404(client: TestClient) -> None:
+    """静态资源路径 404：前端由独立静态源托管，后端不提供任何静态文件。"""
+    response = client.get("/assets/x.js")
+    assert response.status_code == 404
 
 
 # ---------------------------------------------------------------- 错误映射
@@ -800,10 +807,8 @@ def test_openapi_docs_can_be_enabled_by_env(
     fake_service: FakeSandboxService,
     platform_home: Path,
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
 ) -> None:
     """显式设置环境变量才开放 /docs 与 /openapi.json。"""
-    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     monkeypatch.setenv("SANDBOX_CONSOLE_DOCS", "1")
     app = create_app()
     app.dependency_overrides[get_service] = lambda: fake_service

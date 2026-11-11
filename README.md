@@ -99,7 +99,7 @@ uv run --project apps/web/backend python -m sandbox_console   # 启动服务
 | **跨源口径** | **CORS 放行任意来源**（响应头 `Access-Control-Allow-Origin: *`）；终端 WebSocket 握手**不再校验 `Origin`**。来源不是安全边界（同源判定基于可伪造的 `Host` 头），**准入边界只有令牌与票据**（2026-11-03 用户决策，详见 `apps/web/backend/API.md` 14.4） |
 | 平台数据根 | 仍走 `SANDBOX_PLATFORM_HOME`（默认 `/var/lib/sandbox-platform`），与命令行一致 |
 | 权限要求 | 与一期命令行一致：进程本身是 root 时直接执行，否则走免密 `sudo`。**仓库单元默认以非 root 用户（`User=sankabox`）运行**（root 直跑仍是受支持的路径），前提清单见下方「运行前提」 |
-| 前端托管 | `apps/web/frontend/dist` 由同一进程在 `/` 路径托管；目录不存在时跳过静态托管并告警（`/api/health` 的 `console_mounted` 为 false），不影响服务启动；部署路径不同时用 `SANDBOX_CONSOLE_DIST` 覆盖 |
+| 前端托管 | **后端只提供 `/api`，不托管前端**：前端由 Cloudflare Workers 独立托管（后端根路径 `/` 返回 404） |
 | 网页终端 | WebSocket 端点需要 `websockets` 库（uvicorn 的 WebSocket 实现）；未安装时握手会被拒（HTTP 404），终端会话建得起来但连不上。握手还要带**一次性票据**（`POST /api/auth/ticket` 换，30 秒内有效、用过即废）：浏览器 `WebSocket` 不能设自定义头，长期令牌不进 URL |
 | 接口文档 | `apps/web/backend/API.md` 的「二期 HTTP 接口」章节；运行时的交互式文档在 `/docs`，**默认关闭**，需要时用 `SANDBOX_CONSOLE_DOCS=1` 开启 |
 | 错误响应 | 统一 `{"detail": "中文消息"}`；400 / 404 / 409 保留平台异常原文，500 只回「平台内部错误，请查看服务日志」（原文只进日志，不回显宿主路径） |

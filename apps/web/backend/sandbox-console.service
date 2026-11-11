@@ -126,12 +126,7 @@ Environment=SANDBOX_PLATFORM_HOME=/var/lib/sandbox-platform
 #   · 轮换令牌：删掉令牌文件后重启服务，或改环境变量后重启。
 # Environment=SANDBOX_CONSOLE_TOKEN=换成你自己的令牌（建议 16 位以上）
 
-# 前端托管（SANDBOX_CONSOLE_DIST）：不设时默认找**源码树**里的前端产物目录
-#   （apps/web/frontend/dist）。快照部署导出的代码里**不含 dist**
-#   （git archive 不含被 gitignore 的产物），因此快照部署会自动跳过前端托管：
-#   /api/health 的 console_mounted=false，控制台网页打不开、但后端接口照常可用。
-#   需要网页控制台时：自行构建前端，并把该行取消注释指向实际产物目录。
-# Environment=SANDBOX_CONSOLE_DIST=/opt/sandbox-platform/apps/web/frontend/dist
+# 前端由 Cloudflare Workers 独立托管，本服务只提供 /api（根路径返回 404）。
 
 # 终端会话上限：默认全部会话 20 个、单沙箱 5 个。
 #   需要调整时用下面两个环境变量覆盖（一般不用改）：

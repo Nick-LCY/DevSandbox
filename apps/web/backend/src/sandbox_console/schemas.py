@@ -362,7 +362,6 @@ class HealthResponse(BaseModel):
     status: str
     version: str
     data_root_configured: bool
-    console_mounted: bool
 
 
 class AuthTicketResponse(BaseModel):

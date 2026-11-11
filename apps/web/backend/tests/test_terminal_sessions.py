@@ -286,15 +286,12 @@ def ticket_url(client: TestClient, path: str) -> str:
 def client(
     manager: TerminalSessionManager,
     platform_home: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ):
     """测试客户端（终端会话管理器整体替换）。
 
     必须以上下文管理器方式使用：测试客户端会为每个请求开一个事件循环，
     会话在创建时记住事件循环，跨请求必须共用同一个。
     """
-    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     app = create_app()
     app.dependency_overrides[get_terminal_manager] = lambda: manager
     app.dependency_overrides[get_terminal_manager_ws] = lambda: manager
@@ -665,10 +662,9 @@ def test_http_create_rejects_bad_payload(client: TestClient) -> None:
 
 
 def test_http_create_fails_when_sandbox_not_running(
-    config: PlatformConfig, fake_service: FakeService, tmp_path: Path, monkeypatch
+    config: PlatformConfig, fake_service: FakeService
 ) -> None:
     """沙箱未运行时创建会话直接失败（中文错误），不产生空会话。"""
-    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
 
     def refuse(request: TerminalSpawnRequest) -> PtyProcess:
         raise ValidationError(f"沙箱未运行，无法创建终端会话：{request.sandbox_name}")
@@ -755,10 +751,9 @@ def test_websocket_unknown_session_reports_error(client: TestClient) -> None:
 
 
 def test_websocket_reports_exit_code(
-    config: PlatformConfig, fake_service: FakeService, tmp_path: Path, monkeypatch
+    config: PlatformConfig, fake_service: FakeService
 ) -> None:
     """容器内进程退出：服务端回一条 exit 帧。"""
-    monkeypatch.setenv("SANDBOX_CONSOLE_DIST", str(tmp_path / "no-console-dist"))
     manager = TerminalSessionManager(
         config,
         fake_service,

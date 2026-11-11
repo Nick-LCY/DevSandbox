@@ -430,8 +430,8 @@ def route_path(scope: Scope) -> str:
 class BearerAuthMiddleware:
     """``/api`` 前缀的 Bearer 令牌认证中间件。
 
-    - **只拦 ``/api`` 前缀**：静态资源（``/``、``/assets/*``、``/fonts/*``）与
-      ``/docs``、``/openapi.json`` 不拦。
+    - **只拦 ``/api`` 前缀**：根路径等非 ``/api`` 路径（``/``、``/docs``、
+      ``/openapi.json``）不拦——本服务不再托管静态资源。
     - ``/api/health`` **不豁免**：401 也是健康口径的一部分，前端靠它区分
       「后端不可达」与「令牌无效」。
     - **WebSocket scope 默认拒绝**（fail-closed）：``websocket_exempt_paths``
