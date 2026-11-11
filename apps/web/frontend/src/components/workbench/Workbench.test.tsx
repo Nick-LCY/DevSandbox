@@ -168,7 +168,7 @@ beforeEach(() => {
 
 describe('沙箱列表读取失败', () => {
   it('首次加载失败：立刻弹失败 toast', async () => {
-    mocks.health.mockResolvedValue({ version: '0.2.0', console_mounted: true });
+    mocks.health.mockResolvedValue({ version: '0.2.0' });
     mocks.listSandboxes.mockRejectedValue(new Error('读取沙箱列表失败'));
 
     renderWorkbench();
@@ -181,7 +181,7 @@ describe('沙箱列表读取失败', () => {
 
   it('轮询连续 3 次失败：弹一条失败 toast', async () => {
     vi.useFakeTimers();
-    mocks.health.mockResolvedValue({ version: '0.2.0', console_mounted: true });
+    mocks.health.mockResolvedValue({ version: '0.2.0' });
     // 首次加载成功，之后每轮都失败。
     mocks.listSandboxes.mockResolvedValueOnce([]);
     mocks.listSandboxes.mockRejectedValue(new Error('读取沙箱列表失败'));
@@ -202,7 +202,7 @@ describe('沙箱列表读取失败', () => {
 
   it('中间成功一次：连续计数清零，不弹 toast', async () => {
     vi.useFakeTimers();
-    mocks.health.mockResolvedValue({ version: '0.2.0', console_mounted: true });
+    mocks.health.mockResolvedValue({ version: '0.2.0' });
     mocks.listSandboxes.mockResolvedValueOnce([]);
     mocks.listSandboxes.mockRejectedValueOnce(new Error('读取沙箱列表失败'));
     mocks.listSandboxes.mockResolvedValueOnce([]);
@@ -250,7 +250,7 @@ const makeDetail = () => ({
 
 /** 把工作台架到一个运行中的沙箱上（选中 acc-demo）。 */
 function mockRunningSandbox(): void {
-  mocks.health.mockResolvedValue({ version: '0.2.0', console_mounted: true });
+  mocks.health.mockResolvedValue({ version: '0.2.0' });
   mocks.listSandboxes.mockResolvedValue([
     {
       name: 'acc-demo',
@@ -534,7 +534,7 @@ describe('未配置态', () => {
 
   it('填了令牌保存后：工作台挂载，轮询立即启动', async () => {
     window.localStorage.clear();
-    mocks.health.mockResolvedValue({ version: '0.2.0', console_mounted: true });
+    mocks.health.mockResolvedValue({ version: '0.2.0' });
     mocks.listSandboxes.mockResolvedValue([]);
 
     renderWorkbench();
@@ -567,7 +567,7 @@ describe('未配置态', () => {
         CONNECTION_STORAGE_KEY,
         JSON.stringify({ backendBaseUrl: '', token: 'sbx_test' }),
       );
-      mocks.health.mockResolvedValue({ version: '0.2.0', console_mounted: true });
+      mocks.health.mockResolvedValue({ version: '0.2.0' });
       mocks.listSandboxes.mockResolvedValue([]);
 
       renderWorkbench();
@@ -581,7 +581,7 @@ describe('未配置态', () => {
 
   it('网页形态：后端地址可填，填了就按它体检（基址恒非空，但可改）', async () => {
     window.localStorage.clear();
-    mocks.health.mockResolvedValue({ version: '0.2.0', console_mounted: true });
+    mocks.health.mockResolvedValue({ version: '0.2.0' });
     mocks.listSandboxes.mockResolvedValue([]);
 
     renderWorkbench();
@@ -671,7 +671,7 @@ describe('未配置态', () => {
 
 describe('运行期配置失效', () => {
   it('轮询报「未配置」：回到引导面板，不弹普通错误 toast', async () => {
-    mocks.health.mockResolvedValue({ version: '0.2.0', console_mounted: true });
+    mocks.health.mockResolvedValue({ version: '0.2.0' });
     mocks.listSandboxes.mockRejectedValue(
       new ConnectionNotConfiguredError('尚未配置后端连接：请先填写访问令牌'),
     );
@@ -732,7 +732,7 @@ describe('桌面形态的动态 CSP 同步', () => {
 
   it('「保存并连接」：先同步 CSP，再体检，体检通过了才落盘并挂载工作台', async () => {
     window.localStorage.clear();
-    mocks.health.mockResolvedValue({ version: '0.2.0', console_mounted: true });
+    mocks.health.mockResolvedValue({ version: '0.2.0' });
     mocks.listSandboxes.mockResolvedValue([]);
 
     renderWorkbench();
@@ -770,5 +770,22 @@ describe('桌面形态的动态 CSP 同步', () => {
     expect(error.textContent).toContain('令牌无效');
     expect(mocks.listSandboxes).not.toHaveBeenCalled();
     expect(window.localStorage.getItem(CONNECTION_STORAGE_KEY)).toBeNull();
+  });
+});
+
+describe('健康自检的展示态', () => {
+  it('health 正常：健康态恒 ok，不存在降级分支', async () => {
+    mocks.health.mockResolvedValue({ version: '0.2.0' });
+    mocks.listSandboxes.mockResolvedValue([]);
+
+    renderWorkbench();
+
+    // 健康自检通过 → 侧栏健康标识恒为 ok（后端只提供 /api，不再有「前端未挂载」的降级态）。
+    const health = await screen.findByTestId('page-layout-health');
+    await waitFor(() => expect(health.getAttribute('data-health-state')).toBe('ok'));
+    expect(health.textContent).toContain('服务正常（v0.2.0）');
+    // 降级文案一律不出现（没有 degraded 这条分支）。
+    expect(document.body.textContent).not.toContain('降级');
+    expect(document.body.textContent).not.toContain('未挂载');
   });
 });

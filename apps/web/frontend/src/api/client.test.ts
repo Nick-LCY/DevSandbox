@@ -52,7 +52,7 @@ describe('请求基址与凭据', () => {
 
   it('基址为空：归一为默认地址，请求走绝对地址（不再拼相对路径）', async () => {
     setConnectionConfig({ backendBaseUrl: '', token: 'sbx_test' });
-    fetchMock.mockResolvedValue(jsonResponse({ version: '0.2.0', console_mounted: true }));
+    fetchMock.mockResolvedValue(jsonResponse({ version: '0.2.0' }));
 
     await api.health();
 
@@ -61,7 +61,7 @@ describe('请求基址与凭据', () => {
 
   it('基址非空：请求走绝对地址（连远端后端）', async () => {
     setConnectionConfig({ backendBaseUrl: 'http://10.0.0.5:8000', token: 'sbx_test' });
-    fetchMock.mockResolvedValue(jsonResponse({ version: '0.2.0', console_mounted: true }));
+    fetchMock.mockResolvedValue(jsonResponse({ version: '0.2.0' }));
 
     await api.health();
 
@@ -73,7 +73,7 @@ describe('请求基址与凭据', () => {
   it('基址可配：网页形态填了远端地址也走绝对地址（两种形态一个口径）', async () => {
     // 连接层不再按形态收敛：网页端也能指向远端后端。
     setConnectionConfig({ backendBaseUrl: 'https://sandbox.example:8443', token: 'sbx_test' });
-    fetchMock.mockResolvedValue(jsonResponse({ version: '0.2.0', console_mounted: true }));
+    fetchMock.mockResolvedValue(jsonResponse({ version: '0.2.0' }));
 
     await api.health();
 

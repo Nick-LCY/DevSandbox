@@ -140,7 +140,7 @@ afterEach(() => {
 beforeEach(() => {
   mocks.proxyStatus.mockResolvedValue(makeStatus());
   mocks.listTemplates.mockResolvedValue([]);
-  mocks.health.mockResolvedValue({ version: '0.2.0', console_mounted: true });
+  mocks.health.mockResolvedValue({ version: '0.2.0' });
 });
 
 describe('代理重启反馈', () => {

@@ -283,18 +283,18 @@ describe('Sidebar 折叠', () => {
   });
 
   it('折叠态：健康状态点保留，状态标识不变', () => {
-    renderSidebar({ health: { state: 'degraded', text: '后端服务降级' } });
+    renderSidebar({ health: { state: 'ok', text: '服务正常' } });
 
     fireEvent.click(screen.getByTestId('page-layout-sidebar-collapse-button'));
 
     const health = screen.getByTestId('page-layout-health');
-    expect(health.getAttribute('data-health-state')).toBe('degraded');
+    expect(health.getAttribute('data-health-state')).toBe('ok');
     // 状态点还在（文字收起）。
     expect(health.querySelector('span[aria-hidden="true"]')).not.toBeNull();
     // 文字是视觉隐藏（sr-only），不能从可访问树里消失。
     const text = health.querySelector('span:not([aria-hidden="true"])');
     expect(text?.className).toContain('sr-only');
-    expect(text?.textContent).toBe('后端服务降级');
+    expect(text?.textContent).toBe('服务正常');
   });
 
   it('健康状态对辅助技术可见：aria-label 跟着健康文案走', () => {
@@ -310,9 +310,9 @@ describe('Sidebar 折叠', () => {
     );
 
     // 健康状态变了，可访问名跟着变。
-    rerenderWith({ health: { state: 'degraded', text: '后端服务降级' } });
+    rerenderWith({ health: { state: 'ok', text: '服务正常（v0.2.0）' } });
     expect(screen.getByTestId('page-layout-health').getAttribute('aria-label')).toBe(
-      '后端健康：后端服务降级',
+      '后端健康：服务正常（v0.2.0）',
     );
   });
 

@@ -268,11 +268,7 @@ function WorkbenchView({
       let view: HealthView;
       try {
         const result = await api.health();
-        if (!result.console_mounted) {
-          view = { state: 'degraded', text: `服务正常（v${result.version}），前端产物未挂载` };
-        } else {
-          view = { state: 'ok', text: `服务正常（v${result.version}）` };
-        }
+        view = { state: 'ok', text: `服务正常（v${result.version}）` };
       } catch (exc) {
         if (exc instanceof ConnectionNotConfiguredError) {
           // 配置失效：回引导态（不弹 toast）。

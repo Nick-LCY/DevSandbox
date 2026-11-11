@@ -90,7 +90,6 @@ export interface HealthResponse {
   status: string;
   version: string;
   data_root_configured: boolean;
-  console_mounted: boolean;
 }
 
 /** 宿主本地镜像项。 */

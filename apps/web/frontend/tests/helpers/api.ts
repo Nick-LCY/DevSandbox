@@ -275,7 +275,6 @@ export function health(): Promise<{
   status: string;
   version: string;
   data_root_configured: boolean;
-  console_mounted: boolean;
 }> {
   return request('/api/health');
 }

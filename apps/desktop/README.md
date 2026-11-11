@@ -376,7 +376,7 @@ Windows 上 **VS Code 的自动端口转发**（Remote-SSH / Dev Containers 场�
 
 ## 已知边界
 
-- **前端 `base` 已是相对路径**：`vite.config.ts` 的 `base: './'`（三期任务 03 落地），产物里的资源引用形如 `./assets/xxx.js`；网页形态（后端 `StaticFiles` 挂在 `/`）与桌面形态（Tauri 自定义协议）都能解析。改基址会动全量产物，必须重跑既有验收。
+- **前端 `base` 已是相对路径**：`vite.config.ts` 的 `base: './'`（三期任务 03 落地），产物里的资源引用形如 `./assets/xxx.js`；网页形态（独立静态源）与桌面形态（Tauri 自定义协议）都能解析。改基址会动全量产物，必须重跑既有验收。
 - **桌面形态启动时会重载一次主文档**：Rust 进程是新的，还不知道后端主机（这一版主文档的 CSP 里只有 `'self'`），前端启动同步后会重载主文档（重载后这一版 CSP 才带上后端主机）。这是**预期行为**，不是故障。
 - **端口转发已接入**（任务 06 落地）：Rust 侧的「本机监听 + 隧道桥接」在 `src/forward.rs`，命令在 `src/commands.rs`。**隧道链路已于 2026-11-04 在 Windows 真机复验通过**；`https://` 后端下的 wss 路径缺陷（rustls 缺 crypto provider）已于 2026-11-09 修复并真机复测通过（提交 `da36940`），详见 [[tasks/phase3-desktop/RESULTS.md|三期留档]] 第十节。
 - **桌面端 TLS 只认公共根证书**：桌面端 TLS 的信任根是 **webpki-roots**（公共根证书集），**私有 CA / 自签证书的后端走不了 wss 隧道**（建连失败）。后端公网入口现为 **Let's Encrypt** 证书，**不受影响**。

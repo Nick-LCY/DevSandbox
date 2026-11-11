@@ -3,7 +3,7 @@
 沙箱平台的网页控制台：**单页工作台**。左侧边栏是沙箱列表，右侧工作区是选中沙箱的摘要与网页终端；新建沙箱 / 沙箱详情 / 设置（代理设置 + 启动模板）都是**右侧滑出、宽度可拖拽的抽屉**。
 
 - 技术栈：React 19 + Vite 7 + TypeScript 5.9 + Tailwind v4 + shadcn/ui（Base UI 原语），pnpm 管理，Node ≥ 22。
-- 产物由后端服务在 `/` 路径直接托管，单端口对外，**前端不含任何认证逻辑**（只按连接配置发 `Authorization` 头）；**请求恒为绝对地址**（基址默认 `http://127.0.0.1:8000`，可在界面里改），**也可以在界面里配远端后端地址**（见下方「连接配置」）。
+- 产物由独立静态源提供（后端只提供 `/api`，不托管前端），**前端不含任何认证逻辑**（只按连接配置发 `Authorization` 头）；**请求恒为绝对地址**（基址默认 `http://127.0.0.1:8000`，可在界面里改），**也可以在界面里配远端后端地址**（见下方「连接配置」）。
 - 接口契约以 `apps/web/backend/API.md` 为唯一权威，本前端只做编排与展示。
 
 ## 安装
@@ -38,13 +38,13 @@ pnpm dev            # 起在 5173
 pnpm run build      # = tsc --noEmit && vite build
 ```
 
-产物落在 `apps/web/frontend/dist`，后端启动时自动挂载到 `/`：
+产物落在 `apps/web/frontend/dist`，由独立静态源伺服；后端只提供 `/api`：
 
 ```bash
 uv run --project apps/web/backend python -m sandbox_console        # 默认监听 127.0.0.1:8000
 ```
 
-**`base: './'`（相对路径基址）**：产物里的资源引用是 `./assets/...` 而不是 `/assets/...`。两种部署形态都能解析——网页形态（后端 `StaticFiles` 挂在 `/`）与桌面形态（Tauri 自定义协议，Windows 上是 `http://tauri.localhost/`）都是从根路径解析。开发模式下 Vite 仍按 `/` 提供服务（`base: './'` 只影响构建产物）。
+**`base: './'`（相对路径基址）**：产物里的资源引用是 `./assets/...` 而不是 `/assets/...`。两种部署形态都能解析——网页形态（独立静态源）与桌面形态（Tauri 自定义协议，Windows 上是 `http://tauri.localhost/`）都是从根路径解析。开发模式下 Vite 仍按 `/` 提供服务（`base: './'` 只影响构建产物）。
 
 后端相关环境变量：
 
@@ -52,7 +52,6 @@ uv run --project apps/web/backend python -m sandbox_console        # 默认监�
 |---|---|---|
 | `SANDBOX_CONSOLE_HOST` | 监听地址 | `127.0.0.1` |
 | `SANDBOX_CONSOLE_PORT` | 监听端口 | `8000` |
-| `SANDBOX_CONSOLE_DIST` | 前端构建产物目录 | `apps/web/frontend/dist` |
 
 ## 类型检查与单元测试
 
@@ -189,7 +188,7 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 
 ## 路由（两层）
 
-前端用**哈希路由**：后端把构建产物挂在 `/` 上（静态目录托管），深链接没有服务端回退规则会直接 404；哈希路由不依赖服务端回退，刷新与粘贴链接都能落到同一个页面。
+前端用**哈希路由**：深链接没有服务端回退规则会直接 404；哈希路由不依赖服务端回退，刷新与粘贴链接都能落到同一个页面。
 
 路由只有两层：工作台本身，以及「工作台 + 选中的沙箱（可选终端会话）」。
 

@@ -4,7 +4,7 @@ import type { SandboxSummary } from '../../api/types';
 import { Sidebar } from './Sidebar';
 
 /** 后端健康自检的展示状态。 */
-export type HealthState = 'checking' | 'ok' | 'degraded' | 'down';
+export type HealthState = 'checking' | 'ok' | 'down';
 
 /** 健康自检的展示状态与文案。 */
 export interface HealthView {

@@ -9,14 +9,14 @@ import { defineConfig } from 'vite';
 // （`http://127.0.0.1:5173`）时代理才生效——此时代理的目标由 `BACKEND_URL`
 // 决定（默认 `http://127.0.0.1:8000`）。换后端的正确做法是在界面里改
 // 「连接配置」的后端地址，不是改这个环境变量。
-// 生产构建产物由后端服务在 `/` 路径直接托管（单端口对外，无跨域）。
+// 生产构建产物由独立静态源提供（后端只提供 /api，不托管前端）。
 const backend = process.env.BACKEND_URL ?? 'http://127.0.0.1:8000';
 
 export default defineConfig({
   // 相对路径基址：产物里的资源引用是 `./assets/...` 而不是 `/assets/...`。
   //
   // 两种部署形态都能解析：
-  // - web 形态：后端用 StaticFiles 把产物挂在 `/`，相对引用从 `/` 出发即 `/assets/...`；
+  // - web 形态：产物由独立静态源提供（后端只提供 /api），相对引用从 `/` 出发即 `/assets/...`；
   // - 桌面形态：产物由 Tauri 自定义协议提供（Windows 上是 `http://tauri.localhost/`），
   //   同样从根路径解析。
   //

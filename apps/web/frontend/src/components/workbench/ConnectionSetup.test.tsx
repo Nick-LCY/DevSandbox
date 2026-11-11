@@ -65,7 +65,7 @@ function injectDesktopRuntime(): { invoke: ReturnType<typeof vi.fn> } {
 }
 
 beforeEach(() => {
-  mocks.health.mockResolvedValue({ version: '0.2.0', console_mounted: true });
+  mocks.health.mockResolvedValue({ version: '0.2.0' });
 });
 
 afterEach(() => {
