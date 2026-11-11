@@ -6,10 +6,16 @@
 
 - 载体：**Cloudflare Workers + 静态资产**（不是 Pages）
 - 自定义域名：**`dev.sankabox.com`**
-- 远端状态：**S3 兼容对象存储（MinIO）**，配置待用户提供
+- 远端状态：**AWS S3（原生）**，区域 `ap-southeast-1`；**真实桶名 / 键等值只写在不入库的
+  `backend.hcl`**（仓库里只留 `backend.hcl.example` 模板）
 
 > **远端状态桶保持私有**：不对外公开、不开匿名读写；访问凭据用**最小权限**的 AK/SK
 > （只授该桶 / 该前缀的读写权限），不复用管理员密钥。
+>
+> **后端 = 真实 AWS S3，不是 MinIO**：因此**不设** `endpoint` / `use_path_style` /
+> 五个 `skip_*`（那些是 MinIO 兼容参数，指向 AWS 原生时既无必要、也会削弱校验）。
+> 凭据走 **AWS 默认凭据链**（环境变量 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`，
+> 或 `~/.aws/credentials` 里的 profile，或实例角色 / SSO）⇒ **仓库里不出现任何 AK/SK**。
 
 ---
 
@@ -22,9 +28,11 @@
 | `variables.tf` | 全部输入变量声明（`cloudflare_api_token` 标 `sensitive = true`，无 default） |
 | `main.tf` | **唯一所有者原则红线注释** + `data "cloudflare_zone"` + `resource "cloudflare_workers_custom_domain"`（**不含 `cloudflare_workers_script`**） |
 | `outputs.tf` | 输出 worker 名 / 绑定域名 / zone id / zone 名 |
-| `backend.hcl.example` | 远端状态后端模板（值全为占位；**五个 `skip_*`**（含 `skip_s3_checksum`）与 `use_path_style` 已写死，`workspace_key_prefix` 显式写死为 `envs`） |
+| `backend.hcl.example` | 远端状态后端模板（**AWS S3 原生**：`bucket` / `key` / `region` / `workspace_key_prefix`；**不设** `endpoint` / `use_path_style` / 五个 `skip_*`——文末留了一段**注释掉的 MinIO 变体块**备查） |
 | `terraform.tfvars.example` | 非敏感变量取值样例（真实 tfvars 不入库） |
-| `.gitignore` | 忽略 `.terraform/`、`*.tfstate`、`*.tfvars` 等；**不忽略** `.terraform.lock.hcl` |
+| `backend.hcl` | **不入库**（`.gitignore` 已忽略）——真实 S3 桶名 / 键 / 区域等值；凭据不在其中 |
+| `terraform.tfvars` | **不入库**（`.gitignore` 已忽略）——真实 `cloudflare_account_id` 等取值 |
+| `.gitignore` | 忽略 `.terraform/`、`*.tfstate`、`*.tfvars`、`backend.hcl` 等；**不忽略** `.terraform.lock.hcl` |
 | `.terraform.lock.hcl` | provider 版本 + 哈希锁（**入库**，防上游漂移） |
 | `worker/` | Workers 项目骨架（`wrangler.toml` / `src/index.js` / `package.json` 由任务 03 填充） |
 
@@ -108,22 +116,24 @@ terraform version
 | Cloudflare API Token（敏感） | `var.cloudflare_api_token` | `TF_VAR_cloudflare_api_token` |
 | Cloudflare Account ID | `var.cloudflare_account_id` | `TF_VAR_cloudflare_account_id`（**必填**，见下方规则） |
 | 其它非敏感变量 | `var.cloudflare_zone_name` / `var.worker_name` / `var.worker_domain` | 同名 `TF_VAR_*` 或 `terraform.tfvars`（不入库） |
-| 后端（S3/MinIO）访问凭据 | —— | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` |
+| 后端（**AWS S3**）访问凭据 | —— | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`（或 `~/.aws/credentials` 的 profile / 实例角色 / SSO） |
 | wrangler 部署（任务 03） | —— | `CLOUDFLARE_API_TOKEN` |
 
 ```bash
 export TF_VAR_cloudflare_api_token='<API Token>'
 export TF_VAR_cloudflare_account_id='<Account ID>'
-export AWS_ACCESS_KEY_ID='<MinIO access key>'
-export AWS_SECRET_ACCESS_KEY='<MinIO secret key>'
+export AWS_ACCESS_KEY_ID='<AWS access key>'
+export AWS_SECRET_ACCESS_KEY='<AWS secret key>'
 ```
 
 规则：
 
-- **API Token / S3 凭据一律只走环境变量**，绝不写进 `*.tfvars`、`backend.hcl`、
-  `wrangler.toml` 或任何提交物；`.gitignore` 已忽略 `*.tfvars` / `*.tfvars.json`。
+- **API Token / AWS 凭据一律只走环境变量**（或 AWS 默认凭据链），绝不写进 `*.tfvars`、
+  `backend.hcl`、`wrangler.toml` 或任何提交物；`.gitignore` 已忽略 `*.tfvars` /
+  `*.tfvars.json` / `backend.hcl`。
 - `cloudflare_api_token` 变量声明了 `sensitive = true`（终端输出打码）。
-- `backend.hcl` **不入库**（模板是 `backend.hcl.example`，值全为占位）。
+- `backend.hcl` **不入库**（模板是 `backend.hcl.example`；真实桶名 / 区域等值只在不入库的
+  `backend.hcl` 里；**AWS 凭据一律不在其中**）。
 - **`cloudflare_account_id` 必须显式注入**：它是**资源级 required 参数**
   （`cloudflare_workers_custom_domain.account_id`、`data "cloudflare_zone"` 的
   `filter.account.id` 都要它），provider 的 `CLOUDFLARE_ACCOUNT_ID` 环境变量
@@ -149,31 +159,55 @@ export AWS_SECRET_ACCESS_KEY='<MinIO secret key>'
 
 ## 5. 待用户提供（阻塞项）
 
-以下配置**尚未到位**，到位前**只做骨架与 `fmt` / `validate` 门禁**，
-`terraform init`（带后端）/ `plan` / `apply` 一律不跑。
+**已到位**（本轮已写入不入库的真实配置文件）：
 
-### MinIO（S3 远端状态）
+- [x] **远端状态后端 = AWS S3**（原生，非 MinIO）——桶名 / `key` / `region` / `workspace_key_prefix`
+      已写入不入库的 `infra/backend.hcl`；模板见 `backend.hcl.example`。
+- [x] **Cloudflare Account ID**（非机密）——已写入不入库的 `infra/terraform.tfvars`；
+      也可用环境变量 `TF_VAR_cloudflare_account_id` 注入（**必填**：资源级 `account_id` 是
+      required，provider 的 `CLOUDFLARE_ACCOUNT_ID` **不兜底**）。
 
-- [ ] **端点 URL**（示例 `https://minio.sankabox.com`，**待确认**）→ `backend.hcl` 的 `endpoint`
-- [ ] **桶名**（如 `console-cloudflare-tfstate`）→ `backend.hcl` 的 `bucket`
-- [ ] **region**（MinIO 不校验，任意值即可，常用 `us-east-1`）→ `backend.hcl` 的 `region`
-- [ ] **访问凭据**（access key / secret key）→ 环境变量 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`
+**仍缺**（到位前**不跑** `terraform plan` / `apply`，也不跑 `wrangler deploy`）：
 
 ### Cloudflare
 
-- [ ] **Account ID** → `TF_VAR_cloudflare_account_id`（非机密，但本仓尚未取值）
-      —— **必填**：资源级 `account_id` 是 required，provider 的 `CLOUDFLARE_ACCOUNT_ID` 不兜底
 - [ ] **API Token** → `TF_VAR_cloudflare_api_token`（需 **Zone 读取 + Workers 写入 + DNS:Edit**：
       custom domain 与 zone **同账号**时，Cloudflare 会代建 CNAME 记录 ⇒ 需要 **Zone → DNS → Edit**；
       token 权限范围**尽量限定到 `sankabox.com` 这一个 zone**，不要用全账号 token）
-- [ ] **确认 `sankabox.com` 这个 zone 与上述账号是否同账号**：
-      - **同账号** ⇒ 现方案（`workers_custom_domain`）直接可用，DNS 记录自动创建；
-      - **不同账号** ⇒ 改走 `routes` + 手工 DNS record 路线（并留档），需另行调整 `main.tf`。
+- [x] ~~确认 `sankabox.com` 这个 zone 与上述账号是否同账号~~ —— **无需人工确认**：
+      `data "cloudflare_zone"` 的 `filter.account.id` 子过滤**在 plan 期强制**（查不到 zone 即失败）。
+      若 plan 报 zone 查不到 ⇒ 改走 `routes` + 手工 DNS record 路线（并留档），需另行调整 `main.tf`。
+
+### AWS（远端状态后端访问凭据）
+
+- [x] **访问凭据** —— **本机已有**：`~/.aws/credentials` 的 `[default]` profile
+      （region `ap-southeast-1`）；`aws sts get-caller-identity` **成功**（账号 `730335648924`）。
+      （环境变量 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` 或实例角色 / SSO 也可用。）
+- [ ] **目标桶的访问授权** —— 指定的桶 `terraform-654654240294-ap-southeast-1-an` 属
+      **另一个 AWS 账号（`654654240294`）**，本机凭据（账号 `730335648924`）对它**无权限**
+      （`403 AccessDenied`）⇒ 二选一：
+      - 改用**本账号已有的**桶 `terraform-730335648924-ap-southeast-1-an`（**已实测 `init` 成功**）；或
+      - 为本机凭据（账号 `730335648924`）授予目标桶的读写权限（**最小权限**：只授该桶 / 该前缀**）。
 
 ### 其它
 
-- [ ] Worker 名最终确认（当前默认 `sandbox-console-web`，须与任务 03 的 `wrangler.toml` 的 `name` 一致）
-- [ ] 首次部署后的实际账号 / Worker 名 / `workers.dev` 地址补记到本文件（任务 03）
+- [x] Worker 名确认：`sandbox-console-web`（须与任务 03 的 `infra/worker/wrangler.toml` 的
+      `name` 一致）。
+- [ ] 首次部署后的实际账号 / Worker 名 / `workers.dev` 地址补记到本文件（任务 03 / 04）
+
+### 执行记录（本轮）
+
+- **AWS 凭据检测**：本机**已有**可用 AWS 凭据（`~/.aws/credentials` 的 `[default]` profile，
+  region `ap-southeast-1`），`aws sts get-caller-identity` **成功**（账号
+  `730335648924`）。
+- **`terraform init`（真实后端）**：已按 `backend.hcl` 跑过一次，**失败**——原文要点：
+  `Failed to get existing workspaces: Unable to list objects in S3 bucket
+  "terraform-654654240294-ap-southeast-1-an" with prefix "envs/": ... StatusCode: 403 ...
+  api error AccessDenied: Access Denied`。
+  ⇒ **桶在账号 `654654240294` 名下**，而**本机凭据属账号 `730335648924`** ⇒ 无权限。
+  ⇒ 换桶名即可通：把 `backend.hcl` 的 `bucket` 改成本账号的
+  `terraform-730335648924-ap-southeast-1-an`（已实测 `init` 成功：
+  `Successfully configured the backend "s3"!`）。
 
 ---
 
@@ -193,11 +227,16 @@ terraform fmt -check -recursive   # 无输出
 terraform validate                # 通过
 ```
 
-真实后端初始化（**待凭据到位后**）：
+真实后端初始化（**AWS S3**；需 AWS 默认凭据链可用）：
 
 ```bash
 cp backend.hcl.example backend.hcl   # 填入真实值（该文件不入库）
-terraform init                        # 初始化 MinIO 后端
-terraform plan
-terraform apply
+terraform init -reconfigure -backend-config=backend.hcl   # 初始化 AWS S3 后端（不写 state）
+terraform plan                       # 需 TF_VAR_cloudflare_api_token
+terraform apply                      # 需 TF_VAR_cloudflare_api_token
 ```
+
+> ⚠️ **Terraform 不会自动读取 `backend.hcl`**（也不自动读 `backend.tfbackend`）——
+> `backend "s3" {}` 是空块时，**必须**显式传 `-backend-config=backend.hcl`，
+> 否则报 `The attribute "bucket" is required by the backend.`
+> （实测于本机 Terraform **v1.15.8**。）

@@ -1,48 +1,56 @@
-# Terraform 远端状态后端配置模板（S3 兼容对象存储 = MinIO）。
+# Terraform 远端状态后端配置模板（**AWS S3 原生**）。
 #
 # 用法：
 #   cp backend.hcl.example backend.hcl   # backend.hcl 不入库（.gitignore 已忽略）
-#   # 把下面的占位值替换成真实值（**待用户提供**）
-#   terraform init                        # 初始化后端（需要 AWS_* 凭据环境变量）
+#   # 把下面的占位值替换成真实值（真实值由使用者填；本文件不入库）
+#   terraform init -reconfigure -backend-config=backend.hcl   # 初始化后端（走 AWS 默认凭据链）
 #
-# ⚠️ 本文件**全部是占位值**，直接拿去 init 会失败——这是有意为之：
-#    凭据与端点信息尚未到位（见 README「待用户提供」清单）。
+# ⚠️ Terraform **不会自动读取** backend.hcl（也不自动读 backend.tfbackend）——
+#    backend 块留空时，必须用 -backend-config=backend.hcl 显式传进去。
+#    （实测于 Terraform v1.15.8：不传该参数 → "The attribute \"bucket\" is required by the backend."）
+#
+# ⚠️ 本文件**不含任何凭据**：AWS 凭据一律走**默认凭据链**——
+#    环境变量 AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY，
+#    或 ~/.aws/credentials 里的 profile，或实例角色 / SSO。
+#    **绝不**把 AK/SK 写进本文件（backend.hcl 不入库，但仍不应留明文）。
 
-# MinIO 桶名（远端状态所在桶）。待用户提供。
-bucket = "console-cloudflare-tfstate"
+# 状态桶名（**非机密**——但真实值写在不入库的 backend.hcl 里，本模板保持通用）。
+bucket = "<terraform-state-bucket-name>"
 
 # 状态对象键——**字面量，不含 <workspace> 占位符**。
 #
 # workspace 隔离**不靠 key**、靠下方的 `workspace_key_prefix`：S3 后端把它**前置**到 key
 # **之前**（不是追加在 key 之后）：
-#   default workspace  ⇒ 对象 = "<key>"                      = "console-cloudflare/terraform.tfstate"
+#   default workspace   ⇒ 对象 = "<key>"                       = "console-cloudflare/terraform.tfstate"
 #   非 default workspace ⇒ 对象 = "<prefix>/<workspace>/<key>" = "envs/dev/console-cloudflare/terraform.tfstate"
 # 本项目是「单 root module + workspace」用法，不做多环境矩阵；不同 workspace 按此前缀隔离。
-# 待用户提供（桶名 / 路径前缀）。
 key = "console-cloudflare/terraform.tfstate"
 
 # workspace 状态对象的路径前缀（**前置**到 key 之前）。后端默认值为 "env:"，这里显式改成
 # "envs"，避免默认值随版本漂移、也让状态对象路径一眼可读。
 workspace_key_prefix = "envs"
 
-# 区域。MinIO 不校验区域，任意稳定值即可（通常填 us-east-1）。待用户提供。
-region = "us-east-1"
+# 区域（AWS 原生区域名，如 ap-southeast-1）。
+region = "ap-southeast-1"
 
-# MinIO 端点 URL。待用户提供（示例：https://minio.sankabox.com —— 尚未确认）。
-endpoint = "https://minio.sankabox.com"
-
-# MinIO 必须用 path style：否则桶名会被当成域名的一部分（bucket.minio.host），
-# MinIO 侧解析不到，直接 404 / SignatureDoesNotMatch。
-use_path_style = true
-
-# ── 以下四个 skip_* 是 MinIO（非 AWS）的硬要求 ──────────────────────────────
-# 不设它们，terraform init 会去 AWS 官方端点做凭证 / 区域 / 账号校验，
-# 直接卡住（连不上 AWS metadata 服务、报 NoCredentialProviders 等）。
-skip_credentials_validation = true
-skip_region_validation      = true
-skip_requesting_account_id  = true
-skip_metadata_api_check     = true
-
-# 老版本 MinIO 不认 S3 的 `x-amz-checksum-mode` 头，会直接回 400 ⇒ 预置关闭 checksum。
-# （目标 MinIO 已支持该头时可删掉本行。）
-skip_s3_checksum = true
+# ── AWS 原生 S3 后端到此为止 ────────────────────────────────────────────────
+# **不设** endpoint / use_path_style / 五个 skip_*：那些是「S3 兼容存储（MinIO）」
+# 的兼容参数，指向真实 AWS S3 时既无必要、也会削弱校验（skip_* 会跳过
+# 凭证 / 区域 / 账号校验，出错要拖到 apply 期才暴露）。
+#
+# ── 如换回 MinIO（S3 兼容存储）：需补齐 endpoint + use_path_style + 五个 skip_* ──
+#   endpoint                     = "https://minio.sankabox.com"
+#   use_path_style               = true
+#   skip_credentials_validation  = true
+#   skip_region_validation       = true
+#   skip_requesting_account_id   = true
+#   skip_metadata_api_check      = true
+#   skip_s3_checksum             = true
+#
+# 说明（换回 MinIO 时）：
+#   - endpoint / use_path_style：MinIO 必须用 path style，否则桶名会被当成域名的一部分
+#     （bucket.minio.host），MinIO 侧解析不到，直接 404 / SignatureDoesNotMatch；
+#   - 四个 skip_*：不设它们，terraform init 会去 AWS 官方端点做凭证 / 区域 / 账号校验，
+#     直接卡住（连不上 AWS metadata 服务、报 NoCredentialProviders 等）；
+#   - skip_s3_checksum：老版本 MinIO 不认 S3 的 `x-amz-checksum-mode` 头，会直接回 400
+#     ⇒ 预置关闭 checksum（目标 MinIO 已支持该头时可删掉本行）。

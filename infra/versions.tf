@@ -16,7 +16,9 @@ terraform {
     }
   }
 
-  # 远端状态后端：S3 兼容对象存储（MinIO）。
+  # 远端状态后端：**AWS S3（原生，非 MinIO）**。
   # 这里只放空块——具体配置在 backend.hcl（不入库，模板见 backend.hcl.example）。
+  # ⚠️ Terraform **不会自动读取** backend.hcl —— 初始化时必须显式传：
+  #     terraform init -reconfigure -backend-config=backend.hcl
   backend "s3" {}
 }
