@@ -94,6 +94,17 @@ function baseUrl(): string {
   return `http://${host}:${port}`;
 }
 
+/**
+ * 后端基址（指向测试服务的实际端口）。
+ *
+ * **用例里的 `page.request.*` 必须用它拼绝对地址**：后端只提供 `/api`、
+ * 不托管前端，而 `page.request.*` 的相对路径会打到**静态源**（页面基址）
+ * 而不是后端——相对路径下请求根本到不了后端。
+ */
+export function backendBaseUrl(): string {
+  return baseUrl();
+}
+
 /** 运行期文件传输的目录条目（与后端 `FileListEntry` 同名同字段）。 */
 export interface SandboxFileEntry {
   name: string;

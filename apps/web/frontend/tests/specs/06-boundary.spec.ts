@@ -10,7 +10,7 @@
 
 import { expect, test } from '@playwright/test';
 
-import { createSandbox, health, listSandboxes } from '../helpers/api';
+import { backendBaseUrl, createSandbox, health, listSandboxes } from '../helpers/api';
 import { AUTH_FAILED_DETAIL, authHeaders } from '../helpers/auth';
 import { gotoDetail } from '../helpers/console';
 import { run, sandboxExec, userUid } from '../helpers/host';
@@ -92,19 +92,21 @@ test.describe('边界', () => {
 
     // ② 令牌是准入门槛：不带凭据拿不到数据（401），带令牌才拿得到
     //    （三期起全部 `/api` 生效令牌认证，`/api/health` 不豁免）
-    const anonymous = await page.request.get('/api/sandboxes');
+    const anonymous = await page.request.get(`${backendBaseUrl()}/api/sandboxes`);
     expect(anonymous.status()).toBe(401);
     const anonymousBody = (await anonymous.json()) as { detail?: string };
     expect(anonymousBody.detail ?? '').toBe(AUTH_FAILED_DETAIL);
 
-    const response = await page.request.get('/api/sandboxes', { headers: authHeaders() });
+    const response = await page.request.get(`${backendBaseUrl()}/api/sandboxes`, {
+      headers: authHeaders(),
+    });
     expect(response.status()).toBe(200);
     expect(Array.isArray(await response.json())).toBe(true);
     expect((await health()).status).toBe('ok');
 
     // ③ 不暴露接口清单：默认不开 /docs 与 /openapi.json
-    expect((await page.request.get('/docs')).status()).toBe(404);
-    expect((await page.request.get('/openapi.json')).status()).toBe(404);
+    expect((await page.request.get(`${backendBaseUrl()}/docs`)).status()).toBe(404);
+    expect((await page.request.get(`${backendBaseUrl()}/openapi.json`)).status()).toBe(404);
 
     // ④ 网页确实挂在同一个端口上（单端口对外）
     await gotoDetail(page, SANDBOX_NAME);

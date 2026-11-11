@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 import { expect, test } from '@playwright/test';
 
-import { getSandbox, listImages } from '../helpers/api';
+import { backendBaseUrl, getSandbox, listImages } from '../helpers/api';
 import { authHeaders } from '../helpers/auth';
 import {
   fillCreateForm,
@@ -98,7 +98,7 @@ test.describe('本地构建镜像（不存在于任何仓库）', () => {
     await openCreateDialog(page);
     // 前端只允许选搜索得到的镜像；这里直接绕过前端校验，
     // 用「宿主不存在的镜像」调接口，确认后端按契约报错而不是降级直连
-    const response = await page.request.post('/api/sandboxes', {
+    const response = await page.request.post(`${backendBaseUrl()}/api/sandboxes`, {
       // 直调接口要带令牌（后端对全部 `/api` 生效令牌认证）。
       headers: authHeaders(),
       data: {
