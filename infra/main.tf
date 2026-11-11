@@ -18,18 +18,18 @@
 # 资源清单**恰为上面两项**——新增任何资源前先确认它不与 wrangler 的产物重叠。
 # ============================================================================
 
-terraform {
-  # 远端状态后端：S3 兼容对象存储（MinIO）。
-  # 这里只放空块——具体配置在 backend.hcl（不入库，模板见 backend.hcl.example）。
-  backend "s3" {}
-}
-
 # zone 查询（只读 data source，不创建、不修改 zone）。
 # provider v5 起，zone data source 不再接受顶层 name 参数，改用 filter 参数按名字筛：
-#   filter = { name = var.cloudflare_zone_name }
+#   filter = { name = var.cloudflare_zone_name, account = { id = var.cloudflare_account_id } }
 data "cloudflare_zone" "this" {
   filter = {
     name = var.cloudflare_zone_name
+    # 同账号确认从「人工核对」升级为「plan 期强制」：filter.account.id 把 zone 查询
+    # 限定在 var.cloudflare_account_id 这个账号下（v5 schema 支持 account = { id = ... }）。
+    # zone 不在该账号下 ⇒ 查不到 zone ⇒ plan/apply 直接失败，而不是误绑到别人的 zone。
+    account = {
+      id = var.cloudflare_account_id
+    }
   }
 }
 

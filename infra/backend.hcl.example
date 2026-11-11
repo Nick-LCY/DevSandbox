@@ -11,13 +11,19 @@
 # MinIO 桶名（远端状态所在桶）。待用户提供。
 bucket = "console-cloudflare-tfstate"
 
-# 状态对象键。**带 workspace 前缀**：本项目是「单 root module + workspace」用法，
-# 不做多环境矩阵；不同 workspace 的状态对象按前缀隔离。
-# 注意：S3 后端在非 default workspace 下会在 key 后再追加 `env:/<workspace>`，
-# 例如 key = "console-cloudflare/default/terraform.tfstate" + workspace "dev"
-# ⇒ 实际对象 "console-cloudflare/default/terraform.tfstate/env:/dev/terraform.tfstate"。
+# 状态对象键——**字面量，不含 <workspace> 占位符**。
+#
+# workspace 隔离**不靠 key**、靠下方的 `workspace_key_prefix`：S3 后端把它**前置**到 key
+# **之前**（不是追加在 key 之后）：
+#   default workspace  ⇒ 对象 = "<key>"                      = "console-cloudflare/terraform.tfstate"
+#   非 default workspace ⇒ 对象 = "<prefix>/<workspace>/<key>" = "envs/dev/console-cloudflare/terraform.tfstate"
+# 本项目是「单 root module + workspace」用法，不做多环境矩阵；不同 workspace 按此前缀隔离。
 # 待用户提供（桶名 / 路径前缀）。
-key = "console-cloudflare/<workspace>/terraform.tfstate"
+key = "console-cloudflare/terraform.tfstate"
+
+# workspace 状态对象的路径前缀（**前置**到 key 之前）。后端默认值为 "env:"，这里显式改成
+# "envs"，避免默认值随版本漂移、也让状态对象路径一眼可读。
+workspace_key_prefix = "envs"
 
 # 区域。MinIO 不校验区域，任意稳定值即可（通常填 us-east-1）。待用户提供。
 region = "us-east-1"
@@ -36,3 +42,7 @@ skip_credentials_validation = true
 skip_region_validation      = true
 skip_requesting_account_id  = true
 skip_metadata_api_check     = true
+
+# 老版本 MinIO 不认 S3 的 `x-amz-checksum-mode` 头，会直接回 400 ⇒ 预置关闭 checksum。
+# （目标 MinIO 已支持该头时可删掉本行。）
+skip_s3_checksum = true

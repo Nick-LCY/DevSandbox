@@ -13,6 +13,13 @@ variable "cloudflare_api_token" {
 variable "cloudflare_account_id" {
   description = "Cloudflare Account ID（非机密；须与创建 Worker 的账号一致）。待用户提供。"
   type        = string
+
+  validation {
+    # Cloudflare Account ID 是 32 位小写十六进制串；写错时在 plan 期就报错，
+    # 不至于到 apply 阶段才以「资源级 account_id 无效」的形式炸出来。
+    condition     = can(regex("^[0-9a-f]{32}$", var.cloudflare_account_id))
+    error_message = "cloudflare_account_id 必须是 32 位小写十六进制的 Cloudflare Account ID。"
+  }
 }
 
 variable "cloudflare_zone_name" {
@@ -31,4 +38,11 @@ variable "worker_domain" {
   description = "Worker 绑定的自定义域名。"
   type        = string
   default     = "dev.sankabox.com"
+
+  validation {
+    # 自定义域名必须落在 cloudflare_zone_name 这个 zone 内（形如 <子域>.<zone>），
+    # 否则 custom domain 会挂在 zone 之外 ⇒ 绑定必然失败。
+    condition     = endswith(var.worker_domain, ".${var.cloudflare_zone_name}")
+    error_message = "worker_domain 必须以 .${var.cloudflare_zone_name} 结尾（自定义域名须落在该 zone 内）。"
+  }
 }
