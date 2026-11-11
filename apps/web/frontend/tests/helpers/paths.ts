@@ -23,9 +23,10 @@ export const RUNTIME_DIR = path.join(TESTS_DIR, '.runtime');
 /**
  * 预置连接配置的 storageState 文件。
  *
- * `global-setup.ts` 按测试服务的实际端口写它，`playwright.config.ts` 的
- * `use.storageState` 读它——页面一打开就是「已配置」态（口径见
- * `helpers/connection.ts`）。
+ * `global-setup.ts` 写它：**origin 键 = 静态源 origin**（页面 localStorage
+ * 注入的依据），**内容里的后端基址 = 后端实际地址**（另一个 origin，
+ * 两者刻意不同源）；`playwright.config.ts` 的 `use.storageState` 读它——
+ * 页面一打开就是「已配置」态（口径见 `helpers/connection.ts`）。
  */
 export const STORAGE_STATE_FILE = path.join(RUNTIME_DIR, 'storage-state.json');
 

@@ -1,5 +1,10 @@
 /**
- * 验收全局准备：同步 Python 工作区环境 → 构建前端产物 → 拉起独立静态源 → 构建本地专属测试镜像 → 拉起控制台服务 → 清理残留沙箱。
+ * 验收全局准备：同步 Python 工作区环境 → 构建前端产物 → 拉起独立静态源 →
+ * 构建本地专属测试镜像 → 清理残留沙箱与终端会话 → 拉起控制台服务。
+ *
+ * **顺序按代码实际执行来**：静态源在构建产物之后就起（第 3 步），
+ * 后端服务在清理残留沙箱之后才起（第 7 步）——清理走命令行（`sandboxctl`），
+ * 不依赖后端服务，顺序反过来也不影响结果，但描述要与代码一致。
  *
  * 产出的运行期信息（端口、测试镜像引用）落在 `.runtime/fixtures.json`，
  * 供各用例文件读取（Playwright 的 global setup 与用例不在同一个进程里）。
@@ -20,7 +25,7 @@ import { buildLocalOnlyImage, type BuiltImage } from './helpers/image';
 import { APPS_DIR, CONSOLE_DIR, RUNTIME_DIR } from './helpers/paths';
 import { writeStorageState } from './helpers/connection';
 import { DEFAULT_PORT, startConsoleServer } from './helpers/server';
-import { DEFAULT_STATIC_PORT, startStaticServer } from './helpers/static';
+import { DEFAULT_STATIC_PORT, STATIC_HOST, startStaticServer } from './helpers/static';
 import { cleanupLeftoverSandboxes, cleanupTerminalSessions } from './helpers/sandbox';
 import { CONSOLE_STATIC_PORT, CONSOLE_TEST_PORT } from './playwright.config';
 
@@ -89,10 +94,10 @@ export default async function globalSetup(): Promise<void> {
 
   // **交叉断言①**：静态源实际端口必须与验收配置（playwright.config）的
   // `CONSOLE_STATIC_PORT` 一致，不一致直接抛错。
-  // 为什么这条不能省：`--strictPort` 保证了端口不会被静默换掉，但配置与
-  // 实际值仍要对得上——baseURL 按配置端口算，静态源按实际端口起，
-  // 两边对不上时页面直接连不上（而且报错现场是「页面打不开」，跟「端口写错了」
-  // 根本看不出来）。
+  // **防御性断言：真实保障来自就绪探测**——`startStaticServer` 里的
+  // `waitForStatic` 打的就是静态源根路径，端口不对时压根起不来（或起在别的
+  // 端口上、探测不通）。这条在当前实现下**恒真**（两边读同一个环境变量），
+  // 留着是防将来有人改了一处忘了另一处，别把它当成真实保障。
   if (staticRuntime.port !== CONSOLE_STATIC_PORT) {
     throw new Error(
       `静态源端口与验收配置端口不一致：实际 ${staticRuntime.port}，` +
@@ -103,8 +108,10 @@ export default async function globalSetup(): Promise<void> {
 
   // **交叉断言②**：后端服务实际端口必须与验收配置（playwright.config）的
   // `CONSOLE_TEST_PORT` 一致，不一致直接抛错。
-  // 为什么这条不能省：预置连接配置里的后端基址按服务实际端口写，写错了
-  // 页面会去连一台不存在的后端。
+  // **防御性断言：真实保障来自就绪探测**——`startConsoleServer` 里的
+  // `waitForHealth` 打的就是服务自己的 `/api/health`，端口不对时压根起不来。
+  // 这条在当前实现下**恒真**（两边读同一个环境变量），留着是防将来有人
+  // 改了一处忘了另一处，别把它当成真实保障。
   if (runtime.port !== CONSOLE_TEST_PORT) {
     throw new Error(
       `预置端口与验收配置端口不一致：服务实际端口 ${runtime.port}，` +
@@ -135,7 +142,7 @@ export default async function globalSetup(): Promise<void> {
   // **不会**注入这份预置 ——页面会落回「未配置」态（引导面板），工作台整片
   // 不挂载，既有用例全红，而报错现场（引导面板没出现）跟「origin 写错了」
   // 根本看不出来。
-  const expectedOrigin = `http://127.0.0.1:${CONSOLE_STATIC_PORT}`;
+  const expectedOrigin = `http://${STATIC_HOST}:${CONSOLE_STATIC_PORT}`;
   const written = JSON.parse(fs.readFileSync(storageStateFile, 'utf-8')) as {
     origins?: { origin?: string }[];
   };

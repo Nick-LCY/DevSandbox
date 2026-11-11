@@ -113,8 +113,21 @@ export async function waitForHealth(port: number, timeoutMs = 60_000): Promise<v
   throw new Error(`控制台服务在 ${timeoutMs} 毫秒内没有通过自检（端口 ${port}）`);
 }
 
-/** 拉起控制台服务，返回进程信息。 */
+/**
+ * 拉起控制台服务，返回进程信息。
+ *
+ * 起之前先确认**端口是空的**（与 `helpers/static.ts` 的静态源同一套路）：
+ * 端口被占时后端会绑定失败退出，等健康自检的 60 秒全是白等。
+ * 与其干等，不如提前抛一句人话，告诉怎么换端口。
+ */
 export async function startConsoleServer(port: number = DEFAULT_PORT): Promise<ServerRuntime> {
+  if (!(await portFree(port))) {
+    throw new Error(
+      `控制台服务端口 ${port} 已被占用（服务起不来，端口不换）。` +
+        `换一个端口：CONSOLE_TEST_PORT=<端口> pnpm run test:acceptance`,
+    );
+  }
+
   fs.mkdirSync(RUNTIME_DIR, { recursive: true });
   const python = backendPython();
   const logFd = fs.openSync(LOG_FILE, 'a');

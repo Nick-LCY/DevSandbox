@@ -89,11 +89,6 @@ export interface TemplateModel {
   updated_at: string;
 }
 
-function baseUrl(): string {
-  const { host, port } = readFixtures();
-  return `http://${host}:${port}`;
-}
-
 /**
  * 后端基址（指向测试服务的实际端口）。
  *
@@ -102,7 +97,8 @@ function baseUrl(): string {
  * 而不是后端——相对路径下请求根本到不了后端。
  */
 export function backendBaseUrl(): string {
-  return baseUrl();
+  const { host, port } = readFixtures();
+  return `http://${host}:${port}`;
 }
 
 /** 运行期文件传输的目录条目（与后端 `FileListEntry` 同名同字段）。 */
@@ -146,7 +142,7 @@ export async function sandboxFileRequest(
     headers['Content-Type'] = 'application/octet-stream';
   }
   const response = await fetch(
-    `${baseUrl()}/api/sandboxes/${encodeURIComponent(name)}/files/${action}?path=${encodeURIComponent(path)}`,
+    `${backendBaseUrl()}/api/sandboxes/${encodeURIComponent(name)}/files/${action}?path=${encodeURIComponent(path)}`,
     {
       method: action === 'upload' ? 'POST' : 'GET',
       headers,
@@ -206,7 +202,7 @@ export async function downloadSandboxFile(
 
 /** 发一个 JSON 请求。 */
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${baseUrl()}${path}`, {
+  const response = await fetch(`${backendBaseUrl()}${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',

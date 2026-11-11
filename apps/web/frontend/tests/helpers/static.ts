@@ -85,6 +85,26 @@ export async function waitForStatic(port: number, timeoutMs = 60_000): Promise<v
 }
 
 /**
+ * 取静态源日志的尾部（出错时带进错误消息，省得再去翻日志文件）。
+ *
+ * 读不到就回一句说明，**不让取日志本身把原始错误盖掉**。
+ */
+function staticLogTail(lines = 20): string {
+  try {
+    if (!fs.existsSync(STATIC_LOG_FILE)) {
+      return '（static.log 不存在）';
+    }
+    const content = fs.readFileSync(STATIC_LOG_FILE, 'utf-8').trimEnd();
+    if (!content) {
+      return '（static.log 是空的）';
+    }
+    return content.split('\n').slice(-lines).join('\n');
+  } catch {
+    return '（读不到 static.log）';
+  }
+}
+
+/**
  * 拉起静态源，返回进程信息。
  *
  * 起之前先确认**端口是空的**：端口被占时 `--strictPort` 会让 Vite 直接退出，
@@ -122,17 +142,60 @@ export async function startStaticServer(
     logFile: STATIC_LOG_FILE,
   };
   fs.writeFileSync(STATIC_RUNTIME_FILE, JSON.stringify(runtime, null, 2), 'utf-8');
+
+  // **进程级失败要立刻冒泡**，不能等就绪探测的白白 60 秒：
+  // - `error`：spawn 级失败（可执行文件不在、权限不对等）。没有这个监听时
+  //   `ChildProcess` 的 `error` 事件是**未捕获**的，会把 global-setup 直接崩掉，
+  //   现场只剩一句看不懂的堆栈。
+  // - `exit`：vite 因 `--strictPort` 端口被抢会**立刻退出**（端口检查有竞态窗口：
+  //   检查通过之后、vite 绑定之前被抢）。等满 60 秒才发现就白等了。
+  const spawnFailed = new Promise<never>((_, reject) => {
+    child.once('error', (error: Error) => {
+      reject(new Error(`静态源进程启动失败：${error.message}`));
+    });
+  });
+  const exitedEarly = new Promise<never>((_, reject) => {
+    child.once('exit', (code, signal) => {
+      reject(
+        new Error(
+          `静态源进程提前退出（退出码 ${code ?? '无'}，信号 ${signal ?? '无'}）——` +
+            `多半是端口 ${port} 被抢（--strictPort 不静默换端口）。` +
+            `换一个端口：CONSOLE_STATIC_PORT=<端口> pnpm run test:acceptance\n` +
+            `static.log 尾部：\n${staticLogTail()}`,
+        ),
+      );
+    });
+  });
+
   try {
-    await waitForStatic(port);
+    // 三个赛跑：就绪探测 / spawn 失败 / 提前退出，谁先来听谁的。
+    await Promise.race([waitForStatic(port), spawnFailed, exitedEarly]);
   } catch (error) {
-    await stopStaticServer(runtime);
+    // 收尾失败（停服务、等端口释放）**不该掩盖原始错误**——原始错误才是根因。
+    await stopStaticServer(runtime).catch(() => undefined);
     throw error;
   }
   return runtime;
 }
 
+/** 进程是否还活着（`kill(pid, 0)` 只探活，不发信号）。 */
+function alive(pid: number): boolean {
+  if (pid <= 0) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** 停止静态源。 */
 export async function stopStaticServer(runtime: StaticRuntime): Promise<void> {
+  // 进程本来就没活着（自己退了 / 压根没起来）：端口多半是**别人**占着的，
+  // 等它释放是白等（等不到），直接收尾。
+  const wasAlive = alive(runtime.pid);
   if (runtime.pid > 0) {
     try {
       process.kill(runtime.pid, 'SIGTERM');
@@ -140,18 +203,20 @@ export async function stopStaticServer(runtime: StaticRuntime): Promise<void> {
       // 进程已经退出：忽略
     }
   }
-  try {
-    await waitPortFree(runtime.port, 10_000);
-  } catch {
-    // 优雅退出没成功：强杀后再等一次。
-    if (runtime.pid > 0) {
-      try {
-        process.kill(runtime.pid, 'SIGKILL');
-      } catch {
-        // 已经退出：忽略
+  if (wasAlive) {
+    try {
+      await waitPortFree(runtime.port, 10_000);
+    } catch {
+      // 优雅退出没成功：强杀后再等一次。
+      if (runtime.pid > 0) {
+        try {
+          process.kill(runtime.pid, 'SIGKILL');
+        } catch {
+          // 已经退出：忽略
+        }
       }
+      await waitPortFree(runtime.port, 10_000);
     }
-    await waitPortFree(runtime.port, 10_000);
   }
   if (fs.existsSync(STATIC_RUNTIME_FILE)) {
     fs.rmSync(STATIC_RUNTIME_FILE, { force: true });
