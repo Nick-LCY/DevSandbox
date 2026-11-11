@@ -164,8 +164,8 @@
 | 02 | 核心包（**done，2026-11-09**） | `transfer.py`（路径校验 / upload / probe / 下载泵 / list）+ `TransferError` 与固定中文文案常量 + `__init__.py` 导出 + 单测 —— **93 项单测**全绿、**审查修复一轮**（7 项必修全部完成）；03 轮在此基础上**回修**了上传字节数核对 |
 | 03 | 服务端（**done，2026-11-09**） | `routes/files.py` 三端点 + 流式装配 + 错误文案表 + schemas + `API.md` 第 16 章 + 单测（**42 项**）；**raw 流式 body（禁 JSON body）**；**核心包回修**（`mv` 前核对期望字节数）+ **服务端字节计数兜底**；**Traefik 读超时的「入口点级」落地**（`websecure` 入口点 `readTimeout=0`；本机部署链属本平台自管的基础设施，属本轮落地范围）—— 门禁：服务端 **329 passed** / 核心包非 root **370 passed** + root **23 passed** / **ruff rc=0** |
 | 04 | 前端（**done，2026-11-09**） | `client.ts` 加 raw / blob / list 请求能力 + `lib/file-transfer.ts` 纯逻辑 + 文件面板组件（入口按钮 / 抽屉 / 面包屑 / 列表 / 上传 / 下载 / 进度 / 确认框）+ 图标资产 vendor（含根目录 `folder.svg` / `file.svg` 移入）+ 测试——门禁：前端 **vitest 633 passed**（基线 584 → +49）/ typecheck 双零错 / build 成功；后端配套 **330 passed**（+1，CORS `expose_headers`）；桌面下载留桩 `TODO(05)` |
-| 05 | 桌面端（**doing，2026-11-09 代码侧收口；Windows 真机待验**） | `Cargo.toml` 加 `reqwest` 0.12（rustls-tls，**不引 OpenSSL / aws-lc-rs**）+ dialog 插件 + Rust 下载落盘命令（同目录临时名 + `rename` 原子写）+ 命令注册 + 前端 `desktop-ipc.ts` 公共层与形态分支 + 进度事件（100 ms 节流）+ `cancel_download` 幂等取消——门禁：`cargo test` **47 passed**（基线 25 → +22，0 警告）/ 前端 **651 passed**（基线 633 → +18）/ typecheck 双零错 / build 成功，后端 / 核心包零改动；审查修复一轮 **9 项**；**15 条 Windows 真机清单已产出，本机 Linux 无法验证** |
-| 06 | 验收与文档收口（**done，2026-11-09**） | Playwright 真机 spec `12-file-transfer.spec.ts`（903 行 / 2 用例：主链路 + 负例）+ 文档同步 + **ADR 0018 复核**（状态已是已接受，06 只复核不改状态） + **全轮收口留档** [[tasks/runtime-file-transfer/RESULTS.md\|RESULTS.md]] —— 门禁：e2e 全量 **50 passed / 0 failed / 0 flaky / 0 skipped**（9.9 分钟，基线 48+2）、**e2e gate 通过**；审查一轮（1 Critical + 3 Warning + 低成本项）→ 修复一轮 **10 项**；**唯一开口 = 05 的 Windows 真机清单 15 条待用户执行** |
+| 05 | 桌面端（**done，2026-11-11**） | `Cargo.toml` 加 `reqwest` 0.12（rustls-tls，**不引 OpenSSL / aws-lc-rs**）+ dialog 插件 + Rust 下载落盘命令（同目录临时名 + `rename` 原子写）+ 命令注册 + 前端 `desktop-ipc.ts` 公共层与形态分支 + 进度事件（100 ms 节流）+ `cancel_download` 幂等取消——门禁：`cargo test` **47 passed**（基线 25 → +22，0 警告）/ 前端 **651 passed**（基线 633 → +18）/ typecheck 双零错 / build 成功，后端 / 核心包零改动；审查修复一轮 **9 项**；**15 条 Windows 真机清单已于 2026-11-11 由用户在 Windows 真机逐条执行、全部通过**（日常使用正常） |
+| 06 | 验收与文档收口（**done，2026-11-09**） | Playwright 真机 spec `12-file-transfer.spec.ts`（903 行 / 2 用例：主链路 + 负例）+ 文档同步 + **ADR 0018 复核**（状态已是已接受，06 只复核不改状态） + **全轮收口留档** [[tasks/runtime-file-transfer/RESULTS.md\|RESULTS.md]] —— 门禁：e2e 全量 **50 passed / 0 failed / 0 flaky / 0 skipped**（9.9 分钟，基线 48+2）、**e2e gate 通过**；审查一轮（1 Critical + 3 Warning + 低成本项）→ 修复一轮 **10 项**；**唯一开口已于 2026-11-11 闭合**（05 的 Windows 真机清单 15 条全部通过，全轮 01~06 全部 done） |
 
 依赖顺序：**01 → 02 → 03 → 04 → 05 → 06**，其中 **04 与 05 可并行**。
 
@@ -208,7 +208,7 @@
 - [x] Rust 侧用 `reqwest` **0.12**（`rustls-tls`，**不引 OpenSSL / aws-lc-rs**；`stream` 特性不需要）实现下载落盘命令；`tauri-plugin-dialog` 保存框可用，capabilities 已补 `dialog:allow-save`。**（05 轮：`reqwest` 0.12（`default-features = false` + `rustls-tls`，依赖树无 OpenSSL / aws-lc-rs；`stream` 特性经核实无用已去除）+ `tauri-plugin-dialog`；capabilities **只加** `dialog:allow-save`）**
 - [x] 桌面形态下载进度来自 Rust 侧 `download://<作用域>/<downloadId>` 事件（100 ms 节流，载荷含 `phase` / `loaded` / `total` / `path` / `target_path`）；`cancel_download` 幂等取消 + 删临时文件；令牌走 invoke 参数、**不落盘 / 不进日志 / 不进 URL**。**（05 轮）**
 - [x] 落盘路径 = **用户所选**；新增 Rust 代码**无 unwrap / 越界索引**（release profile `panic = "abort"` 下的硬要求），错误一律 `Result` 收口。**（05 轮：落盘路径 = 原生保存框返回值；同目录临时名 + `rename` 原子写；非测试 Rust **零 `unwrap` / `expect`**）**
-- [ ] **Windows 真机验证清单**已产出并逐条验过：上传选文件 / 保存框 / 中文文件名 / 大文件 / 中途取消；**未验不宣称完成**。——清单已细化为 **15 条**收录于 [[tasks/runtime-file-transfer/05-desktop-download.md|05 任务]] 的「进展」；**06 轮已收口，但本清单仍待用户 Windows 真机执行**——本机 Linux 无法验证（Playwright 覆盖不到 Tauri IPC 与原生对话框），**未验不宣称完成**（05 任务维持 `doing`）。
+- [x] **Windows 真机验证清单**已产出并逐条验过：上传选文件 / 保存框 / 中文文件名 / 大文件 / 中途取消；**未验不宣称完成**。——清单已细化为 **15 条**收录于 [[tasks/runtime-file-transfer/05-desktop-download.md|05 任务]] 的「进展」；**2026-11-11 由用户在自己的 Windows 机器上跑桌面端（连真后端）逐条执行、全部通过**，用户确认该功能**日常持续在用、使用正常** ⇒ **05 任务置 `done`**，**全轮（01~06）无遗留开口**（收口留档见 [[tasks/runtime-file-transfer/RESULTS.md|全轮留档]] 第十二节）。
 
 ### 验收、门禁与文档
 
@@ -223,7 +223,7 @@
 - 三期需求：[[prds/phase3-desktop.md]] — 桌面壳、连接层与端口转发；本轮的字节泵机制来自该轮。
 - 文件注入轮：[[prds/file-injection.md]] — 创建时注入的机制与信任边界（本轮的**对照通道**，本轮对其零改动）。
 - 任务集：[[tasks/runtime-file-transfer/README.md|运行期文件传输任务集]] — 01~06 六个任务与依赖顺序。
-- **全轮收口留档**：[[tasks/runtime-file-transfer/RESULTS.md|运行期文件传输全轮收口留档]] — 各轮门禁数字、e2e 证据链、大文件真机证据、部署动作、环境事件、已知边界与留白、提交链（**唯一开口 = 05 的 Windows 真机清单待用户执行**）。
+- **全轮收口留档**：[[tasks/runtime-file-transfer/RESULTS.md|运行期文件传输全轮收口留档]] — 各轮门禁数字、e2e 证据链、大文件真机证据、部署动作、环境事件、已知边界与留白、提交链、**第十二节：2026-11-11 Windows 真机验证通过、全轮收口**）。
 - 架构总览：[[architecture/overview.md]] — 分层结构、挂载契约与回收契约。
 - 注入决策：[[architecture/decisions/0012-文件注入采用复制加改属主而非改造挂载预检.md|0012 文件注入采用复制加改属主而非改造挂载预检]]。
 - 传输机制决策：[[architecture/decisions/0018-运行期文件传输机制选型.md|0018 运行期文件传输机制选型]] — 主通道、四条否决理由、10 条被实测修正的设计口径与部署链反代约束（本 PRD 方案章节的依据）。
