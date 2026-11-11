@@ -1,11 +1,12 @@
 ---
 prd: prds/console-cloudflare.md
-status: todo
+status: done
 ---
 # 任务：Terraform 底座（`infra/` 目录骨架与远端状态后端）
 
 > 需求见 [[prds/console-cloudflare.md|控制台前端托管到 Cloudflare PRD]]，决策见 [[architecture/decisions/0019-控制台前端托管到CloudflareWorkers.md|ADR 0019]]。
 > **本任务只落底座**，不部署、不建资源——**Cloudflare 凭据与 MinIO 配置尚未到位**（见「待用户提供」清单）。
+> **本任务已收口（done，2026-11-11）**——底座、provider pin 与 lock、门禁、审查修复全部落地；下文的实施要点是**施工单**，也是验收核对清单；**最终门禁、审查结论、提交链与两处口径勘误见文末「进展（收口）」**。
 
 ## 目标
 
@@ -21,13 +22,14 @@ status: todo
 infra/
 ├── README.md                  # 目录说明 / 部署顺序 / 凭据注入 / 待提供清单
 ├── .gitignore                 # 忽略 .terraform/、*.tfstate、*.tfvars 等
-├── versions.tf                # required_version + provider 精确 pin
+├── versions.tf                # required_version + provider 精确 pin + backend "s3" 空块
 ├── providers.tf               # provider 配置（cloudflare）
 ├── variables.tf               # 变量声明（api_token sensitive）
 ├── main.tf                    # zone data + workers_custom_domain（唯一所有者原则注释）
 ├── outputs.tf                 # 输出（hostname / zone_id 等）
-├── backend.hcl.example        # backend "s3" 占位示例
+├── backend.hcl.example        # backend "s3" 配置模板（值全为占位）
 ├── terraform.tfvars.example   # 变量取值示例（全部占位、无真实凭据）
+├── .terraform.lock.hcl        # provider 版本 + 哈希锁（**必须入库**）
 └── worker/                    # Workers 项目骨架（03 轮填充）
 ```
 
@@ -46,13 +48,14 @@ infra/
 
 ### `backend.hcl` 占位
 
-- `main.tf` 里只放 **`backend "s3" {}` 空块**（不写值——值在 `backend.hcl` 里）；
+- **`backend "s3" {}` 空块放在 `versions.tf` 的 `terraform` 块内**（不写值——值在 `backend.hcl` 里）——**勘误**：施工单原写「放在 `main.tf` 里」，实际实现按 Terraform 惯例**合并进 `versions.tf` 的 `terraform` 块**（`required_version` / `required_providers` / `backend` 同块）；
 - **`backend.hcl.example`** 写全配置项，**值全部是占位**：
 
 | 项 | 值 / 说明 |
 |---|---|
 | `bucket` | 占位（MinIO 桶名） |
-| `key` | 占位，**带 workspace 前缀** |
+| `key` | 占位，**字面量 `console-cloudflare/terraform.tfstate`**（**不含 `<workspace>` 占位符**）——**勘误**：施工单原写「带 workspace 前缀」，实际实现是 **key 用字面量**、workspace 隔离靠下一行的 `workspace_key_prefix` |
+| `workspace_key_prefix` | **显式写死 `"envs"`**（后端默认值为 `env:`）——**前置**到 `key` **之前**（不是追加在 key 之后）；非 default workspace 的状态对象路径形如 `envs/<workspace>/console-cloudflare/terraform.tfstate` |
 | `region` | 占位 |
 | `endpoint` | 占位（MinIO 端点 URL） |
 | `use_path_style` | **`true`** —— MinIO **必须** path style，否则桶名会被当成域名的一部分 |
@@ -60,8 +63,9 @@ infra/
 | `skip_region_validation` | `true` |
 | `skip_requesting_account_id` | `true` |
 | `skip_metadata_api_check` | `true` |
+| `skip_s3_checksum` | `true` —— 老版本 MinIO 不认 S3 的 `x-amz-checksum-mode` 头，会直接回 400 |
 
-> **四个 `skip_*` 是 MinIO 的硬要求**：不设则 `terraform init` 会去 AWS 官方端点做凭证 / 区域 / 账号校验，直接卡住。
+> **五个 `skip_*` 是 MinIO 的硬要求**：不设则 `terraform init` 会去 AWS 官方端点做凭证 / 区域 / 账号校验，直接卡住。
 
 ### 变量与凭据
 
@@ -74,14 +78,14 @@ infra/
 - 文件头注释写明：**TF 只管 zone data + `workers_custom_domain`；**不声明 `workers_script`**——脚本与静态资产归 `wrangler`。
 - 资源清单**恰为**：
   1. `data "cloudflare_zone"`（按名字查 zone）；
-  2. `resource "cloudflare_workers_custom_domain"`（`hostname` = `dev.sankabox.com`、`script_name` 指向 03 轮建的 Worker、`zone_id` 取自 data）。
+  2. `resource "cloudflare_workers_custom_domain"`（`hostname` = `dev.sankabox.com`、`service` 指向 03 轮建的 Worker、`zone_id` 取自 data）——**勘误**：施工单原写 `script_name`，那是 provider **v4** 的字段名；本仓 pin 的是 **v5**，字段名为 **`service`**（语义相同＝目标 Worker 名）。
 - **不写 `resource "cloudflare_workers_script"`**——写进去就构成第二个所有者，脚本会被 TF 与 `wrangler` 互相覆盖。
 
 ## 完成标准
 
-- [ ] `infra/` 目录骨架齐全（上表 10 项），文件命名与职责符合上表。
+- [ ] `infra/` 目录骨架齐全（上表 11 项），文件命名与职责符合上表。
 - [ ] `versions.tf`：`required_version >= 1.9`；provider **精确 pin**；`.terraform.lock.hcl` **入库**。
-- [ ] `backend "s3"` 空块在位；`backend.hcl.example` **九项齐全**（bucket / key 带 workspace 前缀 / region / endpoint / **`use_path_style = true`** / 四个 `skip_*`），**值全是占位**。
+- [ ] `backend "s3"` 空块在位（**在 `versions.tf` 的 `terraform` 块内**）；`backend.hcl.example` **配置项齐全**（bucket / key **字面量** / **`workspace_key_prefix = "envs"`** / region / endpoint / **`use_path_style = true`** / **五个 `skip_*`**，含 `skip_s3_checksum`），**值全是占位**。
 - [ ] `variables.tf` 变量**全部声明**；`api_token` **`sensitive = true`**；**无真实凭据入库**。
 - [ ] `main.tf` 资源清单**恰为** zone data + `workers_custom_domain`；文件头注释写明**单一所有者原则**；**无 `workers_script`**。
 - [ ] `outputs.tf` 输出齐备（至少 hostname / zone_id）。
@@ -102,3 +106,60 @@ infra/
 - **MinIO S3 远端状态**：端点 URL / 桶名 / region / 访问凭据（→ `backend.hcl` 的 `endpoint` / `bucket` / `region` / `AWS_*`）。
 - **Cloudflare**：Account ID / API Token / **zone 与账号是否同账号**（同账号 ⇒ DNS 自动创建；不同账号 ⇒ 改走 `routes` + 手工 record 路线并留档）。
 - 上述未到位前，**代码骨架与 `fmt` / `validate` 门禁可先做完**；`init` / `plan` / `apply` 留待 03 / 04 轮。
+
+---
+
+## 进展（收口）
+
+> **本任务状态：done（2026-11-11 收口）。** `infra/` Terraform 底座落地——**只管域名层**（`data "cloudflare_zone"` + `cloudflare_workers_custom_domain`），**全程不声明 `workers_script`**（单一所有者原则写死在 `main.tf` 文件头）；cloudflare provider **精确 pin `5.28.1`** + `.terraform.lock.hcl` **入库**；门禁全绿；审查一轮**零 Critical**、**4 条 Warning 全部修复后合入**。
+> **本任务不部署、不建资源**：`terraform init`（带后端）/ `plan` / `apply` **待用户提供 MinIO 与 Cloudflare 配置后**才跑（清单见 [[current-state.md|当前状态]] 的 TODO 段与 [[tasks/console-cloudflare/README.md|任务集 README]]）。
+
+### 交付结论
+
+- **交付 = `infra/` Terraform 底座**（本仓新增目录）：`README.md` / `.gitignore` / `versions.tf` / `providers.tf` / `variables.tf` / `main.tf` / `outputs.tf` / `backend.hcl.example` / `terraform.tfvars.example` / `.terraform.lock.hcl` + `worker/` 骨架（03 轮填充）。
+- **域名层 only**：root module 资源清单**恰为** `data "cloudflare_zone"` + `resource "cloudflare_workers_custom_domain"`——**不声明 `cloudflare_workers_script`**（Worker 脚本与静态资产归 `wrangler`），红线写死在 `main.tf` 文件头注释。
+- **provider 精确 pin**：`cloudflare/cloudflare = 5.28.1`（`= x.y.z`，**不用** `~>` / `>=` 浮动范围，防上游漂移）+ `.terraform.lock.hcl` **入库**（provider 版本 + 哈希锁）。
+- **零凭据入库**：`api_token` 标 `sensitive = true`，只经 `TF_VAR_cloudflare_api_token` 注入；`backend.hcl` 与真实 `*.tfvars` 均被 `.gitignore` 排除，入库的两份 `.example` **值全是占位**。
+- **workspace 隔离口径**：`key` 为**字面量** `console-cloudflare/terraform.tfstate`（**不含 `<workspace>` 占位符**），隔离靠**显式** `workspace_key_prefix = "envs"`（**前置**到 key 之前）——`default` ⇒ `console-cloudflare/terraform.tfstate`；非 default ⇒ `envs/<workspace>/console-cloudflare/terraform.tfstate`。
+
+### 门禁最终数字
+
+| 门禁 | 结果 |
+|---|---|
+| `terraform init -backend=false` | **成功**——只装 provider、不连后端、**零凭据** |
+| `terraform providers lock -platform=linux_amd64` | **成功**——`.terraform.lock.hcl` 生成并入库 |
+| `terraform fmt -check -recursive` | **无输出**（审查修复轮复跑仍无输出） |
+| `terraform validate` | **通过**（审查修复轮复跑仍通过） |
+
+### 审查结论与修复轮
+
+- **审查（reviewer）一轮**：**零 Critical**、**4 条 Warning** ⇒ 结论「**修复后合入**」。
+- **4 条 Warning 全部修复**：
+
+| # | Warning | 修复落点 |
+|---|---|---|
+| 1 | **workspace 状态路径口径**不准 | `backend.hcl.example` / `infra/README.md` 统一为「`workspace_key_prefix` **前置**到 key **之前**」，并给出 `default` 与非 default 两条实际对象路径对照 |
+| 2 | **`account_id` 注入口径**不清 | `providers.tf` / `infra/README.md` 写明：**资源级 `account_id` 是 required**，provider 的 `CLOUDFLARE_ACCOUNT_ID` **不兜底** ⇒ 必须 `TF_VAR_cloudflare_account_id` 或不入库的 `terraform.tfvars` |
+| 3 | **Token 权限清单缺 `DNS:Edit`** | 待提供清单补 **Zone:Read + DNS:Edit + Workers 写权限**，并建议**限定 `sankabox.com` 单 zone**（custom domain 与 zone 同账号时 Cloudflare 会代建 CNAME 记录） |
+| 4 | **`infra/README.md` 断链** | 指向 ADR 0019 的引用路径修正为可点开的正确路径 |
+
+- **provider v5 与 v4 的三处形状差异**（按 pin 的 **v5** 写，**经 provider schema 实证正确**）：① **provider 块无 `account_id`**（v5 把账号作用域下沉到**资源级**）；② `cloudflare_workers_custom_domain` 用 **`service`** 字段（v4 为 `script_name`，语义相同＝目标 Worker 名）；③ `data "cloudflare_zone"` 用 **`filter = { name = ..., account = { id = ... } }`**（v4 为顶层 `name` 参数）——其 `account` 子过滤把「zone 与账号同账号」从**人工核对**升级为 **plan 期强制**（查不到 zone 即直接失败）。
+
+### 提交链
+
+| 提交 | 内容 |
+|---|---|
+| `e408740` | **底座**：`infra/` 目录骨架 + provider 精确 pin 5.28.1 + lock 入库 + 单一所有者红线注释 |
+| `62b1555` | **审查修复轮**：4 条 Warning 全部修复（workspace 路径口径 / `account_id` 注入口径 / Token 权限补 `DNS:Edit` / README 断链） |
+
+### 与任务书的两处口径勘误
+
+1. **`backend "s3"` 空块的位置**：施工单原写「**`main.tf` 里**只放 `backend "s3" {}` 空块」——实际实现**合并进 `versions.tf` 的 `terraform` 块**（`required_version` / `required_providers` / `backend` 同块）。
+2. **`key` 的 workspace 前缀**：施工单原写「`key` 占位，**带 workspace 前缀**」——实际实现的 `key` 是**字面量** `console-cloudflare/terraform.tfstate`（**不含 `<workspace>` 占位符**），workspace 隔离靠**显式** `workspace_key_prefix = "envs"`（**前置**到 key 之前）；非 default workspace 的状态对象路径形如 `envs/<workspace>/console-cloudflare/terraform.tfstate`。
+
+### 后续（待用户提供配置后）
+
+- `terraform init`（带后端）/ `plan` / `apply` **一律不跑**，直到 **MinIO 端点 / 桶名 / region / AK·SK** 与 **Cloudflare Account ID / API Token** 到位（清单见 [[current-state.md|当前状态]] 的 TODO 段）。
+- **已知提示**：Terraform **1.15.8** 对 S3 后端的 `endpoint` 参数有 **deprecation 警告**（提示改用 `endpoints.s3` 块）——**待真实 `init` 时一并处理**。
+- 下游：[[tasks/console-cloudflare/03-cloudflare-workers-deploy.md|03 Cloudflare Workers 部署]]（填 `infra/worker/` + 首次 `wrangler deploy`）→ [[tasks/console-cloudflare/04-domain-and-live-acceptance.md|04 域名绑定与公网真机验收]]（`terraform apply`）。
+- 收口留档索引：[[tasks/console-cloudflare/README.md|控制台前端托管到 Cloudflare 任务集]]；决策依据：[[architecture/decisions/0019-控制台前端托管到CloudflareWorkers.md|ADR 0019]]（第 4 节：单一所有者原则、远端状态后端）。
