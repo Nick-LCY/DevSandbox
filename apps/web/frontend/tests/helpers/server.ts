@@ -11,6 +11,9 @@
  * 健康自检也要带 `Authorization` 头（否则自检恒 401，等健康永远超时）。
  * 令牌常量在 `helpers/auth.ts`（单一来源，页面预置与直调请求头共用同一份）。
  *
+ * 后端只提供 `/api`、**不托管前端**：前端产物由独立静态源伺服
+ * （见 `helpers/static.ts`），页面与后端刻意不同源。
+ *
  * `uv run` 一律带 `--no-sync`：工作区里两个成员共用同一个虚拟环境，
  * 按成员同步是精确对齐的（只同步服务端包会把核心包的依赖剪掉），
  * 两个成员来回跑就互相剪。环境由
@@ -23,7 +26,7 @@ import net from 'node:net';
 import path from 'node:path';
 
 import { TEST_TOKEN, TOKEN_ENV_VAR, authHeaders } from './auth';
-import { BACKEND_PROJECT_DIR, CONSOLE_DIST_DIR, RUNTIME_DIR } from './paths';
+import { BACKEND_PROJECT_DIR, RUNTIME_DIR } from './paths';
 
 export const DEFAULT_PORT = Number(process.env.CONSOLE_TEST_PORT ?? '8100');
 export const HOST = '127.0.0.1';
@@ -121,8 +124,6 @@ export async function startConsoleServer(port: number = DEFAULT_PORT): Promise<S
       ...process.env,
       SANDBOX_CONSOLE_HOST: HOST,
       SANDBOX_CONSOLE_PORT: String(port),
-      // 前端产物目录显式指到仓库内的构建产物，避免依赖「相对当前工作目录」的默认值
-      SANDBOX_CONSOLE_DIST: CONSOLE_DIST_DIR,
       // 固定测试令牌：注入优先 = 不落盘（磁盘上不留令牌文件）。
       [TOKEN_ENV_VAR]: TEST_TOKEN,
     },

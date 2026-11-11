@@ -10,8 +10,8 @@
 ```
 apps/web/frontend/tests/
 ├── playwright.config.ts        # 验收配置（串行、超时、产物留存、storageState 预置）
-├── global-setup.ts             # 前端构建 → 本地测试镜像 → 起控制台服务 → 清残留沙箱
-├── global-teardown.ts          # 停服务 → 清残留沙箱 → 删测试镜像
+├── global-setup.ts             # 前端构建 → 起静态源 → 本地测试镜像 → 起控制台服务 → 清残留沙箱
+├── global-teardown.ts          # 停静态源 → 停服务 → 清残留沙箱 → 删测试镜像
 ├── tsconfig.json               # 验收脚本的类型检查配置
 ├── helpers/
 │   ├── api.ts          # 控制台 REST 接口直调（统一带认证头）
@@ -24,6 +24,7 @@ apps/web/frontend/tests/
 │   ├── paths.ts        # 路径常量
 │   ├── sandbox.ts      # 验收沙箱的命名与清理
 │   ├── server.ts       # 控制台服务的启动 / 停止 / 重启
+│   ├── static.ts       # 独立静态源的启动 / 停止（页面基址）
 │   ├── terminal.ts     # 网页终端的操作与断言
 │   └── workspace.ts    # 外部挂载目录与内容指纹
 ├── specs/                       # 用例
@@ -38,7 +39,8 @@ apps/web/frontend/tests/
 │   ├── 09-terminal-clipboard.spec.ts # 终端剪贴板（Ctrl+Shift+C/V、语义锁、失败提示）
 │   ├── 10-auth-connection.spec.ts # 认证与连接配置（401 负向 / 票据 / 引导面板 / 工作台挂载）
 │   ├── 11-forward-web-notice.spec.ts # web 形态的端口转发区（说明卡 + 安装入口 + 零管理元素）
-│   └── 12-file-transfer.spec.ts # 运行期文件传输（上传 / 下载 / 目录列表 / 覆盖 / 负例）
+│   ├── 12-file-transfer.spec.ts # 运行期文件传输（上传 / 下载 / 目录列表 / 覆盖 / 负例）
+│   └── 13-static-frontend.spec.ts # 静态源与后端的分工（静态源出页面 / 后端根路径 404）
 └── artifacts/                   # 运行产物：截图 / trace / 报告（不进版本库）
 ```
 
@@ -80,28 +82,55 @@ CONSOLE_TEST_PORT=8200 pnpm run test:acceptance
 
 ---
 
+## 一之二、独立静态源（页面基址）
+
+**后端只提供 `/api`，不托管前端**：前端产物由**独立静态源**伺服（生产形态是
+Cloudflare Workers 独立托管前端）。验收套件照这条形态走：**页面在静态源上，
+接口在另一个 origin 上**——两者刻意不同源。
+
+| 项 | 口径 |
+|---|---|
+| 静态源 | `vite preview`（`node_modules/.bin/vite preview`），伺服 `apps/web/frontend/dist` |
+| 端口 | 默认 **8200**，环境变量 `CONSOLE_STATIC_PORT` 覆盖；**与后端的 8100 错开** |
+| 绑定地址 | **只绑 `127.0.0.1`**（硬要求）：`http://127.0.0.1` 是**安全上下文**，`navigator.clipboard` 在安全上下文里才可用（终端剪贴板用例依赖它） |
+| `--strictPort` | **硬要求**：端口被占时直接失败，**不静默换端口**——换了会毁掉 `baseURL` 与 storageState 的 origin（页面要么 404、要么预置的连接配置压根注不进去，报错现场还跟「端口写错了」看不出来） |
+| 页面基址 | `playwright.config.ts` 的 `use.baseURL` = 静态源 origin |
+| storageState 的 origin | = **静态源**（页面 localStorage 注入的依据） |
+| 预置连接配置里的后端基址 | = **后端地址**（`http://127.0.0.1:<后端端口>`）：**与静态源刻意不同源** |
+| 交叉断言 | `global-setup.ts` 三条：静态源实际端口 == `CONSOLE_STATIC_PORT`；后端实际端口 == `CONSOLE_TEST_PORT`；**写入的 storageState origin == `baseURL` 的 origin**。任一不成立直接抛错 |
+
+**为什么 origin 必须钉死**：storageState 的 localStorage 是**按 origin 注入**的，
+键对不上时浏览器**不注入**那份预置——页面静默落回「未配置」态（引导面板），
+工作台整片不挂载，既有用例全红，而报错现场（引导面板没出现）跟「origin 写错了」
+根本看不出来。
+
+**相对 URL 的分工**：`page.goto('/')` 走**静态源根**（页面）；
+`page.request.*` 若写相对路径会打到**静态源**而不是后端——后端接口一律写
+**绝对地址**（`http://127.0.0.1:<后端端口>/api/...`）。
+
+---
+
 ## 二、验收脚本自己做了什么
 
 `global-setup.ts` 按固定顺序准备环境：
 
 1. `cd apps && uv sync --all-packages --all-groups` 同步 Python 工作区环境（核心包与服务端包共用
    `apps/.venv`，按成员同步是精确对齐的，只同步一边会把另一边的依赖剪掉）；
-2. `pnpm run build` 构建前端产物（后端在 `/` 路径托管同一份产物）；
+2. `pnpm run build` 构建前端产物（由独立静态源伺服，见「一之二」）；
 3. 现场用 `docker build` 构建一个**名字带一次性随机后缀**的测试镜像——这个名字在任何镜像仓库里都不可能存在；
 4. 清掉上一轮残留的验收沙箱（名字前缀 `acc-`，不碰别人的沙箱）；
 5. 用平台虚拟环境里的 Python 直接拉起控制台服务（不经 `uv run` 的中间进程，
    进程号就是服务本体，重启不留孤儿），监听 `127.0.0.1:<端口>`，等 `/api/health` 通过
    （**健康自检带认证头**：三期起 `/api/health` 不豁免，没令牌恒 401）；
-6. 服务起来后按**实际端口**写一份 `.runtime/storage-state.json`：预置页面侧的
-   连接配置（基址 + 令牌），用例打开页面就直接在工作台里；写之前做**交叉断言**
-   ——这个端口必须与 `playwright.config.ts` 的 `CONSOLE_TEST_PORT` 一致，不一致
-   直接抛错（storageState 按 origin 注入，端口对不上时浏览器不注入那份预置，
-   页面会静默落回「未配置」态）。
+6. **拉起独立静态源**（`vite preview`，绑 `127.0.0.1`、`--strictPort`），等根路径能出 HTML 页面；
+7. 服务与静态源都起来后，按**静态源 origin + 后端实际端口**写一份
+   `.runtime/storage-state.json`：预置页面侧的连接配置（后端基址 + 令牌），
+   用例打开页面就直接在工作台里；写之前做**交叉断言**（见「一之二」）。
 
 > 取解释器的 `uv run` 一律带 `--no-sync`：验收里核心包与服务端包的解释器都要用，
 > 不让每次取解释器都顺手同步一次环境。
 
-`global-teardown.ts` 收尾：停服务 → 清残留沙箱 → 删测试镜像 → 清运行期目录。
+`global-teardown.ts` 收尾：停静态源 → 停服务 → 清残留沙箱 → 删测试镜像 → 清运行期目录。
 
 ---
 

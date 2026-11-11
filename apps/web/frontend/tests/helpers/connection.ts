@@ -14,10 +14,10 @@
  * - 令牌用 `helpers/auth.ts` 的固定测试令牌（与服务进程注入的是同一份）。
  *
  * 预置方式有两条，本文件都提供：
- * - **`storageState` 预置**（既有 9 条用例走这条）：`global-setup.ts` 按测试
- *   服务的实际端口写一份 storageState 文件，`playwright.config.ts` 的
- *   `use.storageState` 读它——页面一打开就已配置，既有用例直接进工作台，
- *   不用在每条用例里多写一步「先配置再操作」；
+ * - **`storageState` 预置**（既有 9 条用例走这条）：`global-setup.ts` 按**静态源**
+ *   的 origin 与**后端**的实际端口写一份 storageState 文件，
+ *   `playwright.config.ts` 的 `use.storageState` 读它——页面一打开就已配置，
+ *   既有用例直接进工作台，不用在每条用例里多写一步「先配置再操作」；
  * - **运行期注入**（负向用例走这条）：`seedConnection` / `clearConnection`
  *   用 `addInitScript` 在页面脚本运行前写 / 删 localStorage，
  *   用来构造「未配置」与「指定令牌」两种态。
@@ -58,20 +58,27 @@ export function connectionConfig(port: number): ConnectionConfig {
 /**
  * 写预置用的 storageState 文件（`playwright.config.ts` 的 `use.storageState` 读它）。
  *
- * **端口取服务起来之后的实际端口**（不是猜的默认值）：预置的基址必须与
+ * **两个 origin 刻意不同源**：
+ * - `pageOrigin` = **静态源**（页面所在处）：storageState 的 localStorage
+ *   是按 origin 注入的，这个键必须与 `baseURL` 的 origin 一致，否则浏览器
+ *   **不注入**这份预置（页面静默落回「未配置」态）；
+ * - `backendPort` = **后端**：预置内容里的 `backendBaseUrl` 指向它
+ *   （页面在静态源上，接口在另一个 origin 上——这正是生产形态）。
+ *
+ * 后端端口取服务起来之后的**实际端口**（不是猜的默认值）：预置的基址必须与
  * 服务实际监听的地址一致，否则页面会去连一台不存在的后端。
  */
-export function writeStorageState(port: number): string {
-  const origin = `http://127.0.0.1:${port}`;
+export function writeStorageState(options: { pageOrigin: string; backendPort: number }): string {
+  const { pageOrigin, backendPort } = options;
   const payload = {
     cookies: [],
     origins: [
       {
-        origin,
+        origin: pageOrigin,
         localStorage: [
           {
             name: CONNECTION_STORAGE_KEY,
-            value: JSON.stringify(connectionConfig(port)),
+            value: JSON.stringify(connectionConfig(backendPort)),
           },
         ],
       },

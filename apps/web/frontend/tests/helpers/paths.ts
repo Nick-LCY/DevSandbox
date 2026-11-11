@@ -35,5 +35,5 @@ export const CLI_PATH = path.join(APPS_DIR, 'cli', 'sandboxctl.py');
 export const CORE_PROJECT_DIR = path.join(APPS_DIR, 'core');
 /** 服务端所在的 uv 项目（apps/web/backend）：控制台服务用它起。 */
 export const BACKEND_PROJECT_DIR = path.join(WEB_DIR, 'backend');
-/** 前端构建产物目录（服务端在 `/` 路径托管它）。 */
+/** 前端构建产物目录（由独立静态源伺服它，见 `helpers/static.ts`）。 */
 export const CONSOLE_DIST_DIR = path.join(CONSOLE_DIR, 'dist');
