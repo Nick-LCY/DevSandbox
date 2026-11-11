@@ -1,0 +1,19 @@
+{
+  "name": "sandbox-console-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Workers 项目：控制台前端静态资产 + 极简 passthrough 脚本（脚本与资产归 wrangler，域名层归 Terraform）",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.32.1",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "pnpm --dir ../../apps/web/frontend run build && wrangler deploy",
+    "deploy:dry": "wrangler deploy --dry-run"
+  },
+  "devDependencies": {
+    "wrangler": "^4.160.1"
+  }
+}

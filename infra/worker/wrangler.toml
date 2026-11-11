@@ -1,0 +1,36 @@
+# Cloudflare Workers 项目配置（infra/worker/）。
+#
+# **单一所有者原则**（见 infra/README.md 第 2 节）：
+#   - Worker 脚本 + 静态资产 → **wrangler**（本文件 / `wrangler deploy`）
+#   - zone / 自定义域名     → **Terraform**（infra/ 的 root module）
+#   ⇒ 本文件**不配**任何域名（`dev.sankabox.com` 由 Terraform 的
+#     `cloudflare_workers_custom_domain` 绑定）。
+#
+# **凭据**：只走环境变量 `CLOUDFLARE_API_TOKEN`，**绝不写进本文件**。
+
+# Worker 名——须与 infra/variables.tf 的 `worker_name` 默认值一致
+# （Terraform 的 `cloudflare_workers_custom_domain.service` 指向它）。
+name = "sandbox-console-web"
+
+# 脚本入口（纯 JS ESM，无构建步骤）。
+main = "src/index.js"
+
+# Workers 运行时兼容日期（填当天）。
+compatibility_date = "2026-11-11"
+
+# Cloudflare Account ID（32 位小写 hex；**非机密**，可入库）。
+account_id = "c6f014ff9f682f99502c1046d5e85ca1"
+
+[assets]
+# 静态资产来源：前端构建产物。
+# 由 `pnpm run deploy` 串起来的 build 步骤产出（`apps/web/frontend` 的 `dist/`）。
+directory = "../../apps/web/frontend/dist"
+
+# 绑定名——脚本内经 `env.ASSETS` 访问（当前脚本不用它：资产请求不经 Worker）。
+binding = "ASSETS"
+
+# 资产请求**不经** Worker 函数（平台直出静态文件）。
+run_worker_first = false
+
+# 哈希路由（前端用 `#/sandboxes/...`）**不需要** SPA 回退规则 ⇒ none。
+not_found_handling = "none"

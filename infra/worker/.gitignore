@@ -1,0 +1,3 @@
+# 依赖与 Wrangler 本地缓存——绝不入库
+node_modules/
+.wrangler/

@@ -34,7 +34,7 @@
 | `terraform.tfvars` | **不入库**（`.gitignore` 已忽略）——真实 `cloudflare_account_id` 等取值 |
 | `.gitignore` | 忽略 `.terraform/`、`*.tfstate`、`*.tfvars`、`backend.hcl` 等；**不忽略** `.terraform.lock.hcl` |
 | `.terraform.lock.hcl` | provider 版本 + 哈希锁（**入库**，防上游漂移） |
-| `worker/` | Workers 项目骨架（`wrangler.toml` / `src/index.js` / `package.json` 由任务 03 填充） |
+| `worker/` | **Cloudflare Workers 项目**（`package.json` / `pnpm-lock.yaml` / `wrangler.toml` / `src/index.js` / `README.md`）——脚本与静态资产归 `wrangler`（详见 [`worker/README.md`](worker/README.md)） |
 
 ### Terraform 安装
 
