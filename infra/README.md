@@ -157,45 +157,82 @@ export AWS_SECRET_ACCESS_KEY='<AWS secret key>'
 
 ---
 
-## 5. 待用户提供（阻塞项）
+## 5. 凭据到位状态（阻塞项）
 
-**已到位**（本轮已写入不入库的真实配置文件）：
+**已到位**（均写入不入库的真实配置文件 / 环境变量）：
 
 - [x] **远端状态后端 = AWS S3**（原生，非 MinIO）——桶名 / `key` / `region` / `workspace_key_prefix`
       已写入不入库的 `infra/backend.hcl`；模板见 `backend.hcl.example`。
 - [x] **Cloudflare Account ID**（非机密）——已写入不入库的 `infra/terraform.tfvars`；
       也可用环境变量 `TF_VAR_cloudflare_account_id` 注入（**必填**：资源级 `account_id` 是
       required，provider 的 `CLOUDFLARE_ACCOUNT_ID` **不兜底**）。
-
-**仍缺**（到位前**不跑** `terraform plan` / `apply`，也不跑 `wrangler deploy`）：
+- [x] **Cloudflare API Token** → 已写入不入库的 `infra/.env`（`CLOUDFLARE_API_TOKEN`
+      与 `TF_VAR_cloudflare_api_token`），**绝不入库**。
+- [x] **AWS 访问凭据** → 已写入不入库的 `infra/.env`（`AWS_ACCESS_KEY_ID` /
+      `AWS_SECRET_ACCESS_KEY`），**绝不入库**。
 
 ### Cloudflare
 
-- [ ] **API Token** → `TF_VAR_cloudflare_api_token`（需 **Zone 读取 + Workers 写入 + DNS:Edit**：
+- [x] **API Token** → `TF_VAR_cloudflare_api_token`（需 **Zone 读取 + Workers 写入 + DNS:Edit**：
       custom domain 与 zone **同账号**时，Cloudflare 会代建 CNAME 记录 ⇒ 需要 **Zone → DNS → Edit**；
       token 权限范围**尽量限定到 `sankabox.com` 这一个 zone**，不要用全账号 token）
+      —— **实测通过**：`plan` 查到 zone、`wrangler deploy` 成功、`terraform apply` 成功。
 - [x] ~~确认 `sankabox.com` 这个 zone 与上述账号是否同账号~~ —— **无需人工确认**：
       `data "cloudflare_zone"` 的 `filter.account.id` 子过滤**在 plan 期强制**（查不到 zone 即失败）。
-      若 plan 报 zone 查不到 ⇒ 改走 `routes` + 手工 DNS record 路线（并留档），需另行调整 `main.tf`。
+      实测 **同账号**：`plan` 读到 zone `sankabox.com`（zone id `613fb07e356c15be43d80eb05e15298d`）。
 
 ### AWS（远端状态后端访问凭据）
 
-- [x] **访问凭据** —— **本机已有**：`~/.aws/credentials` 的 `[default]` profile
-      （region `ap-southeast-1`）；`aws sts get-caller-identity` **成功**（账号 `730335648924`）。
-      （环境变量 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` 或实例角色 / SSO 也可用。）
-- [ ] **目标桶的访问授权** —— 指定的桶 `terraform-654654240294-ap-southeast-1-an` 属
-      **另一个 AWS 账号（`654654240294`）**，本机凭据（账号 `730335648924`）对它**无权限**
-      （`403 AccessDenied`）⇒ 二选一：
-      - 改用**本账号已有的**桶 `terraform-730335648924-ap-southeast-1-an`（**已实测 `init` 成功**）；或
-      - 为本机凭据（账号 `730335648924`）授予目标桶的读写权限（**最小权限**：只授该桶 / 该前缀**）。
+- [x] **访问凭据** —— **已到位**：用户提供的最小权限 AK/SK（写入不入库的 `infra/.env`）。
+      `aws sts get-caller-identity` **成功**，身份为账号 `654654240294` 的
+      IAM 用户 `TerraformUser`（**即目标桶所属账号** ⇒ 对目标桶有读写权限）。
+- [x] **目标桶的访问授权** —— **已解决**（桶方案 c）：AK/SK 属账号 `654654240294`，
+      与桶 `terraform-654654240294-ap-southeast-1-an` **同账号** ⇒
+      `terraform init -reconfigure -backend-config=backend.hcl` **成功**，
+      远端状态对象已落到 `console-cloudflare/terraform.tfstate`。
 
 ### 其它
 
 - [x] Worker 名确认：`sandbox-console-web`（须与任务 03 的 `infra/worker/wrangler.toml` 的
       `name` 一致）。
-- [ ] 首次部署后的实际账号 / Worker 名 / `workers.dev` 地址补记到本文件（任务 03 / 04）
+- [x] 首次部署后的实际账号 / Worker 名 / `workers.dev` 地址补记到本文件（任务 03 / 04）
+      —— 见下方「首次部署记录」。
 
-### 执行记录（本轮）
+### 首次部署记录（2026-11-12，真实部署）
+
+| 项 | 值 |
+|---|---|
+| Cloudflare 账号（Account ID） | `c6f014ff9f682f99502c1046d5e85ca1` |
+| zone | `sankabox.com`（zone id `613fb07e356c15be43d80eb05e15298d`，**与上表同账号**） |
+| Worker 名 | `sandbox-console-web` |
+| `workers.dev` 地址 | `https://sandbox-console-web.nucbox.workers.dev` |
+| 自定义域名 | `https://dev.sankabox.com`（**已生效**，HTTP 200） |
+| 上传资产数 | **123** 个文件 |
+| Terraform 状态 | `data.cloudflare_zone.this` + `cloudflare_workers_custom_domain.this`（**恰 2 项**，无 `workers_script`） |
+| 远端状态对象 | `s3://terraform-654654240294-ap-southeast-1-an/console-cloudflare/terraform.tfstate`（SSE-AES256） |
+
+### 执行记录（本轮：真实部署链打通）
+
+- **凭据注入**：`set -a; source infra/.env; set +a` ⇒
+  `CLOUDFLARE_API_TOKEN` / `TF_VAR_cloudflare_api_token` / `CLOUDFLARE_ACCOUNT_ID` /
+  `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` **全部到位**（值不入库、不外传）。
+- **`terraform init -reconfigure -backend-config=backend.hcl`**：**成功**
+  （`Successfully configured the backend "s3"!`；provider `cloudflare v5.28.1` 复用锁文件）。
+  workspace = `default`。
+- **`terraform plan -out=/tmp/tfplan`**：**成功**，动作恰为 **2 项**
+  —— 1 个 data（`cloudflare_zone`）+ 1 个 create（`workers_custom_domain`）；
+  `Plan: 1 to add, 0 to change, 0 to destroy.`。
+- **`wrangler deploy`（`infra/worker` 的 `pnpm run deploy`）**：**成功**
+  —— 前端 build + 上传 **123** 个资产，
+  `Uploaded sandbox-console-web`，版本 id `2d8b29ba-c5c7-49f3-8a06-2ede41fa9613`。
+- **`terraform apply /tmp/tfplan`**：**成功**（`Resources: 1 added, 0 changed, 0 destroyed.`）。
+  `terraform state list` = 恰 2 项，与「唯一所有者原则」一致。
+- **HTTP 验收**：`https://dev.sankabox.com` → **HTTP 200**，body 含
+  `page-layout-title` 与 `assets/index-*.js` 引用；与 `workers.dev` 地址
+  **byte 级一致**（同 sha256）。
+
+<details>
+<summary>上一轮记录（桶权限未到位时，已被本轮方案 c 取代）</summary>
 
 - **AWS 凭据检测**：本机**已有**可用 AWS 凭据（`~/.aws/credentials` 的 `[default]` profile，
   region `ap-southeast-1`），`aws sts get-caller-identity` **成功**（账号
@@ -204,10 +241,10 @@ export AWS_SECRET_ACCESS_KEY='<AWS secret key>'
   `Failed to get existing workspaces: Unable to list objects in S3 bucket
   "terraform-654654240294-ap-southeast-1-an" with prefix "envs/": ... StatusCode: 403 ...
   api error AccessDenied: Access Denied`。
-  ⇒ **桶在账号 `654654240294` 名下**，而**本机凭据属账号 `730335648924`** ⇒ 无权限。
-  ⇒ 换桶名即可通：把 `backend.hcl` 的 `bucket` 改成本账号的
-  `terraform-730335648924-ap-southeast-1-an`（已实测 `init` 成功：
-  `Successfully configured the backend "s3"!`）。
+  ⇒ **桶在账号 `654654240294` 名下**，而**当时本机凭据属账号 `730335648924`** ⇒ 无权限。
+  ⇒ 本轮按**桶方案 c** 换用同账号 AK/SK ⇒ 已打通。
+
+</details>
 
 ---
 

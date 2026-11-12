@@ -81,17 +81,22 @@ pnpm run deploy             # 正式部署：先构建前端，再 wrangler depl
 
 ---
 
-## 5. 首次部署记录（待部署后回填）
+## 5. 首次部署记录（2026-11-12 已部署）
 
-> **当前状态：尚未部署**（缺 Cloudflare API Token）⇒ 下表留空。
+> **当前状态：已部署**（Cloudflare API Token 已到位，走环境变量注入，**未入库**）。
 
 | 项 | 值 |
 |---|---|
 | Cloudflare 账号（Account ID） | `c6f014ff9f682f99502c1046d5e85ca1` |
 | Worker 名 | `sandbox-console-web` |
-| `workers.dev` 地址 | _（待部署后回填）_ |
-| 自定义域名 | `dev.sankabox.com`（待 `terraform apply` 后生效） |
-| 部署日期 | _（待部署后回填）_ |
+| `workers.dev` 地址 | `https://sandbox-console-web.nucbox.workers.dev` |
+| 自定义域名 | `https://dev.sankabox.com`（**已生效**，HTTP 200） |
+| 上传资产数 | **123** 个文件 |
+| 部署日期 | **2026-11-12** |
+| Worker 版本 id | `2d8b29ba-c5c7-49f3-8a06-2ede41fa9613` |
 
+> 部署命令：`cd infra/worker && pnpm run deploy`（前端 build + `wrangler deploy`）。
+> **注意**：改前端代码后要**重新跑**这条命令，`terraform apply` **不会**重新上传资产。
+>
 > 部署完成后，**同步补记**到 [infra/README.md](../README.md) 第 5 节
-> （「首次部署后的实际账号 / Worker 名 / `workers.dev` 地址」）。
+> （「首次部署记录」）。
