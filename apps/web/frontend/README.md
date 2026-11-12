@@ -47,6 +47,20 @@ uv run --project apps/web/backend python -m sandbox_console        # 默认监�
 
 **`base: './'`（相对路径基址）**：产物里的资源引用是 `./assets/...` 而不是 `/assets/...`。两种部署形态都能解析——网页形态（独立静态源）与桌面形态（Tauri 自定义协议，Windows 上是 `http://tauri.localhost/`）都是从根路径解析。开发模式下 Vite 仍按 `/` 提供服务（`base: './'` 只影响构建产物）。
 
+### 生产形态：Cloudflare Workers 托管
+
+生产上**同一份 `dist`** 由 **Cloudflare Workers + 静态资产**托管（**不是 Pages**），自定义域名 **`dev.sankabox.com`**；后端**只提供 `/api`**（根路径返回 404）。部署是**手动**的，**一条命令**：
+
+```bash
+cd infra/worker && pnpm run deploy      # = 前端 build + wrangler deploy（上传静态资产）
+```
+
+- **改前端后只需重跑上面这条**——它**先构建再部署**，不会出现「以为部署了新前端、其实还是旧 `dist`」的坑。
+- **顺序是硬约束**：`pnpm run deploy` **先** → `terraform apply` **后**（域名绑定要指向一个**已存在**的 Worker；域名层归 Terraform，脚本与资产归 `wrangler`）。
+- **凭据只走环境变量**：`CLOUDFLARE_API_TOKEN`（Cloudflare API Token）**绝不入库**。
+- **业务代码零改动**：哈希路由 + `base: './'` + 恒绝对请求基址 + 后端 CORS 任意来源 ⇒ 同一份 `dist` 放到任意静态源都开箱可用。
+- 详见 `infra/README.md` 与 `docs/architecture/decisions/0019-控制台前端托管到CloudflareWorkers.md`。
+
 后端相关环境变量：
 
 | 变量 | 作用 | 默认 |

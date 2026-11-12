@@ -1,13 +1,13 @@
 ---
 prd: prds/console-cloudflare.md
-status: doing
+status: done
 ---
 # 任务：域名绑定与公网真机浏览器验收
 
 > 需求见 [[prds/console-cloudflare.md|控制台前端托管到 Cloudflare PRD]]，决策见 [[architecture/decisions/0019-控制台前端托管到CloudflareWorkers.md|ADR 0019]]。
 > 本任务把 `dev.sankabox.com` 绑到 Worker 上，并做**公网真机浏览器**全功能验收——这是本轮唯一一次「按真实生产形态」端到端点通的验证。
-> **本任务进行中（doing，2026-11-11 起）**——**域名绑定已完成、HTTP 层验收已过**；**剩余 = 用户浏览器真机验收八步**（须在用户侧真实浏览器执行）。详见文末「进展（2026-11-11）」。
-> **2026-11-12 追加**：**改名 `dev-sandbox` 后域名已重绑并复验 200**（`service` `forces replacement`、约 2 秒解绑窗口）——**验收状态不变，仍为 `doing`**；详见文末「改名后的域名重绑与复验（2026-11-12）」。
+> **本任务已收口（done，2026-11-12）**——**域名绑定、HTTP 层验收、用户浏览器真机八步全部通过**；收口轮**零代码改动、零提交**（只做文档核销与留档）。最终验收记录见文末「浏览器真机验收通过（2026-11-12，用户执行）」，全轮留档见 [[tasks/console-cloudflare/RESULTS.md|控制台前端托管到 Cloudflare 全轮收口留档]]。
+> **历史口径保留（不改写）**：2026-11-11 的「域名绑定已完成、HTTP 层验收已过」见文末「进展（2026-11-11）」；2026-11-12 的「改名 `dev-sandbox` 后域名已重绑并复验 200」见文末「改名后的域名重绑与复验（2026-11-12）」。
 
 ## 目标
 
@@ -67,14 +67,14 @@ resource "cloudflare_workers_custom_domain" "console" {
 
 ## 完成标准
 
-- [ ] `main.tf` 落 `cloudflare_workers_custom_domain`：`hostname = dev.sankabox.com`、`script_name` 指向 03 轮 Worker、`zone_id` 取自 zone data。
-- [ ] **部署顺序**：`wrangler deploy` **先**、`terraform apply` **后**（顺序在 `infra/README.md` 写明）。
-- [ ] DNS 路线已确认并留档（同账号自动建记录 / 不同账号改走 `routes` + 手工 record）。
-- [ ] `terraform state list` 与 `terraform plan` 核对：**恰为** zone data + `workers_custom_domain`，**无 `workers_script`**。
-- [ ] `https://dev.sankabox.com` **返回控制台页面**（不是 404、不是裸 JSON、不是 Cloudflare 错误页）。
-- [ ] 真机八步全部走通：引导面板 → 填地址令牌（先体检）→ 工作台 → **健康 ok、无降级文案** → 列表 / 新建（含镜像选择器）/ 详情 / 终端（连上敲命令、断连重连）/ 停止 / 删除 → 模板 → 文件注入 → 运行期文件面板 → **剪贴板可用**。
-- [ ] **无 CORS 预检失败**、**无混合内容告警**。
-- [ ] `infra/RESULTS.md` **证据留档**齐备（时间点、URL、逐条结果、指针）。
+- [x] `main.tf` 落 `cloudflare_workers_custom_domain`：`hostname = dev.sankabox.com`、**`service`** 指向 03 轮 Worker（**provider v5 的字段名**，语义同 v4 的 `script_name`）、`zone_id` 取自 zone data。
+- [x] **部署顺序**：`wrangler deploy` **先**、`terraform apply` **后**（顺序在 `infra/README.md` 第 3 节写明，且标为**硬约束**）。
+- [x] DNS 路线已确认并留档（同账号自动建记录 / 不同账号改走 `routes` + 手工 record）——**实测同账号**，由 `data "cloudflare_zone"` 的 `filter.account.id` 子过滤在 plan 期强制。
+- [x] `terraform state list` 与 `terraform plan` 核对：**恰为** zone data + `workers_custom_domain`，**无 `workers_script`**（改名与重绑后**复验仍恒为 2 项**）。
+- [x] `https://dev.sankabox.com` **返回控制台页面**（不是 404、不是裸 JSON、不是 Cloudflare 错误页）——**首探即 200**，内容与 `workers.dev` **byte 级一致**。
+- [x] 真机八步全部走通：引导面板 → 填地址令牌（先体检）→ 工作台 → **健康 ok、无降级文案** → 列表 / 新建（含镜像选择器）/ 详情 / 终端（连上敲命令、断连重连）/ 停止 / 删除 → 模板 → 文件注入 → 运行期文件面板 → **剪贴板可用**——**2026-11-12 由用户在真实浏览器逐条执行、全部通过**。
+- [x] **无 CORS 预检失败**、**无混合内容告警**（用户浏览器控制台观察）。
+- [x] **证据留档齐备**（时间点、URL、逐条结果、指针）——**留档落在 `docs/tasks/console-cloudflare/RESULTS.md`**（证据归文档库；`infra/README.md` 只留部署与改名记录）。**偏离说明**：施工单原写 `infra/RESULTS.md`，实际**未在 `infra/` 建该文件**——`infra/` 是 IaC 代码目录，不放验收叙事。
 
 ## 依赖
 
@@ -149,4 +149,43 @@ resource "cloudflare_workers_custom_domain" "console" {
 | 旧 Worker | **`sandbox-console-web` 已删**（旧地址 → **404**、Cloudflare **error code 1042**） |
 
 - **改名细节**（状态对象前缀迁移、**S3 原生锁开启**、提交 `04de972`）见 [[tasks/console-cloudflare/03-cloudflare-workers-deploy.md|任务 03]] 文末「改名（2026-11-12）」。
-- **验收状态不变**：**本任务仍为 `doing`**——**剩余 = 用户浏览器真机验收八步**（须在用户侧真实浏览器执行），清单见上文「剩余 = 用户浏览器真机验收八步」。
+- **验收状态不变**：**本任务仍为 `doing`**——**剩余 = 用户浏览器真机验收八步**（须在用户侧真实浏览器执行），清单见上文「剩余 = 用户浏览器真机验收八步」。**（此处为 2026-11-12 当时的记录；**已由下文「浏览器真机验收通过（2026-11-12，用户执行）」收口**——本任务现为 `done`。）**
+
+---
+
+## 浏览器真机验收通过（2026-11-12，用户执行）
+
+> **本节为收口记，不改写上文 2026-11-11 的绑定与验收记录。** **执行方 = 用户**（真实浏览器 + 真后端）；**本轮零代码改动、零提交**（只做文档核销与留档）。
+
+### 八步逐条结果
+
+| # | 步骤 | 结果 |
+|---|---|---|
+| 1 | **引导面板** | **通过**——未配置态出现（后端地址 + 令牌输入） |
+| 2 | **填地址与令牌**（`https://sandbox-api.sankabox.com` + 令牌，保存并连接，先做健康自检） | **通过** |
+| 3 | **工作台** | **通过**——侧栏与工作区正常渲染 |
+| 4 | **健康自检 `ok`，无降级文案** | **通过**——健康态为 `ok`，界面**无「前端产物未挂载」文案**（新前端不读 `console_mounted`） |
+| 5 | **沙箱生命周期**（列表 / 新建含镜像选择器 / 详情 / 网页终端**连上敲命令 → 断开 → 重连** / 停止 / 删除） | **通过** |
+| 6 | **模板** | **通过**——模板区可用 |
+| 7 | **文件注入** | **通过**——创建时注入声明可用 |
+| 8 | **运行期文件面板** | **通过**——浏览 / 下载 / 上传可用 |
+| 9 | **终端剪贴板**（`Ctrl+Shift+C` / `Ctrl+Shift+V`） | **通过**（https 安全上下文成立） |
+
+### 负面观察项
+
+| 项 | 结果 |
+|---|---|
+| **CORS 预检失败** | **无**——浏览器控制台未见 preflight 报错 |
+| **混合内容告警** | **无**——https 页面未加载 http 资源；后端为 https，终端 WS 走 wss |
+
+### 收口结论
+
+- **本任务状态：doing → done（2026-11-12）**——**唯一开口（用户浏览器真机八步）已闭合**，**全轮 01~05 全部 done**。
+- **代码改动：零**；**提交：零**——本轮只做真机验证与文档收口。
+- **留档指针**：全轮收口留档见 [[tasks/console-cloudflare/RESULTS.md|控制台前端托管到 Cloudflare 全轮收口留档]]（第五节「真机验收记录」）；PRD 核销见 [[prds/console-cloudflare.md|控制台前端托管到 Cloudflare PRD]] 的「验收标准」。
+
+### 遗留（不阻断）
+
+- **开发机出口偶发丢包**（12 探 11 中 1 超时 + 1 次 TLS `unexpected eof`）——**已判定为环境现象、非部署缺陷**；**用户侧真机浏览器八步全过**进一步证伪「部署缺陷」。
+- **宿主后端仍跑旧版**——**不阻断**（新前端不读 `console_mounted`）；**择机更新到纯 API 版**后，**旧 web 形态的根路径页面随之下线**（后端 `GET /` 与 `/assets/*` 一律 404），**更新前需确认无人在用旧入口**。
+- **桌面端旧安装包内嵌旧前端**——状态灯会因 `console_mounted` 缺失 / =false 显示降级文案；**代码修复已在本轮 01 落库，无需改码**，**重新打包即愈**（跨机动作须先 push 分支，见 [[current-state.md|当前状态]] 的 TODO 段）。

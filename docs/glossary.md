@@ -54,6 +54,11 @@
 - **终端会话标签** — 工作区终端标签条上的一个标签，直接对应终端会话表里的一条会话（即容器内一个带真实终端的 shell）；点标签即附着到该会话，标签尾的关闭按钮是关闭会话而非只收起面板。
 - **设计令牌** — 集中定义的视觉变量（颜色、字体、圆角、阴影），以 `--app-*` 形式写在样式底座里，再由 Tailwind 映射成 `--color-*` 等工具类；组件只引用令牌，不写死色值。
 
+### 控制台前端托管（Cloudflare 轮）
+- **控制台前端托管** — 网页控制台前端**构建产物的托管位置**——**当前 = Cloudflare Workers + 静态资产**（**不是 Pages**），自定义域名 **`dev.sankabox.com`**；后端**不再托管前端**（`GET /` 与 `/assets/*` 一律 **404**）。载体 = **Workers**、域名绑定 = **Terraform**（**单一所有者原则**：脚本与静态资产归 `wrangler`，Terraform 只管域名层），部署顺序 **`wrangler deploy` 先 → `terraform apply` 后**（硬约束）。与「后端纯 API 化」**成对使用**（见 [[architecture/decisions/0019-控制台前端托管到CloudflareWorkers.md|ADR 0019 控制台前端托管到 Cloudflare Workers]]）。
+- **Workers 静态资产** — Cloudflare Workers 的 **`[assets]` 机制**：`wrangler.toml` 的 `[assets]` 绑定把构建产物目录（`apps/web/frontend/dist`）作为静态资源服务，**资产请求由平台直出**（`run_worker_first = false` ⇒ 资产请求**不经** Worker 函数），**Worker 只兜非资产路径**（本项目的极简 ESM passthrough 对非资产路径返回 **404**；`not_found_handling = none`——前端用**哈希路由**，不需要服务端回退规则）。**脚本与资产归 `wrangler`**，Terraform **不声明 `workers_script`**（见 [[architecture/decisions/0019-控制台前端托管到CloudflareWorkers.md|ADR 0019]] 第 1 / 4 节）。
+- **后端纯 API 化** — 控制台服务的**形态口径**：**只提供 `/api`**，**不再托管任何静态资源**（`StaticFiles` 挂载链、`SANDBOX_CONSOLE_DIST` 目录发现、`_mount_console` 等能力链全部删除）；`GET /` 与 `GET /assets/*` 一律 **404**（且响应体**不含** `<html`）；**`/api/health` 无 `console_mounted` 字段**（响应字段集合恰为 `{status, version, data_root_configured}`）——**破坏性变更、无兼容层**（不双写、不保留旧字段、不按客户端版本返回）。**推论**：健康自检**只反映后端自身**，前端可用性由静态托管侧独立判断（见 [[architecture/decisions/0019-控制台前端托管到CloudflareWorkers.md|ADR 0019]] 第 2 节）。
+
 ### 控制台模板轮
 - **控制台模板轮** — 路线图三期之后的一次独立交付轮次，做两件事：把通用工具装进平台基础镜像（0.3.0），以及在网页控制台上新增「启动模板」。本轮不叫「三期」——「三期」现指桌面端打包轮（见 [[architecture/decisions/0001-项目定位与三期路线.md|ADR 0001 修订行（2026-11-03）]]），两者不得混用；原路线图里「三期 = URL 代理与快照」的口径已随该修订退役（见 [[architecture/decisions/0001-项目定位与三期路线.md|0001 项目定位与三期路线]]）。
 - **启动模板** — 保存下来的一套沙箱创建配置快照，含镜像、挂载、文件注入、环境变量、工作目录、网络、命令七项（全选填）。控制台私有能力，数据存服务端平台数据根的模板目录；**应用语义 = 出现的字段整体替换、缺失的字段保持现状**；**模板声明原样透传**（前端不做任何占位符替换）与宿主路径 `~` 展开是网页创建专属口径，命令行不承接模板（见 [[architecture/decisions/0010-启动模板收敛为控制台私有功能.md|0010 启动模板收敛为控制台私有功能]]）。

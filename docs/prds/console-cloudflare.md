@@ -4,6 +4,7 @@
 > 二期需求见 [[prds/phase2-console.md]]，三期需求见 [[prds/phase3-desktop.md]]，运行期文件传输轮见 [[prds/runtime-file-transfer.md]]
 > 本轮任务集见 [[tasks/console-cloudflare/README.md|控制台前端托管到 Cloudflare 任务集]]
 > 决策见 [[architecture/decisions/0019-控制台前端托管到CloudflareWorkers.md|ADR 0019]]（**已接受**）
+> **核销状态（2026-11-12）：验收标准 27 条已逐条核销完毕（27 / 27，证据见下文「验收标准」）**——全轮 01~05 全部 done；全轮留档见 [[tasks/console-cloudflare/RESULTS.md|控制台前端托管到 Cloudflare 全轮收口留档]]。
 
 ## 背景
 
@@ -101,50 +102,55 @@
 
 ## 验收标准
 
+> **核销状态（2026-11-12）：全部逐条核销完毕。** 每条均挂证据；证据分四类——**门禁数字**（01 轮实测）、**部署实证**（03 / 04 轮实测）、**用户验收**（2026-11-12 用户真实浏览器八步全过）、**全轮留档**（[[tasks/console-cloudflare/RESULTS.md|控制台前端托管到 Cloudflare 全轮收口留档]]）。
+> **勾选总数 = 27 条（27 / 27）**；**与原始口径有偏离的条目已按实际核销并注明**（唯一一处：**Terraform 与 Cloudflare 第 3 条**的远端状态后端——实际远超原占位口径，属**增强**）。
+
 ### 后端
 
-- [ ] 全仓 grep `StaticFiles` / `app.mount` / `SANDBOX_CONSOLE_DIST` / `console_mounted` / `BACKEND_DIR` / `FRONTEND_DIST_DIR` / `_mount_console` **零命中**（后端源码与后端测试目录）。
-- [ ] `GET /api/health` 的响应字段集合**恰为** `{status, version, data_root_configured}`（用 `set(body) == {...}` 断言，不逐字段断言）。
-- [ ] `GET /` 返回 **404** 且响应体**不含** `<html`；`GET /assets/*` 返回 **404**。
-- [ ] 后端测试目录中 `SANDBOX_CONSOLE_DIST` **零命中**（原 27 处 `monkeypatch.setenv` 全部删除）。
-- [ ] 令牌闸**行为不变**：`/api` 无令牌仍 **401**（原文案不变）；非 `/api` 路径不拦令牌闸、但 `/` 本身 **404**（不是 401）。
-- [ ] 后端 `pytest` **全绿** + `ruff` **rc=0**（记录新的 passed 数；基线 330）。
+- [x] 全仓 grep `StaticFiles` / `app.mount` / `SANDBOX_CONSOLE_DIST` / `console_mounted` / `BACKEND_DIR` / `FRONTEND_DIST_DIR` / `_mount_console` **零命中**（后端源码与后端测试目录）——**门禁**：01 轮审查一轮**零 Critical**、**6 条 Warning 全部修复后合入**；**27 处** `SANDBOX_CONSOLE_DIST` 注入全删（分布 `02×2` / `03×8` / `files×2` / `templates×6` / `images_proxy×1` / `forwards×5` / `terminal_sessions×3`）；证据见 [[tasks/console-cloudflare/01-backend-api-only-and-acceptance-migration.md|任务 01]] 文末「进展（收口）」。
+- [x] `GET /api/health` 的响应字段集合**恰为** `{status, version, data_root_configured}`（用 `set(body) == {...}` 断言，不逐字段断言）——**门禁**：服务端 **332 passed** + `ruff` **rc=0**。
+- [x] `GET /` 返回 **404** 且响应体**不含** `<html`；`GET /assets/*` 返回 **404**——**门禁**：新增用例钉死（**+2 passed**），并由 `13-static-frontend.spec.ts` 做**负向断言 + 正向对照**双保险。
+- [x] 后端测试目录中 `SANDBOX_CONSOLE_DIST` **零命中**（原 27 处 `monkeypatch.setenv` 全部删除）——同上，**grep 全查零漏网**。
+- [x] 令牌闸**行为不变**：`/api` 无令牌仍 **401**（原文案不变）；非 `/api` 路径不拦令牌闸、但 `/` 本身 **404**（不是 401）——**门禁**：原 `test_static_assets_are_not_blocked_by_auth` 用例改写为「不带 `Authorization` 请求 `/` → 404」。
+- [x] 后端 `pytest` **全绿** + `ruff` **rc=0**（记录新的 passed 数；基线 330）——**门禁**：**332 passed**（基线 330 → **+2**）+ `ruff` **rc=0**。
 
 ### 前端
 
-- [ ] `src/` 目录 grep `console_mounted` **零命中**；**零构建期注入**（构建产物不写死后端地址）。
-- [ ] `typecheck` **双零错**（web 与桌面两套）+ `vitest` **全绿**（记录新的 passed 数；基线 664）+ `build` 成功。
-- [ ] 桌面端 `cargo check` **0 警告** + `cargo test` **47** 不回归。
+- [x] `src/` 目录 grep `console_mounted` **零命中**；**零构建期注入**（构建产物不写死后端地址）——**门禁**：前端删降级分支（`HealthState` 无 `'degraded'`、`Workbench.tsx` 无降级分支、`Sidebar.tsx` 样式分支零改动）+ mocks 全部同步；**零构建期注入**（请求基址恒从连接配置推导，见 ADR 0015 决策 D）。
+- [x] `typecheck` **双零错**（web 与桌面两套）+ `vitest` **全绿**（记录新的 passed 数；基线 664）+ `build` 成功——**门禁**：vitest **665 passed**（基线 664 → **+1** 新用例）、typecheck **双零错**、build **成功**。
+- [x] 桌面端 `cargo check` **0 警告** + `cargo test` **47** 不回归——**门禁**：`cargo test` **47 passed**（**本轮桌面端零改动**，零改动确认）；`cargo check` 0 警告在 01 轮门禁表内沿用既有结论（本轮无桌面端代码变更，无新增警告面）。
 
 ### 验收套件
 
-- [ ] 静态源绑 **`127.0.0.1`**（且 `--strictPort`）；**页面 origin ≠ 后端 origin**（断言写进 `global-setup` 交叉校验，不等即抛错）。
-- [ ] `06-boundary` 的单端口用例改为**负向断言 + 正向对照**。
-- [ ] 新增 `13-static-frontend.spec.ts` **2 条**。
-- [ ] `10-auth-connection.spec.ts` **10 条全过**且**断言零改动**。
-- [ ] e2e 全量 **53 passed / 0 failed / 0 flaky / 0 skipped**，**连续两轮全绿**（记录耗时；基线 51）。
+- [x] 静态源绑 **`127.0.0.1`**（且 `--strictPort`）；**页面 origin ≠ 后端 origin**（断言写进 `global-setup` 交叉校验，不等即抛错）——**门禁**：`global-setup` 交叉断言「静态源实际端口 == 配置端口」+「`storageState` origin == `baseURL` origin」；**`vite preview` 冒烟一次通过**（回退方案未启用）。
+- [x] `06-boundary` 的单端口用例改为**负向断言 + 正向对照**——**门禁**：后端根 404 且不含 `<html` + 后端 `/assets/*` 404 + 静态源根 200 含控制台页面标识（正向对照）+ `gotoDetail` 后页面照常进详情。
+- [x] 新增 `13-static-frontend.spec.ts` **2 条**——**门禁**：用例数 51 → **53**（+2）。
+- [x] `10-auth-connection.spec.ts` **10 条全过**且**断言零改动**——**门禁**：**代码零改动**（`page.goto('/')` 的相对路径语义自动变为静态源根），10 条全过。
+- [x] e2e 全量 **53 passed / 0 failed / 0 flaky / 0 skipped**，**连续两轮全绿**（记录耗时；基线 51）——**门禁**：**53 passed / 0 failed / 0 flaky / 0 skipped**，**连续四轮全绿**（首轮两轮各 **10.1m**；审查修复轮复跑两轮 **603s / 602s**）。
 
 ### Terraform 与 Cloudflare
 
-- [ ] `terraform fmt -check -recursive` **无输出** + `terraform validate` 通过。
-- [ ] 资源清单**恰为** zone data + `workers_custom_domain`，**无 `workers_script`**。
-- [ ] `backend "s3"` 配置齐全、值全部是**占位**；`.terraform.lock.hcl` **入库**；`*.tfvars` / `*.tfstate` **未入库**。**远端状态后端 = 真实 AWS S3**（`ap-southeast-1`、**不设 `endpoint`**、**不设 `use_path_style`**、**不设四个 `skip_*`**）；**桶归属账号与本机凭据账号不一致（403）**，需先拍板（见 [[tasks/console-cloudflare/02-terraform-base.md|任务 02]] 文末「增量（2026-11-11）」）。
-- [ ] `wrangler deploy` 成功。
-- [ ] `https://dev.sankabox.com` **返回控制台页面**。
+- [x] `terraform fmt -check -recursive` **无输出** + `terraform validate` 通过——**门禁**：02 轮门禁全绿（审查修复轮复跑仍全绿）；03 / 04 轮（改名与重绑）复跑**仍无输出 + 仍通过**。
+- [x] 资源清单**恰为** zone data + `workers_custom_domain`，**无 `workers_script`**——**部署实证**：`terraform state list` **恒为 2 项**（含 2026-11-12 改名重绑后复验），**无 `workers_script`** ⇒ **单一所有者原则守住**。
+- [x] `backend "s3"` 配置齐全、值全部是**占位**；`.terraform.lock.hcl` **入库**；`*.tfvars` / `*.tfstate` **未入库**。**远端状态后端 = 真实 AWS S3**（`ap-southeast-1`、**不设 `endpoint`**、**不设 `use_path_style`**、**不设四个 `skip_*`**）；**桶归属账号与本机凭据账号不一致（403）**，需先拍板（见 [[tasks/console-cloudflare/02-terraform-base.md|任务 02]] 文末「增量（2026-11-11）」）。
+  - **按实际核销（超出原占位口径，属增强）**：① **真实 `backend.hcl` 已落本机、**不入库**（`.gitignore` 已忽略，**零凭据入库**）；② 远端状态后端**已是真实 AWS S3**（**不再用 MinIO**：删 `endpoint` / `use_path_style` / 五个 `skip_*`，MinIO 变体留注释块）；③ **跨账号 403 已解除**——走**方案 c**（桶**同账号** IAM 用户 `TerraformUser` 的 AK/SK 经 `infra/.env` 注入，**未入库、未回显**）⇒ 真实 `init` **成功**；④ **S3 原生锁已开**（`backend.hcl` 设 `use_lockfile = true`，锁对象 `dev-sandbox/terraform.tfstate.tflock` **实测生成并正常释放**）——**这一条超出原口径，属增强**。
+- [x] `wrangler deploy` 成功——**部署实证**：**成功**——Worker **`dev-sandbox`**、地址 **`https://dev-sandbox.nucbox.workers.dev`**、**123 资产**、版本 id **`9e12fa39-d92b-48ed-8e8a-ea6978fbb4f7`**；`deploy` 脚本**先 build 再 deploy，一条命令**（避免「以为部署了新前端、其实还是旧 `dist`」）。
+- [x] `https://dev.sankabox.com` **返回控制台页面**——**部署实证**：**首探即 200**（证书即时签发），body 含 `page-layout-title` 与 `assets/index-*.js`，与 `workers.dev` 内容 **byte 级一致**（同一 sha256）；资产直出 **200**、非资产路径 **404**。
 
 ### 真机浏览器验收
 
-- [ ] 从 CF 域名连 `https://sandbox-api.sankabox.com`，全功能可用：引导面板 → 填地址与令牌 → 工作台 → 健康 `ok` 且**无降级文案** → 列表 / 新建（含镜像选择器）/ 详情 / 网页终端（连上、敲命令、断开重连）/ 停止 / 删除 / 模板 / 文件注入 / 运行期文件面板 → 剪贴板可用。
-- [ ] **无 CORS 预检失败**、**无混合内容告警**。
+- [x] 从 CF 域名连 `https://sandbox-api.sankabox.com`，全功能可用：引导面板 → 填地址与令牌 → 工作台 → 健康 `ok` 且**无降级文案** → 列表 / 新建（含镜像选择器）/ 详情 / 网页终端（连上、敲命令、断开重连）/ 停止 / 删除 / 模板 / 文件注入 / 运行期文件面板 → 剪贴板可用。
+  - **用户验收（2026-11-12）**：**用户于真实浏览器逐条执行八步、全部通过**（引导面板 → 填 `https://sandbox-api.sankabox.com` 与令牌 → 工作台 → 健康 `ok` **无降级文案** → 沙箱生命周期（含终端**连上敲命令、断开重连**）/ 停止 / 删除 → 模板 → 文件注入 → 运行期文件面板 → 剪贴板 `Ctrl+Shift+C` / `Ctrl+Shift+V` 可用）。证据见 [[tasks/console-cloudflare/04-domain-and-live-acceptance.md|任务 04]] 文末「浏览器真机验收通过（2026-11-12，用户执行）」。
+- [x] **无 CORS 预检失败**、**无混合内容告警**——**用户验收（2026-11-12）**：浏览器控制台**无 preflight 报错**、**无混合内容告警**（https 页面不加载 http 资源；后端为 https，终端 WS 走 wss）。
 
 ### 文档与治理
 
-- [ ] **ADR 0019 落档**（已接受）并**单向取代 ADR 0013 第 6 节**；[[architecture/decisions/README.md|决策清单]] 同步（新增 0019 行 + 0013 行加标注）。
-- [ ] [[current-state.md|看板]] 同步（活跃需求 + 任务看板 + TODO）。
-- [ ] [[glossary.md|词汇表]] 补三条词条（控制台前端托管 / Workers 静态资产 / 后端纯 API 化）。
-- [ ] [[prds/README.md|PRD 清单]] 与 [[tasks/README.md|任务清单]] 同步。
-- [ ] 代码区文档同步：仓库根 `README.md`、`apps/web/backend/API.md`、`apps/web/frontend/README.md`、`apps/web/backend/sandbox-console.service`、`apps/web/frontend/tests/README.md`。
-- [ ] **历史不改写清单**：[[architecture/decisions/0013-三期定位改定与认证重启.md|ADR 0013]] 本体、[[prds/phase2-console.md|二期 PRD]]、[[tasks/phase2-console/01-service-core-api.md|二期任务 01]] **保持原样**。
+- [x] **ADR 0019 落档**（已接受）并**单向取代 ADR 0013 第 6 节**；[[architecture/decisions/README.md|决策清单]] 同步（新增 0019 行 + 0013 行加标注）——**已核销**：ADR 0019 于**立项日（2026-11-11）**落档、状态**已接受**；取代关系**只写在 ADR 0019 与决策清单**；**ADR 0013 本体历史表述不改写**。
+- [x] [[current-state.md|看板]] 同步（活跃需求 + 任务看板 + TODO）——**已核销**：2026-11-12 同步为「01~05 全部 done、用户验收通过」口径，看板含 **RESULTS 指针**。
+- [x] [[glossary.md|词汇表]] 补三条词条（控制台前端托管 / Workers 静态资产 / 后端纯 API 化）——**已核销**：三条词条已入册。
+- [x] [[prds/README.md|PRD 清单]] 与 [[tasks/README.md|任务清单]] 同步——**已核销**：两条清单已补本轮条目与「01~05 全部 done」状态。
+- [x] 代码区文档同步：仓库根 `README.md`、`apps/web/backend/API.md`、`apps/web/frontend/README.md`、`apps/web/backend/sandbox-console.service`、`apps/web/frontend/tests/README.md`——**已核销**：前四项在 **01 轮**同步；根 `README.md` 的 **`infra/` 目录行**与**前端部署命令口径**在 **05 轮**补齐；`apps/web/frontend/README.md` 的 **CF 形态与 `pnpm run deploy` 口径**在 **05 轮**补齐。
+- [x] **历史不改写清单**：[[architecture/decisions/0013-三期定位改定与认证重启.md|ADR 0013]] 本体、[[prds/phase2-console.md|二期 PRD]]、[[tasks/phase2-console/01-service-core-api.md|二期任务 01]] **保持原样**——**已核销**：三者**零改动**（ADR 0013 仅**追加指向性标注**，**历史表述一字未改**）；ADR 0018 及其任务集**本轮零改动**。
 
 ## 相关文档
 

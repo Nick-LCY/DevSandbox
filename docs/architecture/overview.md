@@ -52,7 +52,7 @@
 ## 核心模块
 
 - `控制面` — 编排沙箱的创建、关闭、删除；一期实现为可复用服务模块，命令行只是薄壳，二期对外暴露 FastAPI 接口。
-- `控制台服务（二期）` — 把控制面核心包常驻为 FastAPI 服务并提供网页控制台（沙箱管理、网页终端、代理设置），不做认证，只绑回环或内网。**（三期起改为访问令牌保护，`/api` 全量受保护；该口径由 [[architecture/decisions/0013-三期定位改定与认证重启.md|ADR 0013]] 推翻 0009 的裁剪。连接层后端侧已落地（[[tasks/phase3-desktop/02-backend-token-and-cors.md|三期任务 02]]），前端侧未改造前网页控制台拿不到数据，须与 03 同批发布；**现状：02 与 03 均已落地，同批发布条件具备（03 已于 2026-11-04 闭合：远端形态真机实测通过，本机形态按偏离记录闭合）。** **默认以非 root 用户运行（2026-11-06：仓库 systemd 单元 `User=sankabox`，root 直跑仍受支持但降为非默认路径，见 [[architecture/decisions/0016-控制台默认运行用户改为非root.md|ADR 0016]]）。**
+- `控制台服务（二期）` — 把控制面核心包常驻为 FastAPI 服务并提供网页控制台（沙箱管理、网页终端、代理设置），不做认证，只绑回环或内网。**（三期起改为访问令牌保护，`/api` 全量受保护；该口径由 [[architecture/decisions/0013-三期定位改定与认证重启.md|ADR 0013]] 推翻 0009 的裁剪。连接层后端侧已落地（[[tasks/phase3-desktop/02-backend-token-and-cors.md|三期任务 02]]），前端侧未改造前网页控制台拿不到数据，须与 03 同批发布；**现状：02 与 03 均已落地，同批发布条件具备（03 已于 2026-11-04 闭合：远端形态真机实测通过，本机形态按偏离记录闭合）。** **默认以非 root 用户运行（2026-11-06：仓库 systemd 单元 `User=sankabox`，root 直跑仍受支持但降为非默认路径，见 [[architecture/decisions/0016-控制台默认运行用户改为非root.md|ADR 0016]]）。** **纯 API 服务：不再托管前端（前端托管于 Cloudflare Workers，见 ADR 0019）。**
 - `守护进程管理` — 在宿主机上创建沙箱专属用户、分配子 UID/GID 段、拉起 systemd 用户级免 root 守护进程并配置 linger。
 - `镜像构建与分发` — 平台基础镜像的构建与版本管理（官方默认沙箱镜像已退役，沙箱镜像由创建者显式指定）；外部镜像统一经统一镜像代理拉取，代理拉不到时才回退宿主本地副本注入。
 - `挂载装配` — 按契约挂载套接字，并原样应用用户声明的挂载；不创建、不修改、不清理用户挂载的宿主机目录。
@@ -90,5 +90,6 @@
 | [[architecture/decisions/0016-控制台默认运行用户改为非root.md\|0016 控制台默认运行用户改为非 root]] | 控制台默认以非 root 用户（`sankabox`）运行：免密 sudo 覆盖两条通道、数据根属主先迁后改单元、端口 > 1024、部署产物可读可执行；root 直跑仍受支持但降为非默认路径（`~` 展开回 `/root` → 400 只在自行改回 root 时触发）；**非 root 默认不等于降权**（宿主操作经免密 sudo，实际权限 ≈ root），收敛权限须收窄 sudoers 规则 |
 | [[architecture/decisions/0017-移除终端空闲回收.md\|0017 移除终端空闲回收]] | 终端会话的空闲回收机制**整体移除**（后台巡检线程、「距上次附着 ≥30 分钟即自动关闭」的判据、`reclaimed` 退出原因与 `SANDBOX_TERMINAL_IDLE_TIMEOUT` 环境变量一并下线）；会话只有三种用户可感知的结束方式——用户主动删除、容器内进程自己退出、沙箱删除（另有服务退出兜底）；服务重启作废与启动清扫保留、名额语义不变（已退出仍占、需手动移除），断开标签页后会话后台存活、重开可接回同一 shell；名额积压风险已登记待办 |
 | [[architecture/decisions/0018-运行期文件传输机制选型.md\|0018 运行期文件传输机制选型]] | 运行期文件传输主通道 = `docker exec -i` + 容器内 `sh`/`cat`，复用端口转发的字节泵资产（**零新增第三方依赖**）；上传走「同目录临时名 → `mv` 原子替换」，下载走 `cat` 流出 + **前置分层探测**（FIFO 会挂死 exec），目录列表用 `find` 单次 exec 产出 **NUL 分隔**记录；**大小不限**但**受部署链反代读超时约束**（本机 Traefik **v3 无 service 级 `respondingTimeouts`** ⇒ 已以**入口点级** `websecure` `readTimeout=0` 落地，infra 提交 `529ac29`）；含 10 条被实测推翻 / 精化的设计口径（**06 轮复核通过，无口径变更**） |
+| [[architecture/decisions/0019-控制台前端托管到CloudflareWorkers.md\|0019 控制台前端托管到 Cloudflare Workers]] | 前端托管到 **Cloudflare Workers + 静态资产**（**不是 Pages**），域名 `dev.sankabox.com`；后端**纯 API 化**（只提供 `/api`，`/api/health` 删 `console_mounted`，**破坏性变更、无兼容层**）；验收套件迁**独立本地静态源**（页面 origin ≠ 后端 origin，与生产跨源同构）；**单一所有者原则**——Terraform 只管域名层、脚本与资产归 `wrangler`；顺序 `wrangler deploy` → `terraform apply`；**单向取代 0013 第 6 节**（历史表述不改写）。**2026-11-12 全轮收口**：用户真实浏览器八步验收全过，见 [[tasks/console-cloudflare/RESULTS.md\|全轮收口留档]] |
 
 决策背景与代价见 [[architecture/decisions/README.md|架构决策记录清单]]；术语统一见 [[glossary.md|词汇表]]。

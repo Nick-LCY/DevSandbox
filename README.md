@@ -17,6 +17,7 @@
 | `apps/web/e2e/` | 端到端验收基建：静态页可达冒烟 + 健康检查门禁 + 契约断言 |
 | `apps/cli/sandboxctl.py` | 命令行薄壳：只做参数解析、调用核心模块、打印结果 |
 | `base-image/` | 平台基础镜像（Dockerfile、免 root 引导脚本 `rootless/`、判定脚本 `verify.sh` / `verify-rootless.sh`） |
+| `infra/` | Cloudflare 基础设施：Terraform 域名层（`dev.sankabox.com` 绑定）+ Worker 部署配置（`infra/worker/`：`wrangler.toml` 绑前端 `dist`、极简 passthrough 脚本）；远端状态存真实 AWS S3 |
 | `docs/` | 需求、任务、架构与约定文档 |
 
 **目录变更**
@@ -143,6 +144,30 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/api/prox
 | 缓存只增不减 | **不提供清理代理缓存的接口**，页面只展示占用大小 |
 
 > `POST /api/proxy/restart` 能打断正在拉镜像的沙箱（代理不可达时创建 / 启动直接失败）。三期起全部 `/api` 都受令牌保护，它不再是「未认证的特权端点」；但令牌是单一凭据。**回环这一跳没有网络边界保护**（本机任意进程都能连上端口），但接口仍要求令牌；**令牌是唯一准入门槛**。
+
+### 前端部署到 Cloudflare（`infra/`）
+
+网页控制台的**前端产物**托管在 **Cloudflare Workers + 静态资产**上（**不是 Pages**），自定义域名 **`dev.sankabox.com`**；**后端只提供 `/api`**（根路径 `/` 返回 **404**）。部署链是**手动**的，**顺序是硬约束**：
+
+```bash
+# 1) 先部署 Worker（内含前端构建）：deploy 脚本 = 先 build 再 wrangler deploy
+cd infra/worker && pnpm run deploy
+
+# 2) 后绑定自定义域名（Terraform）：远端状态在真实 AWS S3，必须显式传 backend 配置
+cd infra && terraform init -reconfigure -backend-config=backend.hcl
+cd infra && terraform apply
+```
+
+| 项 | 说明 |
+|---|---|
+| **顺序（硬约束）** | **`wrangler deploy` 先 → `terraform apply` 后**——域名资源要指向一个**已存在**的 Worker；**反序**会失败或指向不存在的 Worker |
+| **单一所有者** | Terraform **只管域名层**（zone data + `workers_custom_domain`），**不声明 `workers_script`**；脚本与静态资产归 `wrangler` |
+| **凭据** | Cloudflare API Token 与 AWS 凭据**只走环境变量**（经 `infra/.env` 注入，**不入库**）：`CLOUDFLARE_API_TOKEN` / `TF_VAR_cloudflare_api_token` / `TF_VAR_cloudflare_account_id` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` |
+| **远端状态** | **真实 AWS S3**（region `ap-southeast-1`，**AWS 默认端点**，**不再用 MinIO**）；状态对象 `dev-sandbox/terraform.tfstate`，**S3 原生锁已开**（`use_lockfile = true`，锁对象 `.tflock`） |
+| **改前端时** | **只需重跑第 1 步**；`terraform apply` **不重传静态资产** |
+| **详见** | `infra/README.md`（目录说明 / 部署顺序 / 凭据注入 / 状态对象与原生锁）；决策见 `docs/architecture/decisions/0019-控制台前端托管到CloudflareWorkers.md` |
+
+> **与后端部署互不依赖**：后端只提供 `/api`，前端产物与后端进程**各自独立发布**——改前端不必重启后端。
 
 ## 运行前提
 
