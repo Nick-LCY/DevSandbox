@@ -188,4 +188,6 @@ resource "cloudflare_workers_custom_domain" "console" {
 
 - **开发机出口偶发丢包**（12 探 11 中 1 超时 + 1 次 TLS `unexpected eof`）——**已判定为环境现象、非部署缺陷**；**用户侧真机浏览器八步全过**进一步证伪「部署缺陷」。
 - **宿主后端仍跑旧版**——**不阻断**（新前端不读 `console_mounted`）；**择机更新到纯 API 版**后，**旧 web 形态的根路径页面随之下线**（后端 `GET /` 与 `/assets/*` 一律 404），**更新前需确认无人在用旧入口**。
+  - **已解决（2026-11-12）**：宿主已更新至 **`c45192b`** 纯 API 版（05849be → c45192b），**验证全绿**——`/api/health` 字段恰为 `{data_root_configured, status, version}`、`GET /` 404、无令牌 401、`/api/sandboxes` 200、外部 `https://sandbox-api.sankabox.com` 401/200 正常、`https://dev.sankabox.com` 200；**零影响落地**（重启时运行中沙箱容器 0 个，启动清扫仅清 2 条陈旧会话记录 + 2 个遗留转发容器，数据根未动）。上文原表述**不改写**。
 - **桌面端旧安装包内嵌旧前端**——状态灯会因 `console_mounted` 缺失 / =false 显示降级文案；**代码修复已在本轮 01 落库，无需改码**，**重新打包即愈**（跨机动作须先 push 分支，见 [[current-state.md|当前状态]] 的 TODO 段）。
+  - **条件就绪（2026-11-12）**：用户**已完成 push**（`origin/main` 已含全部提交）⇒ **Windows 机器拉取后重打包即可修复状态灯**。
