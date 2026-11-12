@@ -16,7 +16,7 @@ cloudflare_zone_name = "sankabox.com"
 
 # 目标 Worker 名——须与 infra/worker/wrangler.toml 的 name 一致。
 # ⚠️ 与 variables.tf 的默认值一致，改动请同步。
-worker_name = "sandbox-console-web"
+worker_name = "dev-sandbox"
 
 # 绑定的自定义域名。
 # ⚠️ 与 variables.tf 的默认值一致，改动请同步。

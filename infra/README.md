@@ -28,7 +28,7 @@
 | `variables.tf` | 全部输入变量声明（`cloudflare_api_token` 标 `sensitive = true`，无 default） |
 | `main.tf` | **唯一所有者原则红线注释** + `data "cloudflare_zone"` + `resource "cloudflare_workers_custom_domain"`（**不含 `cloudflare_workers_script`**） |
 | `outputs.tf` | 输出 worker 名 / 绑定域名 / zone id / zone 名 |
-| `backend.hcl.example` | 远端状态后端模板（**AWS S3 原生**：`bucket` / `key` / `region` / `workspace_key_prefix`；**不设** `endpoint` / `use_path_style` / 五个 `skip_*`——文末留了一段**注释掉的 MinIO 变体块**备查） |
+| `backend.hcl.example` | 远端状态后端模板（**AWS S3 原生**：`bucket` / `key` / `region` / `workspace_key_prefix` / `use_lockfile`（S3 原生锁）；**不设** `endpoint` / `use_path_style` / 五个 `skip_*`——文末留了一段**注释掉的 MinIO 变体块**备查） |
 | `terraform.tfvars.example` | 非敏感变量取值样例（真实 tfvars 不入库） |
 | `backend.hcl` | **不入库**（`.gitignore` 已忽略）——真实 S3 桶名 / 键 / 区域等值；凭据不在其中 |
 | `terraform.tfvars` | **不入库**（`.gitignore` 已忽略）——真实 `cloudflare_account_id` 等取值 |
@@ -149,11 +149,11 @@ export AWS_SECRET_ACCESS_KEY='<AWS secret key>'
 
 | workspace | 实际状态对象路径 |
 |---|---|
-| `default` | `console-cloudflare/terraform.tfstate`（= `key` 本身） |
-| `dev` | `envs/dev/console-cloudflare/terraform.tfstate`（= `<workspace_key_prefix>/<workspace>/<key>`） |
+| `default` | `dev-sandbox/terraform.tfstate`（= `key` 本身） |
+| `dev` | `envs/dev/dev-sandbox/terraform.tfstate`（= `<workspace_key_prefix>/<workspace>/<key>`） |
 
 ⚠️ **口径**：`workspace_key_prefix` 是**前置**到 `key` **之前**，**不是**追加在 key 之后；
-`key` 本身**不含** `<workspace>` 占位符（字面量 `console-cloudflare/terraform.tfstate`）。
+`key` 本身**不含** `<workspace>` 占位符（字面量 `dev-sandbox/terraform.tfstate`）。
 
 ---
 
@@ -189,27 +189,70 @@ export AWS_SECRET_ACCESS_KEY='<AWS secret key>'
 - [x] **目标桶的访问授权** —— **已解决**（桶方案 c）：AK/SK 属账号 `654654240294`，
       与桶 `terraform-654654240294-ap-southeast-1-an` **同账号** ⇒
       `terraform init -reconfigure -backend-config=backend.hcl` **成功**，
-      远端状态对象已落到 `console-cloudflare/terraform.tfstate`。
+      远端状态对象已落到 `dev-sandbox/terraform.tfstate`。
 
 ### 其它
 
-- [x] Worker 名确认：`sandbox-console-web`（须与任务 03 的 `infra/worker/wrangler.toml` 的
-      `name` 一致）。
+- [x] Worker 名确认：**`dev-sandbox`**（原名 `sandbox-console-web`；须与任务 03 的
+      `infra/worker/wrangler.toml` 的 `name` 一致）。
 - [x] 首次部署后的实际账号 / Worker 名 / `workers.dev` 地址补记到本文件（任务 03 / 04）
-      —— 见下方「首次部署记录」。
+      —— 见下方「首次部署记录」与「改名与重新部署记录」。
 
 ### 首次部署记录（2026-11-12，真实部署）
+
+> ⚠️ **历史记录（改名前）**——Worker 名已由 `sandbox-console-web` 改定为
+> **`dev-sandbox`**，现行口径见下方「改名与重新部署记录」。
 
 | 项 | 值 |
 |---|---|
 | Cloudflare 账号（Account ID） | `c6f014ff9f682f99502c1046d5e85ca1` |
 | zone | `sankabox.com`（zone id `613fb07e356c15be43d80eb05e15298d`，**与上表同账号**） |
-| Worker 名 | `sandbox-console-web` |
-| `workers.dev` 地址 | `https://sandbox-console-web.nucbox.workers.dev` |
+| Worker 名 | `sandbox-console-web`（**旧名，已删**） |
+| `workers.dev` 地址 | `https://sandbox-console-web.nucbox.workers.dev`（**旧地址，现 404**） |
 | 自定义域名 | `https://dev.sankabox.com`（**已生效**，HTTP 200） |
 | 上传资产数 | **123** 个文件 |
 | Terraform 状态 | `data.cloudflare_zone.this` + `cloudflare_workers_custom_domain.this`（**恰 2 项**，无 `workers_script`） |
-| 远端状态对象 | `s3://terraform-654654240294-ap-southeast-1-an/console-cloudflare/terraform.tfstate`（SSE-AES256） |
+| 远端状态对象 | `s3://terraform-654654240294-ap-southeast-1-an/dev-sandbox/terraform.tfstate`（SSE-AES256；**原生命名**，见第 6 节） |
+
+### 改名与重新部署记录（2026-11-12，项目标识 → `dev-sandbox`）
+
+**改动面**：项目标识统一为 `dev-sandbox`（状态对象前缀 + Worker 名）+ 开启 S3 原生锁。
+
+| 项 | 旧值 | 新值 |
+|---|---|---|
+| 状态对象 key | `console-cloudflare/terraform.tfstate` | **`dev-sandbox/terraform.tfstate`** |
+| Worker 名 | `sandbox-console-web` | **`dev-sandbox`** |
+| `workers.dev` 地址 | `https://sandbox-console-web.nucbox.workers.dev` | **`https://dev-sandbox.nucbox.workers.dev`** |
+| 后端锁 | 无（无 `use_lockfile`） | **`use_lockfile = true`**（S3 原生锁，不依赖 DynamoDB） |
+| 锁对象 | —— | `dev-sandbox/terraform.tfstate.tflock` |
+
+- **顺序（硬约束）**：**先搬状态**（服务端 `copy-object` 复制旧对象）→ **再换配置**
+  （`backend.hcl` 的 `key` + `use_lockfile`）→ **再部署新 Worker** → **再 plan/apply**
+  （域名重绑）→ **最后清理旧物**（删旧 Worker + 删旧状态对象）。
+- **状态搬家**：先 `aws s3api copy-object` 把 `console-cloudflare/terraform.tfstate`
+  **复制**成 `dev-sandbox/terraform.tfstate`（**旧对象先当备份保留**），
+  再改 `backend.hcl` 的 `key` ⇒ 改 key 不会丢状态。
+- **`terraform init -reconfigure -backend-config=backend.hcl`**：**成功**
+  （`Successfully configured the backend "s3"!`）；随后 `terraform state list`
+  **恰 2 项**（`data.cloudflare_zone.this` + `cloudflare_workers_custom_domain.this`）⇒
+  状态迁移成功。
+- **原生锁实测**：`terraform plan` 期间 S3 下出现
+  `dev-sandbox/terraform.tfstate.tflock`（被 Terraform 用 Conditional PUT 独占），
+  结束后输出 `Releasing state lock. This may take a few moments...` 且锁对象被清理。
+- **重新部署**：`cd infra/worker && pnpm run deploy` → Worker **`dev-sandbox`**、
+  地址 **`https://dev-sandbox.nucbox.workers.dev`**、**123** 个资产、
+  版本 id **`9e12fa39-d92b-48ed-8e8a-ea6978fbb4f7`**。
+- **域名重绑**：`terraform plan` = **恰 1 项变更**
+  （`cloudflare_workers_custom_domain` 的 `service`：`sandbox-console-web` → `dev-sandbox`，
+  `forces replacement` ⇒ 形态为 **destroy + create**，中间有**约 2s 的短暂解绑窗口**）；
+  `terraform apply` → `Resources: 1 added, 0 changed, 1 destroyed.`
+- **HTTP 验收**：`https://dev.sankabox.com` → **200**，body 含 `page-layout-title`；
+  与 `dev-sandbox.nucbox.workers.dev` **byte 级一致**（同 sha256
+  `0132af2c7aeadb95a7cfa2c8da1147c8332920d22594f4dc8ebf461a3997bf1a`）。
+- **旧物清理**：旧 Worker `sandbox-console-web` **已删**
+  （`GET /workers/services/sandbox-console-web` → **404**；旧 `workers.dev` 地址 → **404**
+  （Cloudflare `error code: 1042`））；旧状态对象 `console-cloudflare/terraform.tfstate`
+  **已删**（`list-objects-v2 --prefix console-cloudflare/` → **空**）。
 
 ### 执行记录（本轮：真实部署链打通）
 
@@ -248,7 +291,40 @@ export AWS_SECRET_ACCESS_KEY='<AWS secret key>'
 
 ---
 
-## 6. 常用命令
+## 6. 状态对象与原生锁
+
+### 状态对象路径
+
+| 项 | 值 |
+|---|---|
+| 桶 | `terraform-654654240294-ap-southeast-1-an`（region `ap-southeast-1`） |
+| `key` | `dev-sandbox/terraform.tfstate` |
+| default workspace 对象 | `s3://terraform-654654240294-ap-southeast-1-an/dev-sandbox/terraform.tfstate` |
+| 非 default workspace 对象 | `s3://.../envs/<workspace>/dev-sandbox/terraform.tfstate` |
+
+> 状态对象路径 = **项目标识**（`dev-sandbox`）+ `/terraform.tfstate`。
+> 改名时**先服务端复制**（`aws s3api copy-object`）再改 `backend.hcl` 的 `key`，
+> **旧对象先当备份保留**，全部验证通过后才删。
+
+### S3 原生锁（`use_lockfile`）
+
+`backend.hcl` / `backend.hcl.example` 均设 `use_lockfile = true`：
+
+- **机制**：Terraform 用 **Conditional PUT** 在 `<key>.tflock` 对象上做互斥
+  ⇒ 锁对象路径 = `dev-sandbox/terraform.tfstate.tflock`。
+  **不依赖 DynamoDB**（本项目从未配过 DynamoDB 表，也不需要）。
+- **支持版本**：**Terraform >= 1.10**；本机实测 **v1.15.8**（满足）。
+- **行为**：并发跑同一状态时，第二个进程会直接**报错退出**（`state lock` 错误），
+  而不是并发写坏状态。
+- **锁对象残留**：正常结束（含失败）时 Terraform 会**删除**锁对象；
+  进程被强杀（kill -9 / 机器宕机）时锁对象会**残留** ⇒ 下一个 Terraform
+  会报锁被占，需人工确认无其它 Terraform 在跑后手动删除
+  （`aws s3api delete-object --bucket <桶> --key dev-sandbox/terraform.tfstate.tflock`）。
+- **查看锁对象**：`aws s3api list-objects-v2 --bucket <桶> --prefix dev-sandbox/`。
+
+---
+
+## 7. 常用命令
 
 ```bash
 cd infra

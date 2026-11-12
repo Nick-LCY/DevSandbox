@@ -21,10 +21,10 @@ bucket = "<terraform-state-bucket-name>"
 #
 # workspace 隔离**不靠 key**、靠下方的 `workspace_key_prefix`：S3 后端把它**前置**到 key
 # **之前**（不是追加在 key 之后）：
-#   default workspace   ⇒ 对象 = "<key>"                       = "console-cloudflare/terraform.tfstate"
-#   非 default workspace ⇒ 对象 = "<prefix>/<workspace>/<key>" = "envs/dev/console-cloudflare/terraform.tfstate"
+#   default workspace   ⇒ 对象 = "<key>"                       = "dev-sandbox/terraform.tfstate"
+#   非 default workspace ⇒ 对象 = "<prefix>/<workspace>/<key>" = "envs/dev/dev-sandbox/terraform.tfstate"
 # 本项目是「单 root module + workspace」用法，不做多环境矩阵；不同 workspace 按此前缀隔离。
-key = "console-cloudflare/terraform.tfstate"
+key = "dev-sandbox/terraform.tfstate"
 
 # workspace 状态对象的路径前缀（**前置**到 key 之前）。后端默认值为 "env:"，这里显式改成
 # "envs"，避免默认值随版本漂移、也让状态对象路径一眼可读。
@@ -32,6 +32,16 @@ workspace_key_prefix = "envs"
 
 # 区域（AWS 原生区域名，如 ap-southeast-1）。
 region = "ap-southeast-1"
+
+# ── 原生锁（S3 原生 LockFile）────────────────────────────────────────────────
+# use_lockfile = true：启用 **S3 原生锁**——Terraform 用 Conditional PUT 在
+# `<key>.tflock` 对象上做互斥（**不依赖 DynamoDB**）。
+#   - 锁对象路径 = `<key>.tflock` ⇒ default workspace 下即
+#     `dev-sandbox/terraform.tfstate.tflock`；
+#   - 正常结束（含失败）时 Terraform 会删除锁对象；进程被强杀时锁对象会**残留**
+#     （此时下一个 Terraform 会因锁被占而报「state lock」错误，需人工确认后清理）。
+# 支持版本：**Terraform >= 1.10**（本机实测 v1.15.8）。
+use_lockfile = true
 
 # ── AWS 原生 S3 后端到此为止 ────────────────────────────────────────────────
 # **不设** endpoint / use_path_style / 五个 skip_*：那些是「S3 兼容存储（MinIO）」

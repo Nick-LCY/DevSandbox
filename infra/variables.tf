@@ -31,7 +31,7 @@ variable "cloudflare_zone_name" {
 variable "worker_name" {
   description = "要绑定自定义域名的 Worker 名——须与 infra/worker/wrangler.toml 的 name 一致。Worker 本身由 wrangler 创建，Terraform 只引用、不声明。"
   type        = string
-  default     = "sandbox-console-web"
+  default     = "dev-sandbox"
 }
 
 variable "worker_domain" {

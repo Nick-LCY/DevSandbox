@@ -10,7 +10,7 @@
 
 # Worker 名——须与 infra/variables.tf 的 `worker_name` 默认值一致
 # （Terraform 的 `cloudflare_workers_custom_domain.service` 指向它）。
-name = "sandbox-console-web"
+name = "dev-sandbox"
 
 # 脚本入口（纯 JS ESM，无构建步骤）。
 main = "src/index.js"
