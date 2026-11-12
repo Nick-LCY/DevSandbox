@@ -159,7 +159,48 @@ infra/
 
 ### 后续（待用户提供配置后）
 
-- `terraform init`（带后端）/ `plan` / `apply` **一律不跑**，直到 **MinIO 端点 / 桶名 / region / AK·SK** 与 **Cloudflare Account ID / API Token** 到位（清单见 [[current-state.md|当前状态]] 的 TODO 段）。
-- **已知提示**：Terraform **1.15.8** 对 S3 后端的 `endpoint` 参数有 **deprecation 警告**（提示改用 `endpoints.s3` 块）——**待真实 `init` 时一并处理**。
+- `terraform init`（带后端）/ `plan` / `apply` **一律不跑**，直到 **MinIO 端点 / 桶名 / region / AK·SK** 与 **Cloudflare Account ID / API Token** 到位（清单见 [[current-state.md|当前状态]] 的 TODO 段）——**勘误（2026-11-11）**：后端已改定为**真实 AWS S3**，本条以文末「增量（2026-11-11）」小节为准。
+- **已知提示**：Terraform **1.15.8** 对 S3 后端的 `endpoint` 参数有 **deprecation 警告**（提示改用 `endpoints.s3` 块）——**待真实 `init` 时一并处理**。**勘误（2026-11-11）**：改定后**不设 `endpoint`**（走 AWS 默认端点），该警告**不再适用**。
 - 下游：[[tasks/console-cloudflare/03-cloudflare-workers-deploy.md|03 Cloudflare Workers 部署]]（填 `infra/worker/` + 首次 `wrangler deploy`）→ [[tasks/console-cloudflare/04-domain-and-live-acceptance.md|04 域名绑定与公网真机验收]]（`terraform apply`）。
 - 收口留档索引：[[tasks/console-cloudflare/README.md|控制台前端托管到 Cloudflare 任务集]]；决策依据：[[architecture/decisions/0019-控制台前端托管到CloudflareWorkers.md|ADR 0019]]（第 4 节：单一所有者原则、远端状态后端）。
+
+### 增量（2026-11-11）：状态后端改定真实 AWS S3
+
+> **本节是收口后的增量记，不改写上文施工单与收口结论。** 上文「MinIO / path style / 五个 `skip_*`」是**当时的施工单口径**；**用户于 2026-11-11 改定远端状态后端 = 真实 AWS S3**，故 `backend.hcl.example` 已切 AWS 原生写法。**下文口径以本节为准。**
+
+#### 改定事实
+
+| 项 | 新口径（2026-11-11 改定） |
+|---|---|
+| 远端状态后端 | **真实 AWS S3**（**不再用 MinIO**） |
+| region | `ap-southeast-1` |
+| 桶 | `terraform-654654240294-ap-southeast-1-an` |
+| 端点 | **AWS 默认端点**（**不设 `endpoint`**） |
+| Cloudflare Account ID | `c6f014ff9f682f99502c1046d5e85ca1`（**非机密**，可入库） |
+| 本机 AWS 凭据 | **已有**（`default` profile，属账号 **`730335648924`**，由 `sts get-caller-identity` **实证**） |
+
+#### 实证与结论
+
+- **真实 `init` 未通——因跨账号**：指定桶属账号 **`654654240294`**，而本机凭据属账号 **`730335648924`** ⇒ 访问被拒（**403 AccessDenied**）。
+- **配置形状已被对照实验证明正确**：工兵用**本账号下同命名模式**的桶（`terraform-730335648924-ap-southeast-1-an`）做对照实验 ⇒ **`init` 可通**，即 `backend "s3"` 的配置形状（bucket / key / `workspace_key_prefix` / region）**无误**，**唯一变量是桶归属账号**。
+- **Terraform 1.15.8 不自动读 `backend.hcl`**（实证）——须**显式传参**：`terraform init -reconfigure -backend-config=backend.hcl`。`infra/` 内的注释与 `README.md` **已按此修正**（旧口径「`init` 会自动取 `backend.hcl`」作废）。
+
+#### 增量提交
+
+| 提交 | 内容 |
+|---|---|
+| `f6ab90c` | **`backend.hcl.example` 切 AWS 原生**：**删** `endpoint` / `use_path_style` / **五个 `skip_*`**（`skip_credentials_validation` / `skip_region_validation` / `skip_requesting_account_id` / `skip_metadata_api_check` / `skip_s3_checksum`）；**保留注释掉的 MinIO 变体块**（若日后回退到 MinIO，照抄该块即可）；`infra/README.md` **同步** |
+
+#### 待决事项
+
+- **跨账号 403 的处置待用户拍板**——三个候选（**a / b / c**）见 [[current-state.md|当前状态]] 的 TODO 段「**S3 状态桶决策（跨账号 403）**」：
+  - **a)** 改用本账号已有的 `terraform-730335648924-ap-southeast-1-an`（**已实测可 `init`**，零额外动作）；
+  - **b)** 为账号 `730335648924` 授予目标桶最小权限（**限 `envs/console-cloudflare/` 前缀读写**）；
+  - **c)** 提供账号 `654654240294` 的凭据。
+- 在拍板前，**带后端的 `init` / `plan` / `apply` 仍不跑**（`init` 会 403）。**其余阻塞（Cloudflare API Token）见 [[current-state.md|当前状态]] 的 TODO 段**——那是 03 / 04 的**唯一硬阻塞**。
+
+#### 已解决（2026-11-11 收口后记，**不改写上文**）
+
+- **跨账号 403 已解除**——**用户拍板走候选 c**：提供**账号 `654654240294`** 的凭据（同账号 IAM 用户 **`TerraformUser`**，AK / SK 经 `infra/.env` 注入，**未入库、未回显**）⇒ **真实 `init` 成功**（`Successfully configured the backend "s3"`）、状态对象 `console-cloudflare/terraform.tfstate` **已落 S3**（workspace `default`）。
+- **带后端的 `init` / `plan` / `apply` 均已跑通**（03 / 04 轮）——`plan` **恰 2 资源**（zone data + `workers_custom_domain`）、`apply` **1 added**、`terraform state list` **恰 2 项**、**无 `workers_script`**（单一所有者原则守住）。详见 [[tasks/console-cloudflare/03-cloudflare-workers-deploy.md|任务 03]] 文末「部署完成（2026-11-11）」。
+- **上文「待决事项」与「在拍板前不跑」为当时状态，已作废**；当前状态见 [[current-state.md|当前状态]]。

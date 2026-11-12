@@ -78,3 +78,11 @@
 - [[architecture/decisions/0015-桌面壳与连接配置抽象.md|0015 桌面壳与连接配置抽象]] — **复用其连接层抽象**：哈希路由、`base: './'`、恒绝对请求基址、「空基址 = 同源」已废除。这四条正是本轮「业务代码零改动、同一份 `dist` 任意静态源开箱可用」的**前提**；桌面壳 `frontendDist` 独立，**本轮零改动**。
 - [[architecture/decisions/0009-二期控制台服务化与范围裁剪.md|0009 二期控制台服务化与范围裁剪]] — 二期把控制台做成「同源同进程」的形态（本轮拆掉的是它的静态托管部分）；其「命令行不服务化」等其余裁剪不受影响。
 - 需求：[[prds/console-cloudflare.md|控制台前端托管到 Cloudflare PRD]]；任务集：[[tasks/console-cloudflare/README.md|控制台前端托管到 Cloudflare 任务集]]；术语见 [[glossary.md|词汇表]]；看板见 [[current-state.md|当前状态]]。
+
+---
+
+> **更新（2026-11-11）：远端状态后端改定为真实 AWS S3（ap-southeast-1），非 MinIO。**
+> 本决策**正文不改写**——上文第 4 节「远端状态存 S3 兼容对象存储（MinIO）：… `use_path_style = true` / 四个 `skip_*`」与「影响」段「远端状态后端是新增依赖」是**当时的原始表述，作历史记录保留**。**当前有效口径以本更新记为准**：远端状态后端 = **真实 AWS S3**（用户于 2026-11-11 改定）：region `ap-southeast-1`、桶 `terraform-654654240294-ap-southeast-1-an`、**AWS 默认端点**⇒ `endpoint` / `use_path_style` / 四个 `skip_*` **一律不设**（MinIO 变体仅作注释块保留在 `backend.hcl.example`）；**桶归属账号 `654654240294` 与本机凭据账号 `730335648924` 不一致 ⇒ 真实 `init` 403 AccessDenied，三选一待拍板**（详见 [[tasks/console-cloudflare/02-terraform-base.md|任务 02]] 文末「增量（2026-11-11）」与 [[current-state.md|当前状态]] 的 TODO 段）。**本决策的其余结论（载体 / 单一所有者原则 / 部署顺序 / 破坏性变更等）均不受影响。**
+>
+> **更新（2026-11-11，晚）：跨账号 403 已解除，部署链已跑通。**
+> 上一条更新记中的「三选一待拍板」**已拍板并落地**——走**候选 c**：使用**账号 `654654240294`** 的凭据（同账号 IAM 用户 `TerraformUser`，AK / SK 经 `infra/.env` 注入，**未入库、未回显**）⇒ 真实 `terraform init` **成功**（`Successfully configured the backend "s3"`）、状态对象 `console-cloudflare/terraform.tfstate` **已落 S3**（workspace `default`）、`plan` **恰 2 资源**、`apply` **1 added**、`terraform state list` **恰 2 项**且**无 `workers_script`**。**载体 / 单一所有者原则 / 部署顺序（`wrangler deploy` → `terraform apply`）等本决策结论全部成立且已实证**；Worker 名为 `sandbox-console-web`，域名 `dev.sankabox.com` 已绑。详见 [[tasks/console-cloudflare/03-cloudflare-workers-deploy.md|任务 03]] 文末「部署完成（2026-11-11）」与 [[tasks/console-cloudflare/04-domain-and-live-acceptance.md|任务 04]] 文末「进展（2026-11-11）」。**本决策的其余结论（载体 / 单一所有者原则 / 部署顺序 / 破坏性变更等）均不受影响。**

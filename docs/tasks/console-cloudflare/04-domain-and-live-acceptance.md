@@ -1,11 +1,13 @@
 ---
 prd: prds/console-cloudflare.md
-status: todo
+status: doing
 ---
 # 任务：域名绑定与公网真机浏览器验收
 
 > 需求见 [[prds/console-cloudflare.md|控制台前端托管到 Cloudflare PRD]]，决策见 [[architecture/decisions/0019-控制台前端托管到CloudflareWorkers.md|ADR 0019]]。
 > 本任务把 `dev.sankabox.com` 绑到 Worker 上，并做**公网真机浏览器**全功能验收——这是本轮唯一一次「按真实生产形态」端到端点通的验证。
+> **本任务进行中（doing，2026-11-11 起）**——**域名绑定已完成、HTTP 层验收已过**；**剩余 = 用户浏览器真机验收八步**（须在用户侧真实浏览器执行）。详见文末「进展（2026-11-11）」。
+> **2026-11-12 追加**：**改名 `dev-sandbox` 后域名已重绑并复验 200**（`service` `forces replacement`、约 2 秒解绑窗口）——**验收状态不变，仍为 `doing`**；详见文末「改名后的域名重绑与复验（2026-11-12）」。
 
 ## 目标
 
@@ -84,6 +86,67 @@ resource "cloudflare_workers_custom_domain" "console" {
 
 ## 待用户提供（阻塞项）
 
-- **MinIO S3 远端状态配置**（端点 / 桶 / region / 凭据）——`terraform init` 的前置。
-- **Cloudflare API Token**（`CLOUDFLARE_API_TOKEN`）与 **Account ID**。
-- **zone 与账号是否同账号**的确认——决定 DNS 走自动建记录还是手工 record 路线。
+> **前两项已到位（2026-11-11），第三项本就无需人工确认——部署侧阻塞全部解除。**
+
+- **S3 远端状态配置**（**2026-11-11 改定：真实 AWS S3**——region `ap-southeast-1`、桶 `terraform-654654240294-ap-southeast-1-an`、**AWS 默认端点**）——**已到位**：桶属账号 `654654240294` 的 IAM 用户 `TerraformUser` 凭据经 `infra/.env` 注入（**未入库、未回显**）⇒ **方案 c 落地**，`terraform init` **成功**。
+- **Cloudflare API Token**（`CLOUDFLARE_API_TOKEN`）——**已到位**（**只走环境变量、不入库**）；**Account ID 已到位**（`c6f014ff9f682f99502c1046d5e85ca1`，非机密）。
+- **zone 与账号是否同账号**的确认——**已由 `data "cloudflare_zone"` 的 `filter.account.id` 子过滤在 plan 期强制**（查不到 zone 即失败）⇒ **无需人工确认**；本轮 `plan` **实证命中**（zone data 正常解析）。
+
+---
+
+## 进展（2026-11-11）
+
+> **本任务状态：doing（2026-11-11 起）。** **域名绑定已完成、HTTP 层验收已过**（部署侧全部到位）；**剩余 = 用户浏览器真机验收八步**。
+
+### 域名绑定与 HTTP 层验收（已过）
+
+| 项 | 结果 |
+|---|---|
+| 域名绑定 | **已完成**——`terraform apply` **成功**（**1 added**），`cloudflare_workers_custom_domain` 落 **`dev.sankabox.com`**，指向 03 轮 Worker **`sandbox-console-web`** |
+| 资源清单 | `terraform state list` **恰 2 项**（zone data + `workers_custom_domain`）、**无 `workers_script`** ⇒ **单一所有者原则守住** |
+| 根路径 | `https://dev.sankabox.com` **首探即 200**（**证书即时签发**）；body 含 **`page-layout-title`** 与 **`assets/index-*.js`** |
+| 内容一致性 | 与 `workers.dev` 地址内容 **byte 级一致**（**同 sha256**）⇒ 域名层只改写入口，**产物本身未被改动** |
+| 资产直出 | `assets/index-DFpMAFde.js` **200**（**635 KB**）⇒ `[assets]` 直出链路成立（`run_worker_first = false`） |
+| 非资产路径 | **404** ⇒ 极简 passthrough worker 的兜底行为成立 |
+
+### 一处环境现象（非部署缺陷）
+
+- **现象**：**开发机出口**到 `dev.sankabox.com` **偶发丢包**——**12 次探测中 11 次成功、1 次超时**，另有 **1 次 TLS `unexpected eof`**；`cf-ray` 落 **LAX**，而 `workers.dev` 走代理落 **SIN**。
+- **判定**：**开发机出口路由抖动**，**非部署缺陷**（同一时段 `workers.dev` 侧稳定可达、产物 byte 级一致）。
+- **处置**：**建议浏览器复验**——以用户侧真实浏览器观察为准。
+
+### 剩余 = 用户浏览器真机验收八步
+
+> 须在**用户侧真实浏览器**打开 `https://dev.sankabox.com`，连接 `https://sandbox-api.sankabox.com`：
+
+1. **引导面板**——未配置态出现（后端地址 + 令牌输入）；
+2. **填地址与令牌**——填 `https://sandbox-api.sankabox.com` 与令牌，**保存并连接**，**先做健康自检**（连接前的探活）；
+3. **健康自检 `ok`**——界面**无「前端产物未挂载」文案**；
+4. **沙箱生命周期**——列表 / **新建**（含**镜像选择器**）/ **详情** / **网页终端**（连上 → **敲命令** → **断开** → **重连**）/ **停止** / **删除**；
+5. **模板**——模板区可用；
+6. **文件注入**——创建时注入声明可用；
+7. **运行期文件面板**——浏览 / 下载 / 上传可用；
+8. **终端剪贴板**——`Ctrl+Shift+C` / `Ctrl+Shift+V` 可用（https 安全上下文成立）。
+
+- **负面观察项**：浏览器控制台**无 CORS 预检失败**、**无混合内容告警**。
+
+### 部署侧备注
+
+- **宿主后端仍跑旧版时无阻断**：**新前端不读 `console_mounted`** ⇒ 后端尚未切到纯 API 版也**不影响**本次新前端的功能验证。
+- **建议**：宿主后端**择机更新到纯 API 版**；届时**旧 web 形态随之下线根路径页面**（后端 `GET /` 与 `/assets/*` 一律 **404**）⇒ 旧入口不再可用，**更新前需确认无人在用旧入口**。
+
+### 改名后的域名重绑与复验（2026-11-12）
+
+> **本节为追加记，不改写上文 2026-11-11 的绑定与验收记录。** **起因**：**用户拍板**——项目标识统一改为 **`dev-sandbox`**（原 Worker 名 `sandbox-console-web` 太难认），**域名绑定随之重指向新 Worker**。
+
+| 项 | 结果 |
+|---|---|
+| 重绑原因 | Worker 名 `sandbox-console-web` → **`dev-sandbox`** ⇒ `cloudflare_workers_custom_domain.service` 指向变更 |
+| plan 形态 | **`service` 变更为 `forces replacement`** ⇒ 计划形态为 **destroy + create**，中间有**约 2 秒的短暂解绑窗口** |
+| apply 结果 | **`Resources: 1 added, 0 changed, 1 destroyed.`** ⇒ 域名已指向新 Worker |
+| 资源清单 | `terraform state list` **恒为 2 项**（zone data + `workers_custom_domain`）、**无 `workers_script`** ⇒ **单一所有者原则守住** |
+| 复验 | `https://dev.sankabox.com` **200**；内容与 `https://dev-sandbox.nucbox.workers.dev` **byte 级一致**（同一 sha256） |
+| 旧 Worker | **`sandbox-console-web` 已删**（旧地址 → **404**、Cloudflare **error code 1042**） |
+
+- **改名细节**（状态对象前缀迁移、**S3 原生锁开启**、提交 `04de972`）见 [[tasks/console-cloudflare/03-cloudflare-workers-deploy.md|任务 03]] 文末「改名（2026-11-12）」。
+- **验收状态不变**：**本任务仍为 `doing`**——**剩余 = 用户浏览器真机验收八步**（须在用户侧真实浏览器执行），清单见上文「剩余 = 用户浏览器真机验收八步」。

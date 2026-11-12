@@ -24,7 +24,7 @@
 
 - **前端托管到 Cloudflare**：载体 = **Cloudflare Workers + 静态资产**（**不是 Pages**），自定义域名 **`dev.sankabox.com`**。
 - **后端纯 API 化**：把「托管前端」这条能力链**整体删除、不留兼容层**——`StaticFiles` 挂载链、`SANDBOX_CONSOLE_DIST` 目录发现、`console_mounted` 字段、前端降级文案全部下线；后端只提供 `/api`。
-- **域名层纳入 IaC**：Terraform 管理 Cloudflare 域名层，代码放本仓 `infra/`，**远端状态存 S3 兼容对象存储**（MinIO；端点 / 桶 / 凭据**待用户提供**，配置先用占位）。
+- **域名层纳入 IaC**：Terraform 管理 Cloudflare 域名层，代码放本仓 `infra/`，**远端状态存真实 AWS S3**（**用户于 2026-11-11 改定，不再用 MinIO**；region `ap-southeast-1`、桶 `terraform-654654240294-ap-southeast-1-an`、**AWS 默认端点**；**桶归属账号与本机凭据账号不一致（403），三选一待拍板**）。
 - **验收套件迁到独立本地静态源**：Playwright 套件的 `baseURL` 改指本地静态源，**页面 origin ≠ 后端 origin**——**与生产跨源形态同构**，把「同源」这个隐含前提从验收基线里彻底拿掉。
 - **前端可独立发版**：前端改动不再需要重启后端进程。
 - **前置条件已具备（不需要额外改造连接层）**：
@@ -89,7 +89,7 @@
 
 - **目录**：本仓新增 `infra/`——**单个 root module + workspace**（不做多环境矩阵）。
 - **`versions.tf`**：`required_version >= 1.9`；cloudflare provider **精确 pin**；`.terraform.lock.hcl` **入库**。
-- **`backend.hcl` 占位**：`backend "s3"` 空块 + `backend.hcl.example` 占位文件——`bucket` / `key`（带 workspace 前缀）/ `region` / `endpoint` / **`use_path_style = true`** / `skip_credentials_validation` / `skip_region_validation` / `skip_requesting_account_id` / `skip_metadata_api_check`。**MinIO 必须 path style + 四个 skip**，否则 `terraform init` 会直接卡住。
+- **`backend.hcl` 占位**：`backend "s3"` 空块 + `backend.hcl.example` 占位文件——`bucket` / `key`（带 workspace 前缀）/ `region` / `workspace_key_prefix`。**2026-11-11 改定为真实 AWS S3**：`endpoint` / `use_path_style` / 四个 `skip_*` **不设**（走 AWS 默认端点与原生校验）；**MinIO 变体作为注释块保留**在 `backend.hcl.example` 里（若回退到 MinIO，照抄该块）。
 - **凭据只走环境变量**：`TF_VAR_*` 传变量、`AWS_*` 传后端凭据；**无真实凭据入库**。
 - **单一所有者原则**：`main.tf` 的资源清单**恰为** `cloudflare_zone` data + `cloudflare_workers_custom_domain` 资源——**不声明 `cloudflare_workers_script`**（脚本与资产归 `wrangler`）。文件头注释写明这条原则。
 - **部署顺序**：`wrangler deploy` **先**、`terraform apply` **后**——域名资源要指向一个**已存在**的 Worker。
@@ -128,7 +128,7 @@
 
 - [ ] `terraform fmt -check -recursive` **无输出** + `terraform validate` 通过。
 - [ ] 资源清单**恰为** zone data + `workers_custom_domain`，**无 `workers_script`**。
-- [ ] `backend "s3"` 配置齐全、值全部是**占位**；`.terraform.lock.hcl` **入库**；`*.tfvars` / `*.tfstate` **未入库**。
+- [ ] `backend "s3"` 配置齐全、值全部是**占位**；`.terraform.lock.hcl` **入库**；`*.tfvars` / `*.tfstate` **未入库**。**远端状态后端 = 真实 AWS S3**（`ap-southeast-1`、**不设 `endpoint`**、**不设 `use_path_style`**、**不设四个 `skip_*`**）；**桶归属账号与本机凭据账号不一致（403）**，需先拍板（见 [[tasks/console-cloudflare/02-terraform-base.md|任务 02]] 文末「增量（2026-11-11）」）。
 - [ ] `wrangler deploy` 成功。
 - [ ] `https://dev.sankabox.com` **返回控制台页面**。
 
