@@ -3,7 +3,7 @@
 > 高频变更的工作看板。**开始任何任务前先读这里。** 由团队维护。保持轻量——它是看板，不是叙事。
 
 ## 活跃需求
-- **文件窗格与 Obsidian 阅读器** — **已立项（2026-11-12），01~08 全部 todo 未开工**。控制台终端区改造：① **文件窗格**——终端右侧伴生**分屏**（可折叠），**锚定当前终端会话的 shell 当前目录**（pwd 走 **OSC 1337 shell integration**），以快速浏览 / 下载为主、纯文本预览为辅；② **固定 Obsidian tab**——全宽双栏 vault 阅读器（左树右预览），**markdown 渲染 + wikilink 正向跳转**。需求见 [[prds/file-pane-obsidian.md|文件窗格与 Obsidian 阅读器 PRD]]，任务集见 [[tasks/file-pane-obsidian/README.md|文件窗格与 Obsidian 阅读器任务集]]；**关键口径**：**彻底放弃自动跟随 pwd**（唯一联动入口是工具条「回跳」按钮）、文件窗格内**不做 markdown 渲染**（渲染专属 Obsidian tab）、**pwd / vault 根 / 折叠态全部前端本地记忆**（不入后端）、全局文件抽屉退役、**无 ADR**（机制写进 PRD「方案」节）。**2026-11-13 口径修订（用户拍板）**：大文件预览改「**二次确认 + 进度条加载**」（**废除 2 MB 强制截断**与「文件过大」提示条）、镜像补 **UTF-8 locale ENV** 且创建沙箱容器时注入 **`SANDBOX_NETWORK`**（值 = 实际生效网络名，**并入任务 02**）、Obsidian tab 改用 **官方 logo SVG**（本地资产、零 CDN）；**验收标准由 35 条增至 38 条**（新增 OBS-11 / ENV-01 / ENV-02）。
+- **文件窗格与 Obsidian 阅读器** — **已立项（2026-11-12），01 打样已收口（2026-11-13，结论落任务文件进展节），02~08 未开工**。控制台终端区改造：① **文件窗格**——终端右侧伴生**分屏**（可折叠），**锚定当前终端会话的 shell 当前目录**（pwd 走 **OSC 1337 shell integration**），以快速浏览 / 下载为主、纯文本预览为辅；② **固定 Obsidian tab**——全宽双栏 vault 阅读器（左树右预览），**markdown 渲染 + wikilink 正向跳转**。需求见 [[prds/file-pane-obsidian.md|文件窗格与 Obsidian 阅读器 PRD]]，任务集见 [[tasks/file-pane-obsidian/README.md|文件窗格与 Obsidian 阅读器任务集]]；**关键口径**：**彻底放弃自动跟随 pwd**（唯一联动入口是工具条「回跳」按钮）、文件窗格内**不做 markdown 渲染**（渲染专属 Obsidian tab）、**pwd / vault 根 / 折叠态全部前端本地记忆**（不入后端）、全局文件抽屉退役、**无 ADR**（机制写进 PRD「方案」节）。**2026-11-13 口径修订（用户拍板）**：大文件预览改「**二次确认 + 进度条加载**」（**废除 2 MB 强制截断**与「文件过大」提示条）、镜像补 **UTF-8 locale ENV** 且创建沙箱容器时注入 **`SANDBOX_NETWORK`**（值 = 实际生效网络名，**并入任务 02**）、Obsidian tab 改用 **官方 logo SVG**（本地资产、零 CDN）；**验收标准由 35 条增至 38 条**（新增 OBS-11 / ENV-01 / ENV-02）。
 
 ## 历史交付
 - **控制台前端托管到 Cloudflare（Workers + 静态资产）** — **已完成（2026-11-12 收口，01~05 全部 done）**。控制台前端从「后端托管」解耦并独立发版：载体是 **Cloudflare Workers + 静态资产**（**不是 Pages**），域名 **`dev.sankabox.com`**，项目标识定名 **`dev-sandbox`**（Worker 与 `.workers.dev` 地址同名）；后端同时纯 API 化（`console_mounted` 字段删除、`GET /` 与 `/assets/*` 一律 404）。**核心口径**：**单一所有者原则**——Terraform 只管域名层（zone data + `workers_custom_domain`），**脚本与静态资产归 `wrangler`**，部署顺序 `wrangler deploy` → `terraform apply`；远端状态存**真实 AWS S3**（region `ap-southeast-1`、**S3 原生锁 `use_lockfile = true` 已开启**）；**手动部署不做 CI**。需求见 [[prds/console-cloudflare.md|控制台前端托管到 Cloudflare PRD]]，任务集见 [[tasks/console-cloudflare/README.md|控制台前端托管到 Cloudflare 任务集]]，全轮留档见 [[tasks/console-cloudflare/RESULTS.md|控制台前端托管到 Cloudflare 全轮收口留档]]，决策见 [[architecture/decisions/0019-控制台前端托管到CloudflareWorkers.md|ADR 0019]]（**已接受**，单向取代 [[architecture/decisions/0013-三期定位改定与认证重启.md|ADR 0013]] 第 6 节「Cloudflare 静态托管的退役」，历史表述不改写）。
@@ -22,7 +22,7 @@
 ## 任务看板
 | 任务集 | 状态 | 入口 |
 |---|---|---|
-| 文件窗格与 Obsidian 阅读器 | todo（2026-11-12 立项，01~08 未开工） | [[tasks/file-pane-obsidian/README.md\|文件窗格与 Obsidian 阅读器任务集]] |
+| 文件窗格与 Obsidian 阅读器 | 01 done（2026-11-13 打样收口），02~08 todo | [[tasks/file-pane-obsidian/README.md\|文件窗格与 Obsidian 阅读器任务集]] |
 | 控制台前端托管到 Cloudflare | done（2026-11-12 收口） | [[tasks/console-cloudflare/README.md\|控制台前端托管到 Cloudflare 任务集]] |
 | 三期：桌面端打包 + 端口转发 | done（2026-11-04 收口） | [[tasks/phase3-desktop/README.md\|三期任务集]] |
 | 运行期文件传输（上传 / 下载） | done（2026-11-11 收口） | [[tasks/runtime-file-transfer/README.md\|运行期文件传输任务集]] |
