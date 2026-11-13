@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ComponentProps } from 'react';
 
 import type { TerminalSessionRecord } from '../api/types';
+import { getSessionPwd, setSessionPwd } from '../lib/terminal-pwd';
 import { TerminalPanel } from './TerminalPanel';
 import { ToastProvider } from './Toast';
 
@@ -324,6 +325,26 @@ describe('关闭终端会话', () => {
     await waitFor(() =>
       expect(screen.queryByTestId('page-sandbox-detail-terminal-tab')).toBeNull(),
     );
+  });
+
+  it('确认关闭会话：这条会话的 pwd 缓存一并清空（会话真的结束了）', async () => {
+    mockSessions([makeRecord({ session_id: 'sess-running', state: 'running' })]);
+    mocks.deleteTerminalSession.mockResolvedValue({
+      session_id: 'sess-running',
+      state: 'running',
+      closed: true,
+      removed: true,
+    });
+    setSessionPwd('sess-running', '/workspace');
+
+    renderPanel();
+
+    const tab = await screen.findByTestId('page-sandbox-detail-terminal-tab');
+    fireEvent.click(within(tab).getByTestId('page-sandbox-detail-terminal-tab-close'));
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-terminal-remove-confirm-button'));
+
+    // 会话被关掉 ⇒ 这条会话的 pwd 缓存作废（否则缓存只增不减）。
+    await waitFor(() => expect(getSessionPwd('sess-running')).toBeNull());
   });
 
   it('取消：确认条关掉，一个删除请求都不发', async () => {

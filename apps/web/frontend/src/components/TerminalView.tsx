@@ -25,6 +25,12 @@ import {
 } from '../lib/terminal-connection';
 import type { TerminalState, TerminalStatus } from '../lib/terminal-feedback';
 import { createFitDebouncer } from '../lib/terminal-fit';
+import {
+  OSC_CURRENT_DIR_IDENT,
+  clearSessionPwd,
+  parseCurrentDirPayload,
+  setSessionPwd,
+} from '../lib/terminal-pwd';
 import { classifyTerminalShortcut } from '../lib/terminal-shortcuts';
 import { useToast } from './Toast';
 
@@ -108,6 +114,25 @@ export function TerminalView({
    * 同一个 effect，但不会把挂载时刻的值再拿出来用一次。
    */
   const autoFocusRef = useRef(autoFocus);
+  /**
+   * 这个终端实例**握过几次手**的标记（重连 / 重新附着的判定依据）。
+   *
+   * 首次握手 = 新起一条 shell ⇒ shell 自己会画带 OSC 的提示符，pwd 不用刷新；
+   * 再次握手 = **重新附着**到还活着的 shell（自动重连 / 用户点「重试」）⇒ shell
+   * 不会主动再报一次 pwd，要靠一次尺寸变化把它逼出来。
+   *
+   * 用 ref 而不是 effect 里的局部变量：局部变量会被 effect 重跑重置，而
+   * 「重试连接」正是**同一个组件实例**里重跑 effect —— 那次握手同样属于重新附着。
+   */
+  const attachedOnceRef = useRef(false);
+  /**
+   * 上一次挂载的会话标识：会话换了就把「握过几次手」的判定复位。
+   *
+   * **不依赖调用方用 `key={activeId}` 强制重挂载**——将来换一种渲染方式
+   * （比如同一实例里切 `sessionId`）时，新会话的**第一次**握手仍是「新起一条
+   * shell」，不该被误判成「重新附着」而白跑一次两步 resize。
+   */
+  const lastSessionIdRef = useRef<string | null>(null);
   const { show } = useToast();
   /** 反馈接口走引用：换身份时不重建终端连接。 */
   const showRef = useRef(show);
@@ -129,6 +154,14 @@ export function TerminalView({
     /** 上一条票据失败的提示键（同一句不重复弹）。 */
     let lastTicketFailureKey = '';
 
+    // 会话换了 ⇒ 「握过几次手」的判定复位：新会话的第一次握手是**新起一条 shell**
+    // （自己会画带 OSC 的提示符），不是重新附着。
+    // 用「上一个 sessionId」判定，不依赖调用方用 `key` 强制重挂载。
+    if (lastSessionIdRef.current !== sessionId) {
+      lastSessionIdRef.current = sessionId;
+      attachedOnceRef.current = false;
+    }
+
     const term = new Terminal({
       cursorBlink: true,
       // 终端配色与字体固定：两套主题下都是深色终端，亮暗切换不影响可读性。
@@ -148,6 +181,30 @@ export function TerminalView({
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     term.open(container);
+
+    /**
+     * 接管 OSC 1337（shell integration 的 pwd 上报）。
+     *
+     * 用 xterm 自己的状态机接序列：**不手写字节流扫描器**——一条 OSC 可能被拆到
+     * 两帧里（跨帧边界由 xterm 的状态机兜底），这里只处理「补齐之后」送来的整条载荷。
+     *
+     * 载荷解析口径在 `src/lib/terminal-pwd.ts`（纯函数 + 单元测试）：剥 `CurrentDir=`
+     * 前缀 → 绝对路径校验 → 过既有 `normalizeContainerPath`。
+     */
+    const oscDisposable = term.parser.registerOscHandler(
+      OSC_CURRENT_DIR_IDENT,
+      (payload: string) => {
+        const path = parseCurrentDirPayload(payload);
+        if (path === null) {
+          // 不认识的载荷 / 非法路径：静默忽略。`dash` / `sh` 会话根本不上报，
+          // 那是设计内的降级（前端据此判定「会话未上报工作目录」），不该报错。
+          return false;
+        }
+        // pwd 是**纯前端产物**：按会话记在前端内存里（后端会话记录不加字段）。
+        setSessionPwd(sessionId, path);
+        return true;
+      },
+    );
 
     /**
      * 焦点回填：会话切换后终端整块重挂载，浏览器焦点会落到 body，
@@ -297,11 +354,44 @@ export function TerminalView({
       }
     };
 
-    const sendResize = (): void => {
+    const sendResize = (cols: number = term.cols, rows: number = term.rows): void => {
       if (!socket || socket.readyState !== WebSocket.OPEN) {
         return;
       }
-      socket.send(encodeResize(term.cols, term.rows));
+      socket.send(encodeResize(cols, rows));
+    };
+
+    /**
+     * 断线重连后的 pwd 刷新：**先发一个与当前不同的尺寸，再发回真实尺寸**。
+     *
+     * 依据 01 轮实测：readline 收到 SIGWINCH 后**只在尺寸真的变了**时才重绘提示符
+     * ——同尺寸的 resize 实测 0 字节（什么都不会发生）；尺寸真变了就会重绘提示符，
+     * 并顺带重新带一条 OSC 1337（拿到新鲜的 pwd）。
+     *
+     * **基准 = 会话的真实尺寸**（`hello` 帧带的 `cols` / `rows`），**不是**前端视宽
+     * （`term.cols`）：标签不可见 / 重建终端时，前端视宽可能 ≠ pty 真实宽度，
+     * 拿它当基准就等于「刷 pwd」顺带把 pty 尺寸改了。以会话真实尺寸为基准时，
+     * 这两步的净效果是**尺寸不变**。
+     *
+     * 两步走完 = **两次重绘**（01 轮实测：bump 与还原各触发一次提示符重画，
+     * 各带一条 OSC 1337）⇒ pwd 拿到最新值，**不产生多余的可见输出**
+     * （没有往终端里写任何字符）。
+     *
+     * 通道是现成的：resize 帧 → 后端 `PtyProcess.resize()` → TIOCSWINSZ → SIGWINCH
+     * → 容器内 readline 重绘。
+     *
+     * **不用「发空行」兜底**：空行会写进 shell 的 stdin，可能提交用户断线前敲了
+     * 一半的命令，也可能被前台程序吞掉（01 轮实测的副作用清单）。
+     *
+     * @param baseCols 会话的真实列数（`hello` 帧带的 `cols`）。
+     * @param baseRows 会话的真实行数（`hello` 帧带的 `rows`）。
+     */
+    const refreshPwdByResize = (baseCols: number, baseRows: number): void => {
+      // 后端对 resize 的列数上限是 1000（超了会回一条「窗口大小参数非法」）——
+      // 顶到上限时往下挪一格，同样能让尺寸「真变化」。
+      const bumped = baseCols >= 1000 ? baseCols - 1 : baseCols + 1;
+      sendResize(bumped, baseRows);
+      sendResize(baseCols, baseRows);
     };
 
     /** 尺寸自适应：容器还没铺开（隐藏的标签）时跳过，避免算出 0 列。 */
@@ -455,14 +545,37 @@ export function TerminalView({
         if (typeof event.data === 'string') {
           const frame = parseTerminalFrame(event.data);
           if (frame.type === 'hello') {
+            // **重连 / 重新附着的判定**：这个终端实例是不是已经握过一次手。
+            // 首次握手是新起一条 shell（shell 自己会画带 OSC 的提示符）；
+            // 再次握手是重新附着到还活着的 shell ⇒ 靠一次尺寸变化把 pwd 逼出来。
+            const reattaching = attachedOnceRef.current;
+            attachedOnceRef.current = true;
             markConnected();
             report('connected', `已连接（会话 ${frame.sessionId.slice(0, 8)}）`);
+            if (reattaching) {
+              // 重新附着：多走一次「cols+1 → 还原」的尺寸刷新，把最新 pwd 要回来。
+              // **基准用 hello 帧带的会话真实尺寸**（不是前端视宽）：
+              // 标签不可见 / 重建终端时前端视宽可能 ≠ pty 真实宽度，
+              // 拿它当基准等于「刷 pwd」顺带把 pty 尺寸改了。
+              refreshPwdByResize(frame.cols, frame.rows);
+            }
+            // 尺寸自适应（前端视宽 → pty）：**放在刷新之后**——
+            // 刷新那两步的基准是会话真实尺寸，先刷新再同步视宽，
+            // 才不会被「还原」把前端视宽又抹回去。
             safeFit();
-            sendResize();
+            if (!reattaching) {
+              // 首次握手：把当前视宽同步给 pty（容器还没铺开时 safeFit 会跳过，
+              // 这一帧是兜底）。
+              sendResize();
+            }
             return;
           }
           if (frame.type === 'exit') {
             finished = true;
+            // 会话**真的结束**了 ⇒ 这条会话的 pwd 缓存作废。
+            // 注意：只在**会话结束**时清——组件卸载（切标签）时会话还活着，
+            // 那时清会把还活着的会话的 pwd 弄丢。
+            clearSessionPwd(sessionId);
             report('closed', `终端进程已退出（退出码 ${frame.code ?? '未知'}）`, {
               exitCode: frame.code,
               // 结束原因透传给上层：用户主动关闭与容器内进程自己退出语义不同
@@ -562,6 +675,7 @@ export function TerminalView({
       observer.disconnect();
       dataDisposable.dispose();
       resizeDisposable.dispose();
+      oscDisposable.dispose();
       socket?.close();
       fitAddon.dispose();
       term.dispose();

@@ -18,6 +18,7 @@ import {
   isInsideTerminalSurface,
   resolveTerminalFocus,
 } from '../lib/terminal-focus';
+import { clearSessionPwd } from '../lib/terminal-pwd';
 import { TerminalView, type TerminalState, type TerminalStatus } from './TerminalView';
 import { useToast } from './Toast';
 import { CloseSessionDialog } from './workbench/CloseSessionDialog';
@@ -413,6 +414,9 @@ export function TerminalPanel({
     setClosingBusy(true);
     try {
       const result = await api.deleteTerminalSession(sessionId);
+      // 会话**真的被关掉了** ⇒ 这条会话的 pwd 缓存作废（纯前端内存缓存，
+      // 只增不减会一直占着旧会话的目录）。
+      clearSessionPwd(sessionId);
       setClosing(null);
       // 标签立刻消失：记录已经被删掉了，列表刷新失败也不能让标签留着。
       setSessionTable((previous) => ({
