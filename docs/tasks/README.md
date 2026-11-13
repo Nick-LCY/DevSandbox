@@ -78,13 +78,13 @@ status: todo        # todo | doing | done | blocked
 - [[tasks/console-cloudflare/RESULTS.md]] — 控制台前端托管到 Cloudflare **全轮收口留档**（01~05）：轮次总表与提交链、全轮门禁数字表（后端 332 + ruff 0 / 核心包 370·23 / 前端 vitest 665 + typecheck 双零 + build / cargo 47 / e2e 四轮 53 全绿 / terraform fmt·validate）、**部署实证**（Worker `dev-sandbox`、**123 资产**、状态恒 2 项无 `workers_script`、**原生锁 `.tflock` 实测**）、**用户真机验收记录（2026-11-12 八步全过）**、**已知边界与留白 5 条**
 - [[tasks/file-pane-obsidian/README.md]] — 文件窗格与 Obsidian 阅读器任务集索引，含 8 个任务、依赖顺序与关键前置风险（**2026-11-12 立项**，01~08 全部 **todo**；**01 打样是硬前置、不通过不进 02 / 03**；02 与 03 可并行；04 依赖 03；05 依赖 04；06 依赖 04；07 依赖 06；08 收口依赖全部；**现有沙箱重建由用户完成**，登记为验收前置）
 - [[tasks/file-pane-obsidian/01-prototype-osc-loop.md]] — 打样轮：真沙箱端到端打通「镜像 PS1 注入 → xterm 注册 OSC 处理器 → 解析 pwd → 窗格定位回跳」，产出三条实测口径结论（**bash 转义实测** / **sh 降级实测** / **断线重连 pwd 恢复方案实测**）
-- [[tasks/file-pane-obsidian/02-image-ps1-injection.md]] — 镜像 PS1 注入：base-image `/etc/bash.bashrc` 追加「保留原 PS1 + 追加 OSC 1337 CurrentDir 序列」（tabby 方案）+ 版本 bump + 构建推送（**现有沙箱重建由用户完成**——外部依赖，登记为验收前置）
+- [[tasks/file-pane-obsidian/02-image-ps1-injection.md]] — 镜像与环境变量注入：base-image `/etc/bash.bashrc` 追加「保留原 PS1 + 追加 OSC 1337 CurrentDir 序列」（tabby 方案）+ 版本 bump + 构建推送 + **locale ENV**（`LANG` / `LC_ALL` = `C.UTF-8`）+ **`SANDBOX_NETWORK` 注入**（核心包创建 / 重启双路径 + 单测，值 = 实际生效网络名、不进 metadata）（**现有沙箱重建由用户完成**——外部依赖，登记为验收前置）
 - [[tasks/file-pane-obsidian/03-frontend-pwd-channel.md]] — 前端 pwd 通道：`src/lib` 纯函数模块 + 单测、`term.parser.registerOscHandler(1337, cb)` 接线（**禁手写字节流扫描器、禁逐帧 `TextDecoder`**）、按会话前端内存缓存（**后端会话记录不加字段**）、断线重连提示符刷新恢复 pwd
 - [[tasks/file-pane-obsidian/04-file-pane-split.md]] — 文件窗格分屏骨架：全局文件抽屉退役 + 工作区头部「文件」按钮移除、三段式分屏 / 可拖拽分隔条（默认约 340px）/ 36px 纯图标折叠竖条、入口随会话与「没有终端会话」空态、fallback 链（pwd → workdir → `/`）、回跳按钮、**全屏范围改造为整个内容区**
-- [[tasks/file-pane-obsidian/05-file-preview.md]] — 文本预览：后端只读端点 `GET /api/sandboxes/{name}/files/read`（服务端 + 核心包 + 单测，复用分层探测与 exec 字节泵、首块 NUL 嗅探、max_bytes 截断声明）+ 前端预览视图（等宽字体 / 行号槽 / 复制对勾 / 2 MB 截断提示条 / 二进制空态 / 返回栈 / hover 眼睛按钮）
-- [[tasks/file-pane-obsidian/06-obsidian-tab.md]] — Obsidian tab 骨架：tabs 条最左固定 tab（gem 图标 +「Obsidian」，不可关闭、独立于终端会话）、全宽双栏（无拖拽分隔线）、引导态设 vault 根（两条入口）、vault 树（只列目录与 .md、展开态本地记忆）、与文件窗格的隐藏 / 恢复联动
+- [[tasks/file-pane-obsidian/05-file-preview.md]] — 文本预览：后端只读端点 `GET /api/sandboxes/{name}/files/read`（服务端 + 核心包 + 单测，复用分层探测与 exec 字节泵、首块 NUL 嗅探、正文流式 + 元信息走响应头、max_bytes 仅为防护上限）+ 前端预览视图（等宽字体 / 行号槽 / 复制对勾 / **大文件二次确认 + 进度条 + 全文渲染** / 二进制空态 / 返回栈 / hover 眼睛按钮）
+- [[tasks/file-pane-obsidian/06-obsidian-tab.md]] — Obsidian tab 骨架：tabs 条最左固定 tab（**Obsidian 官方 logo SVG** 本地资产 +「Obsidian」，不可关闭、独立于终端会话）、全宽双栏（无拖拽分隔线）、引导态设 vault 根（两条入口）、vault 树（只列目录与 .md、展开态本地记忆）、与文件窗格的隐藏 / 恢复联动
 - [[tasks/file-pane-obsidian/07-markdown-wikilink.md]] — markdown 渲染与 wikilink：渲染库引入（react-markdown，**不放行原始 HTML**）、渲染 / 源码分段切换、frontmatter 渲染态隐藏、wikilink 解析纯函数 + 单测 + 三级兜底（同目录 → vault 根相对 → 全库递归同名，带 exec 看门狗超时）、黑色 tooltip、目标不存在就地浅红错误条
-- [[tasks/file-pane-obsidian/08-acceptance-and-docs.md]] — 验收与文档收口：e2e 用例（窗格分屏 / 折叠 / 空态 + Obsidian 双栏 / wikilink 跳转 / 错误条）、门禁全量、**PRD 验收 35 条逐条核销**、文档同步（`API.md` / 标识表 / 词汇表 / 看板 / 两份清单）、全轮留档 `RESULTS.md`
+- [[tasks/file-pane-obsidian/08-acceptance-and-docs.md]] — 验收与文档收口：e2e 用例（窗格分屏 / 折叠 / 空态 + Obsidian 双栏 / wikilink 跳转 / 错误条）、门禁全量、**PRD 验收 38 条逐条核销**、文档同步（`API.md` / 标识表 / 词汇表 / 看板 / 两份清单）、全轮留档 `RESULTS.md`
 
 ## 看板
 任务状态汇总见 [[current-state.md]]，由人维护。
