@@ -4,12 +4,12 @@
 # 依赖命令：bash + docker（宿主守护进程）。
 #
 # 用法：
-#   ./verify.sh                      # 默认校验 sandbox-platform/base:0.3.0
+#   ./verify.sh                      # 默认校验 sandbox-platform/base:0.3.1
 #   BASE_IMAGE=sandbox-platform/base:0.1.0 ./verify.sh
 
 set -uo pipefail
 
-BASE_IMAGE="${BASE_IMAGE:-sandbox-platform/base:0.3.0}"
+BASE_IMAGE="${BASE_IMAGE:-sandbox-platform/base:0.3.1}"
 
 CHECK_TOTAL=0
 CHECK_FAILED=0
@@ -29,6 +29,14 @@ check() {
 # 在镜像内执行 bash 命令，返回输出
 in_image() {
   docker run --rm --entrypoint /bin/bash "$BASE_IMAGE" -c "$1" 2>&1
+}
+
+# 在镜像内执行 bash 命令，并注入一个环境变量
+# in_image_with_env <变量名> <变量值> <命令>
+# 模式串走 env 传递而不是拼进命令行：模式里的 $PS1 / $(pwd) 之类内容
+# 不会被外层 shell 或容器内 shell 求值（求值了就不是「逐字节等于原文」了）。
+in_image_with_env() {
+  docker run --rm --entrypoint /bin/bash -e "$1=$2" "$BASE_IMAGE" -c "$3" 2>&1
 }
 
 echo "===== 基础镜像判定：$BASE_IMAGE ====="
@@ -196,6 +204,66 @@ if [ -n "$ver" ] && [ "$cert" = "cert-ok" ]; then
 else
   check "通用工具层：ca-certificates 已安装且证书文件存在" 1 "版本=${ver:-<无>}，证书=${cert}"
 fi
+
+# ---------------------------------------------------------------- 10. OSC 1337 pwd 上报注入 + UTF-8 locale（0.3.1 新增）
+# 10.1 注入行逐字节等于定稿写法（01 轮真沙箱实测定稿，逐字照抄）
+#     判据拆成两个**各自独立**的判定：
+#       ①「存在该行」——grep -Fx（定长串 + 整行匹配）；不用 tail -n 1 猜末行；
+#       ②「该行是最后一个非空行」——awk 取最后一个非空行（只含空白的行按空行算）
+#          再与定稿原文逐字节比对。
+expected_osc="export PS1=\"\$PS1\"'\\[\\e]1337;CurrentDir=\$(pwd)\\a\\]'"
+in_image_with_env OSC_EXPECTED "$expected_osc" 'grep -Fxq "$OSC_EXPECTED" /etc/bash.bashrc' >/dev/null 2>&1
+osc_line_rc=$?
+last_nonempty="$(in_image "awk 'NF{last=\$0} END{print last}' /etc/bash.bashrc")"
+if [ "$osc_line_rc" -eq 0 ] && [ "$last_nonempty" = "$expected_osc" ]; then
+  check "OSC 1337 注入段在 /etc/bash.bashrc 末尾" 0 "定稿行存在（grep -Fx）且是最后一个非空行（逐字节一致）"
+else
+  if [ "$osc_line_rc" -eq 0 ]; then
+    osc_note="定稿行存在=是"
+  else
+    osc_note="定稿行存在=否"
+  fi
+  check "OSC 1337 注入段在 /etc/bash.bashrc 末尾" 1 "${osc_note}；最后非空行=${last_nonempty}"
+fi
+
+# 10.2 原有内容保留：注入是「追加」，不是覆盖
+#     判据改为「Debian 原生 PS1 定义行逐字节仍在」（/etc/bash.bashrc 的原生那一行）。
+#     原判据是「数 PS1= 的行数」——注入行自身也是 PS1= ⇒ 计数法证明不了「原 PS1 保留」。
+native_ps1='  PS1='"'"'${debian_chroot:+($debian_chroot)}\u@\h:\w\$ '"'"''
+if in_image_with_env NATIVE_PS1 "$native_ps1" 'grep -Fxq "$NATIVE_PS1" /etc/bash.bashrc' >/dev/null 2>&1; then
+  check "OSC 1337 注入为追加（原有 PS1 保留）" 0 "Debian 原生 PS1 定义行逐字节仍在"
+else
+  check "OSC 1337 注入为追加（原有 PS1 保留）" 1 "Debian 原生 PS1 定义行未命中"
+fi
+
+# 10.3 功能判定：交互式非登录 shell 实测发出 OSC 1337
+#     （bash 的提示符与 OSC 走 stderr，捕获必须带 2>&1）
+out="$(in_image "printf 'exit\n' | bash -i 2>&1")"
+if printf '%s' "$out" | grep -q '1337;CurrentDir=/workspace'; then
+  check "bash -i 实测上报 OSC 1337 CurrentDir" 0 "载荷 CurrentDir=/workspace"
+else
+  check "bash -i 实测上报 OSC 1337 CurrentDir" 1 "未捕获到 OSC：$(printf '%s' "$out" | tr '\n' ' ')"
+fi
+
+# 10.4 降级判定：dash / sh 不读 bashrc，不产生 OSC，输出不被污染
+#     匹配 OSC 的**起始形态**（ESC ] 1337;）而不是裸 '1337'：
+#     将来 WORKDIR 之类的路径含 1337 时，裸串匹配会误判成「出现了 OSC」。
+out="$(in_image "printf 'exit\n' | sh -i 2>&1")"
+if printf '%s' "$out" | grep -q $'\033]1337;'; then
+  check "sh -i 自然降级：不产生 OSC 序列" 1 "sh 会话里出现了 OSC"
+else
+  check "sh -i 自然降级：不产生 OSC 序列" 0 "0 条 OSC，输出无污染"
+fi
+
+# 10.5 / 10.6 UTF-8 locale（容器内 locale 原本处于未定义态）
+for key in LANG LC_ALL; do
+  out="$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$BASE_IMAGE" 2>/dev/null | grep -E "^${key}=" || true)"
+  if [ "$out" = "${key}=C.UTF-8" ]; then
+    check "ENV ${key}=C.UTF-8" 0 "$out"
+  else
+    check "ENV ${key}=C.UTF-8" 1 "${out:-未设置}"
+  fi
+done
 
 # ---------------------------------------------------------------- 汇总
 echo

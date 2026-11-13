@@ -6,6 +6,7 @@
 
 > **目录位置**：本目录 2026-11-01 由 `platform/base-image/` 上移到仓库根 `base-image/`；镜像名 `sandbox-platform/base:<版本>` 与构建口径均未变。
 
+> **0.3.1 起新增两样东西。** ① `/etc/bash.bashrc` **末尾追加** OSC 1337 pwd 上报注入段（交互式非登录 shell `bash -i` 生效，`sh` / `dash` 自然降级）；② Dockerfile 新增两条 `ENV`：`LANG=C.UTF-8` 与 `LC_ALL=C.UTF-8`（容器内 locale 原本处于未定义态）。
 > **0.3.0 起新增通用工具层。** 9 个通用工具包（git / openssh-client / vim / curl / ca-certificates / unzip / xz-utils / procps / less）随镜像预装，构建期联网 apt 拉取。
 > **0.2.0 起不再内置依赖镜像离线包。** 依赖镜像（Postgres / MinIO / Logto 等）与一切外部镜像
 > 统一经宿主的统一镜像代理（`rpardini/docker-registry-proxy`）缓存拉取，见 ADR 0008。
@@ -18,9 +19,36 @@
 | `/usr/local/bin/docker` | docker 客户端 | 静态编译的 Go 二进制，版本必须与宿主守护进程一致 |
 | `/usr/bin/git`、`/usr/bin/ssh`、`/usr/bin/vim`、`/usr/bin/curl`、`/usr/bin/unzip`、`/usr/bin/xz`、`/usr/bin/ps`、`/usr/bin/less` | 通用工具层 | apt 装的 9 个通用工具包；`ca-certificates` 不提供命令，只提供 `/etc/ssl/certs/ca-certificates.crt` |
 | `/entrypoint.sh` | 入口脚本 | 纯 bash，只依赖 bash 与 docker |
+| `/etc/bash.bashrc` | 平台注入的 OSC 1337 pwd 上报段 | **追加**在文件末尾（原内容保留）；`bash -i` 起会话时把当前目录以 `ESC ] 1337 ; CurrentDir=<path> BEL` 上报 |
 | `/workspace` | 便捷空目录 | 容器层目录（非 volume），随容器删除而消失 |
 
 镜像内**没有** `/opt/deps/` 目录、**没有** `load-deps.sh` / `fetch-deps.sh`、**没有任何 `.tar` 归档**。
+
+## OSC 1337 pwd 上报注入（0.3.1 新增）
+
+`/etc/bash.bashrc` **末尾追加**一段（**追加**，原内容一字不改）：
+
+```bash
+export PS1="$PS1"'\[\e]1337;CurrentDir=$(pwd)\a\]'
+```
+
+- **单引号是关键**：`$(pwd)` 留在提示符里，bash **每次画提示符时**才求值 ⇒ 路径随 `cd` 实时更新（写成双引号会在 `export` 那一刻被冻死）；
+- `\[` … `\]` 是 bash 的「不可见区」标记，整段 OSC 不占位、不影响光标定位；
+- **追加在末尾是必须的**：Debian 的 `/etc/bash.bashrc` 顶部有非交互守卫（`[ -z "$PS1" ] && return`），非交互 shell 读到那里就返回 ⇒ 注入**只对会画提示符的交互式非登录 shell 生效**；
+- **生效范围**：交互式非登录 shell（`bash -i`）与登录式交互 shell（`bash -l -i`）；`bash`（非交互）、`bash -c` 不读任何 rc 文件 ⇒ 无 OSC；
+- **自然降级**：`/bin/sh` 是 `dash`，只读 `$ENV`（平台未设置），**不读** `/etc/bash.bashrc` ⇒ `sh -i` / `dash -i` 不产生任何 OSC，终端输出不被污染；
+- 写法由 01 轮真沙箱实测定稿（实测记录见 [[tasks/file-pane-obsidian/01-prototype-osc-loop.md|任务 01 打样轮]]），**逐字照抄，未自行发挥**。
+
+## UTF-8 locale（0.3.1 新增）
+
+Dockerfile 新增两条 `ENV`：
+
+```dockerfile
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+```
+
+容器内 locale 原本**处于未定义态**（0.3.1 之前一条 `ENV` 都没有）。这是纯新增，不改变镜像内任何业务运行时（镜像里本来就没有业务运行时）。
 
 ## 通用工具层
 
@@ -46,7 +74,7 @@
 # 在仓库根目录执行；构建期需要外网（apt 拉取通用工具包）
 docker build \
   --build-arg DOCKER_CLI_VERSION=29.6.2 \
-  -t sandbox-platform/base:0.3.0 \
+  -t sandbox-platform/base:0.3.1 \
   base-image
 ```
 
@@ -64,16 +92,17 @@ docker build \
 |------|--------|------|
 | `DOCKER_CLI_VERSION` | `29.6.2` | docker 客户端版本，**必须与宿主守护进程版本一致**（client/server 版本一致性是验收判据） |
 | `BASE_IMAGE` | `debian:bookworm-slim` | 底座发行版 |
-| `BASE_VERSION` | `0.3.0` | 只写入 OCI label |
+| `BASE_VERSION` | `0.3.1` | 只写入 OCI label |
 
 宿主守护进程升级后，必须用新版本号重建基础镜像，否则容器内 `docker version` 的客户端与服务端版本会不一致。
 
 ## 镜像标签规则
 
-- 命名：`sandbox-platform/base:<平台语义化版本>`，例如 `sandbox-platform/base:0.3.0`。
+- 命名：`sandbox-platform/base:<平台语义化版本>`，例如 `sandbox-platform/base:0.3.1`。
 - 版本号语义：`<主>.<次>.<修订>`，主次跟随平台自身版本，修订号在**依赖离线包更新**或**入口脚本行为变更**时递增。
 - 0.2.0 的修订原因：废弃离线包机制（ADR 0008），镜像内不再携带依赖镜像 tar。
 - 0.3.0 的修订原因：新增通用工具层（9 个包），构建口径从零网络改为联网 apt 拉包。
+- 0.3.1 的修订原因：新增 OSC 1337 pwd 上报注入段（`/etc/bash.bashrc`）与两条 UTF-8 locale `ENV`。
 - docker 客户端版本**不写进 tag**，它是构建参数；版本不匹配时重建同名 tag 即可。
 
 ## 挂载点约定
@@ -91,7 +120,7 @@ docker build \
 # 套接字属主是守护进程用户、权限 0660，容器内需以 root 运行才能访问
 docker run -it --rm \
   -v /run/user/<uid>/docker.sock:/var/run/docker.sock \
-  sandbox-platform/base:0.3.0
+  sandbox-platform/base:0.3.1
 ```
 
 ## 入口行为
@@ -119,7 +148,7 @@ docker run -it --rm \
 基础镜像就是普通底座，用户镜像直接 `FROM` 它：
 
 ```dockerfile
-FROM sandbox-platform/base:0.3.0
+FROM sandbox-platform/base:0.3.1
 
 # 用户自己的层：代码、配置、其它工具
 COPY ./app /opt/app
@@ -142,13 +171,13 @@ docker build -t my-sandbox:0.1.0 -f ./Dockerfile .
 
 | 脚本 | 作用 | 依赖 |
 |------|------|------|
-| `verify.sh` | 镜像级判定：业务运行时缺席、**通用工具层在场**、无 volume 挂载点、`/workspace` 语义、入口脚本静态检查与入口行为、**镜像内无离线包痕迹**（共 42 项） | 宿主 docker 守护进程 |
+| `verify.sh` | 镜像级判定：业务运行时缺席、**通用工具层在场**、无 volume 挂载点、`/workspace` 语义、入口脚本静态检查与入口行为、**镜像内无离线包痕迹**、**OSC 1337 注入段逐字节比对 + `bash -i` 功能判定 + `sh -i` 降级判定**、**两条 locale ENV**（共 48 项） | 宿主 docker 守护进程 |
 | `verify-rootless.sh` | 免 root 守护进程联调：入口脚本行为、客户端与服务端版本一致性、镜像内无离线包目录 | 复用同目录 `rootless/` 的 00/01/04 脚本 |
 
 ```bash
 cd base-image
-./verify.sh                                   # 镜像级判定（默认 sandbox-platform/base:0.3.0）
-BASE_IMAGE=sandbox-platform/base:0.3.0 ./verify-rootless.sh   # 免 root 联调（测完自动回收）
+./verify.sh                                   # 镜像级判定（默认 sandbox-platform/base:0.3.1）
+BASE_IMAGE=sandbox-platform/base:0.3.1 ./verify-rootless.sh   # 免 root 联调（测完自动回收）
 ```
 
 实测数据见 [RESULTS.md](RESULTS.md)。

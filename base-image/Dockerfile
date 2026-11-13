@@ -11,14 +11,14 @@
 # 构建：
 #   docker build \
 #     --build-arg DOCKER_CLI_VERSION=29.6.2 \
-#     -t sandbox-platform/base:0.3.0 base-image
+#     -t sandbox-platform/base:0.3.1 base-image
 
 # 客户端版本：与宿主 dockerd 版本保持一致（client/server 版本一致性是验收判据）
 ARG DOCKER_CLI_VERSION=29.6.2
 # 底座：体积优先的精简发行版
 ARG BASE_IMAGE=debian:bookworm-slim
 # 镜像版本号，仅用于 OCI label
-ARG BASE_VERSION=0.3.0
+ARG BASE_VERSION=0.3.1
 
 # ---------------------------------------------------------------- 阶段 1：抠 docker 客户端
 # 官方 docker 客户端镜像里的 /usr/local/bin/docker 是静态编译的 Go 二进制，可直接跨发行版使用
@@ -45,6 +45,11 @@ LABEL org.opencontainers.image.title="sandbox-platform/base" \
       org.opencontainers.image.version="${BASE_VERSION}" \
       io.sandbox-platform.docker-client.version="${DOCKER_CLI_VERSION}"
 
+# UTF-8 locale（0.3.1 新增）：容器内 locale 原本处于未定义态，中文输出可能间歇乱码。
+# 两条都是纯新增，不影响镜像内任何业务运行时（镜像里本来就没有业务运行时）。
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+
 # docker 客户端（静态二进制，无外部运行库依赖）
 COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
 
@@ -56,6 +61,27 @@ RUN set -eux; \
     chmod 0755 /entrypoint.sh; \
     mkdir -p /workspace; \
     chmod 1777 /workspace
+
+# OSC 1337 pwd 上报注入（0.3.1 新增）：追加到 /etc/bash.bashrc 末尾，保留原有内容。
+# 定稿写法逐字取自 01 轮真沙箱实测（docs/tasks/file-pane-obsidian/01-prototype-osc-loop.md）：
+#     export PS1="$PS1"'\[\e]1337;CurrentDir=$(pwd)\a\]'
+# 单引号是关键：$(pwd) 必须留到「画提示符时」才求值（写双引号会在 export 那一刻被冻死）；
+# \[ \] 是 bash 的不可见区标记，整段 OSC 不占位、不参与光标定位。
+# 追加在文件末尾是必须的：Debian 的 /etc/bash.bashrc 顶部有非交互守卫，
+# 非交互 shell 读到那里就返回 ⇒ 注入只对会画提示符的交互式非登录 shell（bash -i）生效。
+# 转义说明：RUN 里用 printf '%s\n' 逐行追加（printf 的 %s 不解释参数里的反斜杠转义，
+# 落盘的就是上面那行原文）；行内的单引号用 shell 的 '\'' 拼接技巧写出。
+# 构建期自检：追加后立刻 grep -Fx 校验「落盘的那一行逐字节等于定稿原文」——
+# 不等则本次构建直接失败（set -e），坏镜像出不了厂；「该行是不是最后一个非空行」
+# 由 verify.sh 判（构建期不判，判了就把镜像结构也钉死在构建脚本里）。
+RUN set -eux; \
+    printf '%s\n' \
+      '' \
+      '# ---- 平台注入：OSC 1337 pwd 上报（交互式非登录 shell 生效）----' \
+      '# 单引号是关键：$(pwd) 留到画提示符时才求值；写成双引号会把路径冻死。' \
+      'export PS1="$PS1"'\''\[\e]1337;CurrentDir=$(pwd)\a\]'\''' \
+      >> /etc/bash.bashrc; \
+    grep -Fxq 'export PS1="$PS1"'\''\[\e]1337;CurrentDir=$(pwd)\a\]'\''' /etc/bash.bashrc
 
 WORKDIR /workspace
 

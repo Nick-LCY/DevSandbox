@@ -82,6 +82,22 @@ SYSTEM_USER_NAME_PATTERN = re.compile(r"[a-z_][a-z0-9_-]{0,30}")
 
 MAX_SYSTEM_USER_LENGTH = 31
 
+# 平台注入到沙箱容器的环境变量：实际生效的 docker 网络名。
+# 容器内变量（与终端会话注入的 ``SANDBOX_TERMINAL_SESSION`` 命名风格一致），
+# 不是宿主平台参数（平台参数前缀是 ``SANDBOX_PLATFORM_*``）。
+SANDBOX_NETWORK_ENV = "SANDBOX_NETWORK"
+
+# 平台强制注入到沙箱容器的 locale 变量与取值（**平台值优先**）。
+#
+# 双层口径：镜像 ENV（``LANG`` / ``LC_ALL`` = ``C.UTF-8``）是**基础层**，
+# 平台在起容器时再注入一遍是**强制层**——docker 的 ``-e`` 会覆盖镜像 ENV，
+# 且 ``LC_ALL`` 的优先级高于 ``LANG``：用户经创建参数声明任一条就能把容器内
+# locale 打回非 UTF-8（中文输出可能间歇乱码）。所以平台层必须两条都注入，
+# 且平台值覆盖用户声明的同名变量。
+SANDBOX_LANG_ENV = "LANG"
+SANDBOX_LC_ALL_ENV = "LC_ALL"
+SANDBOX_LOCALE_VALUE = "C.UTF-8"
+
 RECLAIM_UNTOUCHED_NOTE = "用户挂载的宿主机目录不受影响"
 RECLAIM_INCOMPLETE_NOTE = "依赖容器清单可能不完整（实时探测失败，仅列出元数据中已知的依赖容器）"
 
@@ -829,19 +845,40 @@ class SandboxService:
 
         镜像在调用本方法前已准备好（``auto``：代理拉取或宿主副本注入；
         ``host``：宿主副本注入），这里只负责起容器。
+
+        平台在这里合并注入 ``SANDBOX_NETWORK``：**创建与重启两条路径都走本方法**，
+        一处覆盖两条路径。值 = **实际生效的网络名**（``network`` 实参）——用户创建时
+        指定了自定义网络就取那个自定义值，**绝不字符串拼 ``<沙箱名>-net``**。
+
+        平台在这里同时**强制**注入 locale（``LANG`` / ``LC_ALL`` = ``C.UTF-8``）：
+        镜像 ENV 是**基础层**，平台注入是**强制层**——docker 的 ``-e`` 覆盖镜像 ENV，
+        且 ``LC_ALL`` 优先级高于 ``LANG``，用户声明任一条都会废掉镜像那层修复。
+
+        四条口径：
+        - **平台注入值优先**：用户声明的同名变量被覆盖（平台说的网络才是真在用的那个；
+          locale 同理：平台要的就是 UTF-8，不给用户留废掉它的口子）；
+        - **不写入 metadata**：``metadata.env`` 只装用户声明的值（平台注入值不是用户声明的）；
+        - **不经 API 响应掩码**：不进 ``metadata.env`` ⇒ 不会出现在详情接口的环境变量清单里；
+        - **不就地改写调用方的 env**：合并在本方法内的新 dict 上做，调用方传入的 dict 原样返回。
         """
         labels = {
             LABEL_NAME: name,
             LABEL_ROLE: ROLE_SANDBOX,
             LABEL_MANAGED: "true",
         }
+        container_env = dict(env)
+        if network:
+            container_env[SANDBOX_NETWORK_ENV] = network
+        # locale 强制层：平台值覆盖用户声明的同名变量（镜像 ENV 只是基础层）
+        container_env[SANDBOX_LANG_ENV] = SANDBOX_LOCALE_VALUE
+        container_env[SANDBOX_LC_ALL_ENV] = SANDBOX_LOCALE_VALUE
         return daemon.run_container(
             name=container_name,
             image=image,
             mounts=mounts,
             network=network,
             command=command,
-            env=env,
+            env=container_env,
             labels=labels,
             workdir=workdir,
         )

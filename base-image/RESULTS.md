@@ -1,6 +1,111 @@
 # 平台基础镜像 · 实测记录
 
-## 0.3.0（当前版本）—— 通用工具层
+## 0.3.1（当前版本）—— OSC 1337 pwd 上报注入 + UTF-8 locale
+
+- 执行日期：2026-11-13
+- 宿主：Ubuntu 26.04 LTS / 内核 7.0.0-38-generic / cgroup v2
+- Docker：客户端 + 服务端 **29.6.2**（宿主 root 守护进程），存储驱动 `overlayfs`（containerd 快照器）
+- 镜像：`sandbox-platform/base:0.3.1`，image id `sha256:51c34d2c512cb0ce7dcd0e23bf8cceaf12888ae5723a26fc7972b08eb66aba53`
+- 上游依赖：[[tasks/file-pane-obsidian/01-prototype-osc-loop.md|任务 01 打样轮]]（注入写法的真沙箱实测定稿，本轮逐字照抄）
+
+> **0.3.1 的变更原因**：两件事一起 bump——
+> ① `/etc/bash.bashrc` **末尾追加** OSC 1337 pwd 上报注入段（交互式非登录 shell 生效）；
+> ② Dockerfile 新增两条 `ENV`：`LANG=C.UTF-8` 与 `LC_ALL=C.UTF-8`（容器内 locale 原本处于未定义态）。
+
+### 一、构建
+
+| 项 | 实测 |
+|----|------|
+| 构建命令 | `docker build --build-arg DOCKER_CLI_VERSION=29.6.2 -t sandbox-platform/base:0.3.1 base-image` |
+| 构建耗时（墙钟） | **1.7 秒**（增量：底座层与 docker 客户端层与 0.3.0 共用缓存，只有新增的注入层与 ENV/LABEL 重新落层） |
+| 其中注入层 | 0.2 秒（`RUN printf … >> /etc/bash.bashrc`） |
+| 构建结果 | 成功（BuildKit，联网构建） |
+
+### 二、体积
+
+| 口径 | 0.3.0 | 0.3.1（当前） | 变化 |
+|------|------|------|------|
+| `docker image inspect .Size`（验收口径） | 98,494,563 B = 98.5 MB | **98,496,943 B = 98.5 MB** | **+2,380 B** |
+| `docker history` 分层（自顶向下） | — | 见下表 | 新增 1 个 12.3 kB 层（注入段） |
+
+`docker history`（0.3.1，自顶向下）：
+
+| 层 | 0.3.1 |
+|----|-------|
+| `ENTRYPOINT ["/entrypoint.sh"]` | 0 B |
+| `WORKDIR /workspace` | 4.1 kB |
+| **`RUN` bashrc 注入段（OSC 1337）** | **12.3 kB** |
+| `RUN` 入口脚本可执行位 + `/workspace` 目录权限 | 12.3 kB |
+| `COPY entrypoint.sh` | 8.19 kB |
+| `COPY` docker 客户端二进制 | 42.5 MB |
+| `ENV LC_ALL=C.UTF-8` / `ENV LANG=C.UTF-8` | 0 B / 0 B（ENV 不占层体积） |
+| `LABEL` / `ARG` | 0 B |
+| `RUN` apt 通用工具层（9 包） | 157 MB |
+| debian:bookworm-slim 底座 | 85.3 MB |
+
+### 三、注入段的最终形态
+
+`/etc/bash.bashrc` **末尾追加**（原 58 行一字不改，追加后 62 行）：
+
+```bash
+# ---- 平台注入：OSC 1337 pwd 上报（交互式非登录 shell 生效）----
+# 单引号是关键：$(pwd) 留到画提示符时才求值；写成双引号会把路径冻死。
+export PS1="$PS1"'\[\e]1337;CurrentDir=$(pwd)\a\]'
+```
+
+**Dockerfile 层面的转义处理**（关键点：容器内落盘的就是上面那行**原文**）：
+
+- 用 `printf '%s\n' <参数…> >> /etc/bash.bashrc` 逐行追加，**不用 `echo`**（dash 的 `echo` 会解释 `\e` 等反斜杠转义，会把行内容改坏）；`printf` 的 `%s` **不解释参数里的反斜杠序列** ⇒ `\e` / `\a` / `\[` / `\]` 原样落盘；
+- 行内需要出现**单引号**（`$(pwd)` 必须留在单引号里才能延迟求值），Dockerfile 的 `RUN` 又必须经 `/bin/sh -c` ⇒ 用 shell 的 **`'\''` 拼接技巧**写出：`'export PS1="$PS1"'\''\[\e]1337;CurrentDir=$(pwd)\a\]'\'''`；
+- 整行在 `RUN` 里**全程处于单引号内** ⇒ `$(pwd)` 与 `"$PS1"` 在构建期**不被求值**，落盘的就是定稿原文；
+- **追加在末尾**是必须的：Debian 的 `/etc/bash.bashrc` 顶部有非交互守卫（`[ -z "$PS1" ] && return`），非交互 shell 读到那里就返回 ⇒ 注入**只对会画提示符的交互式非登录 shell 生效**（这正是想要的效果）。
+
+### 四、判定结果
+
+#### `verify.sh`（镜像级，宿主 root 守护进程）：**48 项全通过**（42 项原有 + 6 项新增）
+
+| 判定组 | 项数 | 结果 |
+|--------|------|------|
+| 0～9. 原有判定组（镜像存在 / 基础命令 / 业务运行时缺席 / 无 volume 挂载点 / `/workspace` 语义 / 入口脚本静态检查 / 无离线包痕迹 / 入口行为 / 通用工具层） | **42** | 通过（逐项与 0.3.0 一致） |
+| 10.1 `OSC 1337 注入段在 /etc/bash.bashrc 末尾`（末行逐字节比对定稿原文） | 1 | 通过 |
+| 10.2 `OSC 1337 注入为追加（原有 PS1 保留）` | 1 | 通过 |
+| 10.3 `bash -i 实测上报 OSC 1337 CurrentDir`（功能判定） | 1 | 通过（载荷 `CurrentDir=/workspace`） |
+| 10.4 `sh -i 自然降级：不产生 OSC 序列` | 1 | 通过（0 条 OSC，输出无污染） |
+| 10.5 `ENV LANG=C.UTF-8` | 1 | 通过 |
+| 10.6 `ENV LC_ALL=C.UTF-8` | 1 | 通过 |
+| **合计** | **48** | **不通过 0 项** |
+
+> 判定总数口径：0.3.0 的 **42 项** + 本轮新增 **6 项** = **48 项**（与 0.3.0 当年「35 项 − 2 条被删的否定断言 + 9 条新增 = 42 项」同一套路：镜像内容变了，判定脚本跟着长）。
+
+#### 镜像内实测证据
+
+`bash -i` 的 OSC 序列（`xxd` 实测，`BEL` 终止）：
+
+```
+00000080: 3a2f 776f 726b 7370 6163 6523 201b 5d31  :/workspace# .]1
+00000090: 3333 373b 4375 7272 656e 7444 6972 3d2f  337;CurrentDir=/
+000000a0: 776f 726b 7370 6163 6507 6578 6974 0a65  workspace.exit.e
+```
+
+即 `ESC ] 1337 ; CurrentDir = /workspace BEL`（`1b 5d 31 33 33 37 3b … 07`）——与 01 轮真沙箱捕获的字节**完全同形**。
+
+`bash -i` 内 `cd /tmp` 后，下一条 OSC 即变为 `CurrentDir=/tmp`（路径随 `cd` 实时更新 ⇒ `$(pwd)` 确实延迟求值）。
+
+`sh -i`（`/bin/sh` → dash）：**0 条 OSC**，输出干净（`sh: 0: can't access tty; job control turned off` 是无 tty 的正常噪声，不是 bashrc 污染）。
+
+locale：`bash -c 'echo "$LANG|$LC_ALL"'` ⇒ `C.UTF-8|C.UTF-8`。
+
+### 五、踩坑清单
+
+1. **镜像里的 `echo` 不能用来写带反斜杠的行**：dash 的 `echo` 会解释 `\e` / `\a` 等转义序列 ⇒ 写 OSC 注入行会把内容改坏。必须用 `printf '%s\n'`（`%s` 不解释参数里的反斜杠）。
+2. **行内单引号在 Dockerfile 的 `RUN` 里要转**：`RUN` 经 `/bin/sh -c`，行内既要保留单引号又要不被展开，用 `'\''` 拼接技巧最省事；**不要**为了省事改成双引号（`$(pwd)` 会被冻死，与 01 轮证伪的写法同型）。
+3. **注入必须追加在 `/etc/bash.bashrc` 末尾**：文件顶部的非交互守卫决定了「追加在中间」也会被后面的内容影响、「追加在末尾」才是确定生效的位置。
+4. **`verify.sh` 里断言注入行时不能直接用 `grep "^PS1="`**：Debian 的 `PS1` 定义是**缩进两格**的（`  PS1='${debian_chroot:+($debian_chroot)}\u@\h:\w\$ '`），要用 `grep -cE` 匹配「行首可选空白 + `PS1=`」。
+5. **镜像内跑 `bash -i` 会带两条噪声**：`bash: cannot set terminal process group` 与 `bash: no job control in this shell`（无 tty 时的正常提示，**不是** bashrc 污染）；判定里按 `1337;CurrentDir=` 子串匹配，不受噪声影响。
+
+---
+
+## 0.3.0 —— 通用工具层
 
 - 执行日期：2026-10-31
 - 宿主：Ubuntu 26.04 LTS / 内核 7.0.0-38-generic / cgroup v2
