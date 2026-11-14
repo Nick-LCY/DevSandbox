@@ -87,5 +87,13 @@ status: todo        # todo | doing | done | blocked
 - [[tasks/file-pane-obsidian/08-acceptance-and-docs.md]] — 验收与文档收口：e2e 用例（窗格分屏 / 折叠 / 空态 + Obsidian 双栏 / wikilink 跳转 / 错误条）、门禁全量、**PRD 验收 38 条逐条核销**、文档同步（`API.md` / 标识表 / 词汇表 / 看板 / 两份清单）、全轮留档 `RESULTS.md`（**done：2026-11-14 收口**——e2e 新增 `14-file-pane` 6 条 + `15-obsidian-reader` 4 条、`12-file-transfer` 改写 3 条，**全量 63/63 真沙箱全绿（11.1 分钟）**；门禁全量见 RESULTS；PRD **38 / 38** 核销（证据分真机 e2e / 单测 / 既有落档三档）；词汇表 5 词条、前端约定 4 条、ADR 0004 修订行、看板与两份清单同步、**RESULTS.md 落库**）
 - [[tasks/file-pane-obsidian/RESULTS.md]] — 文件窗格与 Obsidian 阅读器**全轮收口留档**（01~08，2026-11-14 收口）：轮次总表、门禁数字表（核心 429 + ruff 0 / 服务端 348 + ruff 0 / vitest 919 + typecheck 双零 + build / cargo 47 / **e2e 63/63（11.1 分钟，真沙箱）**）、真机验收记录（10 条新用例 + spec12 改写 + teardown 清场逐项核验；**用户浏览器端复验待用户执行**，前置 = 存量沙箱重建 `base:0.3.1`）、已知边界与留白（5 处无真机覆盖项等 9 条）、提交链（`b84f11e` → `c885f83`，08 见 git log 最新）
 
+- [[tasks/registry-cache-manifest/README.md]] — 镜像缓存清单与缓存优先拉取引导任务集索引，含 6 个任务、依赖顺序与关键前置风险（**2026-11-14 立项**；依赖 `01 → 02 → {03, 04, 05 可并行} → 06`；**机制不设打样轮**——前向 md5 验证与反向 `KEY:` 头枚举已双向实证；**现有沙箱重建由用户完成**，为端到端验收（PRD 21/26/30）硬前置；PRD 验收 32 条全覆盖映射）
+- [[tasks/registry-cache-manifest/01-core-cache-scanner.md]] — 核心包缓存扫描器（`cache_manifest.py`：纯解析函数与特权 IO 分离 + 单测 + 真缓存实测，PRD 验收 1~7；无 GC 入口）
+- [[tasks/registry-cache-manifest/02-server-endpoint-and-token.md]] — 服务端端点与受限令牌（`GET /api/proxy/cache/images`：json|text、422、503、60s TTL + `cache-images-token.json` 凭据文件 + 双凭据限界 + 单测，PRD 验收 8~15）
+- [[tasks/registry-cache-manifest/03-injection-pipeline.md]] — 注入管线（服务端创建/启动递参 + 核心包平台强制注入 `SANDBOX_IMAGE_CACHE_URL`/`TOKEN` + 可达地址解析兜底 + 单测，PRD 验收 16~20）
+- [[tasks/registry-cache-manifest/04-base-image-cached-images.md]] — 基础镜像 `base:0.4.0` 与 `cached-images` 命令（纯 bash 三态 + `--noproxy` + bump + 构建推送，PRD 验收 22~26）
+- [[tasks/registry-cache-manifest/05-console-cache-images-view.md]] — console 缓存镜像清单视图（设置抽屉代理状态区旁 + 空态/失败态 + 手动刷新，PRD 验收 27~28）
+- [[tasks/registry-cache-manifest/06-acceptance-and-docs.md]] — 验收与文档收口（e2e 含端到端 21 + 门禁全量 + PRD 32 条逐条核销 + 文档同步 + RESULTS.md 留档，PRD 验收 21、29~32）
+
 ## 看板
 任务状态汇总见 [[current-state.md]]，由人维护。
