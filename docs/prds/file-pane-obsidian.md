@@ -1,7 +1,7 @@
 # 文件窗格与 Obsidian 阅读器
 
 > 日期：2026-11-12
-> 修订：2026-11-13 —— 大文件预览改「二次确认 + 进度条加载」（废除 2 MB 强制截断）；镜像补 UTF-8 locale 并新增容器注入 SANDBOX_NETWORK（并入任务 02）；Obsidian tab 图标改官方 logo SVG（源 link 见方案六）。
+> 修订：2026-11-13 —— 大文件预览改「二次确认 + 进度条加载」（废除 2 MB 强制截断）；镜像补 UTF-8 locale（镜像**基础层** + 平台**强制注入层**，平台值优先）并新增容器注入 SANDBOX_NETWORK（并入任务 02）；Obsidian tab 图标改官方 logo SVG（源 link 见方案六）。
 > 立项方式：**两轮低保真 HTML 原型逐项拍板**（原型只作交互参考，**口径以本文为准**）
 > 任务集：[[tasks/file-pane-obsidian/README.md|文件窗格与 Obsidian 阅读器任务集]]（01~08 八个任务与依赖顺序）
 > 前置轮次：[[prds/runtime-file-transfer.md|运行期文件传输 PRD]]（文件浏览抽屉、下载通道与 `normalizeContainerPath` 的来源）
@@ -190,6 +190,7 @@ xterm 的状态机负责跨帧序列边界（一条 OSC 序列可能被拆到两
 
 - base image 的 Dockerfile **新增** `ENV LANG=C.UTF-8` 与 `ENV LC_ALL=C.UTF-8`（**纯新增**——现状 Dockerfile **一条 ENV 都没有**，容器内 locale 处于**未定义态**）；
 - 这与看板 TODO「**终端中文间歇乱码**」的排查方向②「**容器内 locale 非 UTF-8**」直接相关——该项**落地后该 TODO 不自动关闭**，**以实测观察是否收敛为准**。
+- 此外，容器创建时平台**强制注入** `LANG` / `LC_ALL` = `C.UTF-8`（**平台值优先**于用户同名 env，与 `SANDBOX_NETWORK` 同口径，覆盖创建与重启两条路径）——镜像 ENV 是基础层，平台注入是强制层，防止用户 env 静默把 locale 打回非 UTF-8。
 
 **② 创建沙箱容器时注入 `SANDBOX_NETWORK`**
 
