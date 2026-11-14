@@ -1212,8 +1212,11 @@ describe('三段式分屏与文件窗格', () => {
     // **常显**：把手带静置有底色（不再「hover 才显形」的 bg-transparent）
     expect(tokens, '把手带应有静置可见的底色（bg-muted）').toContain('bg-muted');
     expect(tokens).not.toContain('bg-transparent');
-    // hover 高亮保留
-    expect(tokens).toContain('hover:bg-primary/30');
+    // hover 高亮保留：**不透明叠加实色**（不用半透明 `/30`，半透明会透出终端底色）
+    expect(tokens).toContain(
+      'hover:bg-[color-mix(in_oklab,var(--app-primary)_30%,var(--app-muted))]',
+    );
+    expect(tokens.some((token) => token.includes('/30'))).toBe(false);
     // **直角**：把手本体与 hover 高亮都不带任何圆角
     expect(tokens.filter((token) => token.includes('rounded'))).toEqual([]);
     // 抓握图标静置可见（不再是半透明 /40，hover / 聚焦时加深）

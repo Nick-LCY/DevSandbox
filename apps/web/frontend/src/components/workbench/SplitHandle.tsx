@@ -10,8 +10,13 @@ import type { KeyboardEvent, PointerEvent } from 'react';
  *   「hover 才显形」——宽窄可调这件事要一直看得见；
  * - **直角**：把手本体与 hover 高亮都**不带圆角**（`rounded-md` 已去），
  *   与周围直角环境一致；
- * - hover 高亮保留（`bg-primary/30`，同样直角），抓握图标 hover / 键盘
- *   聚焦时加深；
+ * - hover 高亮保留（同样直角），抓握图标 hover / 键盘聚焦时加深；
+ * - hover 高亮是**不透明叠加实色**：`color-mix(in oklab, var(--app-primary)
+ *   30%, var(--app-muted))`（primary 三成叠在 muted 底上的实色）——不用
+ *   `bg-primary/30` 这类半透明色，半透明会把下方终端底色透出来，叠加色随
+ *   明暗两套主题自动跟随（两个令牌都在 `.dark` 里重定义）；变量用 `--app-*`
+ *   是因为本主题 `@theme inline` 不把 `--color-*` 落到 :root（见
+ *   `src/styles/globals.css`），任意值里引用 `var(--primary)` 会在运行期失效；
  * - 骑缝：`-mx-1.5 w-3`（**每侧压入 6px**）骑在两格的接缝上，**不占布局宽度**
  *   （两侧零间隙的视觉合并不受影响）。审查收敛（复验修复轮·第二批）：从
  *   `-mx-2 w-4`（每侧 8px）收窄而来——把手带对两侧内容的遮挡减半（终端右缘
@@ -67,7 +72,7 @@ export function SplitHandle({
       onPointerCancel={onPointerCancel}
       onKeyDown={onKeyDown}
       data-testid={testId}
-      className="group relative z-10 -mx-1.5 flex w-3 flex-none cursor-col-resize touch-none select-none items-center justify-center bg-muted transition-colors hover:bg-primary/30 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+      className="group relative z-10 -mx-1.5 flex w-3 flex-none cursor-col-resize touch-none select-none items-center justify-center bg-muted transition-colors hover:bg-[color-mix(in_oklab,var(--app-primary)_30%,var(--app-muted))] focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
     >
       <GripVertical
         className="pointer-events-none size-3 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground group-focus-visible:text-foreground"

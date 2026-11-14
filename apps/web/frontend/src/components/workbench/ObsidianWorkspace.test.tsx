@@ -277,8 +277,11 @@ describe('双栏分隔把手（复验修复轮·第二批 #4：左树可拖拽�
     // 常显：把手带静置有底色（不再「hover 才显形」）
     expect(tokens).toContain('bg-muted');
     expect(tokens).not.toContain('bg-transparent');
-    // hover 高亮保留；本体与高亮都直角（无任何圆角 token）
-    expect(tokens).toContain('hover:bg-primary/30');
+    // hover 高亮保留（**不透明叠加实色**，不用半透明 `/30`）；本体与高亮都直角（无任何圆角 token）
+    expect(tokens).toContain(
+      'hover:bg-[color-mix(in_oklab,var(--app-primary)_30%,var(--app-muted))]',
+    );
+    expect(tokens.some((token) => token.includes('/30'))).toBe(false);
     expect(tokens.filter((token) => token.includes('rounded'))).toEqual([]);
     // 抓握图标静置可见（不再是半透明 /40）
     const icon = handle.querySelector('svg');
