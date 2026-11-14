@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { GripVertical, Loader2, Plus } from 'lucide-react';
+import { Loader2, Plus } from 'lucide-react';
 
 import { api } from '../api/client';
 import { cn } from '../lib/cn';
@@ -37,6 +37,7 @@ import { useToast } from './Toast';
 import { CloseSessionDialog } from './workbench/CloseSessionDialog';
 import { FileBrowserPanel } from './workbench/FileBrowserPanel';
 import { ObsidianWorkspace } from './workbench/ObsidianWorkspace';
+import { SplitHandle } from './workbench/SplitHandle';
 import { TerminalTabs, type TerminalTabItem } from './workbench/TerminalTabs';
 
 /** 状态标签文案。 */
@@ -766,38 +767,31 @@ export function TerminalPanel({
               </div>
 
               {/*
-                中：接缝上的**抽屉风格拖拽把手**（视觉照 `DrawerShell` 的宽度
-                把手：`GripVertical` 抓握图标 + hover 变色 + 焦点环，竖向适配为
-                全高竖条）。
+                中：接缝上的**骑缝拖拽把手**（共用组件 `SplitHandle`，与 Obsidian
+                双栏的分隔线同一视觉）。
 
-                与窗格之间**零间隙**（用户浏览器复验修复轮）：把手不再占布局
-                宽度——`w-4` 配 `-mx-2` 让它骑在接缝上（左右各压进邻格 8px），
-                静置时透明，hover / 聚焦才显出把手带与图标；role / aria / 指针
-                拖拽 / 键盘调宽语义全部不变。
+                复验修复轮·第二批 #2 / #6：把手从「hover 显形」改为**固定常显
+                区域**（把手带 `bg-muted` 与抓握图标静置就可见，交互提示更清楚），
+                本体与 hover 高亮都**去圆角**（直角，与周围直角环境一致）；仍骑在
+                接缝上（审查收敛后 `-mx-1.5 w-3`、每侧压入 6px，不占布局宽度；
+                从每侧 8px 收窄——终端右缘字符遮挡减半，但仍可能压到边缘字符列，
+                属骑缝设计的固有代价，请真机定夺），role / aria / 指针拖拽 /
+                键盘调宽语义零改动。
                 折叠态不出把手（竖条上只有展开按钮，没有可拖的东西）。
               */}
               {paneVisible && !paneCollapsed && (
-                <div
-                  role="separator"
-                  aria-orientation="vertical"
-                  aria-label="调整文件窗格宽度"
-                  aria-valuemin={FILE_PANE_MIN_WIDTH_PX}
-                  aria-valuemax={paneMaxWidth}
-                  aria-valuenow={paneWidth}
-                  tabIndex={0}
+                <SplitHandle
+                  label="调整文件窗格宽度"
+                  min={FILE_PANE_MIN_WIDTH_PX}
+                  max={paneMaxWidth}
+                  value={paneWidth}
+                  testId="page-terminal-split-handle"
                   onPointerDown={handleSplitPointerDown}
                   onPointerMove={handleSplitPointerMove}
                   onPointerUp={handleSplitPointerUp}
                   onPointerCancel={handleSplitPointerUp}
                   onKeyDown={handleSplitKeyDown}
-                  data-testid="page-terminal-split-handle"
-                  className="group relative z-10 -mx-2 flex w-4 flex-none cursor-col-resize touch-none select-none items-center justify-center rounded-md bg-transparent transition-colors hover:bg-primary/30 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
-                >
-                  <GripVertical
-                    className="pointer-events-none size-3 text-muted-foreground/40 transition-colors group-hover:text-muted-foreground group-focus-visible:text-foreground"
-                    aria-hidden="true"
-                  />
-                </div>
+                />
               )}
 
               {/*

@@ -236,6 +236,124 @@ describe('引导态（未设根）', () => {
   });
 });
 
+describe('双栏分隔把手（复验修复轮·第二批 #4：左树可拖拽）', () => {
+  function pointerEvent(type: string, clientX: number, pointerId: number): Event {
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX });
+    Object.defineProperty(event, 'pointerId', { value: pointerId });
+    return event;
+  }
+
+  async function renderWithRoot(): Promise<HTMLElement> {
+    mockVault();
+    writeStoredVaultRoot('demo', ROOT);
+    renderWorkspace();
+    await screen.findByTestId('page-sandbox-detail-obsidian-vault-root');
+    return screen.getByTestId('page-sandbox-detail-obsidian');
+  }
+
+  it('分隔把手：role=separator + 数值可读（默认树宽 264、下限 180）', async () => {
+    await renderWithRoot();
+
+    const handle = screen.getByTestId('page-sandbox-detail-obsidian-divider');
+    expect(handle.getAttribute('role')).toBe('separator');
+    expect(handle.getAttribute('aria-orientation')).toBe('vertical');
+    expect(handle.getAttribute('aria-label')).toBe('调整 vault 树宽度');
+    expect(handle.getAttribute('aria-valuemin')).toBe('180');
+    // jsdom 量不到容器宽 ⇒ 上限就是绝对最大宽 520
+    expect(handle.getAttribute('aria-valuemax')).toBe('520');
+    expect(handle.getAttribute('aria-valuenow')).toBe('264');
+    // a11y 增强（复验修复轮·第二批审查）：数值带单位（两处调用共用）
+    expect(handle.getAttribute('aria-valuetext')).toBe('264px');
+    // 左树按当前宽度渲染（默认 264px），预览区吃剩余宽度（flex-1）
+    const tree = screen.getByTestId('page-sandbox-detail-obsidian-vault-tree');
+    expect(tree.style.width).toBe('264px');
+  });
+
+  it('把手常显且直角（与文件窗格骑缝把手同一份共用组件）', async () => {
+    await renderWithRoot();
+
+    const handle = screen.getByTestId('page-sandbox-detail-obsidian-divider');
+    const tokens = handle.className.split(/\s+/).filter(Boolean);
+    // 常显：把手带静置有底色（不再「hover 才显形」）
+    expect(tokens).toContain('bg-muted');
+    expect(tokens).not.toContain('bg-transparent');
+    // hover 高亮保留；本体与高亮都直角（无任何圆角 token）
+    expect(tokens).toContain('hover:bg-primary/30');
+    expect(tokens.filter((token) => token.includes('rounded'))).toEqual([]);
+    // 抓握图标静置可见（不再是半透明 /40）
+    const icon = handle.querySelector('svg');
+    expect(icon).toBeTruthy();
+    const iconTokens = (icon as unknown as SVGElement).getAttribute('class')?.split(/\s+/) ?? [];
+    expect(iconTokens).toContain('text-muted-foreground');
+    expect(iconTokens.some((token) => token.includes('/40'))).toBe(false);
+  });
+
+  it('指针拖拽：树在左 ⇒ 往右拖树变宽、往左拖树变窄', async () => {
+    await renderWithRoot();
+    const handle = screen.getByTestId('page-sandbox-detail-obsidian-divider');
+
+    fireEvent(handle, pointerEvent('pointerdown', 500, 1));
+    fireEvent(handle, pointerEvent('pointermove', 600, 1));
+    await waitFor(() =>
+      expect(screen.getByTestId('page-sandbox-detail-obsidian-vault-tree').style.width).toBe(
+        '364px',
+      ),
+    );
+    // aria 同步跟随
+    expect(handle.getAttribute('aria-valuenow')).toBe('364');
+
+    fireEvent(handle, pointerEvent('pointermove', 200, 1));
+    await waitFor(() =>
+      expect(screen.getByTestId('page-sandbox-detail-obsidian-vault-tree').style.width).toBe(
+        '180px',
+      ),
+    );
+    expect(handle.getAttribute('aria-valuenow')).toBe('180');
+  });
+
+  it('方向键调宽：→ 变宽 16px、← 变窄 16px（树在左，方向与文件窗格相反）', async () => {
+    await renderWithRoot();
+    const handle = screen.getByTestId('page-sandbox-detail-obsidian-divider');
+
+    fireEvent.keyDown(handle, { key: 'ArrowRight' });
+    await waitFor(() => expect(handle.getAttribute('aria-valuenow')).toBe('280'));
+
+    fireEvent.keyDown(handle, { key: 'ArrowLeft' });
+    await waitFor(() => expect(handle.getAttribute('aria-valuenow')).toBe('264'));
+  });
+
+  it('宽度是会话内内存态：重挂载回默认（不入 localStorage）', async () => {
+    const split = await renderWithRoot();
+    const handle = screen.getByTestId('page-sandbox-detail-obsidian-divider');
+
+    fireEvent(handle, pointerEvent('pointerdown', 500, 1));
+    fireEvent(handle, pointerEvent('pointermove', 600, 1));
+    await waitFor(() =>
+      expect(screen.getByTestId('page-sandbox-detail-obsidian-vault-tree').style.width).toBe(
+        '364px',
+      ),
+    );
+    expect(split).toBeTruthy();
+
+    // 卸载重挂（换沙箱 / 刷新即重挂）：宽度回默认，存储里什么都没写
+    cleanup();
+    mockVault();
+    writeStoredVaultRoot('demo', ROOT);
+    renderWorkspace();
+    await screen.findByTestId('page-sandbox-detail-obsidian-vault-root');
+    expect(screen.getByTestId('page-sandbox-detail-obsidian-vault-tree').style.width).toBe(
+      '264px',
+    );
+    /*
+     * 这条 localStorage 断言只是个**哨兵**：仅防后人「顺手给树宽加持久化」的
+     * 回归（一旦真写了这个 key 就红）。**宽度的实质保障是上一行**——重挂后
+     * 回默认 264px；key 名与「有没有写」都不是契约本体，别为迁就这条断言改
+     * 存储口径（复验修复轮·第二批审查 #6）。
+     */
+    expect(window.localStorage.getItem('sandbox-console-obsidian-tree-width')).toBeNull();
+  });
+});
+
 describe('vault 树', () => {
   it('只列目录与 .md 文件（txt / special 不出现）', async () => {
     mockVault();

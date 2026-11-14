@@ -11,7 +11,9 @@
  *
  * 一、**固定 tab**：tabs 条**最左**、带 Obsidian 本地 logo、**不可关闭**
  *    （tab 上只有「选中」这一个按钮，没有关闭钮），**零终端会话时照样可用**；
- * 二、**双栏**：左 vault 树（固定宽）+ 中间一条**不可拖拽**的细分隔线 + 右预览区；
+ * 二、**双栏**：左 vault 树（宽度可拖拽调）+ 中间一条**可拖拽的骑缝把手**
+ *    （复验修复轮·第二批 #4：原「不可拖拽的细分隔线」改可拖拽，样式与文件窗格
+ *    把手一致——常显、直角）+ 右预览区（吃剩余宽度）；左树有最小宽度钳位；
  *    激活 Obsidian tab 时**文件窗格隐藏**，切回终端 tab 后窗格按**原折叠态**恢复；
  * 三、**设根引导态**：「选择一个目录作为 vault 根」+「使用沙箱工作目录」+ 路径输入框
  *    +「打开」按钮；两条入口都可用（本 spec 走「使用沙箱工作目录」，输入框路径由
@@ -267,9 +269,18 @@ test.describe('Obsidian 阅读器', () => {
     expect(previewBox, '量不到预览区').not.toBeNull();
     expect(treeBox!.x).toBeLessThan(dividerBox!.x);
     expect(dividerBox!.x).toBeLessThan(previewBox!.x);
-    // 分隔线是一条**细线**（不是可拖拽的分隔条：宽度 1px、无 role=separator）
-    expect(Math.round(dividerBox!.width), '两栏之间不是一条细线').toBeLessThanOrEqual(2);
-    await expect(divider).not.toHaveAttribute('role', 'separator');
+    // 分隔线现在是**可拖拽的骑缝把手**（复验修复轮·第二批 #4）：role=separator、
+    // 12px 常显把手带骑在两格接缝上（不占布局宽度；审查收敛后从 16px 收窄——
+    // 每侧压入从 8px 减到 6px，与左树的右内边距 pr-1.5 配平，滚动条不被吞热区）；
+    // 数值范围与文件窗格把手同一钳位口径（下限 180）。
+    expect(Math.round(dividerBox!.width), '把手不是骑缝的 12px 带').toBe(12);
+    await expect(divider).toHaveAttribute('role', 'separator');
+    await expect(divider).toHaveAttribute('aria-label', '调整 vault 树宽度');
+    await expect(divider).toHaveAttribute('aria-valuemin', '180');
+    await expect(divider).toHaveAttribute('aria-valuenow', '264');
+    await expect(divider).toHaveAttribute('aria-valuetext', '264px');
+    // 左树按当前宽度渲染（默认 264px）
+    expect(Math.round(treeBox!.width), '左树默认宽度不是 264px').toBe(264);
     // 右栏还没选文件：空态
     await expect(page.getByTestId('page-sandbox-detail-obsidian-preview-empty')).toHaveText(
       '从左侧选择文件',
@@ -320,6 +331,65 @@ test.describe('Obsidian 阅读器', () => {
       treeFile(page, `${VAULT}/acc-obsidian-refresh-probe.md`),
       '点刷新后 vault 树没有出现新文件（缓存失效重拉没生效）',
     ).toBeVisible({ timeout: 60_000 });
+  });
+
+  test('双栏可拖拽：拖把手调左树宽度（右拖变宽 / 左拖变窄）、钳位生效、预览吃剩余宽度', async ({
+    page,
+  }) => {
+    await openObsidianTab(page);
+    await useWorkdirAsVaultRoot(page);
+
+    const handle = page.getByTestId('page-sandbox-detail-obsidian-divider');
+    await expect(handle).toBeVisible();
+
+    /** 量某个 testid 元素的整数化宽度。 */
+    const widthOf = async (testId: string): Promise<number> => {
+      const box = await page.getByTestId(testId).boundingBox();
+      expect(box, `量不到 ${testId}`).not.toBeNull();
+      return Math.round(box!.width);
+    };
+    /** 拖把手：从当前指针位置拖到 `offsetX`（相对起点，正数 = 往右 = 树变宽）。 */
+    const drag = async (offsetX: number): Promise<void> => {
+      const box = await handle.boundingBox();
+      expect(box, '量不到双栏把手').not.toBeNull();
+      const startX = box!.x + box!.width / 2;
+      const startY = box!.y + box!.height / 2;
+      await page.mouse.move(startX, startY);
+      await page.mouse.down();
+      await page.mouse.move(startX + offsetX, startY, { steps: 8 });
+      await page.mouse.up();
+    };
+
+    // ── ① 默认树宽 264px，把手 aria 与宽度同步
+    expect(await widthOf('page-sandbox-detail-obsidian-vault-tree')).toBe(264);
+    await expect(handle).toHaveAttribute('aria-valuenow', '264');
+
+    // ── ② 往右拖 120px ⇒ 树变宽约 120px，预览区仍在右侧且变窄（吃剩余宽度）
+    const previewBefore = (await preview(page).boundingBox())!.x;
+    await drag(120);
+    const widened = await widthOf('page-sandbox-detail-obsidian-vault-tree');
+    expect(widened, `往右拖 120px 后树宽应在 374~394 之间（实测 ${widened}）`)
+      .toBeGreaterThanOrEqual(374);
+    expect(widened).toBeLessThanOrEqual(394);
+    await expect(handle).toHaveAttribute('aria-valuenow', String(widened));
+    const previewAfterX = (await preview(page).boundingBox())!.x;
+    expect(previewAfterX, '树变宽后预览区左缘没有右移（预览没吃剩余宽度）').toBeGreaterThan(
+      previewBefore,
+    );
+    await expect(preview(page)).toBeVisible();
+
+    // ── ③ 往左猛拖 ⇒ 树铌到最小宽度 180px（左树最小宽度钳位）
+    await drag(-2000);
+    expect(await widthOf('page-sandbox-detail-obsidian-vault-tree')).toBe(180);
+    await expect(handle).toHaveAttribute('aria-valuenow', '180');
+
+    // ── ④ 方向键调宽：→ 变宽 16px、← 变窄 16px（键盘可用性）
+    await handle.focus();
+    await handle.press('ArrowRight');
+    await expect(handle).toHaveAttribute('aria-valuenow', '196');
+    expect(await widthOf('page-sandbox-detail-obsidian-vault-tree')).toBe(196);
+    await handle.press('ArrowLeft');
+    await expect(handle).toHaveAttribute('aria-valuenow', '180');
   });
 
   test('点击 .md 渲染 + wikilink 命中跳转（含 tooltip / 返回栈）+ 渲染与源码切换', async ({

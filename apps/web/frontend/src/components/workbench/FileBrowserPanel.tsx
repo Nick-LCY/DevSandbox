@@ -736,14 +736,24 @@ export function FileBrowserPanel({
     setCopied(false);
   }, [sandbox, abortTransfers]);
 
-  // 卸载同样收口（AbortController 与 reader 都不留）。
-  useEffect(
-    () => () => {
+  /*
+   * 挂载复位 + 卸载收口（**成对写**）。
+   *
+   * 只有 cleanup 没有 setup 的版本在应用根的 StrictMode 下会把面板写死：
+   * 开发模式 React 对每次挂载做「setup → cleanup → setup」的模拟重挂，
+   * **refs 在模拟重挂之间保留**——cleanup 写进 `aliveRef.current` 的 false
+   * 不同位，之后 `startPreview` / 上传 / 下载的全部 `aliveRef` 守卫永久拒绝：
+   * 预览请求在网络层正常完成，正文却永远停在「正在读取…」（用户桌面端 dev
+   * 实测的真 bug，复验修复轮·第二批 #3）。setup 里把 true 复位回去，
+   * 真卸载仍置 false（行为与生产环境完全一致）。
+   */
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
       aliveRef.current = false;
       abortTransfers();
-    },
-    [abortTransfers],
-  );
+    };
+  }, [abortTransfers]);
 
   /* ---------------------------------------------------------------- 导航 */
 
@@ -1745,8 +1755,26 @@ export function FileBrowserPanel({
         className="flex h-full min-h-0 w-full flex-col overflow-hidden rounded-r-xl border border-border bg-card"
         data-testid="page-file-pane-content"
       >
-        {/* 顶部固定工具条：面包屑（占满剩余宽度）+ 回跳 / 上传 / 刷新 / 折叠（同高 h-8，折叠钮固定右端） */}
+        {/*
+          顶部固定工具条（复验修复轮·第二批 #1）：**折叠钮最左** + 面包屑（占满剩余宽度）
+          + 回跳 / 刷新（相对顺序不变、居中排布）+ **上传最右**；预览态只剩折叠钮 + 面包屑。
+        */}
         <div className="flex flex-none items-center gap-1.5 px-2 py-2">
+            {/*
+              折叠：收成右缘 36px 纯图标竖条（竖条上只有**顶部**的展开按钮）。
+              复验修复轮·第二批 #1：折叠钮从工具条右端移到**最左**——窗格自身的
+              开关与列表操作分开，右端让给「上传」。
+            */}
+            <button
+              type="button"
+              onClick={onToggleCollapsed}
+              title="折叠文件窗格"
+              aria-label="折叠文件窗格"
+              data-testid="page-file-pane-collapse-button"
+              className="grid size-8 flex-none place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+            >
+              <PanelRightClose className="size-4" aria-hidden="true" />
+            </button>
             <nav
               aria-label="路径"
               data-testid="page-file-browser-crumbs"
@@ -1914,9 +1942,10 @@ export function FileBrowserPanel({
             </nav>
 
             {/*
-              回跳 / 上传 / 刷新是**列表态**的操作：预览态（窗格内的第二视图）里
+              回跳 / 刷新 / 上传是**列表态**的操作：预览态（窗格内的第二视图）里
               不出现（预览只读，避免「预览着一个文件、却往它所在目录上传」的歧义）。
-              折叠钮在两种视图下都在（窗格本身的开关），且固定在工具条**右端**。
+              相对顺序（复验修复轮·第二批 #1）：回跳 → 刷新（原有相对顺序不变），
+              **上传在最右**；折叠钮已移到工具条最左。
             */}
             {!inPreview && (
               <>
@@ -1943,25 +1972,6 @@ export function FileBrowserPanel({
 
             <button
               type="button"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={preparingUpload}
-              aria-busy={preparingUpload}
-              data-testid="page-file-browser-upload-button"
-              className="inline-flex h-8 flex-none items-center justify-center gap-1.5 rounded-lg border border-transparent bg-primary px-2.5 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/80 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {preparingUpload ? (
-                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-              ) : (
-                <Upload className="size-4" aria-hidden="true" />
-              )}
-              上传
-            </button>
-            {/*
-              刷新：**强制重读当前目录**（同路径重读通道）。loading 反馈 =
-              按钮瞬时禁用 + 图标旋转（用户浏览器复验修复轮新增）。
-            */}
-            <button
-              type="button"
               onClick={refreshDirectory}
               disabled={refreshing}
               aria-busy={refreshing}
@@ -1975,6 +1985,25 @@ export function FileBrowserPanel({
                 aria-hidden="true"
               />
             </button>
+            {/*
+              上传：**工具条最右**（复验修复轮·第二批 #1：从回跳 / 刷新之间挪到行尾，
+              回跳与刷新的相对顺序不受影响）。
+            */}
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={preparingUpload}
+              aria-busy={preparingUpload}
+              data-testid="page-file-browser-upload-button"
+              className="inline-flex h-8 flex-none items-center justify-center gap-1.5 rounded-lg border border-transparent bg-primary px-2.5 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/80 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {preparingUpload ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <Upload className="size-4" aria-hidden="true" />
+              )}
+              上传
+            </button>
             <input
               ref={fileInputRef}
               type="file"
@@ -1987,18 +2016,6 @@ export function FileBrowserPanel({
             />
               </>
             )}
-
-            {/* 折叠：收成右缘 36px 纯图标竖条（竖条上只有**顶部**的展开按钮）；展开态固定在工具条右端。 */}
-            <button
-              type="button"
-              onClick={onToggleCollapsed}
-              title="折叠文件窗格"
-              aria-label="折叠文件窗格"
-              data-testid="page-file-pane-collapse-button"
-              className="grid size-8 flex-none place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
-            >
-              <PanelRightClose className="size-4" aria-hidden="true" />
-            </button>
           </div>
 
           {/*
@@ -2223,7 +2240,18 @@ export function FileBrowserPanel({
                   <div className="relative flex items-center justify-end">
                     <span
                       data-testid="page-file-browser-row-mtime"
-                      className="text-right font-mono text-[11.5px] tabular-nums text-muted-foreground transition-opacity duration-150 group-hover:opacity-0"
+                      className={cn(
+                        'text-right font-mono text-[11.5px] tabular-nums text-muted-foreground',
+                        /*
+                          复验修复轮·第二批 #5（审查后口径收紧）：**只有文件行**
+                          hover 才隐藏修改时间（给行尾浮现的眼睛钮让位）；目录行
+                          与 special 行 hover 时时间都保持可见——special 行与
+                          目录行一样没有预览钮，原本「非文件行也隐藏时间、却没
+                          有任何按钮」是个死角。
+                        */
+                        entry.kind === 'file' &&
+                          'transition-opacity duration-150 group-hover:opacity-0',
+                      )}
                     >
                       {formatFileMtime(entry.mtime)}
                     </span>
@@ -2231,10 +2259,12 @@ export function FileBrowserPanel({
                       「预览」眼睛钮：**行尾浮现**、约 150ms 淡入、**不带文字**。
                       - 行单击仍是**下载**（既有口径零改动）⇒ click 与 Enter / Space
                         都要 `stopPropagation`（否则行上的键盘处理器会把「预览」当成下载）；
-                      - 目录行没有预览（目录不可预览）；
+                      - **仅文件行有**（与 README「仅文件行」口径一致）：目录不可
+                        预览，special 条目（设备 / 套接字等）走预览必然报错——
+                        直接不给入口；
                       - 它盖在修改时间那一格上，hover 时时间文字淡出，不叠字。
                     */}
-                    {entry.kind !== 'dir' && (
+                    {entry.kind === 'file' && (
                       <button
                         type="button"
                         title="预览"

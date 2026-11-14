@@ -6,13 +6,16 @@
  * 这里只放**纯函数**：不碰 DOM、不碰网络、不碰存储。组件层（`TerminalPanel.tsx`
  * 与 `FileBrowserPanel.tsx`）只负责把结果画出来。
  *
- * 收敛的四件事：
+ * 收敛的五件事：
  *
  * 1. **分隔条拖拽的宽度钳位**（`clampFilePaneWidth` / `filePaneWidthFromDrag`）：
  *    窗格有最小 / 最大宽度，**终端面板有最小宽度钳位**（拖到最窄时终端不被压没）；
- * 2. **定位 fallback 链**（`resolveFilePaneStartPath`）：会话 pwd → 沙箱 workdir → `/`；
- * 3. **同路径判定**（`isSameContainerPath`）：回跳按钮「已在目标目录」的判据；
- * 4. **入口条件**（`shouldShowFilePane`）：窗格只在「存在终端会话 **且** 激活的是
+ * 2. **Obsidian 双栏的树宽钳位**（`clampObsidianTreeWidth` /
+ *    `obsidianTreeWidthFromDrag`，复验修复轮·第二批 #4）：左 vault 树可拖拽，
+ *    树有最小 / 最大宽度，预览区有最小宽度（容器装得下时；窄容器预览随压缩）；
+ * 3. **定位 fallback 链**（`resolveFilePaneStartPath`）：会话 pwd → 沙箱 workdir → `/`；
+ * 4. **同路径判定**（`isSameContainerPath`）：回跳按钮「已在目标目录」的判据；
+ * 5. **入口条件**（`shouldShowFilePane`）：窗格只在「存在终端会话 **且** 激活的是
  *    终端 tab」时存在（06 轮起 Obsidian tab 是另一种 tab，激活它时窗格隐藏）。
  */
 
@@ -115,6 +118,103 @@ export function filePaneWidthFromDrag(input: {
   return clampFilePaneWidth(input.startWidth + delta, {
     containerWidth: input.containerWidth,
     minTerminalWidth: input.minTerminalWidth,
+  });
+}
+
+/* -------------------------------------------------- Obsidian 双栏树宽 */
+
+/** Obsidian 双栏（左 vault 树 + 右预览）的默认树宽（像素；与旧固定宽一致）。 */
+export const OBSIDIAN_TREE_DEFAULT_WIDTH_PX = 264;
+
+/** vault 树的最小宽度（像素）：再窄目录名读不了了。 */
+export const OBSIDIAN_TREE_MIN_WIDTH_PX = 180;
+
+/** vault 树的最大宽度（像素）：再宽就把预览区挤没了。 */
+export const OBSIDIAN_TREE_MAX_WIDTH_PX = 520;
+
+/** 预览区的最小宽度（像素）：容器装得下时预览区不被压没（窄容器预览随压缩）。 */
+export const OBSIDIAN_PREVIEW_MIN_WIDTH_PX = 320;
+
+export interface ObsidianTreeWidthOptions {
+  /**
+   * Obsidian 双栏容器的宽度（像素）。
+   *
+   * 未知 / 不可用（≤ 0）时**只按树自身的最小 / 最大宽度钳位**——拿不到容器宽度
+   * 时不能把树钳到 0（与文件窗格的容器宽口径一致）。
+   */
+  containerWidth?: number | null;
+  /** 预览区的最小宽度（像素）。 */
+  minPreviewWidth?: number | null;
+}
+
+/**
+ * 钳位 Obsidian 双栏的 vault 树宽度（复验修复轮·第二批 #4）。
+ *
+ * 规则（与 `clampFilePaneWidth` 同构）：
+ *
+ * 1. 不是有限数字 ⇒ 回落默认树宽；
+ * 2. 下限 = `OBSIDIAN_TREE_MIN_WIDTH_PX`；
+ * 3. 上限 = `min(OBSIDIAN_TREE_MAX_WIDTH_PX, 容器宽 - 预览最小宽)`
+ *    ——**容器宽不可用时上限就是 `OBSIDIAN_TREE_MAX_WIDTH_PX`**；
+ * 4. 容器窄到「装不下最小树 + 最小预览」时，**树保持下限**：上限被抬回树的
+ *    最低值，**预览随容器压缩**（窄容器里预览不再有独立保底）。
+ *
+ * 返回值是整数像素（拖拽过程中不出现小数抖动）。
+ */
+export function clampObsidianTreeWidth(
+  width: number,
+  options: ObsidianTreeWidthOptions = {},
+): number {
+  if (typeof width !== 'number' || !Number.isFinite(width)) {
+    return OBSIDIAN_TREE_DEFAULT_WIDTH_PX;
+  }
+  const minPreviewWidth =
+    typeof options.minPreviewWidth === 'number' &&
+    Number.isFinite(options.minPreviewWidth) &&
+    options.minPreviewWidth > 0
+      ? options.minPreviewWidth
+      : OBSIDIAN_PREVIEW_MIN_WIDTH_PX;
+
+  let max = OBSIDIAN_TREE_MAX_WIDTH_PX;
+  const containerWidth = options.containerWidth;
+  if (
+    typeof containerWidth === 'number' &&
+    Number.isFinite(containerWidth) &&
+    containerWidth > 0
+  ) {
+    max = Math.min(max, containerWidth - minPreviewWidth);
+  }
+  if (max < OBSIDIAN_TREE_MIN_WIDTH_PX) {
+    // 容器太窄：树保持下限，预览随容器压缩。
+    max = OBSIDIAN_TREE_MIN_WIDTH_PX;
+  }
+  const clamped = Math.min(Math.max(width, OBSIDIAN_TREE_MIN_WIDTH_PX), max);
+  return Math.round(clamped);
+}
+
+/**
+ * 拖拽 Obsidian 双栏分隔把手时的新树宽。
+ *
+ * 树在**左**：往**右**拖（指针横坐标变大）⇒ 树变宽；往左拖 ⇒ 树变窄。
+ * 起点宽度与起点指针横坐标一起记（拖拽过程里每帧都从起点算，
+ * 免得累加出漂移）。
+ */
+export function obsidianTreeWidthFromDrag(input: {
+  /** 拖拽起点的树宽（像素）。 */
+  startWidth: number;
+  /** 拖拽起点的指针横坐标（像素）。 */
+  startX: number;
+  /** 当前指针横坐标（像素）。 */
+  pointerX: number;
+  /** 容器宽度（像素）：用来钳位（容器装得下时保预览最小宽，窄容器预览随压缩）。 */
+  containerWidth: number;
+  /** 预览区的最小宽度（像素）。 */
+  minPreviewWidth?: number;
+}): number {
+  const delta = input.pointerX - input.startX;
+  return clampObsidianTreeWidth(input.startWidth + delta, {
+    containerWidth: input.containerWidth,
+    minPreviewWidth: input.minPreviewWidth,
   });
 }
 

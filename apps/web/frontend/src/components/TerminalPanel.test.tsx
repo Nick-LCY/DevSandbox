@@ -1202,6 +1202,30 @@ describe('三段式分屏与文件窗格', () => {
     await waitFor(() => expect(screen.getByTestId('page-file-pane').style.width).toBe('340px'));
   });
 
+  it('骑缝把手常显且直角（复验修复轮·第二批 #2/#6）：把手带与图标静置可见、无圆角', async () => {
+    mockSessions([makeRecord({ session_id: 'sess-a' })]);
+
+    renderPanel();
+
+    const handle = await screen.findByTestId('page-terminal-split-handle');
+    const tokens = handle.className.split(/\s+/).filter(Boolean);
+    // **常显**：把手带静置有底色（不再「hover 才显形」的 bg-transparent）
+    expect(tokens, '把手带应有静置可见的底色（bg-muted）').toContain('bg-muted');
+    expect(tokens).not.toContain('bg-transparent');
+    // hover 高亮保留
+    expect(tokens).toContain('hover:bg-primary/30');
+    // **直角**：把手本体与 hover 高亮都不带任何圆角
+    expect(tokens.filter((token) => token.includes('rounded'))).toEqual([]);
+    // 抓握图标静置可见（不再是半透明 /40，hover / 聚焦时加深）
+    const icon = handle.querySelector('svg');
+    expect(icon).toBeTruthy();
+    const iconTokens = (icon as unknown as SVGElement).getAttribute('class')?.split(/\s+/) ?? [];
+    expect(iconTokens).toContain('text-muted-foreground');
+    expect(iconTokens.some((token) => token.includes('/40'))).toBe(false);
+    // a11y 增强（复验修复轮·第二批审查）：数值带单位（与 Obsidian 把手同一份组件）
+    expect(handle.getAttribute('aria-valuetext')).toBe('340px');
+  });
+
   it('分隔条 aria-valuemax 跟钳位函数的实际上限走（容器宽 900 ⇒ 上限 580）', async () => {
     mockSessions([makeRecord({ session_id: 'sess-a' })]);
 

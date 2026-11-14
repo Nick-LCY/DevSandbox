@@ -12,6 +12,7 @@
  * - 桌面分支：原生保存框（取消静默 / 确认后 invoke Rust 落盘）、进度事件、失败 toast；
  *   关闭抽屉取消在途下载。
  */
+import { StrictMode } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -1419,16 +1420,29 @@ describe('折叠态', () => {
     expect(onToggleCollapsed).toHaveBeenCalledTimes(1);
   });
 
-  it('展开态：折叠钮是工具条行的最后一个元素（与折叠态展开钮 firstElementChild 双锁对称）', async () => {
+  it('展开态：折叠钮在工具条行最左、上传在最右（复验修复轮·第二批 #1）', async () => {
     mocks.listFiles.mockResolvedValue([entry({ name: 'a.txt' })]);
     renderPanel();
 
     const collapse = await screen.findByTestId('page-file-pane-collapse-button');
-    // 折叠钮所在行就是顶部固定工具条（面包屑 + 回跳 / 上传 / 刷新 / 折叠）
+    // 折叠钮所在行就是顶部固定工具条（折叠钮 + 面包屑 + 回跳 / 刷新 / 上传）
     const toolbarRow = collapse.parentElement as HTMLElement;
     expect(within(toolbarRow).getByTestId('page-file-browser-crumbs')).toBeTruthy();
-    // 折叠钮固定在工具条**右端**：行内最后一个元素（列表态与预览态同一行）
-    expect(toolbarRow.lastElementChild).toBe(collapse);
+    // 折叠钮**最左**：行内第一个元素（列表态与预览态同一位置语义）
+    expect(toolbarRow.firstElementChild).toBe(collapse);
+    // 上传**最右**：行内最后一个按钮（行尾的隐藏文件输入不是按钮，不参与排序）
+    const buttons = Array.from(toolbarRow.querySelectorAll('button'));
+    expect(buttons[buttons.length - 1]).toBe(
+      screen.getByTestId('page-file-browser-upload-button'),
+    );
+    // 其余按钮相对顺序不变：回跳仍在刷新之前，且都夹在折叠钮与上传之间
+    const order = buttons.map((button) => button.getAttribute('data-testid'));
+    const jumpIndex = order.indexOf('page-file-pane-jump-button');
+    const refreshIndex = order.indexOf('page-file-browser-refresh-button');
+    expect(jumpIndex, '回跳钮应该在（且仅回跳 / 刷新 / 上传 / 折叠四个钮里）').toBeGreaterThan(-1);
+    expect(refreshIndex, '刷新钮应该在').toBeGreaterThan(-1);
+    expect(jumpIndex, '回跳与刷新的相对顺序变了').toBeLessThan(refreshIndex);
+    expect(order[0]).toBe('page-file-pane-collapse-button');
   });
 });
 
@@ -1518,9 +1532,11 @@ describe('预览（窗格内的第二视图）', () => {
     mocks.listFiles.mockResolvedValue([
       entry({ name: 'a.txt', kind: 'file' }),
       entry({ name: 'sub', kind: 'dir', size: 0 }),
+      // special 条目（设备 / 套接字等）：行照常渲染（点击即下载），但没有预览
+      entry({ name: 'null-dev', kind: 'special', size: 0 }),
     ]);
     renderPanel();
-    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(2));
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(3));
 
     const button = previewButtonOf('a.txt');
     // 不带文字（纯图标）
@@ -1539,9 +1555,36 @@ describe('预览（窗格内的第二视图）', () => {
     expect(
       within(button.parentElement as HTMLElement).getByTestId('page-file-browser-row-mtime'),
     ).toBeTruthy();
+    // **修改时间的 hover 去留随行类型**（复验修复轮·第二批 #5，审查后口径收紧
+    // 为 `kind === 'file'`）：**仅文件行** hover 隐藏时间（给眼睛钮让位）；目录行
+    // 与 special 行 hover 时间都保持可见——两都没有预览钮，原本「隐藏时间却
+    // 不浮现任何按钮」是个死角（special 走预览必然报错，直接不给入口）。
+    const fileMtime = classTokens(
+      within(rowOf('a.txt')).getByTestId('page-file-browser-row-mtime'),
+    );
+    expect(fileMtime, '文件行的修改时间没有 hover 隐藏类').toContain('group-hover:opacity-0');
+    const dirMtime = classTokens(
+      within(rowOf('sub')).getByTestId('page-file-browser-row-mtime'),
+    );
+    expect(dirMtime, '目录行的修改时间不应有 hover 隐藏类').not.toContain(
+      'group-hover:opacity-0',
+    );
+    expect(dirMtime).not.toContain('transition-opacity');
     // 目录行没有预览钮
     expect(
       within(rowOf('sub')).queryByTestId('page-file-browser-row-preview-button'),
+    ).toBeNull();
+    // **special 行**（审查补口）：hover 保持 mtime 可见、也没有眼睛钮
+    const specialMtime = classTokens(
+      within(rowOf('null-dev')).getByTestId('page-file-browser-row-mtime'),
+    );
+    expect(specialMtime, 'special 行的修改时间不应有 hover 隐藏类').not.toContain(
+      'group-hover:opacity-0',
+    );
+    expect(specialMtime).not.toContain('transition-opacity');
+    expect(
+      within(rowOf('null-dev')).queryByTestId('page-file-browser-row-preview-button'),
+      'special 行不该有预览眼睛钮',
     ).toBeNull();
   });
 
@@ -1982,5 +2025,67 @@ describe('预览（窗格内的第二视图）', () => {
 
     view.unmount();
     expect(signal?.aborted).toBe(true);
+  });
+
+  /*
+   * 复验修复轮·第二批 #3（用户桌面端 dev 实测的真 bug）：应用根挂 StrictMode，
+   * 开发模式下 React 对每次挂载做一次「模拟卸载再重挂」——**refs 在这次模拟
+   * 重挂之间是保留的**。面板的卸载清理把 `aliveRef.current` 写成 false 后，
+   * 重挂的 setup 若不复位，它就永远是 false ⇒ `startPreview` 的全部提交守卫
+   * （`alive()`）永久拒绝：请求在网络层正常完成，正文却永远不渲染，停在
+   * 「正在读取…」。这条用例复现用户看到的卡死（修复前红、修复后绿），
+   * 常驻套件（QA-01 当时漏了文件窗格预览的真渲染断言）。
+   *
+   * **等价性**（复验修复轮·第二批审查 #4，防后人误改）：这里在用例外层包
+   * `<StrictMode>` ≡ 应用根挂 StrictMode——StrictMode 的双挂载（双 render /
+   * effect setup-cleanup-setup）按**子树**生效，而 `main.tsx` 的应用根本来就
+   * 挂着 `<StrictMode>`，生产构建不生效、仅 dev。单测单独包一层是为了在
+   * 组件测试里复现与 dev 环境完全相同的行为；**不要**因为「应用根已经有
+   * StrictMode 了」而删掉这层包裹或本用例。
+   */
+  it('StrictMode 模拟重挂载后点眼睛：预览正文照常渲染（aliveRef 不被写死 false）', async () => {
+    mocks.listFiles.mockResolvedValue([entry({ name: 'a.md', size: 9 })]);
+    mocks.readFile.mockResolvedValue({
+      text: '# 标题\n正文\n',
+      binary: false,
+      size: 9,
+      bytes: 9,
+      truncated: false,
+    } satisfies ReadFileResult);
+
+    render(
+      <StrictMode>
+        <ToastProvider>
+          <FileBrowserPanel
+            sandbox="demo-01"
+            sessionId="sess-1"
+            workdir="/home/acc-demo"
+            collapsed={false}
+            onToggleCollapsed={() => {}}
+            desktop={false}
+          />
+        </ToastProvider>
+      </StrictMode>,
+    );
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+
+    fireEvent.click(
+      within(rowOf('a.md')).getByTestId('page-file-browser-row-preview-button'),
+    );
+    await waitFor(() => expect(mocks.readFile).toHaveBeenCalledTimes(1));
+
+    // 请求已正常完成 ⇒ 正文必须渲染出来（行号 + 内容），不能停在「正在读取…」。
+    await waitFor(
+      () => expect(screen.getByTestId('page-file-preview-body')).toBeTruthy(),
+      { timeout: 2_000 },
+    );
+    const lines = screen
+      .getAllByTestId('page-file-preview-line')
+      .map((node) => node.textContent);
+    expect(lines).toEqual(['# 标题', '正文']);
+    expect(
+      screen.getAllByTestId('page-file-preview-line-number').map((node) => node.textContent),
+    ).toEqual(['1', '2']);
+    expect(screen.queryByTestId('page-file-preview-loading')).toBeNull();
   });
 });

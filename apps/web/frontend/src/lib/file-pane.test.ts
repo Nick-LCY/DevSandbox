@@ -15,9 +15,15 @@ import {
   FILE_PANE_MAX_WIDTH_PX,
   FILE_PANE_MIN_TERMINAL_WIDTH_PX,
   FILE_PANE_MIN_WIDTH_PX,
+  OBSIDIAN_PREVIEW_MIN_WIDTH_PX,
+  OBSIDIAN_TREE_DEFAULT_WIDTH_PX,
+  OBSIDIAN_TREE_MAX_WIDTH_PX,
+  OBSIDIAN_TREE_MIN_WIDTH_PX,
   clampFilePaneWidth,
+  clampObsidianTreeWidth,
   filePaneWidthFromDrag,
   isSameContainerPath,
+  obsidianTreeWidthFromDrag,
   resolveFilePaneStartPath,
   shouldShowFilePane,
 } from './file-pane';
@@ -119,6 +125,93 @@ describe('分隔条拖拽', () => {
         containerWidth: 1000,
       }),
     ).toBe(680);
+  });
+});
+
+describe('Obsidian 双栏树宽钳位（复验修复轮·第二批 #4）', () => {
+  it('默认树宽 264、下限 180、上限 520、预览最小宽 320', () => {
+    expect(OBSIDIAN_TREE_DEFAULT_WIDTH_PX).toBe(264);
+    expect(OBSIDIAN_TREE_MIN_WIDTH_PX).toBe(180);
+    expect(OBSIDIAN_TREE_MAX_WIDTH_PX).toBe(520);
+    expect(OBSIDIAN_PREVIEW_MIN_WIDTH_PX).toBe(320);
+  });
+
+  it('不是有限数字 ⇒ 回落默认树宽', () => {
+    expect(clampObsidianTreeWidth(Number.NaN)).toBe(OBSIDIAN_TREE_DEFAULT_WIDTH_PX);
+    expect(clampObsidianTreeWidth(Number.POSITIVE_INFINITY)).toBe(
+      OBSIDIAN_TREE_DEFAULT_WIDTH_PX,
+    );
+  });
+
+  it('低于下限 ⇒ 钳到最小树宽；高于上限 ⇒ 钳到最大树宽', () => {
+    expect(clampObsidianTreeWidth(50)).toBe(OBSIDIAN_TREE_MIN_WIDTH_PX);
+    expect(clampObsidianTreeWidth(99_999)).toBe(OBSIDIAN_TREE_MAX_WIDTH_PX);
+    expect(clampObsidianTreeWidth(300)).toBe(300);
+  });
+
+  it('容器宽可用 ⇒ 上限不超过「容器宽 - 预览最小宽」', () => {
+    // 容器充裕（1200 - 320 = 880 > 520）⇒ 绝对上限 520 生效
+    expect(clampObsidianTreeWidth(99_999, { containerWidth: 1200 })).toBe(
+      OBSIDIAN_TREE_MAX_WIDTH_PX,
+    );
+    // 容器较窄（700 - 320 = 380 < 520）⇒ 容器推导的上限生效
+    expect(clampObsidianTreeWidth(99_999, { containerWidth: 700 })).toBe(380);
+    expect(clampObsidianTreeWidth(99_999, { containerWidth: 700, minPreviewWidth: 500 })).toBe(
+      200,
+    );
+    // 容器宽不可用（≤ 0 / null）⇒ 只按树自身上下限锢位，不能钳到 0
+    expect(clampObsidianTreeWidth(99_999, { containerWidth: 0 })).toBe(
+      OBSIDIAN_TREE_MAX_WIDTH_PX,
+    );
+    expect(clampObsidianTreeWidth(99_999, { containerWidth: null })).toBe(
+      OBSIDIAN_TREE_MAX_WIDTH_PX,
+    );
+  });
+
+  it('容器窄到装不下「最小树 + 最小预览」⇒ 预览保底，树不再让位（上限被抬回下限）', () => {
+    expect(clampObsidianTreeWidth(300, { containerWidth: 400 })).toBe(
+      OBSIDIAN_TREE_MIN_WIDTH_PX,
+    );
+  });
+
+  it('返回值是整数像素（不出现小数抖动）', () => {
+    expect(clampObsidianTreeWidth(300.6)).toBe(301);
+  });
+
+  it('拖拽：树在左 ⇒ 往右拖变宽、往左拖变窄', () => {
+    const base = { startWidth: 264, containerWidth: 1200 };
+    expect(obsidianTreeWidthFromDrag({ ...base, startX: 500, pointerX: 600 })).toBe(364);
+    expect(obsidianTreeWidthFromDrag({ ...base, startX: 500, pointerX: 400 })).toBe(
+      OBSIDIAN_TREE_MIN_WIDTH_PX,
+    );
+  });
+
+  it('拖拽同样距离 ⇒ 宽度同样变化（每帧都从起点算，不累加漂移）', () => {
+    const first = obsidianTreeWidthFromDrag({
+      startWidth: 264,
+      startX: 500,
+      pointerX: 580,
+      containerWidth: 1200,
+    });
+    const second = obsidianTreeWidthFromDrag({
+      startWidth: 264,
+      startX: 500,
+      pointerX: 580,
+      containerWidth: 1200,
+    });
+    expect(first).toBe(second);
+    expect(first).toBe(344);
+  });
+
+  it('拖到最宽：树不超过「容器宽 - 预览最小宽」（预览区吃剩余宽度但不被压没）', () => {
+    expect(
+      obsidianTreeWidthFromDrag({
+        startWidth: 264,
+        startX: 500,
+        pointerX: 5000,
+        containerWidth: 700,
+      }),
+    ).toBe(380);
   });
 });
 

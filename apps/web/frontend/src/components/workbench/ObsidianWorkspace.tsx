@@ -1,5 +1,6 @@
 /**
- * Obsidian tab 的阅读器骨架：**全宽双栏**（左 vault 树 + 右预览区）+ vault 根管理。
+ * Obsidian tab 的阅读器骨架：**全宽双栏**（左 vault 树 + 中间可拖拽的分隔把手
+ * + 右预览区，复验修复轮·第二批起双栏宽度可调）+ vault 根管理。
  *
  * 口径来源：PRD「方案四 · Obsidian tab」+ 任务 06「Obsidian tab 骨架」。
  *
@@ -11,6 +12,10 @@
  * - **vault 树**：树形展开风格（三角箭头旋转 + 缩进层级线），**只列目录与
  *   `.md` 文件**（过滤在 `src/lib/obsidian-vault.ts`），目录**懒展开**
  *   （复用 `api.listFiles`），**展开态按路径记 localStorage**；
+ * - **双栏宽度可调**（复验修复轮·第二批 #4）：左树 / 右预览之间的分隔线是
+ *   **可拖拽把手**（与文件窗格骑缝把手同一份共用组件 `SplitHandle`：常显、
+ *   直角、同视觉），左树有最小宽度钳位（`file-pane.ts` 纯函数）、预览区吃
+ *   剩余宽度；宽度是**会话内内存态**（不入 localStorage，重挂载回默认宽度）。
  * - **右侧预览区**本轮只有占位（点 `.md` 文件先落选中态）——markdown 渲染与
  *   wikilink 在 07 轮，挂载点就是 `page-sandbox-detail-obsidian-preview`。
  *
@@ -26,6 +31,12 @@ import type { FileListEntry } from '../../api/types';
 import { cn } from '../../lib/cn';
 import { isLargePreviewFile } from '../../lib/file-preview';
 import {
+  OBSIDIAN_TREE_DEFAULT_WIDTH_PX,
+  OBSIDIAN_TREE_MIN_WIDTH_PX,
+  clampObsidianTreeWidth,
+  obsidianTreeWidthFromDrag,
+} from '../../lib/file-pane';
+import {
   filterVaultEntries,
   isPathWithinVaultRoot,
   normalizeVaultRoot,
@@ -39,6 +50,7 @@ import {
 } from '../../lib/obsidian-vault';
 import { ObsidianPreview, OBSIDIAN_HEADER_CLASS } from './ObsidianPreview';
 import { PreviewConfirmDialog } from './PreviewConfirmDialog';
+import { SplitHandle } from './SplitHandle';
 
 /** 目录列举的状态：还没读 / 读到了 / 读失败。 */
 interface DirState {
@@ -279,6 +291,20 @@ export function ObsidianWorkspace({ sandbox, workdir }: ObsidianWorkspaceProps) 
   const previousRootRef = useRef<string | null>(root);
   /** 「刷新 vault 树」进行中：按钮瞬时禁用 + 旋转（用户浏览器复验修复轮）。 */
   const [refreshingTree, setRefreshingTree] = useState(false);
+  /**
+   * 左 vault 树的宽度（像素）：默认 264px，双栏分隔把手拖拽 / 方向键可改
+   * （复验修复轮·第二批 #4）。**会话内内存态**：不入 localStorage（PRD 未要求
+   * 持久化），重挂载（换沙箱 / 刷新）即回默认宽度。
+   */
+  const [treeWidth, setTreeWidth] = useState<number>(OBSIDIAN_TREE_DEFAULT_WIDTH_PX);
+  /** Obsidian 双栏容器（量宽度用）。 */
+  const splitRef = useRef<HTMLDivElement | null>(null);
+  /** 拖拽把手的进行中状态（起点指针位置 + 起点树宽）。 */
+  const treeDragRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(
+    null,
+  );
+  /** 树宽的最新值（按下把手时取，避免闭包里拿到旧值）。 */
+  const treeWidthRef = useRef<number>(treeWidth);
   /** 挂载那一拍不写存储（沿用根 / 展开态「挂载不写」的惯例）。 */
   const skipSelectionWriteRef = useRef(true);
   /**
@@ -527,6 +553,86 @@ export function ObsidianWorkspace({ sandbox, workdir }: ObsidianWorkspaceProps) 
     applyRoot(draftPath);
   }, [applyRoot, draftPath]);
 
+  /* ------------------------------------------ 双栏分隔把手（复验修复轮·第二批 #4） */
+
+  /** 树宽的最新值：跟随 state，供按下把手时读取。 */
+  useEffect(() => {
+    treeWidthRef.current = treeWidth;
+  }, [treeWidth]);
+
+  /** 分隔把手按下：记下起点（指针横坐标 + 起点树宽）。 */
+  const handleSplitPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    treeDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: treeWidthRef.current,
+    };
+    // 指针捕获：拖出把手也不丢事件。环境不支持时跳过（不影响其余逻辑）。
+    if (typeof event.currentTarget.setPointerCapture === 'function') {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
+  }, []);
+
+  /** 拖拽中：按指针位置算新树宽（钳位口径在 `obsidianTreeWidthFromDrag` 里）。 */
+  const handleSplitPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = treeDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    const container = splitRef.current;
+    if (!container) {
+      return;
+    }
+    setTreeWidth(
+      obsidianTreeWidthFromDrag({
+        startWidth: drag.startWidth,
+        startX: drag.startX,
+        pointerX: event.clientX,
+        containerWidth: container.getBoundingClientRect().width,
+      }),
+    );
+  }, []);
+
+  /** 松手（或指针捕获丢失）：拖拽收口。 */
+  const handleSplitPointerUp = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (treeDragRef.current?.pointerId === event.pointerId) {
+      treeDragRef.current = null;
+    }
+    if (
+      typeof event.currentTarget.hasPointerCapture === 'function' &&
+      event.currentTarget.hasPointerCapture(event.pointerId)
+    ) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }, []);
+
+  /**
+   * 按方向键调宽（每次 16px）：把手能用键盘操作。树在**左**：→ 变宽、
+   * ← 变窄（与文件窗格把手方向相反，两边都是「箭头指向哪边哪边变宽」）。
+   */
+  const handleSplitKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') {
+      return;
+    }
+    event.preventDefault();
+    const container = splitRef.current;
+    setTreeWidth((current) =>
+      clampObsidianTreeWidth(current + (event.key === 'ArrowRight' ? 16 : -16), {
+        containerWidth: container ? container.getBoundingClientRect().width : null,
+      }),
+    );
+  }, []);
+
+  /**
+   * 把手的可调上限（`aria-valuemax`）：直接问钳位函数「这个容器宽下最大能到
+   * 多少」（传一个足够大的期望值，返回值就是上限）；容器宽拿不到时是 520。
+   * 与文件窗格把手同款（渲染期活读容器宽，不挂 ResizeObserver）。
+   */
+  const treeMaxWidth = clampObsidianTreeWidth(Number.MAX_SAFE_INTEGER, {
+    containerWidth: splitRef.current?.getBoundingClientRect().width ?? null,
+  });
+
   /** 沙箱工作目录能不能当根（不可得时「使用沙箱工作目录」禁用）。 */
   const workdirRoot = normalizeVaultRoot(workdir);
   /** 输入框里的值非法（非空提示，红字就地展示，不进 toast）。 */
@@ -628,12 +734,17 @@ export function ObsidianWorkspace({ sandbox, workdir }: ObsidianWorkspaceProps) 
 
   return (
     <div
+      ref={splitRef}
       className="flex min-h-0 flex-1 overflow-hidden rounded-xl border border-border bg-card"
       data-testid="page-sandbox-detail-obsidian"
     >
-      {/* 左栏：vault 树（固定宽，不可拖拽）。 */}
+      {/*
+        左栏：vault 树。宽度默认 264px，由双栏分隔把手拖拽 / 方向键调整
+        （复验修复轮·第二批 #4：原固定宽改可调，钳位口径在 `file-pane.ts`）。
+      */}
       <aside
-        className="flex min-h-0 w-[264px] flex-none flex-col"
+        className="flex min-h-0 flex-none flex-col pr-1.5"
+        style={{ width: treeWidth }}
         data-testid="page-sandbox-detail-obsidian-vault-tree"
       >
         <div
@@ -675,16 +786,34 @@ export function ObsidianWorkspace({ sandbox, workdir }: ObsidianWorkspaceProps) 
             更改
           </button>
         </div>
+        {/*
+          树列表的滚动容器。**防把手吞滚动条热区**（复验修复轮·第二批审查收敛
+          #1①）：原生滚动条贴在滚动容器**自身的右缘**（实测：给滚动容器自己补
+          padding 挪不动它，padding 只出现在滚动条内侧），所以这 6px 内边距给在
+          上面的 aside 上——量正好等于骑缝把手每侧压入的宽度（`-mx-1.5`），
+          滚动条整体落在把手热区之外，互不重叠；列表自身另留 pr-1 的行右距。
+        */}
         <div className="min-h-0 flex-1 overflow-y-auto py-1 pr-1">
           <VaultChildren dirPath={root} ctx={treeContext} />
         </div>
       </aside>
 
-      {/* 中：一条细分隔线（纯展示，**不可拖拽**）。 */}
-      <div
-        aria-hidden="true"
-        data-testid="page-sandbox-detail-obsidian-divider"
-        className="w-px flex-none bg-border"
+      {/*
+        中：接缝上的**骑缝拖拽把手**（复验修复轮·第二批 #4：原「不可拖拽的细分隔线」
+        改为可拖拽；样式与文件窗格的把手同一份共用组件 `SplitHandle`——常显、直角、
+        同视觉）。testid 沿用旧分隔线的 `page-sandbox-detail-obsidian-divider`。
+      */}
+      <SplitHandle
+        label="调整 vault 树宽度"
+        min={OBSIDIAN_TREE_MIN_WIDTH_PX}
+        max={treeMaxWidth}
+        value={treeWidth}
+        testId="page-sandbox-detail-obsidian-divider"
+        onPointerDown={handleSplitPointerDown}
+        onPointerMove={handleSplitPointerMove}
+        onPointerUp={handleSplitPointerUp}
+        onPointerCancel={handleSplitPointerUp}
+        onKeyDown={handleSplitKeyDown}
       />
 
       {/* 右：预览区（07 轮在这里落 markdown 渲染 / wikilink / 工具条）。 */}

@@ -9,7 +9,14 @@
  * 钉的行为（全部在真浏览器 + 真沙箱上跑）：
  *
  * 一、**分屏三段式**：左终端面板 + 中接缝拖拽把手 + 右文件窗格，三者**零间隙贴合成
- *    一块带边框的面板**（用户浏览器复验修复轮：把手骑在接缝上、不再占布局宽度）；
+ *    一块带边框的面板**（用户浏览器复验修复轮：把手骑在接缝上、不再占布局宽度；
+ *    复验修复轮·第二批 #2/#6：把手**常显**——把手带与抓握图标静置就可见，本体
+ *    与 hover 高亮都**直角**）；
+ * 一甲、**工具条顺序**（复验修复轮·第二批 #1）：折叠钮**最左**、上传**最右**，
+ *    回跳 → 刷新相对顺序不变、居中排布；
+ * 一乙、**窗格预览**（复验修复轮·第二批 #3，QA-01 当时漏了文件窗格预览的真渲染
+ *    断言——这条补上并**永久留在套件里**）：点行尾眼睛钮 ⇒ 预览第二视图渲染
+ *    **正文**（行号 + 内容可见，不停在「正在读取…」）；
  *    窗格默认宽 340px，把手可拖拽（往左变宽、往右变窄）与方向键调宽，窗格有最小宽度
  *    240px、上限 720px，且**终端面板有最小宽度钳位**（拖到最窄时终端不被压没）；
  * 二、**折叠**：折叠为右缘 **36px 纯图标竖条**，竖条上**不显示任何文字**、
@@ -41,6 +48,7 @@ import {
   crumbs,
   expectPaneAt,
   filePane,
+  fileRow,
   openFilePane,
   paneCollapsed,
   paneContent,
@@ -158,6 +166,8 @@ test.describe('文件窗格（终端右侧分屏）', () => {
       'aria-valuenow',
       String(DEFAULT_WIDTH_PX),
     );
+    // a11y 增强（复验修复轮·第二批审查）：数值带单位（与 Obsidian 把手同一份组件）
+    await expect(paneHandle(page)).toHaveAttribute('aria-valuetext', `${DEFAULT_WIDTH_PX}px`);
 
     // ── ③ 方向键调宽：← 变宽 16px、→ 变窄 16px（键盘可用性）
     await paneHandle(page).focus();
@@ -428,6 +438,98 @@ test.describe('文件窗格（终端右侧分屏）', () => {
     expect(headerBox, '量不到「名称」表头').not.toBeNull();
     expect(listBox, '量不到列表容器').not.toBeNull();
     expect(headerBox!.y, '「名称」表头应位于列表容器上方').toBeLessThanOrEqual(listBox!.y);
+  });
+
+  test('工具条顺序：折叠钮最左 / 上传最右（回跳→刷新不变）；把手常显且直角', async ({
+    page,
+  }) => {
+    await gotoDetail(page, SANDBOX);
+    await openFilePane(page);
+    await expectPaneAt(page, ['workspace']);
+
+    // ── ① 工具条顺序（复验修复轮·第二批 #1）：从左到右依次是
+    //    折叠 → 面包屑 → 回跳 → 刷新 → 上传；上传是行内最后一个按钮。
+    const collapse = page.getByTestId('page-file-pane-collapse-button');
+    const jump = page.getByTestId('page-file-pane-jump-button');
+    const refresh = page.getByTestId('page-file-browser-refresh-button');
+    const upload = page.getByTestId('page-file-browser-upload-button');
+    const [collapseBox, jumpBox, refreshBox, uploadBox] = await Promise.all([
+      collapse.boundingBox(),
+      jump.boundingBox(),
+      refresh.boundingBox(),
+      upload.boundingBox(),
+    ]);
+    expect(collapseBox, '量不到折叠钮').not.toBeNull();
+    expect(jumpBox, '量不到回跳钮').not.toBeNull();
+    expect(refreshBox, '量不到刷新钮').not.toBeNull();
+    expect(uploadBox, '量不到上传钮').not.toBeNull();
+    expect(collapseBox!.x, '折叠钮不在工具条最左').toBeLessThan(jumpBox!.x);
+    expect(jumpBox!.x, '回跳 → 刷新的相对顺序变了').toBeLessThan(refreshBox!.x);
+    expect(refreshBox!.x, '上传钮不在工具条最右').toBeLessThan(uploadBox!.x);
+    // DOM 顺序佐证：折叠钮是工具条行的第一个元素
+    const firstChildId = await collapse.evaluate(
+      (element) =>
+        (element.parentElement?.firstElementChild as HTMLElement | null)?.getAttribute(
+          'data-testid',
+        ) ?? null,
+    );
+    expect(firstChildId, '折叠钮不是工具条行的第一个元素').toBe(
+      'page-file-pane-collapse-button',
+    );
+
+    // ── ② 骑缝把手常显且直角（复验修复轮·第二批 #2/#6）：静置就有可见的
+    //    把手带（非透明底色），本体不带任何圆角。
+    const handle = paneHandle(page);
+    const handleStyle = await handle.evaluate((element) => {
+      const style = window.getComputedStyle(element);
+      return { borderRadius: style.borderRadius, backgroundColor: style.backgroundColor };
+    });
+    expect(handleStyle.borderRadius, '把手不应有圆角（直角）').toBe('0px');
+    expect(handleStyle.backgroundColor, '把手带应静置可见（非透明底色）').not.toBe(
+      'rgba(0, 0, 0, 0)',
+    );
+  });
+
+  test('窗格预览：点行尾眼睛钮 ⇒ 预览第二视图渲染正文（行号 + 内容可见，QA-01 补口）', async ({
+    page,
+  }) => {
+    await gotoDetail(page, SANDBOX);
+    await openFilePane(page);
+    await expectPaneAt(page, ['workspace']);
+
+    // 夹具：往当前目录放一份小文本文件（不经前端，直接走接口通道）
+    await uploadSandboxFile(
+      SANDBOX,
+      `${WORKSPACE}/acc-pane-preview-note.txt`,
+      Buffer.from('ACC_PREVIEW_LINE_ONE\nACC_PREVIEW_LINE_TWO\n', 'utf-8'),
+    );
+    // 强制重读通道（刷新钮）让新文件出现在列表里
+    await page.getByTestId('page-file-browser-refresh-button').click();
+    const row = fileRow(page, 'acc-pane-preview-note.txt');
+    await expect(row, '刷新后夹具文件没有出现在列表里').toBeVisible({ timeout: 30_000 });
+
+    // 点行尾的眼睛钮（行 hover 才浮现）：预览是窗格内的第二视图
+    await row.hover();
+    await row.getByTestId('page-file-browser-row-preview-button').click();
+
+    // **正文渲染**（不停在「正在读取…」）：行号 + 内容可见（复验修复轮·第二批
+    // #3 的真沙箱断言；QA-01 当时漏了文件窗格预览，这就是那条真渲染断言）
+    const body = page.getByTestId('page-file-preview-body');
+    await expect(body, '点眼睛后预览正文没有渲染出来').toBeVisible({ timeout: 30_000 });
+    const lines = page.getByTestId('page-file-preview-line');
+    await expect(lines).toHaveText(['ACC_PREVIEW_LINE_ONE', 'ACC_PREVIEW_LINE_TWO']);
+    const numbers = page.getByTestId('page-file-preview-line-number');
+    await expect(numbers).toHaveText(['1', '2']);
+    // 工具条齐全：文件名 / 大小 / 复制 / 返回
+    await expect(page.getByTestId('page-file-preview-title')).toHaveText(
+      'acc-pane-preview-note.txt',
+    );
+    await expect(page.getByTestId('page-file-preview-back-button')).toBeVisible();
+    await expect(page.getByTestId('page-file-preview-copy-button')).toBeVisible();
+    // 返回 ⇒ 回到列表态
+    await page.getByTestId('page-file-preview-back-button').click();
+    await expect(page.getByTestId('page-file-browser-list')).toBeVisible();
+    await expect(page.getByTestId('page-file-preview-body')).toHaveCount(0);
   });
 
   test('会话切换：新的终端会话带自己的窗格，折叠态跨会话保持', async ({ page }) => {
