@@ -1359,3 +1359,143 @@ describe('三段式分屏与文件窗格', () => {
     expect(screen.getByTestId('page-file-pane')).toBeTruthy();
   });
 });
+
+describe('Obsidian tab（06 轮：固定 tab + 文件窗格联动）', () => {
+  /** tabs 条里固定的 Obsidian tab。 */
+  function obsidianTab(): HTMLElement {
+    return screen.getByTestId('page-sandbox-detail-obsidian-tab');
+  }
+
+  it('最左的固定 tab：官方 logo（本地资产）+「Obsidian」文字、无关闭按钮', async () => {
+    mockSessions([makeRecord({ session_id: 'sess-a' })]);
+
+    renderPanel();
+
+    await screen.findAllByTestId('page-sandbox-detail-terminal-tab');
+    const tablist = screen.getByTestId('page-sandbox-detail-terminal-tabs');
+    const first = tablist.querySelector('[role="tab"]');
+    expect(first?.getAttribute('data-testid')).toBe('page-sandbox-detail-obsidian-tab');
+
+    const tab = obsidianTab();
+    // 不可关闭：tab 上只有一个按钮（选中），没有任何关闭按钮。
+    expect(tab.querySelectorAll('button')).toHaveLength(1);
+    expect(within(tab).queryByTestId('page-sandbox-detail-terminal-tab-close')).toBeNull();
+    expect(tab.textContent).toContain('Obsidian');
+
+    // 图标是本地 SVG 资产（运行时零 CDN：不是 http(s) 外链）。
+    const icon = within(tab).getByTestId('page-sandbox-detail-obsidian-tab-icon');
+    const src = icon.getAttribute('src') ?? '';
+    expect(src).toContain('obsidian');
+    expect(src.startsWith('http://')).toBe(false);
+    expect(src.startsWith('https://')).toBe(false);
+
+    // 默认激活的是终端 tab。
+    expect(tab.getAttribute('aria-selected')).toBe('false');
+    expect(tab.getAttribute('data-active')).toBe('false');
+  });
+
+  it('没有任何终端会话时该 tab 仍可用（点开照样进 Obsidian 视图）', async () => {
+    mockSessions([]);
+
+    const onActiveSessionChange = vi.fn();
+    renderPanel(onActiveSessionChange);
+
+    await screen.findByTestId('page-sandbox-detail-terminal-empty-title');
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-obsidian-tab-select'));
+
+    expect(obsidianTab().getAttribute('aria-selected')).toBe('true');
+    expect(obsidianTab().getAttribute('data-active')).toBe('true');
+    expect(screen.getByTestId('page-sandbox-detail-obsidian')).toBeTruthy();
+    // 点 tab 不改选中会话（tab 与终端会话无关）。
+    expect(onActiveSessionChange).not.toHaveBeenCalled();
+    // 终端 tab 的「没有终端会话」空态只在终端 tab 激活时出现。
+    expect(screen.queryByTestId('page-sandbox-detail-terminal-empty-title')).toBeNull();
+  });
+
+  it('激活 Obsidian ⇒ 文件窗格与分隔条消失；切回终端 tab ⇒ 按原折叠态恢复', async () => {
+    mockSessions([makeRecord({ session_id: 'sess-a' })]);
+
+    renderPanel();
+
+    // 先在终端 tab 里把窗格折叠起来（折叠态由 TerminalPanel 持有）。
+    await screen.findByTestId('page-file-pane');
+    fireEvent.click(screen.getByTestId('page-file-pane-collapse-button'));
+    await screen.findByTestId('page-file-pane-collapsed');
+    expect(screen.getByTestId('page-file-pane').style.width).toBe('36px');
+
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-obsidian-tab-select'));
+
+    // Obsidian tab 激活：终端分屏整体不出现（窗格 / 分隔条 / 终端表面都不在）。
+    expect(screen.queryByTestId('page-terminal-split')).toBeNull();
+    expect(screen.queryByTestId('page-file-pane')).toBeNull();
+    expect(screen.queryByTestId('page-terminal-split-handle')).toBeNull();
+    expect(screen.queryByTestId('page-sandbox-detail-terminal-surface')).toBeNull();
+    expect(screen.getByTestId('page-sandbox-detail-obsidian')).toBeTruthy();
+
+    // 点终端标签切回：窗格按**原折叠态**恢复（36px），折叠态没被重置。
+    const tab = await screen.findByTestId('page-sandbox-detail-terminal-tab');
+    fireEvent.click(within(tab).getByTestId('page-sandbox-detail-terminal-tab-select'));
+
+    const pane = await screen.findByTestId('page-file-pane');
+    expect(pane.style.width).toBe('36px');
+    expect(screen.getByTestId('page-file-pane-collapsed')).toBeTruthy();
+    expect(screen.getByTestId('page-sandbox-detail-terminal-surface')).toBeTruthy();
+    expect(screen.queryByTestId('page-sandbox-detail-obsidian')).toBeNull();
+    expect(obsidianTab().getAttribute('aria-selected')).toBe('false');
+  });
+
+  it('展开态下切回终端 tab：窗格与分隔条都回来（宽度不变）', async () => {
+    mockSessions([makeRecord({ session_id: 'sess-a' })]);
+
+    renderPanel();
+
+    await screen.findByTestId('page-file-pane');
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-obsidian-tab-select'));
+    expect(screen.queryByTestId('page-file-pane')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-terminal-tab-select'));
+    await screen.findByTestId('page-file-pane');
+    expect(screen.getByTestId('page-file-pane').style.width).toBe('340px');
+    expect(screen.getByTestId('page-terminal-split-handle')).toBeTruthy();
+  });
+
+  it('在 Obsidian tab 上新建会话：回到终端 tab', async () => {
+    mocks.listTerminalSessions.mockResolvedValue([]);
+    mocks.createTerminalSession.mockResolvedValue({
+      session_id: 'sess-new',
+      sandbox: 'demo',
+      container_name: 'sandbox-demo',
+      cols: 80,
+      rows: 24,
+      state: 'running',
+      created_at: '2026-10-30T01:00:00+00:00',
+    });
+
+    renderPanel();
+
+    await screen.findByTestId('page-sandbox-detail-terminal-empty-title');
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-obsidian-tab-select'));
+    expect(screen.getByTestId('page-sandbox-detail-obsidian')).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-terminal-new-button'));
+
+    await waitFor(() => expect(screen.queryByTestId('page-sandbox-detail-obsidian')).toBeNull());
+    // 路由由父组件驱动（这里 onActiveSessionChange 是替身）：断言的是「tab 回到终端」。
+    expect(screen.getByTestId('page-sandbox-detail-terminal-empty-title')).toBeTruthy();
+  });
+
+  it('全屏：Obsidian 双栏在全屏层内（tabs 条仍可见、可切）', async () => {
+    mockSessions([]);
+
+    renderPanel();
+
+    await screen.findByTestId('page-sandbox-detail-terminal-empty-title');
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-obsidian-tab-select'));
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-terminal-fullscreen-button'));
+
+    const panel = screen.getByTestId('page-sandbox-detail-terminal-panel');
+    expect(panel.className).toContain('fixed');
+    expect(screen.getByTestId('page-sandbox-detail-terminal-tabs')).toBeTruthy();
+    expect(screen.getByTestId('page-sandbox-detail-obsidian')).toBeTruthy();
+  });
+});

@@ -35,6 +35,7 @@ import { TerminalView, type TerminalState, type TerminalStatus } from './Termina
 import { useToast } from './Toast';
 import { CloseSessionDialog } from './workbench/CloseSessionDialog';
 import { FileBrowserPanel } from './workbench/FileBrowserPanel';
+import { ObsidianWorkspace } from './workbench/ObsidianWorkspace';
 import { TerminalTabs, type TerminalTabItem } from './workbench/TerminalTabs';
 
 /** 状态标签文案。 */
@@ -146,11 +147,13 @@ export function TerminalPanel({
   /**
    * 当前激活的工作区 tab 类型。
    *
-   * 06 轮起 tabs 条最左会有一个固定的 Obsidian tab，那时这个取值由 tab 条上报。
-   * 本轮只有终端 tab，但**入口条件的结构先按两种取值搭好**：文件窗格是终端 tab
-   * 的伴生物，激活别的 tab 时窗格整体不出现（口径见 `shouldShowFilePane`）。
+   * 06 轮起 tabs 条最左有一个**固定的 Obsidian tab**（与终端会话无关），
+   * 终端会话标签与它二选一。文件窗格是**终端 tab 的伴生物**：激活 Obsidian
+   * tab 时窗格整体不出现（口径见 `shouldShowFilePane`），切回终端 tab 时
+   * 窗格按 `paneCollapsed` 的**原折叠态**恢复（折叠态在同一挂载内持有，切 tab
+   * 不重置）。
    */
-  const [activeTabKind] = useState<WorkspaceTabKind>('terminal');
+  const [activeTabKind, setActiveTabKind] = useState<WorkspaceTabKind>('terminal');
   /**
    * 文件窗格宽度（像素）：默认 340px，分隔条拖拽可改。
    *
@@ -421,6 +424,8 @@ export function TerminalPanel({
       // 新建会话是明确的用户操作意图：终端重挂载后要把焦点还给用户
       // （否则新终端成了看得见、敲不进 pty 的「空心光标」）。
       focusIntentRef.current = true;
+      // 新建会话必然落在终端 tab 上（Obsidian tab 与终端会话无关）。
+      setActiveTabKind('terminal');
       onActiveSessionChange(session.session_id);
     } catch (exc) {
       show('error', exc instanceof Error ? exc.message : '新建终端会话失败', {
@@ -518,10 +523,17 @@ export function TerminalPanel({
   const selectSession = useCallback(
     (sessionId: string) => {
       focusIntentRef.current = true;
+      // 点终端标签 = 切回终端 tab（从 Obsidian tab 回来时窗格随之恢复）。
+      setActiveTabKind('terminal');
       onActiveSessionChange(sessionId);
     },
     [onActiveSessionChange],
   );
+
+  /** 切 tab：Obsidian tab 与终端会话 tab 二选一（终端 tab 由点标签本身驱动）。 */
+  const selectTabKind = useCallback((kind: WorkspaceTabKind) => {
+    setActiveTabKind(kind);
+  }, []);
 
   /** 全屏开关：退出全屏就是再点同一个按钮（不绑 Esc / F11）。 */
   const toggleFullscreen = useCallback(() => {
@@ -642,146 +654,164 @@ export function TerminalPanel({
         busy={busy}
         sandboxRunning={sandboxRunning}
         fullscreen={fullscreen}
+        activeTabKind={activeTabKind}
         onSelect={selectSession}
         onClose={requestClose}
         onNew={() => void createTerminal()}
+        onSelectTabKind={selectTabKind}
         onToggleFullscreen={toggleFullscreen}
       />
 
       {/*
-        内容区（**tabs 条下方**）：三段式——左终端面板 + 中可拖拽分隔条 +
-        右文件窗格。全屏时这一整块（含窗格）被 `fixed` 覆盖。
+        内容区（**tabs 条下方**）：
+
+        - 终端 tab：三段式——左终端面板 + 中可拖拽分隔条 + 右文件窗格；
+        - Obsidian tab：全宽双栏（左 vault 树 + 右预览区）。
+
+        两种内容**二选一渲染**：激活 Obsidian tab 时终端分屏整体不出现
+        （窗格与分隔条随之消失，`shouldShowFilePane` 已在条件里算上 tab 维度）。
+        全屏时这一整块被 `fixed` 覆盖（Obsidian 双栏也在全屏层内）。
       */}
       <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
-        {activeId && activeStatus === 'failed' && (
-          <div>
-            <button
-              type="button"
-              onClick={retryActive}
-              data-testid="page-sandbox-detail-terminal-retry-button"
-              className="inline-flex h-7 items-center justify-center rounded-lg border border-border bg-card px-2.5 text-[12.5px] text-foreground transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
-            >
-              重试连接
-            </button>
-          </div>
-        )}
-
-        <div
-          ref={splitRef}
-          className="flex min-h-0 flex-1"
-          data-testid="page-terminal-split"
-        >
-          {/*
-            左：终端面板。**最小宽度钳位**（`minWidth`）——拖分隔条时
-            终端不会被压没（钳位口径在 `src/lib/file-pane.ts`）。
-          */}
-          <div
-            className="flex min-h-0 flex-1 flex-col"
-            style={{ minWidth: FILE_PANE_MIN_TERMINAL_WIDTH_PX }}
-            data-testid="page-terminal-split-terminal"
-          >
-            {activeId ? (
-              <TerminalView
-                key={activeId}
-                sessionId={activeId}
-                retryToken={retryTokens[activeId] ?? 0}
-                autoFocus={autoFocus}
-                onStateChange={(state) => {
-                  handleStateChange(activeId, state);
-                }}
-              />
-            ) : (
-              /*
-                没有会话：内容区空态（标题「没有终端会话」+ 新建会话入口）。
-                窗格此时**整体不出现**（它是终端会话的伴生物）。
-              */
-              <div
-                className="flex h-full min-h-0 items-center justify-center rounded-xl border border-border bg-terminal-bg p-3"
-                data-testid="page-sandbox-detail-terminal-placeholder"
-              >
-                <div className="flex flex-col items-center gap-3">
-                  <span
-                    className="text-[13px] text-terminal-fg/80"
-                    data-testid="page-sandbox-detail-terminal-empty-title"
-                  >
-                    没有终端会话
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => void createTerminal()}
-                    disabled={busy || !sandboxRunning}
-                    title={sandboxRunning ? '新建终端会话' : '沙箱未运行，无法新建终端会话'}
-                    data-testid="page-sandbox-detail-terminal-empty-create-button"
-                    className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-[13px] text-foreground transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
-                  >
-                    {busy ? (
-                      <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-                    ) : (
-                      <Plus className="size-4" aria-hidden="true" />
-                    )}
-                    新建会话
-                  </button>
-                </div>
+        {activeTabKind === 'obsidian' ? (
+          <ObsidianWorkspace
+            key={sandboxName}
+            sandbox={sandboxName}
+            workdir={sandboxWorkdir ?? ''}
+          />
+        ) : (
+          <>
+            {activeId && activeStatus === 'failed' && (
+              <div>
+                <button
+                  type="button"
+                  onClick={retryActive}
+                  data-testid="page-sandbox-detail-terminal-retry-button"
+                  className="inline-flex h-7 items-center justify-center rounded-lg border border-border bg-card px-2.5 text-[12.5px] text-foreground transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+                >
+                  重试连接
+                </button>
               </div>
             )}
-          </div>
 
-          {/*
-            中：可拖拽分隔条（拖它改窗格宽度）。
-            折叠态不出分隔条（竖条上只有展开按钮，没有可拖的东西）。
-          */}
-          {paneVisible && !paneCollapsed && (
             <div
-              role="separator"
-              aria-orientation="vertical"
-              aria-label="调整文件窗格宽度"
-              aria-valuemin={FILE_PANE_MIN_WIDTH_PX}
-              aria-valuemax={paneMaxWidth}
-              aria-valuenow={paneWidth}
-              tabIndex={0}
-              onPointerDown={handleSplitPointerDown}
-              onPointerMove={handleSplitPointerMove}
-              onPointerUp={handleSplitPointerUp}
-              onPointerCancel={handleSplitPointerUp}
-              onKeyDown={handleSplitKeyDown}
-              data-testid="page-terminal-split-handle"
-              className="group w-1.5 flex-none cursor-col-resize rounded-full bg-transparent transition-colors hover:bg-primary/40 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
-            />
-          )}
-
-          {/*
-            右：文件窗格（默认 340px；折叠态是右缘 36px 纯图标竖条）。
-            宽度由分隔条拖拽决定，**不入存储**（折叠态才持久）。
-          */}
-          {paneVisible && (
-            <div
-              className="flex-none"
-              style={{
-                width: paneCollapsed ? FILE_PANE_COLLAPSED_WIDTH_PX : paneWidth,
-              }}
-              data-testid="page-file-pane"
+              ref={splitRef}
+              className="flex min-h-0 flex-1"
+              data-testid="page-terminal-split"
             >
               {/*
-                按「沙箱:会话」强制重挂载：path / entries / 定位标记都是
-                组件内部状态，换会话或换沙箱时必须归零——否则同起点
-                （都兜底 `/`）时 applyPath 走同路径分支不清 entries，旧会话 /
-                旧沙箱的行会一直挂到新查询返回，期间点行还会把旧路径发给新
-                沙箱。折叠态与窗格宽度在父组件持有，不受重挂载影响。
+                左：终端面板。**最小宽度钳位**（`minWidth`）——拖分隔条时
+                终端不会被压没（钳位口径在 `src/lib/file-pane.ts`）。
               */}
-              <FileBrowserPanel
-                key={`${sandboxName}:${activeId ?? 'none'}`}
-                sandbox={sandboxName}
-                sessionId={activeId}
-                workdir={sandboxWorkdir ?? ''}
-                collapsed={paneCollapsed}
-                onToggleCollapsed={togglePaneCollapsed}
-                desktop={desktop}
-              />
-            </div>
-          )}
-        </div>
-      </div>
+              <div
+                className="flex min-h-0 flex-1 flex-col"
+                style={{ minWidth: FILE_PANE_MIN_TERMINAL_WIDTH_PX }}
+                data-testid="page-terminal-split-terminal"
+              >
+                {activeId ? (
+                  <TerminalView
+                    key={activeId}
+                    sessionId={activeId}
+                    retryToken={retryTokens[activeId] ?? 0}
+                    autoFocus={autoFocus}
+                    onStateChange={(state) => {
+                      handleStateChange(activeId, state);
+                    }}
+                  />
+                ) : (
+                  /*
+                    没有会话：内容区空态（标题「没有终端会话」+ 新建会话入口）。
+                    窗格此时**整体不出现**（它是终端会话的伴生物）；激活
+                    Obsidian tab 时整个分屏都不渲染，空态自然也不出现。
+                  */
+                  <div
+                    className="flex h-full min-h-0 items-center justify-center rounded-xl border border-border bg-terminal-bg p-3"
+                    data-testid="page-sandbox-detail-terminal-placeholder"
+                  >
+                    <div className="flex flex-col items-center gap-3">
+                      <span
+                        className="text-[13px] text-terminal-fg/80"
+                        data-testid="page-sandbox-detail-terminal-empty-title"
+                      >
+                        没有终端会话
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => void createTerminal()}
+                        disabled={busy || !sandboxRunning}
+                        title={sandboxRunning ? '新建终端会话' : '沙箱未运行，无法新建终端会话'}
+                        data-testid="page-sandbox-detail-terminal-empty-create-button"
+                        className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-[13px] text-foreground transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+                      >
+                        {busy ? (
+                          <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                        ) : (
+                          <Plus className="size-4" aria-hidden="true" />
+                        )}
+                        新建会话
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
 
+              {/*
+                中：可拖拽分隔条（拖它改窗格宽度）。
+                折叠态不出分隔条（竖条上只有展开按钮，没有可拖的东西）。
+              */}
+              {paneVisible && !paneCollapsed && (
+                <div
+                  role="separator"
+                  aria-orientation="vertical"
+                  aria-label="调整文件窗格宽度"
+                  aria-valuemin={FILE_PANE_MIN_WIDTH_PX}
+                  aria-valuemax={paneMaxWidth}
+                  aria-valuenow={paneWidth}
+                  tabIndex={0}
+                  onPointerDown={handleSplitPointerDown}
+                  onPointerMove={handleSplitPointerMove}
+                  onPointerUp={handleSplitPointerUp}
+                  onPointerCancel={handleSplitPointerUp}
+                  onKeyDown={handleSplitKeyDown}
+                  data-testid="page-terminal-split-handle"
+                  className="group w-1.5 flex-none cursor-col-resize rounded-full bg-transparent transition-colors hover:bg-primary/40 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+                />
+              )}
+
+              {/*
+                右：文件窗格（默认 340px；折叠态是右缘 36px 纯图标竖条）。
+                宽度由分隔条拖拽决定，**不入存储**（折叠态才持久）。
+              */}
+              {paneVisible && (
+                <div
+                  className="flex-none"
+                  style={{
+                    width: paneCollapsed ? FILE_PANE_COLLAPSED_WIDTH_PX : paneWidth,
+                  }}
+                  data-testid="page-file-pane"
+                >
+                  {/*
+                    按「沙箱:会话」强制重挂载：path / entries / 定位标记都是
+                    组件内部状态，换会话或换沙箱时必须归零——否则同起点
+                    （都兜底 `/`）时 applyPath 走同路径分支不清 entries，旧会话 /
+                    旧沙箱的行会一直挂到新查询返回，期间点行还会把旧路径发给新
+                    沙箱。折叠态与窗格宽度在父组件持有，不受重挂载影响。
+                  */}
+                  <FileBrowserPanel
+                    key={`${sandboxName}:${activeId ?? 'none'}`}
+                    sandbox={sandboxName}
+                    sessionId={activeId}
+                    workdir={sandboxWorkdir ?? ''}
+                    collapsed={paneCollapsed}
+                    onToggleCollapsed={togglePaneCollapsed}
+                    desktop={desktop}
+                  />
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
       <CloseSessionDialog
         open={closing !== null}
         running={closing?.running ?? false}

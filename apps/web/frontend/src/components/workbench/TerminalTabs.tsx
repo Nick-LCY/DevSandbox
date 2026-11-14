@@ -1,6 +1,8 @@
 import { Maximize, Minimize, Plus, X } from 'lucide-react';
 
+import obsidianLogoUrl from '../../assets/brand/obsidian.svg';
 import { cn } from '../../lib/cn';
+import type { WorkspaceTabKind } from '../../lib/file-pane';
 
 /** 标签对应的会话状态。 */
 export type TerminalTabState = 'running' | 'exited' | 'invalid';
@@ -27,9 +29,13 @@ interface TerminalTabsProps {
   sandboxRunning: boolean;
   /** 终端是否处于全屏（面板覆盖整页）。 */
   fullscreen: boolean;
+  /** 当前激活的工作区 tab 类型（固定 Obsidian tab 与终端会话 tab 二选一）。 */
+  activeTabKind: WorkspaceTabKind;
   onSelect: (sessionId: string) => void;
   onClose: (sessionId: string) => void;
   onNew: () => void;
+  /** 切到某个工作区 tab。 */
+  onSelectTabKind: (kind: WorkspaceTabKind) => void;
   /** 切换全屏：退出全屏就是再点同一个按钮。 */
   onToggleFullscreen: () => void;
 }
@@ -50,6 +56,10 @@ function dotClass(state: TerminalTabState): string {
  *
  * 标签就是后端的终端会话：一个标签一个会话，点标签即附着到该会话，
  * 标签尾的 × 关闭会话（会先弹确认）。
+ *
+ * **最左是固定的 Obsidian tab**（06 轮）：图标是 Obsidian 官方 logo SVG
+ * （本地资产，运行时零 CDN）、**不可关闭、无关闭按钮**，且**独立于终端会话**
+ * 存在——没有任何终端会话时仍然可用。
  */
 export function TerminalTabs({
   tabs,
@@ -58,11 +68,14 @@ export function TerminalTabs({
   busy,
   sandboxRunning,
   fullscreen,
+  activeTabKind,
   onSelect,
   onClose,
   onNew,
+  onSelectTabKind,
   onToggleFullscreen,
 }: TerminalTabsProps) {
+  const terminalActive = activeTabKind === 'terminal';
   return (
     <div className="flex h-[42px] items-center justify-between gap-4 border-b border-border bg-card px-6">
       <div
@@ -70,7 +83,43 @@ export function TerminalTabs({
         className="flex h-full min-w-0 items-end gap-0.5 overflow-x-auto"
         data-testid="page-sandbox-detail-terminal-tabs"
       >
-        {tabs.length === 0 && (
+        {/*
+          固定 Obsidian tab：**tabs 条最左**、**不可关闭（没有关闭按钮）**，
+          与终端会话无关（零会话时照样可用）。
+
+          图标用 `img` 引本地 SVG 资产：该 SVG 内含 `logo-*` 渐变 id，
+          内联多副本会 ID 冲突，走图片引用最省事，且运行时零 CDN。
+        */}
+        <span
+          role="tab"
+          aria-selected={activeTabKind === 'obsidian'}
+          data-testid="page-sandbox-detail-obsidian-tab"
+          data-active={activeTabKind === 'obsidian' ? 'true' : 'false'}
+          className={cn(
+            'group inline-flex h-8 shrink-0 items-center gap-1.5 rounded-t-lg px-2.5 text-[13px]',
+            'border-b-2 transition-colors',
+            activeTabKind === 'obsidian'
+              ? 'border-primary font-medium text-foreground'
+              : 'border-transparent text-muted-foreground hover:bg-muted hover:text-foreground',
+          )}
+        >
+          <button
+            type="button"
+            onClick={() => onSelectTabKind('obsidian')}
+            data-testid="page-sandbox-detail-obsidian-tab-select"
+            className="inline-flex items-center gap-1.5 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+          >
+            <img
+              src={obsidianLogoUrl}
+              alt=""
+              aria-hidden="true"
+              data-testid="page-sandbox-detail-obsidian-tab-icon"
+              className="size-[14px] shrink-0"
+            />
+            Obsidian
+          </button>
+        </span>
+        {tabs.length === 0 && terminalActive && (
           <span
             className={cn(
               'group inline-flex h-8 shrink-0 items-center gap-1.5 rounded-t-lg px-2.5 text-[13px]',
@@ -82,7 +131,8 @@ export function TerminalTabs({
           </span>
         )}
         {tabs.map((tab) => {
-          const active = tab.id === activeId;
+          // 激活 Obsidian tab 时终端标签一律不显示「激活」态（highlight 只属于当前 tab）。
+          const active = terminalActive && tab.id === activeId;
           return (
             <span
               key={tab.id}
