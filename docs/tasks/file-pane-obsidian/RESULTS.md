@@ -1,0 +1,87 @@
+# 文件窗格与 Obsidian 阅读器全轮收口留档
+
+> **留档说明**
+> - 本文件是**文件窗格与 Obsidian 阅读器**轮（01~08）的**全轮收口留档**：结论、轮次总表、门禁数字、真机验收记录、已知边界与留白、提交链。体例参考 [[tasks/console-cloudflare/RESULTS.md|控制台前端托管到 Cloudflare 全轮收口留档]]，**只写结论与数字**，过程细节见各任务文件。
+> - **当前状态（2026-11-14）**：**01~08 全部 done、全轮收口**——01~06 于 2026-11-13 收口，07 与 08（执行部分 + 文档收口）于 2026-11-14 完成；验收标准 **38 条逐条核销（38 / 38）**（见 [[prds/file-pane-obsidian.md|PRD]]「验收标准」节，证据分**真机 e2e / 单测 / 既有落档**三档，未真机覆盖项如实标注）。
+> - **留档口径**：本文只写**已实测**的数字；「未在真机覆盖 / 待用户执行 / 刻意不做」一律显式标出（见第五节），不与「已闭合」混写。
+> - 关联：需求 [[prds/file-pane-obsidian.md|文件窗格与 Obsidian 阅读器 PRD]]、任务集 [[tasks/file-pane-obsidian/README.md|任务集]]、决策 [[architecture/decisions/0004-镜像契约与默认沙箱镜像.md|ADR 0004（2026-11-14 修订行）]]、看板 [[current-state.md|当前状态]]。
+
+## 一、结论（一句话）
+
+**全轮收口**：① **文件窗格**——终端伴生分屏（默认约 340px、可折叠为 36px 纯图标竖条），锚定会话 pwd（**OSC 1337 shell integration**：镜像 `/etc/bash.bashrc` 注入 + 前端 xterm `registerOscHandler` 解析，**pwd 纯前端产物、后端不加字段**），浏览 / 下载为主、纯文本预览为辅，**无自动跟随**（唯一联动入口「回跳」准星），全局文件抽屉**退役**；② **固定 Obsidian tab**——全宽双栏 vault 阅读器，markdown 渲染（react-markdown，不放行原始 HTML）+ wikilink 正向跳转（三级兜底 + exec 看门狗，未命中就地错误条）；③ **配套**——只读端点 `GET /api/sandboxes/{name}/files/read`（两处预览共用，>2 MB 二次确认 + 进度条 + 全文渲染同口径）、全屏对象扩为 **tabs 条下方整个内容区**、镜像 `base:0.3.1`（OSC 注入 + UTF-8 locale ENV）与平台侧 `SANDBOX_NETWORK` / locale 强制注入（平台值优先）。**e2e 全量 63 / 63（真沙箱）**、门禁全绿、验收 **38 / 38** 核销；ADR 0004 按 01 轮实测结论追加修订行（历史表述不改写）。
+
+## 二、轮次总表（01~08）
+
+| 轮 | 主题 | 状态 | 收口日 | 交付（一句话） |
+|---|---|---|---|---|
+| 01 | 打样：OSC 1337 pwd 链路 | **done** | 2026-11-13 | 真沙箱打通「镜像 PS1 注入 → xterm OSC 解析 → 窗格定位 / 回跳」，产出四块口径结论（**最终注入写法**——PRD 原写法系 bash 语法错误，实测证伪并定稿 / **`sh` 降级表现** / **断线重连恢复方案** / **与 ADR 0004 §3 的冲突评估**）；镜像与主干零残留 |
+| 02 | 镜像与环境注入 | **done** | 2026-11-13 | 镜像 **`base:0.3.1`**：`/etc/bash.bashrc` 末尾 OSC 1337 注入（保留原 PS1 + tabby 方案定稿写法）+ Dockerfile **locale ENV**（`LANG` / `LC_ALL` = `C.UTF-8`）+ 版本 bump 构建推送；核心包 **`SANDBOX_NETWORK` 注入**（创建 / 重启双路径 + 单测，值 = 实际生效网络名、不进 metadata）；**存量沙箱重建登记为用户前置** |
+| 03 | 前端 pwd 通道 | **done** | 2026-11-13 | `src/lib` 纯函数模块 + 单测（绝对路径校验 + `normalizeContainerPath`）、`term.parser.registerOscHandler(1337, cb)` 接线（禁手写扫描器、禁逐帧 `TextDecoder`）、按会话内存缓存、断线重连 SIGWINCH 刷提示符恢复 pwd |
+| 04 | 文件窗格分屏骨架 | **done** | 2026-11-13 | 全局抽屉退役 + 头部「文件」按钮移除；三段式分屏 / 可拖拽分隔条 / 36px 纯图标折叠竖条；入口随会话与「没有终端会话」空态；fallback 链（pwd → workdir → `/`）；回跳准星；**全屏范围改造为 tabs 条下方整个内容区** |
+| 05 | 只读预览端点 + 窗格预览 | **done** | 2026-11-13 | `GET /api/sandboxes/{name}/files/read`（服务端 + 核心 + 单测；正文流式、元信息走响应头、`max_bytes` 仅为防护上限；`API.md` 补 16.7 章节）+ 预览第二视图（等宽 / 行号 / 复制 / **>2 MB 二次确认 + 进度条 + 全文** / 二进制空态 / 返回栈 / hover 眼睛） |
+| 06 | Obsidian tab 骨架 | **done** | 2026-11-13 | 固定 tab（tabs 条最左、**官方 logo SVG** 本地资产零 CDN、不可关闭、零会话可用）、全宽双栏（1px 不可拖拽分隔线）、引导态设 vault 根（两条入口）、vault 树（只列目录与 `.md`、展开态本地记忆）、与文件窗格的隐藏 / 恢复联动 |
+| 07 | markdown 渲染与 wikilink | **done** | 2026-11-14 | react-markdown 10.1.0 + remark-gfm 4.0.1（**不放行原始 HTML**，`<script>` 转义为文本）、渲染 / 源码分段切换、frontmatter 渲染态隐藏、wikilink 三级兜底纯函数 + 单测（27 条，含 BFS 同名与看门狗超时）、黑色 tooltip 防裁切、目标不存在就地错误条、**>2 MB 与窗格同口径**（共用 `PreviewConfirmDialog` / `PreviewLoading`） |
+| 08 | 验收与文档收口 | **done** | 2026-11-14 | e2e 新增 `14-file-pane`（6 条）+ `15-obsidian-reader`（4 条）、`12-file-transfer` 改写（抽屉 → 窗格入口，断言强度不变）；门禁全量（见第三节）；**PRD 38 / 38 核销**；文档同步（词汇表 / 前端约定 / ADR 0004 修订行 / 看板 / 两份清单）；本留档 |
+
+> 各轮明细见：[[tasks/file-pane-obsidian/01-prototype-osc-loop.md|01]]、[[tasks/file-pane-obsidian/02-image-ps1-injection.md|02]]、[[tasks/file-pane-obsidian/03-frontend-pwd-channel.md|03]]、[[tasks/file-pane-obsidian/04-file-pane-split.md|04]]、[[tasks/file-pane-obsidian/05-file-preview.md|05]]、[[tasks/file-pane-obsidian/06-obsidian-tab.md|06]]、[[tasks/file-pane-obsidian/07-markdown-wikilink.md|07]]、[[tasks/file-pane-obsidian/08-acceptance-and-docs.md|08]]。
+
+## 三、全轮门禁数字（最终态，2026-11-14，08 轮实跑）
+
+| 门禁 | 结果 |
+|---|---|
+| 核心包 pytest | **429 passed**（0 failed / 0 skipped，`578.64s`） |
+| 核心包 ruff | **0 error**（All checks passed!） |
+| 服务端 pytest | **348 passed**（0 failed，`22.06s`） |
+| 服务端 ruff | **0 error**（工作区根 `apps/` 全仓 ruff 同样通过） |
+| 前端 vitest | **52 个测试文件 / 919 条全过**（`6.73s`） |
+| 前端 typecheck | 应用与验收脚本（`tests/tsconfig.json`）**双零错** |
+| 前端 build | **成功**（`built in 3.09s`；主 chunk 857.91 kB / gzip 262.84 kB——react-markdown 链路带入，见第五节 #7） |
+| 桌面端 `cargo test` | **47 passed**（0 failed，`0.11s`） |
+| **e2e 全量（Playwright）** | **63 passed / 0 failed / 0 skipped，11.1 分钟，串行 1 worker，真沙箱**（既有 53 条 + 本轮新增 10 条：`14-file-pane` 6 条 + `15-obsidian-reader` 4 条；`12-file-transfer` 改写 3 条语义不变） |
+
+> 各轮过程数字（各轮收口时的门禁增量）见对应任务文件；本表为收口轮（08）的全量实跑结果，未重跑不代表既往轮次数字失效。
+
+## 四、真机验收记录（2026-11-14，e2e 真沙箱）
+
+| 项 | 内容 |
+|---|---|
+| 执行方式 | **e2e 真沙箱**（本宿主实跑：docker / 免密 sudo / 镜像 `sandbox-platform/base:0.3.1` 就绪；沙箱走既有接口直建通道，**零 mock**） |
+| 新增主链路用例 | **10 条**——`14-file-pane`（6）：分屏三段式几何与默认 340px / 终端最小宽钳位与 240px 窗格最窄、折叠 36px 竖条（无文字、仅底部一个展开钮、刷新保持）、关闭全部会话空态（「没有终端会话」）与新建恢复、回跳准星（tooltip / 已在目标禁用 / 点击导航）、无自动跟随（`cd /tmp` 后窗格不动）、会话切换按折叠态重建、退役标识 count 0；`15-obsidian-reader`（4）：固定 tab（最左 / 本地 SVG / 无关闭钮 / 零会话可用）、引导态 → 设根双栏（树 264px + 1px 不可拖拽分隔线）、vault 树（只列目录与 `.md` / 展开箭头 / 层级）、markdown 渲染（≤620px 居中 / frontmatter 双态 / 渲染源码切换）+ wikilink 命中压栈回跳 + 目标不存在错误条（`role=alert`、不跳转不弹 toast、正向对照）+ 激活 Obsidian 时窗格隐藏 |
+| 既有用例改写 | `12-file-transfer`（3 条，语义与断言强度不变）：入口从退役抽屉换成终端旁文件窗格（标识全换 `page-file-pane-*` / `page-file-browser-*`，**零退役标识**）；负例 400 / 409 / 401 全保留（沙箱停止后的就地错误态改「导航强制度」触发——窗格无「关掉再开」路径）；取证链保持容器内 `stat` / `sha256sum` 对账 |
+| 结果 | **63 / 63 通过**（11.1 分钟；含 global setup 的 `uv sync` + 前端 build + 静态源 + 本地测试镜像 + 服务拉起） |
+| teardown 清场（跑完逐项核验） | `acc-*` 容器 **0** / `sandbox-acc*` 用户 **0** / `/home/acc-*` 家目录 **0** / `/etc/subuid` acc 段 **0** 行 / 平台 `terminal-sessions/` 里 `acc-*` 记录 **0**（残留两条属用户自己的 `qqbot` 沙箱，按设计不碰）/ 本轮测试镜像**已删** / `8100` / `8200` **已释放** / `tests/.runtime/` **已删** |
+| **用户浏览器端复验** | **待用户执行**——前置：**存量沙箱重建到 `base:0.3.1`**（旧镜像沙箱收不到 pwd 上报，窗格定位与回跳将走 fallback）；复验结果出来后回填本节 |
+
+## 五、已知边界与留白
+
+| # | 边界 / 留白 | 性质 | 说明 |
+|---|---|---|---|
+| 1 | **存量沙箱重建到 `base:0.3.1`** | **外部前置（用户执行）** | 02 轮已推送新镜像，**存量沙箱仍是旧镜像**、收不到 pwd 上报（窗格定位 / 回跳走 fallback：workdir → `/`）；重建后真机复验由用户执行，登记为验收前置 |
+| 2 | **5 处未在真机 e2e 覆盖** | **单测 / 既有落档兜住** | **PV-02 ~ PV-05**（预览第二视图整块）、**OBS-03 的输入框路径**（真机只走按钮路径）、**OBS-11 的 >2 MB 真机流程**（未造夹具）、**PWD-02 的 `dash` / `sh` 降级**（01 / 02 轮实测，本轮未重跑）、**FS-01 的 Obsidian 全屏**（终端全屏有真机用例、Obsidian 全屏无）——PRD 核销均按「单测 / 既有落档」定性，不按「真机实证」（理由：08 的 e2e 范围锁定 PRD QA-01 主链路） |
+| 3 | **Obsidian 激活时终端 WS 断开 - 重连语义** | **设计内行为** | 切到 Obsidian tab 时终端 WS 断开、切回终端 tab 时重连：**服务端 pty 不丢**，pwd 靠**快照回放**恢复（重连后提示符刷新重新上报）；e2e 已覆盖「切回按原折叠态恢复」 |
+| 4 | **img 外链图片未做白名单** | **非目标** | 本轮 Obsidian 渲染不含远程图片加载口径；wikilink 只处理 `.md` 目标跳转 |
+| 5 | **`truncated` 标志的 05 / 07 统一处理** | **待后续** | 正常流程前端按列表 `size` 请求全量、不应看到截断声明（`max_bytes` 仅防护性上限）；两处预览对响应头截断声明的 UI 呈现口径待统一 |
+| 6 | **窄窗口适配** | **非目标** | 不做折叠成浮层 / 遮罩降级 / 移动端适配（PRD「非目标」节钉死） |
+| 7 | **主 chunk 857.91 kB** | **既有现象，待优化** | react-markdown 链路带入（gzip 262.84 kB）；未做代码分割，如在意可对 Obsidian 视图做 `React.lazy`（07 轮已标注为可选项，本轮未做） |
+| 8 | **dirs 目录缓存不持久化** | **设计内** | 目录列举缓存仅会话级内存，窗格 / 阅读器重建后重读 |
+| 9 | **宿主残留 2026-10-30 旧验收镜像** | **非本轮产物** | `sandbox-console-acceptance/local-only-*` 一张 2026-10-30 旧镜像（早于本轮任何一次运行）；本轮 teardown 只清**本轮**构建的镜像，旧残留留给需要的人判断 |
+
+## 六、提交链
+
+| 轮 | 提交 | 说明 |
+|---|---|---|
+| 01 | `b84f11e` | 打样：OSC 1337 pwd 链路端到端打通 + 四块口径结论（镜像未动，临时注入与临时代码零残留） |
+| 02 | `3708d26` | 镜像 `base:0.3.1`：bashrc OSC 注入 + locale ENV + bump 推送；核心包 `SANDBOX_NETWORK` 注入 |
+| 03 | `d8e2de8` | 前端 pwd 通道（纯函数 + 单测 + OSC 接线 + 会话缓存 + 重连恢复） |
+| 04 | `7f221a4` | 文件窗格分屏骨架（抽屉退役 / 分屏 / 折叠 / 空态 / fallback / 回跳 / 全屏范围） |
+| — | `15554e3` | 看板与清单同步（01~04 收口后） |
+| 05 | `6805881` | 只读预览端点 + 文件窗格预览（`API.md` 16.7） |
+| 06 | `03a4a47` | Obsidian tab 骨架（固定 tab / 双栏 / 设根 / vault 树 / 联动） |
+| 07 | `c885f83` | markdown 渲染与 wikilink（react-markdown / 双态 / 三级兜底 / tooltip / 错误条） |
+| 08 | **见 git log 最新** | 验收与文档收口（e2e / 门禁 / PRD 38 / 38 核销 / 文档同步 / 本留档），落盘后随本轮提交 |
+
+---
+
+> **收口记（2026-11-14）**：**01~08 全部 done、验收标准 38 / 38 核销、门禁全绿、e2e 63 / 63（真沙箱）。** 开口仅剩一项：**用户浏览器端复验**（前置 = 存量沙箱重建到 `base:0.3.1`），待用户执行后回填第四节；e2e 真沙箱已覆盖全部主链路，不阻断日常使用。
+>
+> **看板与任务集同步**：[[current-state.md|当前状态]]（活跃需求移入历史交付 / 任务看板 / 规划区前置解除）与 [[tasks/file-pane-obsidian/README.md|任务集 README]]（状态行 / 任务表）已同步为「01~08 全部 done，2026-11-14 收口」。

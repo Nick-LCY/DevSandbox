@@ -4,7 +4,7 @@
 
 这一轮改造控制台的**终端区**：① 把文件浏览从「全局抽屉」改成**终端的伴生分屏**（可折叠、锚定当前会话的 shell 当前目录、以浏览下载为主、文本预览为辅）；② 新增一个**固定的 Obsidian tab**，全宽双栏 vault 阅读器（左树右预览，markdown 渲染 + wikilink 正向跳转）。支撑链路是 **pwd 通道**——用 shell integration（OSC 1337）把 shell 当前目录报上来。
 
-**状态：01~04 done（2026-11-13），05~08 todo（2026-11-12 立项）**——立项口径来自**两轮低保真 HTML 原型的逐项拍板**；**无重大架构分歧，不写 ADR**，机制说明写在 PRD「方案」节。看板见 [[current-state.md|当前状态]]。
+**状态：01~08 全部 done（2026-11-14 收口；01~06 于 2026-11-13，07 / 08 于 2026-11-14）**（2026-11-12 立项）——立项口径来自**两轮低保真 HTML 原型的逐项拍板**；**无重大架构分歧，不写新 ADR**，机制说明写在 PRD「方案」节（唯 ADR 0004 追加一条修订行——镜像 shell 配置口径对齐，2026-11-14 落，历史表述不改写）。看板见 [[current-state.md|当前状态]]，全轮留档见 [[tasks/file-pane-obsidian/RESULTS.md|RESULTS]]。
 
 **2026-11-13 口径修订（用户拍板，三项）**：① **大文件预览**改「**二次确认 + 进度条加载**」——废除 2 MB 强制截断与「文件过大」提示条，确认后加载**全文**；② **镜像与环境变量补齐**并入 **02**——base image 新增 UTF-8 locale ENV、创建沙箱容器时注入 `SANDBOX_NETWORK`（值 = **实际生效的 docker 网络名**）；③ **Obsidian tab 图标**改用 **Obsidian 官方 logo SVG**（本地资产、运行时零 CDN），不再用 lucide `gem`。验收标准由 **35 条**增至 **38 条**（新增 **OBS-11** / **ENV-01** / **ENV-02**）。
 
@@ -37,10 +37,10 @@
 | [[tasks/file-pane-obsidian/02-image-ps1-injection.md\|02]] | 镜像与环境变量注入（OSC 1337 / locale / SANDBOX_NETWORK） | **done（2026-11-13）** | base-image `/etc/bash.bashrc` 追加注入（保留原 PS1 + tabby 方案序列）+ **版本 bump** + 构建推送；**新增 locale ENV**（`LANG` / `LC_ALL` = `C.UTF-8`）；**新增 `SANDBOX_NETWORK` 注入**（核心包**创建 / 重启双路径** + 单测，值 = 实际生效网络名、不进 metadata）；**现有沙箱重建由用户完成**（外部依赖，登记为验收前置） |
 | [[tasks/file-pane-obsidian/03-frontend-pwd-channel.md\|03]] | 前端 pwd 通道 | **done（2026-11-13）** | `src/lib` 纯函数模块 + 单测；`registerOscHandler(1337, cb)` 接线；**按会话前端内存缓存**；断线重连提示符刷新恢复 pwd |
 | [[tasks/file-pane-obsidian/04-file-pane-split.md\|04]] | 文件窗格分屏骨架 | **done（2026-11-13）** | 抽屉退役、三段式分屏 / 拖拽 / 折叠、入口随会话与空态、fallback 链、回跳按钮、**全屏范围改造** |
-| [[tasks/file-pane-obsidian/05-file-preview.md\|05]] | 文件窗格文本预览 | **todo** | 后端只读端点（服务端 + 核心包 + 单测，**正文流式、元信息走响应头**）+ 前端预览视图（行号 / 复制 / **大文件二次确认 + 进度条** / 二进制空态 / 返回栈 / hover 眼睛） |
-| [[tasks/file-pane-obsidian/06-obsidian-tab.md\|06]] | Obsidian tab 骨架 | **todo** | 固定 tab（最左、**Obsidian 官方 logo SVG**、不可关闭）、全宽双栏、引导态设 vault 根、vault 树、与文件窗格的隐藏 / 恢复联动 |
-| [[tasks/file-pane-obsidian/07-markdown-wikilink.md\|07]] | markdown 渲染与 wikilink | **todo** | 渲染库引入（react-markdown，不放行原始 HTML）、渲染 / 源码切换、frontmatter 处理、wikilink 解析纯函数 + 单测 + 三级兜底、tooltip、错误条、历史栈；**Obsidian 预览 >2 MB 文件复用 05 的二次确认 + 进度条**（与文件窗格同口径） |
-| [[tasks/file-pane-obsidian/08-acceptance-and-docs.md\|08]] | 验收与文档收口 | **todo** | e2e 用例、门禁全量、**PRD 验收 38 条逐条核销**、文档同步（`API.md` / 标识表 / 词汇表 / 看板 / 两份清单）、全轮留档 `RESULTS.md` |
+| [[tasks/file-pane-obsidian/05-file-preview.md\|05]] | 文件窗格文本预览 | **done（2026-11-13）** | 后端只读端点（服务端 + 核心包 + 单测，**正文流式、元信息走响应头**）+ 前端预览视图（行号 / 复制 / **大文件二次确认 + 进度条** / 二进制空态 / 返回栈 / hover 眼睛） |
+| [[tasks/file-pane-obsidian/06-obsidian-tab.md\|06]] | Obsidian tab 骨架 | **done（2026-11-13）** | 固定 tab（最左、**Obsidian 官方 logo SVG**、不可关闭）、全宽双栏、引导态设 vault 根、vault 树、与文件窗格的隐藏 / 恢复联动 |
+| [[tasks/file-pane-obsidian/07-markdown-wikilink.md\|07]] | markdown 渲染与 wikilink | **done（2026-11-14）** | 渲染库引入（react-markdown，不放行原始 HTML）、渲染 / 源码切换、frontmatter 处理、wikilink 解析纯函数 + 单测 + 三级兜底、tooltip、错误条、历史栈；**Obsidian 预览 >2 MB 文件复用 05 的二次确认 + 进度条**（与文件窗格同口径） |
+| [[tasks/file-pane-obsidian/08-acceptance-and-docs.md\|08]] | 验收与文档收口 | **done（2026-11-14）** | e2e 用例、门禁全量、**PRD 验收 38 条逐条核销**、文档同步（`API.md` / 标识表 / 词汇表 / 看板 / 两份清单）、全轮留档 `RESULTS.md` |
 
 ## 依赖顺序
 
