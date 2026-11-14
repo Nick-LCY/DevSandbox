@@ -270,6 +270,55 @@ export function deleteSandbox(name: string): Promise<DeleteResultModel> {
   return request(`/api/sandboxes/${encodeURIComponent(name)}`, { method: 'DELETE' });
 }
 
+/** 终端会话表的一行（`GET /api/terminal/sessions`）。 */
+export interface TerminalSessionModel {
+  session_id: string;
+  sandbox_name: string;
+  container_name: string;
+  system_user: string;
+  created_at: string;
+  last_attached_at: string;
+  /** `running` / `exited`。 */
+  state: string;
+  exit_code: number | null;
+  pid: number;
+  cols: number;
+  rows: number;
+  attached_count: number;
+  host_pid: number;
+}
+
+/**
+ * 列出终端会话记录（给了沙箱名就只列该沙箱的）。
+ *
+ * 用于用例之间**清场**：会话记录是宿主侧持久资源，同一沙箱的多条用例会互相
+ * 看到对方的会话（页面的标签条按会话表渲染）。
+ */
+export function listTerminalSessions(sandbox?: string): Promise<TerminalSessionModel[]> {
+  const query = sandbox === undefined ? '' : `?sandbox=${encodeURIComponent(sandbox)}`;
+  return request<TerminalSessionModel[]>(`/api/terminal/sessions${query}`);
+}
+
+/** 删除一条终端会话记录（运行中的会话会走完整关闭流程）。 */
+export function deleteTerminalSession(
+  sessionId: string,
+): Promise<{ session_id: string; state: string; closed: boolean; removed: boolean }> {
+  return request(`/api/terminal/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+}
+
+/**
+ * 清掉某个沙箱的全部终端会话记录（用例开始前的清场，幂等）。
+ *
+ * 返回清掉的会话数（留档用）。
+ */
+export async function clearTerminalSessions(sandbox: string): Promise<number> {
+  const sessions = await listTerminalSessions(sandbox);
+  for (const session of sessions) {
+    await deleteTerminalSession(session.session_id).catch(() => undefined);
+  }
+  return sessions.length;
+}
+
 /** 宿主本地镜像列表。 */
 export function listImages(): Promise<
   { reference: string; image_id: string; size_bytes: number; created_at: string }[]

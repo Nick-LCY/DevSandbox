@@ -26,6 +26,7 @@ apps/web/frontend/tests/
 │   ├── server.ts       # 控制台服务的启动 / 停止 / 重启
 │   ├── static.ts       # 独立静态源的启动 / 停止（页面基址）
 │   ├── terminal.ts     # 网页终端的操作与断言
+│   ├── file-pane.ts    # 文件窗格（终端右侧分屏）的操作与断言
 │   └── workspace.ts    # 外部挂载目录与内容指纹
 ├── specs/                       # 用例
 │   ├── 01-lifecycle.spec.ts     # 全流程
@@ -39,8 +40,10 @@ apps/web/frontend/tests/
 │   ├── 09-terminal-clipboard.spec.ts # 终端剪贴板（Ctrl+Shift+C/V、语义锁、失败提示）
 │   ├── 10-auth-connection.spec.ts # 认证与连接配置（401 负向 / 票据 / 引导面板 / 工作台挂载）
 │   ├── 11-forward-web-notice.spec.ts # web 形态的端口转发区（说明卡 + 安装入口 + 零管理元素）
-│   ├── 12-file-transfer.spec.ts # 运行期文件传输（上传 / 下载 / 目录列表 / 覆盖 / 负例）
-│   └── 13-static-frontend.spec.ts # 静态源与后端的分工（静态源出页面 / 后端根路径 404）
+│   ├── 12-file-transfer.spec.ts # 运行期文件传输（**入口 = 终端右侧文件窗格**；上传 / 下载 / 列表 / 覆盖 / 负例）
+│   ├── 13-static-frontend.spec.ts # 静态源与后端的分工（静态源出页面 / 后端根路径 404）
+│   ├── 14-file-pane.spec.ts     # 文件窗格（三段式分屏 / 折叠 / 空态 / 回跳 / 无自动跟随）
+│   └── 15-obsidian-reader.spec.ts # Obsidian 阅读器（固定 tab / 双栏 / 树 / 渲染 / wikilink / 错误条）
 └── artifacts/                   # 运行产物：截图 / trace / 报告（不进版本库）
 ```
 
@@ -204,6 +207,12 @@ Cloudflare Workers 独立托管前端）。验收套件照这条形态走：**�
 | `saveTemplateFromCreateDialog` | 把当前表单存成模板（命名弹窗） | `page-sandbox-create-template-save-button` → `page-sandbox-create-template-dialog` → `page-sandbox-create-template-name-input` → `page-sandbox-create-template-confirm-button` |
 | `renameTemplate` | 在设置抽屉里行内重命名模板（回车提交） | `page-settings-template-item` → `page-settings-template-rename-button` → `page-settings-template-rename-input`（Enter） |
 | `deleteTemplate` | 在设置抽屉里删除模板（走确认弹窗） | `page-settings-template-delete-button` → `page-settings-template-delete-dialog` → `page-settings-template-delete-confirm-button` |
+| `openFilePane` | 打开文件窗格（**窗格是终端会话的伴生物**：建一个会话，等窗格与列表到位，返回会话标识） | `page-sandbox-detail-terminal-new-button` → `page-file-pane` → `page-file-pane-content` → `page-file-browser-list` |
+| `uploadFromPane` | 走窗格的上传入口传一个本地文件 | `page-file-browser-upload-button` → 原生 filechooser |
+| `fileRow` / `uploadRow` / `crumbs` | 列表行 / 行内上传行 / 面包屑 | `page-file-browser-row[data-name=…]` / `page-file-browser-upload-row[data-upload-name=…]` / `page-file-browser-crumb` |
+| `paneContent` / `paneCollapsed` / `paneHandle` / `splitTerminal` | 展开态面板根 / 36px 折叠竖条 / 分隔条 / 终端格 | `page-file-pane-content` / `page-file-pane-collapsed` / `page-terminal-split-handle` / `page-terminal-split-terminal` |
+| `expectPaneAt` | 等窗格定位到某个目录（面包屑当前层就绪） | `page-file-browser-crumb`（`aria-current="page"`） |
+| `paneToast` | 窗格来源（`file-browser`）的 toast（按类型 + 文案筛） | `page-toast-item[data-toast-source="file-browser"]` |
 
 **同页双挂载的标识**：`page-sandbox-list-create-button` 在侧栏顶部与右侧空态引导块各挂一个（同页同时存在），取第一个即可：
 
@@ -228,8 +237,10 @@ await page.getByTestId('page-sandbox-list-create-button').first().click();
 | `09-terminal-clipboard` | `Ctrl+Shift+C` 把终端选区复制到系统剪贴板（读回来逐字比对）；`Ctrl+Shift+V` 把系统剪贴板的内容粘贴进终端（容器内的 shell 真收到了，判据是输出行整行就是标记串）；语义锁：`Ctrl+V` 仍然是字面量 0x16（不碰系统剪贴板），`Ctrl+C` 仍然是中断；没有选区时按 `Ctrl+Shift+C` 静默无反馈；剪贴板 API 不可用时弹失败提示 |
 | `10-auth-connection` | **无令牌访问后端 → 401**（缺失与错误同一句文案「访问令牌无效或缺失」、不回显令牌、带 `WWW-Authenticate: Bearer`；`/api/health` 与业务接口都不豁免）；**错误令牌 → 401**；**正确令牌 → 200**；**终端 WebSocket 无票据 → 握手被拒**（连不上，关闭码**精确判 1006**；配一条**正向对照**：换票后带票连同一地址 → 握手成功，证明「连不上」确实是票据闸拒的）；**未配置连接 → 引导面板出现、工作台不挂载**（`page-connection-*` 在、`page-sandbox-list-title` 不在、地址栏里没有沙箱路由）；**配置正确 → 工作台挂载**（预置配置与引导面板里「保存并连接」两条路都验，页面请求确实带 `Authorization` 头）；**令牌无效时侧栏健康自检显示「令牌无效」**（与「后端不可达」分开） |
 | `11-forward-web-notice` | **web 形态的端口转发区只有一张说明卡 + 一个「安装桌面端」按钮**（网页形态无法管理端口转发，请使用桌面端）；点「安装桌面端」弹三步指引（拿安装包 / 填后端地址与令牌 / 开启转发后访问），弹窗能关；**零管理元素**（表格 / 行 / 新建表单 / 「转发」按钮一个都不渲染）；**web 形态连转发记录都不读**（跨过一个 10 秒合并轮询周期，期间零转发请求） |
-| `12-file-transfer` | **上传 → 容器内校验 → 下载回环 → 同名覆盖（取消 / 确认）→ 目录导航**：面板从沙箱容器内 workdir 起手（面包屑各级可点、点目录行即进入目录）；上传只能进当前浏览目录（行内进度出现并走完、列表出现该条目、名称与大小列正确）；**容器内校验**（字节数 / sha256 / 属主，宿主侧 `docker exec` 取证）；**接口直传 raw 上传**（钉裸字节流通道本身）；**下载回环**（点文件行即下载、字节逐一致、中文名 `Content-Disposition` 正确、`Content-Length` = 探测到的字节数）；**同名覆盖**（取消 → 容器内内容不变、确认 → 内容换成新版本）；**隐藏文件（`.` 开头）照常显示**、**文件夹排在列表最前**；负例：**下载目录 → 400**、**上传到目录 → 400**（UI 就地展示后端 detail）、**非法路径 → 400**、**沙箱已停止 → 409**、**无令牌 → 401** |
+| `12-file-transfer` | **上传 → 容器内校验 → 下载回环 → 同名覆盖（取消 / 确认）→ 目录导航**（**入口 = 终端 tab 右侧的文件窗格**；`page-sandbox-detail-files-button` / `page-file-browser-dialog` 已退役，本用例对它们做「不复存在」断言）：窗格按 fallback 链（会话 pwd → 沙箱 workdir → `/`）起手到容器内 `/workspace`（面包屑各级可点、点目录行即进入目录）；上传只能进当前浏览目录（行内进度出现并走完、列表出现该条目、名称与大小列正确）；**容器内校验**（字节数 / sha256 / 属主，宿主侧 `docker exec` 取证）；**接口直传 raw 上传**（钉裸字节流通道本身）；**下载回环**（点文件行即下载、字节逐一致、中文名 `Content-Disposition` 正确、`Content-Length` = 探测到的字节数）；**同名覆盖**（取消 → 容器内内容不变、确认 → 内容换成新版本）；**隐藏文件（`.` 开头）照常显示**、**文件夹排在列表最前**；负例：**下载目录 → 400**、**上传到目录 → 400**（UI 就地展示后端 detail）、**非法路径 → 400**、**沙箱已停止 → 409**（就地错误态靠**导航**强制重读）、**无令牌 → 401** |
 | `13-static-frontend` | **静态源根 → 200** 且出页面（静态源吐出 index.html 静态外壳；浏览器里 React 照常挂载——证据用 **React 渲染后才有的标识**：已配置态 `page-sandbox-list-title` 可见、引导面板不出现，**不用静态外壳自带的 `page-layout-title` 占位当证据**）；**后端根 → 404** 且响应体不是 HTML（后端不托管前端，前端由独立静态源伺服） |
+| `14-file-pane` | **文件窗格（终端右侧分屏）**：三段式（左终端 + 中 `role="separator"` 分隔条 + 右窗格）从左到右依次排开，窗格默认 **340px**，方向键 ±16px、指针拖拽向左变宽，**最小 240px 且终端面板 ≥ 320px**（终端不被压没）；折叠成 **36px 纯图标竖条**（**无文字、竖条上只有底部一个展开按钮**、分隔条同时收掉），**刷新后折叠态保持**，展开复原；**关闭全部会话** ⇒ 窗格与分隔条整体消失 + 空态标题「没有终端会话」+ 新建会话入口恢复窗格且**折叠态保持**；**回跳准星**（tooltip「跳转到终端当前目录：/workspace」随 pwd 更新、已在目标目录禁用、点击回到 pwd）；**无自动跟随**（终端里 `cd /tmp` 后 tooltip 变、窗格目录一动不动）；换会话时窗格按折叠态重建；**抽屉退役**（两个旧标识 count 0） |
+| `15-obsidian-reader` | **Obsidian 阅读器**：固定 tab 在 **tabs 条最左**、图标是**同源构建产物里的本地 SVG**、tab 上只有「选中」一个按钮（**无关闭钮**）、**零终端会话时照样可用**；引导态（标题 / 「使用沙箱工作目录」/ 路径输入框 / 空值「打开」禁用）→ 设根后**全宽双栏**（左树 + **≤2px 不可拖拽分隔线** + 右预览）与「vault 根：/workspace」+「更改」；vault 树**只列目录与 `.md`**（`.txt` 不在）、目录展开箭头 `rotate-90` / 子层出现 / 收起消失；点 `.md` **markdown 渲染**（内容列 ≤620px 居中、**渲染态隐藏 frontmatter**、**源码态可见**、渲染/源码分段 `aria-pressed`）；**wikilink** 虚线强调色 + hover tooltip = 解析后路径 + 点击**压栈**跳转（返回钮出现 / 退回消失 / 互链回跳）；**目标不存在** ⇒ 正文**顶部**就地红色错误条「链接目标不存在：…」（`role=alert`、可关闭、**不跳转**、**不弹 toast**，附**正向对照**）；激活 Obsidian tab 时**文件窗格与终端分屏整体不出现**，切回终端 tab **按原折叠态恢复** |
 
 ---
 
@@ -247,6 +258,8 @@ await page.getByTestId('page-sandbox-list-create-button').first().click();
 - **容器内取证**：要证明「容器里到底有什么」（字节数、sha256、属主）时，走**宿主侧的 `docker exec`**（沙箱守护进程里执行，路径见 `helpers/host.ts` 的 `sandboxExec`）——**不经过被测接口**。否则只是让平台自证（接口说「写成功了」不算数，容器里的字节才是）。被测接口的下载 / 列表作为**用户视角**的旁证并列保留，两者都要有。
 - **行内进度**：上传一完成进度行就被摘掉，本机链路上几十毫秒就传完——**不用轮询等进度行出现**（会随机器负载偶发命不中）。改用 `page.addInitScript` 装 MutationObserver，把「上传行 / 下载进度条出现 + 每次的 `data-state` / `aria-valuenow` / 百分比文本」记进 `window.__acc`，动作结束后对**记录**做断言。观测器按元素留档（元素被摘掉后仍读得到它最后的属性），所以「出现 → 走完 → 被摘掉」整条链不会漏。
 - **负向断言的正向对照**：凡是「不该发生 X」的断言，都要先有一条**确实发生了 X** 的正向对照兜底（例：断言「点目录行不发下载请求」之前，先点一次文件行、确认监听器听到了下载请求）。否则监听器没挂上 / 路由写错这类环境问题会让负向断言恒真。
+- **文件窗格（与旧抽屉的三处差异）**：①窗格**没有开关按钮**——它是终端会话的伴生物，`openFilePane` 就是「建一个会话」；②起手目录走 **会话 pwd → 沙箱 workdir → `/`** 的 fallback 链（抽屉时期只看元数据 workdir），pwd 异步到达会「再挪一次」，所以断言目录前先用 `expectPaneAt` 等它落定；③**没有「关掉再打开」**：要强制重读列表就**导航**（点根面包屑 / 点目录行，同路径导航也会重读）。
+- **终端会话是宿主侧持久资源**（同一沙箱上限 **5 个**，`terminal.py` 的 `DEFAULT_MAX_SESSIONS_PER_SANDBOX`）：同一沙箱的多条用例会看到彼此留下的会话标签。共享同一沙箱的 spec 用 `helpers/api.ts` 的 `clearTerminalSessions(sandbox)` 在 `beforeEach` 清场——否则「零会话 / 关掉全部会话」这类断言会依赖用例执行顺序，甚至撞上会话数上限。
 
 ---
 

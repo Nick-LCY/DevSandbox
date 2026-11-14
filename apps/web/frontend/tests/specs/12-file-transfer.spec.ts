@@ -1,16 +1,24 @@
 /**
- * 运行期文件传输真机验收（06 轮）。
+ * 运行期文件传输真机验收（06 轮立项，**文件窗格轮改写入口**）。
  *
- * 任务书：`docs/tasks/runtime-file-transfer/06-acceptance-and-docs.md`；
- * 需求：`docs/prds/runtime-file-transfer.md`（验收标准「验收、门禁与文档」一节）；
+ * 任务书：`docs/tasks/runtime-file-transfer/06-acceptance-and-docs.md`（原始验收）；
+ * 改写依据：`docs/tasks/file-pane-obsidian/04-file-pane-split.md`（**全局文件抽屉退役**，
+ * 浏览入口改成终端 tab 右侧的文件窗格）与 `08-acceptance-and-docs.md`（本轮收口）；
+ * 需求：`docs/prds/runtime-file-transfer.md` + `docs/prds/file-pane-obsidian.md`；
  * 接口契约：`apps/web/backend/API.md` 第 16 章。
  *
+ * **入口口径（本轮改写点）**：文件浏览只有「终端 tab 右侧的文件窗格」这一个入口——
+ * 工作区头部的「文件」按钮与全局抽屉（`page-sandbox-detail-files-button` /
+ * `page-file-browser-dialog`）**已退役**，本 spec 一律不再碰这两个标识（并对它们
+ * 做「不复存在」的负向断言，见主链路第 ⑦ 条）。上传 / 下载 / 列表的**语义与断言
+ * 强度不变**（同一个上传按钮、同一批行内进度与覆盖确认标识、同一条容器内取证）。
+ *
  * 钉的行为（主链路，正向）：
- * 一、工作区头部的「文件」按钮与「详情」「停止」**同级**（同一个操作区容器），
- *    打开**独立的文件抽屉**；
- * 二、抽屉按沙箱的容器内 workdir 起手（本 spec 用 `/workspace`），**面包屑**父级
- *    可点击（根目录 crumb 的 `data-depth="-1"`；当前层级是纯文本、不可点），
- *    点目录行即进入该目录；
+ * 一、窗格是**终端会话的伴生物**：在沙箱工作区建一个终端会话后，右侧出现文件窗格
+ *    （三段式分屏：左终端 + 中分隔条 + 右窗格）；沙箱工作目录是容器内 `/workspace`；
+ * 二、窗格按**会话 pwd → 沙箱 workdir → `/`** 的 fallback 链起手（本 spec 用
+ *    `/workspace`），**面包屑**父级可点击（根目录 crumb 的 `data-depth="-1"`；
+ *    当前层级是纯文本、不可点），点目录行即进入该目录；
  * 三、上传只能进**当前浏览目录**：面板的上传按钮 → 原生文件选择框 → 行内进度
  *    出现并走完 → 列表出现该条目（名称 / 大小列都正确）；
  * 四、**容器内校验**：上传后容器里的文件字节数与内容摘要都与本地一致，属主是
@@ -21,6 +29,7 @@
  * 六、**同名覆盖**：同名普通文件先弹覆盖确认框；取消 → 「已跳过」且**容器内**
  *    内容不变（`sha256sum` 取证）；确认 → 成功且内容**换成新内容**（容器内摘要
  *    + 下载回环双重对账）。
+ * 七、**抽屉退役**：工作区头部不再有「文件」按钮、全局文件抽屉标识不复存在。
  *
  * 负例：
  * 一、下载**目录** → 400 + 固定中文文案（**UI 层无此入口**：点目录行是「进入
@@ -31,7 +40,8 @@
  * 三、**非法路径**（相对路径）→ 400 + 固定中文文案（UI 层没有路径输入框，
  *    只能接口直调）；
  * 四、**沙箱已停止** → 上传 / 下载 / 列目录都回 409 + 固定中文文案（UI 上
- *    「上传」弹后端 detail 的失败 toast、「列目录失败」是面板就地错误态）；
+ *    「上传」弹后端 detail 的失败 toast；「列目录失败」是窗格就地错误态——
+ *    窗格没有「关掉再打开」这条路径，用**导航（点根面包屑）**强制重读一次）；
  * 五、**401**：不带令牌的端点一律被拒（全局 401 口径由 `10-auth-connection`
  *    覆盖，这里只做端点级抽样，确认新端点没有漏挂令牌中间件）。
  *
@@ -77,13 +87,22 @@ import {
   type SandboxDetailModel,
 } from '../helpers/api';
 import { AUTH_FAILED_DETAIL } from '../helpers/auth';
-import { gotoDetail, toastItem } from '../helpers/console';
+import { gotoDetail } from '../helpers/console';
+import {
+  crumbs,
+  expectPaneAt,
+  fileRow,
+  openFilePane,
+  paneToast,
+  uploadFromPane,
+  uploadRow,
+} from '../helpers/file-pane';
 import { sandboxExec } from '../helpers/host';
 import { readFixtures } from '../helpers/sandbox';
 
 /** 平台基础镜像：宿主已构建，属平台自建镜像（`/workspace` 空目录由镜像提供）。 */
-const IMAGE = 'sandbox-platform/base:0.3.0';
-/** 主链路沙箱（容器内 workdir 显式给 `/workspace`，抽屉从它起手）。 */
+const IMAGE = 'sandbox-platform/base:0.3.1';
+/** 主链路沙箱（容器内 workdir 显式给 `/workspace`，窗格从它起手）。 */
 const SANDBOX_MAIN = 'acc-files';
 /** 负例沙箱（会被停掉，所以与主链路分开）。 */
 const SANDBOX_NEG = 'acc-files-neg';
@@ -354,42 +373,20 @@ async function readProgressLog(page: Page): Promise<ProgressLog> {
 
 /* ------------------------------------------------------------ 页面操作 */
 
-/** 打开文件抽屉（等列表容器到位）。 */
-async function openFileBrowser(page: Page): Promise<void> {
-  await page.getByTestId('page-sandbox-detail-files-button').click();
-  await expect(page.getByTestId('page-file-browser-dialog')).toBeVisible();
-  await expect(page.getByTestId('page-file-browser-list')).toBeVisible();
-}
-
 /**
- * 走面板的上传入口传一个本地文件：点「上传」→ 原生文件选择框 → 选定文件。
+ * 打开文件窗格（**本轮入口**）：建一个终端会话，窗格随着会话出现。
  *
- * 上传按钮点的是真按钮（`page-file-browser-upload-button`），文件落在**隐藏的
- * 原生 `<input type="file">`** 上（`page-file-browser-file-input`）。
+ * 工作区头部的「文件」按钮与全局抽屉**已退役**（PRD FP-02）：入口只剩终端
+ * tab 右侧的文件窗格，所以这里不再有「点按钮开抽屉」这一步。
  */
-async function uploadFromPanel(page: Page, filePath: string): Promise<void> {
-  const chooser = page.waitForEvent('filechooser');
-  await page.getByTestId('page-file-browser-upload-button').click();
-  await (await chooser).setFiles(filePath);
-}
-
-/** 列表里某个条目（按 `data-name` 筛）。 */
-function fileRow(page: Page, name: string): ReturnType<Page['locator']> {
-  return page.locator(`[data-testid="page-file-browser-row"][data-name="${name}"]`);
-}
-
-/** 行内上传行（按 `data-upload-name` 筛）。 */
-function uploadRow(page: Page, name: string): ReturnType<Page['locator']> {
-  return page.locator(`[data-testid="page-file-browser-upload-row"][data-upload-name="${name}"]`);
-}
-
-/** 面包屑（各级 crumb）。 */
-function crumbs(page: Page): ReturnType<Page['locator']> {
-  return page.getByTestId('page-file-browser-crumb');
+async function openFilePaneAtWorkspace(page: Page): Promise<void> {
+  await openFilePane(page);
+  // 起手目录来自 fallback 链（会话 pwd → 沙箱 workdir → `/`）：先等它落定再断言列表。
+  await expectPaneAt(page, ['workspace']);
 }
 
 /**
- * 文件面板的 toast（按类型 + 来源 + 文案筛）。
+ * 文件窗格的 toast（按类型 + 来源 + 文案筛）。
  *
  * 按文案再筛一层：面板同一时刻只留最新一条 toast，但顶替时旧条会退场一小会儿，
  * DOM 里可能短暂有两条——只按类型 / 来源筛会撞上「上一条还在退场」。
@@ -399,7 +396,7 @@ function fileToast(
   kind: 'success' | 'error' | 'info',
   text: string,
 ): ReturnType<Page['locator']> {
-  return toastItem(page, kind, 'file-browser').filter({ hasText: text });
+  return paneToast(page, kind, text);
 }
 
 /** 容器内某文件的字节数（`stat -c %s`；取不到为 `-1`）。 */
@@ -471,40 +468,15 @@ test.describe('运行期文件传输', () => {
       await page.addInitScript(installProgressObserver);
 
       await gotoDetail(page, SANDBOX_MAIN);
-      // ── ① 「文件」入口与「详情」「停止」同级（同一个操作区容器里，三个都在）
-      const filesButton = page.getByTestId('page-sandbox-detail-files-button');
-      const detailButton = page.getByTestId('page-sandbox-detail-detail-button');
-      const stopButton = page.getByTestId('page-sandbox-detail-stop-button');
-      await expect(filesButton).toBeVisible();
-      await expect(detailButton).toBeVisible();
-      await expect(stopButton).toBeVisible();
-      // 同级 = **同一个父容器**（不只是「三个都在页面上」）
-      const sameParent = await page.evaluate(() => {
-        const ids = [
-          'page-sandbox-detail-files-button',
-          'page-sandbox-detail-detail-button',
-          'page-sandbox-detail-stop-button',
-        ];
-        const parents = ids.map(
-          (id) => document.querySelector(`[data-testid="${id}"]`)?.parentElement ?? null,
-        );
-        return parents.every((parent) => parent !== null && parent === parents[0]);
-      });
-      expect(sameParent, '「文件」「详情」「停止」必须同级（同一个父容器）').toBe(true);
-      // 再钉一层：三个按钮在同一行（纵向坐标相近）
-      const boxes = await Promise.all([
-        filesButton.boundingBox(),
-        detailButton.boundingBox(),
-        stopButton.boundingBox(),
-      ]);
-      const ys = boxes.map((box) => box?.y ?? Number.NaN);
-      expect(
-        Math.max(...ys) - Math.min(...ys),
-        '「文件」「详情」「停止」不在同一行（纵向坐标相差过大）',
-      ).toBeLessThan(8);
-
-      await openFileBrowser(page);
-      // 抽屉从沙箱的 workdir 起手：根 crumb（depth=-1）+ `workspace`（depth=0）
+      // ── ① 入口：终端右侧的文件窗格（**本轮形态**）。
+      //    抽屉退役：头部不再有「文件」按钮，窗格随终端会话出现——
+      //    「文件」入口与「详情」「停止」同级的旧断言随之作废（不再存在那个按钮）。
+      await expect(
+        page.getByTestId('page-sandbox-detail-files-button'),
+        '工作区头部仍有已退役的「文件」按钮',
+      ).toHaveCount(0);
+      await openFilePaneAtWorkspace(page);
+      // 窗格按 fallback 链起手：根 crumb（depth=-1）+ `workspace`（depth=0）
       await expect(crumbs(page)).toHaveCount(2);
       await expect(crumbs(page).nth(1)).toHaveText('workspace');
       await expect(crumbs(page).nth(1)).toHaveAttribute('aria-current', 'page');
@@ -530,7 +502,7 @@ test.describe('运行期文件传输', () => {
       });
 
       // ── ② 上传：行内进度出现 → 走完 → 列表出现该条目
-      await uploadFromPanel(page, big.filePath);
+      await uploadFromPane(page, big.filePath);
       // 首次上传没有同名文件：不该弹覆盖确认框
       await expect(page.getByTestId('page-file-browser-overwrite-dialog')).toHaveCount(0);
       // 上传完成的判据是**成功 toast**（行内进度行一完成就被摘掉，不能拿它
@@ -657,7 +629,7 @@ test.describe('运行期文件传输', () => {
       ).toBe(true);
 
       // ── ⑥ 同名覆盖：先取消（内容不变），再确认（内容换成新版本）
-      await uploadFromPanel(page, version2.filePath);
+      await uploadFromPane(page, version2.filePath);
       const overwrite = page.getByTestId('page-file-browser-overwrite-dialog');
       await expect(overwrite, '同名文件没有弹覆盖确认框').toBeVisible({ timeout: 30_000 });
       await expect(overwrite).toContainText(`「${big.name}」已存在，确认覆盖？`);
@@ -677,7 +649,7 @@ test.describe('运行期文件传输', () => {
         big.sha256,
       );
 
-      await uploadFromPanel(page, version2.filePath);
+      await uploadFromPane(page, version2.filePath);
       await expect(overwrite, '第二次同名上传没有弹覆盖确认框').toBeVisible({
         timeout: 30_000,
       });
@@ -698,7 +670,7 @@ test.describe('运行期文件传输', () => {
       expect(sha256Of(overwritten.bytes), '覆盖之后下载回来的是旧内容').toBe(version2.sha256);
 
       // ── ⑦ 中文文件名：列表 / 下载文件名 / Content-Disposition 都对
-      await uploadFromPanel(page, chinese.filePath);
+      await uploadFromPane(page, chinese.filePath);
       const chineseRow = fileRow(page, chinese.name);
       await expect(chineseRow).toHaveCount(1, { timeout: 60_000 });
       const chineseDownloadPromise = page.waitForEvent('download');
@@ -719,7 +691,7 @@ test.describe('运行期文件传输', () => {
       ).toBe(chinese.name);
 
       // ── ⑧ 隐藏文件（`.` 开头）照常显示在列表里
-      await uploadFromPanel(page, hidden.filePath);
+      await uploadFromPane(page, hidden.filePath);
       const hiddenRow = fileRow(page, '.env-acc');
       await expect(hiddenRow, '隐藏文件（. 开头）没有出现在列表里').toHaveCount(1, {
         timeout: 60_000,
@@ -766,10 +738,12 @@ test.describe('运行期文件传输', () => {
       // 「/workspace 下有子目录」这个前提不成立的话，排序口径无从断言。
       const mkdir = containerExec(detail, ['mkdir', '-p', `${WORKSPACE}/acc-subdir`]);
       expect(mkdir.code, `容器内造子目录失败：${mkdir.stderr}`).toBe(0);
-      // 重开抽屉 → 列表重读（抽屉每次打开都回到起手目录并重读列表）
-      await page.keyboard.press('Escape');
-      await expect(page.getByTestId('page-file-browser-dialog')).toBeHidden();
-      await openFileBrowser(page);
+      // 窗格没有「关掉再打开」这条路径：用**导航**强制重读一次列表
+      // （回根 → 再点 workspace 目录行；同路径导航也会重读）。
+      await crumbs(page).first().click();
+      await expect(crumbs(page)).toHaveCount(1);
+      await fileRow(page, 'workspace').click();
+      await expect(crumbs(page)).toHaveCount(2);
       const allRows = page.locator('[data-testid="page-file-browser-row"]');
       await expect(allRows.first()).toBeVisible({ timeout: 60_000 });
       const kinds: string[] = [];
@@ -801,7 +775,7 @@ test.describe('运行期文件传输', () => {
 
   test('面包屑回根后根 crumb 变静态：不可点、不触发重读，列表不清空', async ({ page }) => {
     await gotoDetail(page, SANDBOX_MAIN);
-    await openFileBrowser(page);
+    await openFilePaneAtWorkspace(page);
     // 起手是 /workspace（根 crumb + workspace 一级）
     await expect(crumbs(page)).toHaveCount(2);
     await expect(crumbs(page).nth(1)).toHaveText('workspace');
@@ -853,22 +827,32 @@ test.describe('运行期文件传输', () => {
     page,
   }) => {
     const dir = makeFixtureDir();
-    // 与容器内 `/workspace` 同名的本地文件：往根目录上传它就等于「上传到已存在目录」
-    const collision = writeFixture(dir, 'workspace', Buffer.from('not a directory\n', 'utf-8'));
+    // 与容器内 `/workspace` 下的同名目录配合：往**当前浏览目录**上传一个同名的
+    // 本地文件，目标路径就落在一个**已存在的目录**上（窗口起手目录是 `/workspace`）
+    const collision = writeFixture(dir, 'acc-collide', Buffer.from('not a directory\n', 'utf-8'));
     try {
       // 与主链路同理：**先删再建**，容器从干净状态开始（残留文件会让
-      // 「根目录里有 workspace 目录」这条判据失真）。
+      // 「同名碰撞目录」这条前提失真）。
       await deleteSandbox(SANDBOX_NEG).catch(() => undefined);
       await createSandbox({
         name: SANDBOX_NEG,
         image: IMAGE,
         command: 'sleep infinity',
+        workdir: WORKSPACE,
       });
 
+      // 在容器里造一个与本地文件同名的目录（宿主侧 docker exec，不经被测接口）
+      const negativeDetail = await getSandbox(SANDBOX_NEG);
+      const mkdir = containerExec(negativeDetail, ['mkdir', '-p', `${WORKSPACE}/${collision.name}`]);
+      expect(mkdir.code, `容器内造同名目录失败：${mkdir.stderr}`).toBe(0);
+
       await gotoDetail(page, SANDBOX_NEG);
-      await openFileBrowser(page);
-      // 起手目录是根（没给 workdir）：等列表读完（`/workspace` 目录一定在）
-      await expect(fileRow(page, 'workspace')).toHaveCount(1, { timeout: 60_000 });
+      // 起手目录确定（workdir 显式给 `/workspace`，不靠 pwd / 元数据的相对时序）
+      await openFilePaneAtWorkspace(page);
+      await expect(crumbs(page)).toHaveCount(2);
+      // 同名目录出现在列表里（碰撞前提就绪；文件夹排在文件前）
+      await expect(fileRow(page, collision.name)).toHaveCount(1, { timeout: 60_000 });
+      await expect(fileRow(page, collision.name)).toHaveAttribute('data-kind', 'dir');
 
       // ── ① 下载**目录** → 400 + 固定中文文案（UI 层无入口，走接口直调）
       const dirDownload = await sandboxFileRequest(SANDBOX_NEG, 'download', WORKSPACE);
@@ -877,16 +861,17 @@ test.describe('运行期文件传输', () => {
 
       // ── ② 上传目标**是已存在目录** → 400，且 UI 就地展示后端 detail
       //    同名目录不弹覆盖确认框（直接交给服务端拒）
+      const collisionTarget = `${WORKSPACE}/${collision.name}`;
       const dirUpload = await sandboxFileRequest(SANDBOX_NEG, 'upload', WORKSPACE, {
         body: Buffer.from('x'),
       });
       expect(dirUpload.status, '上传到目录没有回 400').toBe(400);
       expect(dirUpload.detail).toBe(`目标是一个目录，不能作为上传目标：${WORKSPACE}`);
 
-      await uploadFromPanel(page, collision.filePath);
+      await uploadFromPane(page, collision.filePath);
       // 先等失败 toast（说明服务端已经拒了），**再**断言「全程没弹过覆盖确认框」
       await expect(
-        fileToast(page, 'error', `目标是一个目录，不能作为上传目标：${WORKSPACE}`),
+        fileToast(page, 'error', `目标是一个目录，不能作为上传目标：${collisionTarget}`),
         '上传到目录失败没有弹后端 detail',
       ).toBeVisible({ timeout: 60_000 });
       await expect(
@@ -921,17 +906,16 @@ test.describe('运行期文件传输', () => {
 
       // ── ⑤ 沙箱已停止 → 409 + 固定中文文案
       await stopSandbox(SANDBOX_NEG);
-      // 界面侧：面板还开着（列表快照可用），此时上传 → 后端 detail 的失败 toast
-      await uploadFromPanel(page, collision.filePath);
+      // 界面侧：窗格还开着（列表快照可用），此时上传 → 后端 detail 的失败 toast
+      await uploadFromPane(page, collision.filePath);
       await expect(
         fileToast(page, 'error', '沙箱已停止，无法传输文件'),
         '沙箱停止后上传没有回 409 的固定文案',
       ).toBeVisible({ timeout: 60_000 });
 
-      // 重开抽屉：列目录失败是**面板就地错误态**（不弹 toast），展示后端 detail
-      await page.keyboard.press('Escape');
-      await expect(page.getByTestId('page-file-browser-dialog')).toBeHidden();
-      await openFileBrowser(page);
+      // 列目录失败是**窗格就地错误态**（不弹 toast）。窗格没有「关掉再打开」这条
+      // 路径，用**导航到根目录**（点根 crumb）强制重读一次。
+      await crumbs(page).first().click();
       await expect(page.getByTestId('page-file-browser-error')).toContainText(
         '沙箱已停止，无法传输文件',
         { timeout: 60_000 },
