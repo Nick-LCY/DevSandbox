@@ -19,7 +19,9 @@
  * 四、**vault 树**：树形展开（箭头旋转 + 层级线），**只列目录与 `.md` 文件**，
  *    目录可展开 / 收起；
  * 五、**markdown 渲染**：工具条 = 返回 + 文件名 / 大小 + 「渲染 / 源码」分段切换 +
- *    复制；渲染态**隐藏 frontmatter**、源码态可见；渲染态内容列居中（约 620px）；
+ *    复制；渲染态**隐藏 frontmatter**、源码态可见；渲染态内容列**填满预览区宽度**
+ *    （保留水平内边距，不再 620px 居中限宽；用户浏览器复验修复轮）；左栏 header
+ *    有**刷新**钮（失效目录缓存后按当前展开态重拉，不重置阅读位）；
  * 六、**wikilink 正向跳转**：`[[目标]]` 点击 ⇒ 沿预览历史栈推入目标渲染视图，
  *    返回键退回；hover 出 tooltip（内容 = 解析后的路径）；
  * 七、**目标不存在**：正文**顶部就地**出现浅红错误条「链接目标不存在：<名>」，
@@ -274,6 +276,12 @@ test.describe('Obsidian 阅读器', () => {
     );
     // 「更改」按钮在左栏顶部（已设根）
     await expect(page.getByTestId('page-sandbox-detail-obsidian-change-root-button')).toBeVisible();
+    // 左栏 header 的刷新钮（用户浏览器复验修复轮）：重拉 vault 树、不重置阅读位
+    await expect(page.getByTestId('page-sandbox-detail-obsidian-tree-refresh-button')).toBeVisible();
+    await expect(page.getByTestId('page-sandbox-detail-obsidian-tree-refresh-button')).toHaveAttribute(
+      'aria-label',
+      '刷新',
+    );
 
     // ── ⑥ vault 树：**只列目录与 .md**（.txt 不出现），目录可展开 / 收起
     await expect(treeFile(page, `${VAULT}/${NOTE_A}`)).toBeVisible({ timeout: 60_000 });
@@ -300,6 +308,18 @@ test.describe('Obsidian 阅读器', () => {
     await dir.click();
     await expect(dir).toHaveAttribute('data-expanded', 'false');
     await expect(treeFile(page, `${VAULT}/${SUBDIR}/${NOTE_C}`)).toHaveCount(0);
+
+    // ── ⑦ 左栏刷新钮：不导航、不重置选中，重拉 vault 树（新文件直接出现）
+    await uploadSandboxFile(
+      SANDBOX,
+      `${VAULT}/acc-obsidian-refresh-probe.md`,
+      Buffer.from('# 探针\n', 'utf-8'),
+    );
+    await page.getByTestId('page-sandbox-detail-obsidian-tree-refresh-button').click();
+    await expect(
+      treeFile(page, `${VAULT}/acc-obsidian-refresh-probe.md`),
+      '点刷新后 vault 树没有出现新文件（缓存失效重拉没生效）',
+    ).toBeVisible({ timeout: 60_000 });
   });
 
   test('点击 .md 渲染 + wikilink 命中跳转（含 tooltip / 返回栈）+ 渲染与源码切换', async ({
@@ -318,15 +338,24 @@ test.describe('Obsidian 阅读器', () => {
     await expect(content).toBeVisible({ timeout: 60_000 });
     await expect(content).toContainText('笔记 A');
     await expect(content).toContainText('这是验收夹具 note A。');
-    // 内容列居中且约 620px 宽（PRD OBS-07）
+    // 内容列**填满预览区宽度**（保留合理水平内边距；不再 620px 居中限宽）
     const contentBox = await content.boundingBox();
     const previewBox = await preview(page).boundingBox();
     expect(contentBox, '量不到渲染内容列').not.toBeNull();
     expect(previewBox, '量不到预览区').not.toBeNull();
-    expect(Math.round(contentBox!.width)).toBeLessThanOrEqual(620);
     const leftGap = contentBox!.x - previewBox!.x;
     const rightGap = previewBox!.x + previewBox!.width - (contentBox!.x + contentBox!.width);
-    expect(Math.abs(leftGap - rightGap), '内容列没有居中').toBeLessThanOrEqual(24);
+    // 两侧只留外层滚动容器的水平内边距（约 16px）：不再有居中的大片留白
+    expect(leftGap, '渲染内容列左侧内边距不合理').toBeGreaterThanOrEqual(8);
+    expect(rightGap, '渲染内容列右侧内边距不合理').toBeGreaterThanOrEqual(8);
+    expect(leftGap, '渲染内容列左侧内边距过大').toBeLessThanOrEqual(32);
+    expect(rightGap, '渲染内容列右侧内边距过大（含纵向滚动条）').toBeLessThanOrEqual(48);
+    // 填满：内容列宽度以预览区宽度为**独立基准**（与源码态同口径）。两侧内边距
+    // 的上下界已由上面四条 gap 断言锁定；不用 contentBox 自推自证（那条恒真）。
+    expect(
+      Math.round(contentBox!.width),
+      '渲染内容列没有填满预览区宽度',
+    ).toBeGreaterThanOrEqual(Math.round(previewBox!.width - 48));
     // **frontmatter 渲染态隐藏**
     const renderedText = (await content.textContent()) ?? '';
     expect(renderedText, '渲染态漏出了 frontmatter').not.toContain('tags: [acc, obsidian]');
@@ -340,6 +369,13 @@ test.describe('Obsidian 阅读器', () => {
     const source = page.getByTestId('page-sandbox-detail-obsidian-preview-source');
     await expect(source).toBeVisible();
     await expect(source).toHaveAttribute('data-mode', 'source');
+    // 源码态同样填满预览区宽度（无 620px 上限）
+    const sourceBox = await source.boundingBox();
+    expect(sourceBox, '量不到源码态内容列').not.toBeNull();
+    expect(
+      Math.round(sourceBox!.width),
+      '源码态内容列没有填满预览区宽度',
+    ).toBeGreaterThanOrEqual(Math.round(previewBox!.width - 48));
     await expect(source).toContainText('title: 笔记 A');
     await expect(source).toContainText('tags: [acc, obsidian]');
     await page.getByTestId('page-sandbox-detail-obsidian-preview-mode-render').click();

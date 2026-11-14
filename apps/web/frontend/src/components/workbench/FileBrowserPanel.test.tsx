@@ -293,6 +293,13 @@ describe('列表与导航', () => {
     expect(screen.queryByRole('button', { name: '下载' })).toBeNull();
     expect(screen.queryByText('选中文件后可下载')).toBeNull();
     expect(screen.queryByText(/上传文件到当前目录/)).toBeNull();
+
+    // 列表**拍平**（用户浏览器复验修复轮）：滚动容器不再自带边框 / 圆角
+    // （整块直通滚动贴满窗格），列表头固定在容器**外**。
+    const list = screen.getByTestId('page-file-browser-list');
+    expect(list.className).not.toContain('border');
+    expect(list.className).not.toContain('rounded');
+    expect(list.contains(screen.getByText('名称'))).toBe(false);
   });
 
   it('面包屑父级可点击，点上级目录重新读取列表', async () => {
@@ -1387,13 +1394,19 @@ describe('回跳按钮', () => {
 });
 
 describe('折叠态', () => {
-  it('折叠：右缘竖条上只有展开按钮，没有任何文字', async () => {
+  it('折叠：右缘竖条顶部只有展开按钮，没有任何文字', async () => {
     renderPanel({ collapsed: true });
 
     const collapsed = await screen.findByTestId('page-file-pane-collapsed');
     expect(collapsed.querySelectorAll('button')).toHaveLength(1);
     expect(collapsed.textContent).toBe('');
     expect(screen.getByTestId('page-file-pane-expand-button')).toBeTruthy();
+    // 展开钮固定在竖条**顶部**（不再在底部）：按钮是第一个子元素，
+    // 容器不再用 justify-end 贴底。
+    expect(collapsed.firstElementChild).toBe(
+      screen.getByTestId('page-file-pane-expand-button'),
+    );
+    expect(collapsed.className).not.toContain('justify-end');
     // 折叠态不渲染列表（竖条就是全部）。
     expect(screen.queryByTestId('page-file-browser-list')).toBeNull();
   });
@@ -1404,6 +1417,88 @@ describe('折叠态', () => {
 
     fireEvent.click(await screen.findByTestId('page-file-pane-expand-button'));
     expect(onToggleCollapsed).toHaveBeenCalledTimes(1);
+  });
+
+  it('展开态：折叠钮是工具条行的最后一个元素（与折叠态展开钮 firstElementChild 双锁对称）', async () => {
+    mocks.listFiles.mockResolvedValue([entry({ name: 'a.txt' })]);
+    renderPanel();
+
+    const collapse = await screen.findByTestId('page-file-pane-collapse-button');
+    // 折叠钮所在行就是顶部固定工具条（面包屑 + 回跳 / 上传 / 刷新 / 折叠）
+    const toolbarRow = collapse.parentElement as HTMLElement;
+    expect(within(toolbarRow).getByTestId('page-file-browser-crumbs')).toBeTruthy();
+    // 折叠钮固定在工具条**右端**：行内最后一个元素（列表态与预览态同一行）
+    expect(toolbarRow.lastElementChild).toBe(collapse);
+  });
+});
+
+describe('刷新按钮（强制重读当前目录，用户浏览器复验修复轮）', () => {
+  it('点刷新：不走导航、同路径强制重读，新文件直接出现', async () => {
+    mocks.listFiles.mockResolvedValue([entry({ name: 'a.txt' })]);
+    renderPanel();
+
+    await waitFor(() => expect(mocks.listFiles).toHaveBeenCalledWith('demo-01', '/home/acc-demo'));
+    expect(rowOf('a.txt')).toBeTruthy();
+
+    // 刷新走「同路径强制重读」通道：不用换路径，当前目录重拉一次
+    mocks.listFiles.mockResolvedValueOnce([
+      entry({ name: 'a.txt' }),
+      entry({ name: 'fresh.txt', size: 3 }),
+    ]);
+    const before = mocks.listFiles.mock.calls.length;
+    fireEvent.click(screen.getByTestId('page-file-browser-refresh-button'));
+
+    await waitFor(() => expect(mocks.listFiles.mock.calls.length).toBe(before + 1));
+    expect(mocks.listFiles).toHaveBeenLastCalledWith('demo-01', '/home/acc-demo');
+    await waitFor(() => expect(rowOf('fresh.txt')).toBeTruthy());
+    // 旧行还在：是重读，不是清空后的空窗
+    expect(rowOf('a.txt')).toBeTruthy();
+  });
+
+  it('刷新中按钮瞬时禁用 + 旋转（loading 反馈），落地后复原', async () => {
+    mocks.listFiles.mockResolvedValue([entry({ name: 'a.txt' })]);
+    renderPanel();
+
+    await waitFor(() => expect(mocks.listFiles).toHaveBeenCalledWith('demo-01', '/home/acc-demo'));
+
+    let resolvePending: (value: FileListEntry[]) => void = () => {};
+    mocks.listFiles.mockImplementationOnce(
+      () =>
+        new Promise<FileListEntry[]>((resolve) => {
+          resolvePending = resolve;
+        }),
+    );
+    const button = screen.getByTestId(
+      'page-file-browser-refresh-button',
+    ) as HTMLButtonElement;
+    expect(button.getAttribute('aria-label')).toBe('刷新');
+    fireEvent.click(button);
+
+    expect(button.disabled).toBe(true);
+    expect(button.getAttribute('aria-busy')).toBe('true');
+    expect(button.querySelector('.animate-spin')).toBeTruthy();
+
+    resolvePending([]);
+    await waitFor(() => expect(button.disabled).toBe(false));
+    expect(button.getAttribute('aria-busy')).toBe('false');
+  });
+
+  it('预览态不出现刷新钮（刷新是列表态的操作）', async () => {
+    mocks.listFiles.mockResolvedValue([entry({ name: 'a.txt' })]);
+    mocks.readFile.mockResolvedValue({
+      text: 'hello',
+      binary: false,
+      size: 5,
+      bytes: 5,
+      truncated: false,
+    } satisfies ReadFileResult);
+    renderPanel();
+
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+    fireEvent.click(within(rowOf('a.txt')).getByTestId('page-file-browser-row-preview-button'));
+    await screen.findByTestId('page-file-preview');
+
+    expect(screen.queryByTestId('page-file-browser-refresh-button')).toBeNull();
   });
 });
 

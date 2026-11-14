@@ -691,6 +691,8 @@ export function TerminalView({
      * - 内层（测量 / 挂载层）：无内边距、无边框的空盒，xterm 挂在这里。
      *   fit 量的是父容器的**边框盒**且只减终端元素自身的 padding，
      *   放在这一层才量得到真实可用空间（外层的 padding 与 border 不再被漏算）。
+     *
+     * 右缘直角（文件窗格贴上来时）由 TerminalPanel 外层任意变体覆盖实现（[&_[data-testid=page-sandbox-detail-terminal-surface]]:rounded-r-none 盖掉这里的 rounded-xl 右侧），见 TerminalPanel.tsx:709-716。
      */
     <div
       className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-terminal-bg p-3"

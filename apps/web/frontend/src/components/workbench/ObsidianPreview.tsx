@@ -9,11 +9,15 @@
  * <section page-sandbox-detail-obsidian-preview>            ← 挂载点在 ObsidianWorkspace
  *   [返回?] 文件名 大小 [渲染 | 源码] [复制]                    ← 工具条
  *   [链接目标不存在：<名> ×]                                    ← 就地错误条（可关）
- *   ┌─────────── max-w-620px 居中 ───────────┐
- *   │ markdown 渲染（react-markdown + gfm）   │               ← 渲染态
- *   │ 或 原文（等宽、frontmatter 可见）        │               ← 源码态
- *   └─────────────────────────────────────────┘
+ *   ┌────────────── 填满预览区宽度 ──────────────┐
+ *   │ markdown 渲染（react-markdown + gfm）      │              ← 渲染态
+ *   │ 或 原文（等宽、frontmatter 可见）          │              ← 源码态
+ *   └───────────────────────────────────────────┘
  * </section>
+ *
+ * 内容列**不再有 620px 居中上限**（用户浏览器复验修复轮，2026-11-14）：渲染态与
+ * 源码态都**填满预览区宽度**，只保留外层滚动容器的水平内边距（px-4）——窄预览区
+ * 里 620px 居中列会浪费大片空间，用户实测反馈改为满宽直排。
  * ```
  *
  * 几条硬口径：
@@ -94,6 +98,18 @@ export interface ObsidianPreviewProps {
   /** wikilink 命中的目标：父组件负责压栈（大文件还要先走二次确认）。 */
   onOpenTarget: (target: ObsidianPreviewTarget) => void;
 }
+
+/**
+ * 左右两栏 header（左 vault 根 header 与右预览工具条）**共用的高度令牌**。
+ *
+ * 用户反馈两栏 header 高度差几个 px（用户浏览器复验修复轮，2026-11-14）：
+ * 与其两侧各写一套 h-* 与 py-* 再靠像素断言盯着，不如**复用同一份 class 常量**——
+ * 同一 `h-10` + 同一 `border-b`，高度天然齐平（横向 padding 允许各自覆盖）。
+ * ObsidianWorkspace 的 vault header 用 `cn(OBSIDIAN_HEADER_CLASS, 'px-3')`
+ * 盖掉横向间距，其余全部同源。
+ */
+export const OBSIDIAN_HEADER_CLASS =
+  'flex h-10 flex-none items-center gap-1.5 border-b border-border px-2.5';
 
 /** 渲染 / 源码双态。 */
 type PreviewMode = 'render' | 'source';
@@ -690,9 +706,10 @@ export function ObsidianPreview({
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-mode={mode}>
       {/* 工具条：返回（历史栈）+ 文件名 / 大小 + 渲染 | 源码 + 复制 */}
+      {/* 工具条与左栏 vault header 复用同一高度令牌（OBSIDIAN_HEADER_CLASS）。 */}
       <div
         data-testid="page-sandbox-detail-obsidian-preview-toolbar"
-        className="flex flex-none items-center gap-1.5 border-b border-border px-2.5 py-1.5"
+        className={OBSIDIAN_HEADER_CLASS}
       >
         {canGoBack && (
           <button
@@ -829,7 +846,7 @@ export function ObsidianPreview({
           <div data-testid="page-sandbox-detail-obsidian-preview-body" data-mode="render">
             <div
               data-testid="page-sandbox-detail-obsidian-preview-content"
-              className="mx-auto w-full max-w-[620px] pb-6"
+              className="w-full pb-6"
             >
               {hasBody ? (
                 <WikilinkContext.Provider value={runtime}>
@@ -848,7 +865,7 @@ export function ObsidianPreview({
           <div
             data-testid="page-sandbox-detail-obsidian-preview-source"
             data-mode="source"
-            className="mx-auto w-full max-w-[620px] whitespace-pre-wrap break-words font-mono text-[12px] leading-5 text-foreground"
+            className="w-full whitespace-pre-wrap break-words font-mono text-[12px] leading-5 text-foreground"
           >
             {/* 源码态：**原文**（frontmatter 可见、wikilink 不做替换）。 */}
             {view.text}

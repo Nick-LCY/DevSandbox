@@ -19,7 +19,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, ChevronRight, FileText, Folder, Loader2 } from 'lucide-react';
+import { BookOpen, ChevronRight, FileText, Folder, Loader2, RefreshCw } from 'lucide-react';
 
 import { api } from '../../api/client';
 import type { FileListEntry } from '../../api/types';
@@ -37,7 +37,7 @@ import {
   writeStoredSelection,
   writeStoredVaultRoot,
 } from '../../lib/obsidian-vault';
-import { ObsidianPreview } from './ObsidianPreview';
+import { ObsidianPreview, OBSIDIAN_HEADER_CLASS } from './ObsidianPreview';
 import { PreviewConfirmDialog } from './PreviewConfirmDialog';
 
 /** 目录列举的状态：还没读 / 读到了 / 读失败。 */
@@ -277,6 +277,8 @@ export function ObsidianWorkspace({ sandbox, workdir }: ObsidianWorkspaceProps) 
   } | null>(null);
   /** 上一次的根：用来区分「挂载」与「真的换了根」（换根才清阅读位）。 */
   const previousRootRef = useRef<string | null>(root);
+  /** 「刷新 vault 树」进行中：按钮瞬时禁用 + 旋转（用户浏览器复验修复轮）。 */
+  const [refreshingTree, setRefreshingTree] = useState(false);
   /** 挂载那一拍不写存储（沿用根 / 展开态「挂载不写」的惯例）。 */
   const skipSelectionWriteRef = useRef(true);
   /**
@@ -347,6 +349,9 @@ export function ObsidianWorkspace({ sandbox, workdir }: ObsidianWorkspaceProps) 
   // 换根（或首次设根）：代次自增、清缓存，重新列举根目录。
   useEffect(() => {
     generationRef.current += 1;
+    // 刷新在途时换根：旧刷新 finally 的代次比对恒 false，按钮复位不能指望它——
+    // 这里补一刀（换根本身已 bump 代次丢弃旧响应，这里只负责收按钮状态）。
+    setRefreshingTree(false);
     requestedPathsRef.current.clear();
     setDirs({});
     // **只在真的换根时**清阅读位：挂载那一拍要把恢复的阅读位留住。
@@ -381,6 +386,41 @@ export function ObsidianWorkspace({ sandbox, workdir }: ObsidianWorkspaceProps) 
       void loadDir(path);
     }
   }, [root, expandedPaths, loadDir]);
+
+  /**
+   * 刷新 vault 树（左栏 header 的刷新按钮）。
+   *
+   * 口径（用户浏览器复验修复轮，2026-11-14）：**失效全部目录缓存**后按
+   * **当前展开态**重拉（根 + 已展开目录），**保留当前选中与阅读位置**——
+   * 不动历史栈、不重读正文（`readFile` 一个都不发），只重列目录。
+   */
+  const refreshTree = useCallback(() => {
+    if (root === null) {
+      return;
+    }
+    // 代次自增：在途的旧列举响应回来一律丢弃（与换根同一套护栏）。
+    generationRef.current += 1;
+    const generation = generationRef.current;
+    requestedPathsRef.current.clear();
+    const paths = [
+      root,
+      ...expandedRef.current.filter(
+        (path) => path !== root && isPathWithinVaultRoot(root, path),
+      ),
+    ];
+    for (const path of paths) {
+      // 手动重拉的路径记回「已列举」：后续展开态 effect 不重复发请求。
+      requestedPathsRef.current.add(path);
+    }
+    setRefreshingTree(true);
+    void Promise.all(paths.map((path) => loadDir(path))).finally(() => {
+      // 只收自己这一代：刷新途中又换了根就不再碰按钮状态——按钮复位已交给
+      // 换根 effect（见上，代次比对恒 false 时本分支不执行）。
+      if (generation === generationRef.current) {
+        setRefreshingTree(false);
+      }
+    });
+  }, [root, loadDir]);
 
   /** 目录展开 / 收起（落盘，刷新后仍在）。 */
   const toggleDir = useCallback(
@@ -597,7 +637,7 @@ export function ObsidianWorkspace({ sandbox, workdir }: ObsidianWorkspaceProps) 
         data-testid="page-sandbox-detail-obsidian-vault-tree"
       >
         <div
-          className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2"
+          className={cn(OBSIDIAN_HEADER_CLASS, 'px-3')}
           data-testid="page-sandbox-detail-obsidian-vault-header"
         >
           <span
@@ -607,6 +647,25 @@ export function ObsidianWorkspace({ sandbox, workdir }: ObsidianWorkspaceProps) 
           >
             vault 根：{root}
           </span>
+          {/*
+            刷新：失效目录缓存后按当前展开态重拉 vault 树，**不重置阅读位**。
+            loading 反馈 = 按钮瞬时禁用 + 图标旋转。
+          */}
+          <button
+            type="button"
+            onClick={refreshTree}
+            disabled={refreshingTree}
+            aria-busy={refreshingTree}
+            title="刷新"
+            aria-label="刷新"
+            data-testid="page-sandbox-detail-obsidian-tree-refresh-button"
+            className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+          >
+            <RefreshCw
+              className={cn('size-3.5', refreshingTree && 'animate-spin')}
+              aria-hidden="true"
+            />
+          </button>
           <button
             type="button"
             onClick={changeRoot}

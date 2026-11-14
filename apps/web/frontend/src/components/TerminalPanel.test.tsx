@@ -1149,7 +1149,7 @@ describe('三段式分屏与文件窗格', () => {
     fireEvent.click(screen.getByTestId('page-file-pane-collapse-button'));
 
     const collapsed = await screen.findByTestId('page-file-pane-collapsed');
-    // 竖条上**只有底部一个展开按钮**，且**没有任何文字**。
+    // 竖条上**只有顶部一个展开按钮**，且**没有任何文字**。
     expect(collapsed.querySelectorAll('button')).toHaveLength(1);
     expect(collapsed.textContent).toBe('');
     expect(screen.getByTestId('page-file-pane-expand-button')).toBeTruthy();

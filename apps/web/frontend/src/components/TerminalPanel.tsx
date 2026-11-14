@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Loader2, Plus } from 'lucide-react';
+import { GripVertical, Loader2, Plus } from 'lucide-react';
 
 import { api } from '../api/client';
+import { cn } from '../lib/cn';
 import type { TerminalSessionRecord } from '../api/types';
 import {
   FILE_PANE_COLLAPSED_WIDTH_PX,
@@ -702,9 +703,18 @@ export function TerminalPanel({
               {/*
                 左：终端面板。**最小宽度钳位**（`minWidth`）——拖分隔条时
                 终端不会被压没（钳位口径在 `src/lib/file-pane.ts`）。
+
+                视觉合并（用户浏览器复验修复轮）：窗格贴上来时终端的右缘改
+                **直角**（`TerminalView` 不在本轮改动面，这里从外层用任意变体
+                选择性地盖掉表面的右圆角——特异度高于表面自身的 `rounded-xl`），
+                左右两块合成一个「外圆内方」的整体轮廓。
               */}
               <div
-                className="flex min-h-0 flex-1 flex-col"
+                className={cn(
+                  'flex min-h-0 flex-1 flex-col',
+                  paneVisible &&
+                    '[&_[data-testid=page-sandbox-detail-terminal-surface]]:rounded-r-none',
+                )}
                 style={{ minWidth: FILE_PANE_MIN_TERMINAL_WIDTH_PX }}
                 data-testid="page-terminal-split-terminal"
               >
@@ -756,8 +766,15 @@ export function TerminalPanel({
               </div>
 
               {/*
-                中：可拖拽分隔条（拖它改窗格宽度）。
-                折叠态不出分隔条（竖条上只有展开按钮，没有可拖的东西）。
+                中：接缝上的**抽屉风格拖拽把手**（视觉照 `DrawerShell` 的宽度
+                把手：`GripVertical` 抓握图标 + hover 变色 + 焦点环，竖向适配为
+                全高竖条）。
+
+                与窗格之间**零间隙**（用户浏览器复验修复轮）：把手不再占布局
+                宽度——`w-4` 配 `-mx-2` 让它骑在接缝上（左右各压进邻格 8px），
+                静置时透明，hover / 聚焦才显出把手带与图标；role / aria / 指针
+                拖拽 / 键盘调宽语义全部不变。
+                折叠态不出把手（竖条上只有展开按钮，没有可拖的东西）。
               */}
               {paneVisible && !paneCollapsed && (
                 <div
@@ -774,8 +791,13 @@ export function TerminalPanel({
                   onPointerCancel={handleSplitPointerUp}
                   onKeyDown={handleSplitKeyDown}
                   data-testid="page-terminal-split-handle"
-                  className="group w-1.5 flex-none cursor-col-resize rounded-full bg-transparent transition-colors hover:bg-primary/40 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
-                />
+                  className="group relative z-10 -mx-2 flex w-4 flex-none cursor-col-resize touch-none select-none items-center justify-center rounded-md bg-transparent transition-colors hover:bg-primary/30 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+                >
+                  <GripVertical
+                    className="pointer-events-none size-3 text-muted-foreground/40 transition-colors group-hover:text-muted-foreground group-focus-visible:text-foreground"
+                    aria-hidden="true"
+                  />
+                </div>
               )}
 
               {/*

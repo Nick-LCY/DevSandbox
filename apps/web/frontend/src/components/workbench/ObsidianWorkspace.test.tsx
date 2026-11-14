@@ -567,7 +567,25 @@ describe('阅读器：工具条与渲染 / 源码双态（OBS-06 / OBS-07）', (
     expect(screen.getByTestId('page-sandbox-detail-obsidian-preview-copy-button')).toBeTruthy();
   });
 
-  it('渲染态：620px 居中列 + 标题 / 深底代码块 / 列表 / 任务列表 / 引用 / 行内码 / 粗体；frontmatter 隐藏', async () => {
+  it('左右两栏 header 复用同一高度令牌（结构性齐平，不靠像素断言）', async () => {
+    mockReaderVault();
+    writeStoredVaultRoot('demo', ROOT);
+    renderWorkspace();
+
+    await openReaderFile('/vault/index.md');
+
+    // 用户反馈两侧 header 高度差几个 px：修复口径是「同一 class 常量」——
+    // vault header 与预览工具条都挂 OBSIDIAN_HEADER_CLASS（同一 h-* + border-b），
+    // 这里钉的是**结构性保证**（两侧都含同一高度令牌），不写脆弱的像素断言。
+    const header = screen.getByTestId('page-sandbox-detail-obsidian-vault-header');
+    const toolbar = screen.getByTestId('page-sandbox-detail-obsidian-preview-toolbar');
+    expect(header.className).toContain('h-10');
+    expect(toolbar.className).toContain('h-10');
+    expect(header.className).toContain('border-b');
+    expect(toolbar.className).toContain('border-b');
+  });
+
+  it('渲染态：内容列填满预览区宽度 + 标题 / 深底代码块 / 列表 / 任务列表 / 引用 / 行内码 / 粗体；frontmatter 隐藏', async () => {
     mockReaderVault();
     writeStoredVaultRoot('demo', ROOT);
     renderWorkspace();
@@ -577,8 +595,11 @@ describe('阅读器：工具条与渲染 / 源码双态（OBS-06 / OBS-07）', (
     expect(body.getAttribute('data-mode')).toBe('render');
 
     const content = within(body).getByTestId('page-sandbox-detail-obsidian-preview-content');
-    expect(content.className).toContain('max-w-[620px]');
-    expect(content.className).toContain('mx-auto');
+    // 内容列**填满预览区宽度**（不再 620px 居中限宽，用户浏览器复验修复轮）：
+    // 满宽、无上限、无水平居中。
+    expect(content.className).toContain('w-full');
+    expect(content.className).not.toContain('max-w-[620px]');
+    expect(content.className).not.toContain('mx-auto');
 
     // 标题层级
     expect(within(content).getByRole('heading', { level: 1 }).textContent).toBe('标题一');
@@ -633,6 +654,10 @@ describe('阅读器：工具条与渲染 / 源码双态（OBS-06 / OBS-07）', (
     fireEvent.click(screen.getByTestId('page-sandbox-detail-obsidian-preview-mode-source'));
     const source = await screen.findByTestId('page-sandbox-detail-obsidian-preview-source');
     expect(source.getAttribute('data-mode')).toBe('source');
+    // 源码态同样**填满预览区宽度**（无 620px 上限、无居中）。
+    expect(source.className).toContain('w-full');
+    expect(source.className).not.toContain('max-w-[620px]');
+    expect(source.className).not.toContain('mx-auto');
     expect(source.textContent).toContain('title: 文档');
     expect(source.textContent).toContain('---');
     expect(source.textContent).toContain('# 标题一');
@@ -718,6 +743,124 @@ describe('阅读器：工具条与渲染 / 源码双态（OBS-06 / OBS-07）', (
         ),
       ).toBe(true),
     );
+  });
+});
+
+describe('vault 树刷新（左栏 header 刷新按钮，用户浏览器复验修复轮）', () => {
+  it('点刷新：失效缓存后按当前展开态重拉目录；选中与阅读位不动（不重读正文）', async () => {
+    mockReaderVault();
+    writeStoredVaultRoot('demo', ROOT);
+    renderWorkspace();
+
+    // 展开子目录：notes 进入展开态（触发一次列举）
+    const dir = await waitFor(() => {
+      const found = treeNode('page-sandbox-detail-obsidian-tree-dir', '/vault/notes');
+      expect(found).toBeTruthy();
+      return found as HTMLElement;
+    });
+    fireEvent.click(dir);
+    await waitFor(() =>
+      expect(mocks.listFiles).toHaveBeenCalledWith('demo', '/vault/notes'),
+    );
+
+    // 打开一篇文件：readFile 恰好调用一次
+    await openReaderFile('/vault/index.md');
+    await screen.findByTestId('page-sandbox-detail-obsidian-preview-body');
+    const readCallsBefore = mocks.readFile.mock.calls.length;
+
+    mocks.listFiles.mockClear();
+    const button = screen.getByTestId(
+      'page-sandbox-detail-obsidian-tree-refresh-button',
+    ) as HTMLButtonElement;
+    expect(button.getAttribute('aria-label')).toBe('刷新');
+    fireEvent.click(button);
+
+    // 根 + 当前展开目录各重拉一次（缓存已失效，不是沿用旧 dirs）
+    await waitFor(() => expect(mocks.listFiles).toHaveBeenCalledWith('demo', '/vault'));
+    await waitFor(() => expect(mocks.listFiles).toHaveBeenCalledWith('demo', '/vault/notes'));
+
+    // **阅读位置保留**：正文一个都没重读，标题不变，选中态还在
+    expect(mocks.readFile.mock.calls.length).toBe(readCallsBefore);
+    expect(
+      (screen.getByTestId('page-sandbox-detail-obsidian-preview-title').textContent
+      ),
+    ).toBe('index.md');
+    const fileNode = treeNode('page-sandbox-detail-obsidian-tree-file', '/vault/index.md');
+    expect(fileNode?.getAttribute('data-active')).toBe('true');
+
+    // loading 收口：按钮恢复可用
+    await waitFor(() => expect(button.disabled).toBe(false));
+  });
+
+  it('刷新中按钮瞬时禁用（loading 反馈）', async () => {
+    mockReaderVault();
+    writeStoredVaultRoot('demo', ROOT);
+    renderWorkspace();
+
+    await waitFor(() => expect(mocks.listFiles).toHaveBeenCalledWith('demo', '/vault'));
+
+    // 让下一轮列举挂起：按钮应立即进入禁用 + aria-busy
+    let resolvePending: (value: FileListEntry[]) => void = () => {};
+    mocks.listFiles.mockImplementationOnce(
+      () =>
+        new Promise<FileListEntry[]>((resolve) => {
+          resolvePending = resolve;
+        }),
+    );
+    const button = screen.getByTestId(
+      'page-sandbox-detail-obsidian-tree-refresh-button',
+    ) as HTMLButtonElement;
+    fireEvent.click(button);
+    expect(button.disabled).toBe(true);
+    expect(button.getAttribute('aria-busy')).toBe('true');
+
+    resolvePending([]);
+    await waitFor(() => expect(button.disabled).toBe(false));
+    expect(button.getAttribute('aria-busy')).toBe('false');
+  });
+
+  it('刷新在途时经「更改」换根：刷新钮立即复位，旧刷新不污染新根的树', async () => {
+    mockVault();
+    writeStoredVaultRoot('demo', ROOT);
+    renderWorkspace();
+
+    await waitFor(() => expect(mocks.listFiles).toHaveBeenCalledWith('demo', '/vault'));
+
+    // 挂住刷新的列举请求（在途）
+    let resolveStale: (value: FileListEntry[]) => void = () => {};
+    mocks.listFiles.mockImplementationOnce(
+      () =>
+        new Promise<FileListEntry[]>((resolve) => {
+          resolveStale = resolve;
+        }),
+    );
+    const button = screen.getByTestId(
+      'page-sandbox-detail-obsidian-tree-refresh-button',
+    ) as HTMLButtonElement;
+    fireEvent.click(button);
+    expect(button.disabled).toBe(true);
+    expect(button.getAttribute('aria-busy')).toBe('true');
+
+    // 刷新在途时经「更改」换根（树干保持挂载，刷新钮还在）
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-obsidian-change-root-button'));
+    const input = screen.getByTestId('page-sandbox-detail-obsidian-root-input') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '/vault-two' } });
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-obsidian-root-open-button'));
+
+    // 修复点：换根 effect 补 setRefreshingTree(false)——按钮不用等旧刷新回来就复位
+    //（修复前旧刷新 finally 的代次比对恒 false，按钮永久禁用 + 旋转）
+    await waitFor(() => expect(button.disabled).toBe(false));
+    expect(button.getAttribute('aria-busy')).toBe('false');
+    expect(mocks.listFiles).toHaveBeenCalledWith('demo', '/vault-two');
+
+    // 旧根的在途响应回来（带一个只属于旧根的条目）：不污染新根的树
+    resolveStale([entry({ name: 'stale.md', size: 3 })]);
+    await waitFor(() =>
+      expect(screen.getByTestId('page-sandbox-detail-obsidian-vault-root').textContent).toBe(
+        'vault 根：/vault-two',
+      ),
+    );
+    expect(screen.queryByText('stale.md')).toBeNull();
   });
 });
 

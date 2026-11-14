@@ -10,6 +10,7 @@ import {
   Loader2,
   PanelRightClose,
   PanelRightOpen,
+  RefreshCw,
   Upload,
   X,
 } from 'lucide-react';
@@ -293,7 +294,7 @@ function FilePreviewView({
   return (
     <div
       data-testid="page-file-preview"
-      className="flex min-h-0 flex-1 flex-col gap-2"
+      className="flex min-h-0 flex-1 flex-col gap-2 px-2 pb-2"
     >
       {/* 工具条：返回 + 文件名 / 大小 + 复制 */}
       <div className="flex flex-none items-center gap-1.5">
@@ -428,7 +429,12 @@ function FilePreviewView({
  * - 定位走 **会话 pwd → 沙箱 workdir → `/`** 的 fallback 链（只用来**首次定位**）；
  * - **无自动跟随**：shell 里 `cd` 之后窗格目录**一动不动**——唯一的联动入口是
  *   工具条上的「回跳」准星按钮；
- * - 折叠成右缘 **36px 纯图标竖条**（竖条上只有底部的展开按钮）；
+ * - 折叠成右缘 **36px 纯图标竖条**（竖条上只有**顶部**的展开按钮）；
+ *
+ * 视觉合并（用户浏览器复验修复轮，2026-11-14）：窗格与终端**零间隙**贴成一块——
+ * 窗格改**四边完整 border + 仅右侧圆角**（左缘直角贴终端），面板根不再自带
+ * 内边距（padding 下放到工具条行）；列表态**拍平**：固定工具条 + 固定列表头，
+ * 下方条目列表整块直通滚动、贴满窗格（行 hover 高亮满宽）。
  *
  * 面板自身的能力（沿用抽屉时期的那一套，行为不变）：
  * - 列表三列：图标 + 名称 / 大小 / 修改时间（无类型列）；文件夹在前、隐藏文件照常显示；
@@ -468,6 +474,8 @@ export function FileBrowserPanel({
   const [previewConfirm, setPreviewConfirm] = useState<PreviewTarget | null>(null);
   /** 复制成功的对勾是否在显示（约 1 秒后复原）。 */
   const [copied, setCopied] = useState(false);
+  /** 「刷新」按钮的瞬时 loading（旋转 + 禁用）：重读落地前按钮不重复响应。 */
+  const [refreshing, setRefreshing] = useState(false);
   /**
    * 当前会话上报的工作目录（pwd）。
    *
@@ -1682,17 +1690,33 @@ export function FileBrowserPanel({
     applyPath(jumpTarget, { userInitiated: true });
   }, [applyPath, jumpTarget]);
 
+  /**
+   * 刷新按钮（用户浏览器复验修复轮）：**强制重读当前目录**。
+   *
+   * 复用「同路径强制重读」通道——`applyPath` 遇同路径不走 setState，
+   * 直接 `loadDirectory`；这里显式传当前路径并给按钮加瞬时 loading
+   * （禁用 + 旋转），重读落地后复原。
+   */
+  const refreshDirectory = useCallback(() => {
+    setRefreshing(true);
+    void Promise.resolve(loadDirectory(pathRef.current)).finally(() => {
+      setRefreshing(false);
+    });
+  }, [loadDirectory]);
+
   /* ---------------------------------------------------------------- 渲染 */
 
   /**
    * 折叠态：右缘一条 **36px 纯图标竖条**。
    *
-   * 竖条上**只有底部一个展开按钮**，**不显示任何文字**（PRD FP-03）。
+   * 竖条上**只有顶部一个展开按钮**，**不显示任何文字**（用户浏览器复验修复轮：
+   * 展开钮从底部移到顶部，与展开态工具条右端的折叠钮同一位置语义）。
+   * 与终端同样**零间隙贴合**：完整 border、仅右侧圆角、左缘直角贴终端。
    */
   if (collapsed) {
     return (
       <div
-        className="flex h-full min-h-0 w-full flex-col items-center justify-end border-l border-border bg-card"
+        className="flex h-full min-h-0 w-full flex-col items-center overflow-hidden rounded-r-xl border border-border bg-card pt-2"
         data-testid="page-file-pane-collapsed"
       >
         <button
@@ -1712,14 +1736,17 @@ export function FileBrowserPanel({
   return (
     <>
       {/*
-        面板根：**撑满分屏右侧那一格**（`h-full`）+ 列表自己内部滚动。
+        面板根：**撑满分屏右侧那一格**（`h-full`）。
+        视觉合并：四边完整 border + **仅右侧圆角**（左缘直角贴终端），
+        `overflow-hidden` 让内部滚动内容裁进右侧圆角；内边距下放到工具条行，
+        下方列表整块直通滚动贴满窗格。
       */}
       <div
-        className="flex h-full min-h-0 w-full flex-col gap-2 border-l border-border bg-card p-2"
+        className="flex h-full min-h-0 w-full flex-col overflow-hidden rounded-r-xl border border-border bg-card"
         data-testid="page-file-pane-content"
       >
-        {/* 行：面包屑（占满剩余宽度）+ 回跳 / 上传 / 折叠（同高 h-8） */}
-        <div className="flex flex-none items-center gap-1.5">
+        {/* 顶部固定工具条：面包屑（占满剩余宽度）+ 回跳 / 上传 / 刷新 / 折叠（同高 h-8，折叠钮固定右端） */}
+        <div className="flex flex-none items-center gap-1.5 px-2 py-2">
             <nav
               aria-label="路径"
               data-testid="page-file-browser-crumbs"
@@ -1887,9 +1914,9 @@ export function FileBrowserPanel({
             </nav>
 
             {/*
-              回跳 / 上传是**列表态**的操作：预览态（窗格内的第二视图）里不出现
-              （预览只读，避免「预览着一个文件、却往它所在目录上传」的歧义）。
-              折叠钮在两种视图下都在（窗格本身的开关）。
+              回跳 / 上传 / 刷新是**列表态**的操作：预览态（窗格内的第二视图）里
+              不出现（预览只读，避免「预览着一个文件、却往它所在目录上传」的歧义）。
+              折叠钮在两种视图下都在（窗格本身的开关），且固定在工具条**右端**。
             */}
             {!inPreview && (
               <>
@@ -1929,6 +1956,25 @@ export function FileBrowserPanel({
               )}
               上传
             </button>
+            {/*
+              刷新：**强制重读当前目录**（同路径重读通道）。loading 反馈 =
+              按钮瞬时禁用 + 图标旋转（用户浏览器复验修复轮新增）。
+            */}
+            <button
+              type="button"
+              onClick={refreshDirectory}
+              disabled={refreshing}
+              aria-busy={refreshing}
+              title="刷新"
+              aria-label="刷新"
+              data-testid="page-file-browser-refresh-button"
+              className="grid size-8 flex-none place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+            >
+              <RefreshCw
+                className={cn('size-4', refreshing && 'animate-spin')}
+                aria-hidden="true"
+              />
+            </button>
             <input
               ref={fileInputRef}
               type="file"
@@ -1942,7 +1988,7 @@ export function FileBrowserPanel({
               </>
             )}
 
-            {/* 折叠：收成右缘 36px 纯图标竖条（竖条上只有底部的展开按钮）。 */}
+            {/* 折叠：收成右缘 36px 纯图标竖条（竖条上只有**顶部**的展开按钮）；展开态固定在工具条右端。 */}
             <button
               type="button"
               onClick={onToggleCollapsed}
@@ -1971,20 +2017,30 @@ export function FileBrowserPanel({
               onDownload={downloadPreviewedFile}
             />
           ) : (
-          <div
-            data-testid="page-file-browser-list"
-            className="min-h-0 flex-1 overflow-x-auto overflow-y-auto rounded-lg border border-border bg-card"
-          >
+          <>
+            {/*
+              列表**拍平**（用户浏览器复验修复轮）：列表头从滚动容器里拆出来、
+              **固定**在窗格顶部，不再「窗格内 padding 包一层带边框的表格」。
+            */}
             <div
               className={cn(
                 rowGrid,
-                'sticky top-0 z-10 border-b border-border bg-card px-3 py-2 text-[11.5px] text-muted-foreground',
+                'flex-none border-b border-border bg-card px-3 py-2 text-[11.5px] text-muted-foreground',
               )}
             >
               <span>名称</span>
               <span className="text-right font-mono tabular-nums">大小</span>
               <span className="text-right font-mono tabular-nums">修改时间</span>
             </div>
+
+            {/*
+              条目列表：**整块直通滚动**、贴满窗格（行 hover 高亮满宽）；
+              容器不再自带边框 / 圆角 / 内边距（外壳归面板根）。
+            */}
+            <div
+              data-testid="page-file-browser-list"
+              className="min-h-0 flex-1 overflow-y-auto"
+            >
 
             {loading && entries.length === 0 && (
               <div
@@ -2200,7 +2256,8 @@ export function FileBrowserPanel({
                 </div>
               );
             })}
-          </div>
+            </div>
+          </>
           )}
       </div>
 

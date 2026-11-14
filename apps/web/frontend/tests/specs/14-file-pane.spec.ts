@@ -8,11 +8,13 @@
  *
  * 钉的行为（全部在真浏览器 + 真沙箱上跑）：
  *
- * 一、**分屏三段式**：左终端面板 + 中可拖拽分隔条 + 右文件窗格；窗格默认宽
- *    340px，分隔条可拖拽（往左变宽、往右变窄）与方向键调宽，窗格有最小宽度
+ * 一、**分屏三段式**：左终端面板 + 中接缝拖拽把手 + 右文件窗格，三者**零间隙贴合成
+ *    一块带边框的面板**（用户浏览器复验修复轮：把手骑在接缝上、不再占布局宽度）；
+ *    窗格默认宽 340px，把手可拖拽（往左变宽、往右变窄）与方向键调宽，窗格有最小宽度
  *    240px、上限 720px，且**终端面板有最小宽度钳位**（拖到最窄时终端不被压没）；
  * 二、**折叠**：折叠为右缘 **36px 纯图标竖条**，竖条上**不显示任何文字**、
- *    **只有底部一个展开按钮**；折叠态记在前端本地（localStorage），**刷新后保持**；
+ *    **只有顶部一个展开按钮**（不再在底部，与展开态工具条右端的折叠钮同一位置
+ *    语义）；折叠态记在前端本地（localStorage），**刷新后保持**；
  *    展开即回到原宽度；
  * 三、**入口随会话**：关闭全部会话 ⇒ 窗格**整体消失**（连分隔条一起），内容区显示
  *    空态（标题「没有终端会话」+ 新建会话入口）；点入口新建会话后窗格恢复，
@@ -33,7 +35,7 @@
 
 import { expect, test, type Page } from '@playwright/test';
 
-import { clearTerminalSessions, createSandbox, deleteSandbox } from '../helpers/api';
+import { clearTerminalSessions, createSandbox, deleteSandbox, uploadSandboxFile } from '../helpers/api';
 import { gotoDetail } from '../helpers/console';
 import {
   crumbs,
@@ -137,7 +139,18 @@ test.describe('文件窗格（终端右侧分屏）', () => {
     // 窗格默认宽约 340px（README 契约 + PRD FP-01）
     expect(Math.round(paneBox!.width), '文件窗格默认宽度不是 340px').toBe(DEFAULT_WIDTH_PX);
 
-    // ── ② 分隔条是**可拖拽的分隔条**：role=separator + 竖直方向 + 数值可读
+    // ── ①b 视觉合并：终端与窗格**零间隙**贴成一块，把手骑在接缝上
+    //（用户浏览器复验修复轮：不再有分隔条占出的透明间隙）
+    const seamGap = paneBox!.x - (termBox!.x + termBox!.width);
+    expect(seamGap, '终端与文件窗格之间有间隙（应零间隙贴合成一块）').toBeLessThanOrEqual(2);
+    const seamX = termBox!.x + termBox!.width;
+    const handleCenterX = handleBox!.x + handleBox!.width / 2;
+    expect(
+      Math.abs(handleCenterX - seamX),
+      '拖拽把手不在终端与窗格的接缝上',
+    ).toBeLessThanOrEqual(8);
+
+    // ── ② 分隔条是**可拖拽的接缝把手**：role=separator + 竖直方向 + 数值可读
     await expect(paneHandle(page)).toHaveAttribute('role', 'separator');
     await expect(paneHandle(page)).toHaveAttribute('aria-orientation', 'vertical');
     await expect(paneHandle(page)).toHaveAttribute('aria-valuemin', String(MIN_WIDTH_PX));
@@ -206,15 +219,27 @@ test.describe('文件窗格（终端右侧分屏）', () => {
     const collapsedText = (await paneCollapsed(page).textContent()) ?? '';
     expect(collapsedText.trim(), `折叠态竖条上出现了文字：「${collapsedText}」`).toBe('');
 
-    // ── ③ 竖条上**只有底部一个按钮**（展开），没有回跳 / 上级目录等其它按钮
+    // ── ③ 竖条**顶部**只有一个按钮（展开，与展开态工具条右端的折叠钮同一位置
+    // 语义），没有回跳 / 上级目录等其它按钮
     const barButtons = paneCollapsed(page).locator('button');
     await expect(barButtons).toHaveCount(1);
     await expect(barButtons.first()).toHaveAttribute('aria-label', '展开文件窗格');
     await expect(paneCollapsed(page).getByTestId('page-file-pane-expand-button')).toBeVisible();
     await expect(
       paneCollapsed(page).getByTestId('page-file-pane-jump-button'),
-      '折叠竖条上出现了回跳按钮（PRD 非目标：竖条上只留展开按钮）',
+      '折叠竖条上出现了回跳按钮（非目标：竖条上只留展开按钮）',
     ).toHaveCount(0);
+    // 展开钮在竖条**顶部**（用户浏览器复验修复轮：不再贴底）
+    const barBox = await paneCollapsed(page).boundingBox();
+    const expandBox = await paneCollapsed(page)
+      .getByTestId('page-file-pane-expand-button')
+      .boundingBox();
+    expect(barBox, '量不到折叠竖条').not.toBeNull();
+    expect(expandBox, '量不到展开按钮').not.toBeNull();
+    expect(
+      expandBox!.y - barBox!.y,
+      '展开按钮不在竖条顶部（应贴近竖条顶端）',
+    ).toBeLessThanOrEqual(12);
 
     // ── ④ 折叠态**前端本地记忆**：重新打开工作区（刷新一次页面）仍然是折叠态
     await gotoDetail(page, SANDBOX);
@@ -364,6 +389,45 @@ test.describe('文件窗格（终端右侧分屏）', () => {
       'aria-current',
       'page',
     );
+  });
+
+  test('刷新按钮：同路径强制重读当前目录，不导航也能看到新文件', async ({ page }) => {
+    await gotoDetail(page, SANDBOX);
+    await openFilePane(page);
+    await expectPaneAt(page, ['workspace']);
+
+    const refresh = page.getByTestId('page-file-browser-refresh-button');
+    await expect(refresh).toBeVisible();
+    await expect(refresh).toHaveAttribute('aria-label', '刷新');
+
+    // 直接从后端通道往当前目录放一个新文件（不经前端，模拟「目录被别人改了」）
+    await uploadSandboxFile(SANDBOX, `${WORKSPACE}/acc-pane-refresh-probe.txt`,
+      Buffer.from('ACC_REFRESH\n', 'utf-8'));
+
+    // 不导航，只点刷新（同路径强制重读通道）：新文件行出现
+    await refresh.click();
+    await expect(
+      page.locator('[data-testid="page-file-browser-row"][data-name="acc-pane-refresh-probe.txt"]'),
+      '点刷新后新文件没有出现（同路径强制重读没生效）',
+    ).toBeVisible({ timeout: 30_000 });
+    // 列表头仍在窗格顶部（拍平后固定，不随条目滚动）：结构断言——
+    // ① 「名称」表头不是 list 容器的后代（是容器外的同级固定头）；
+    // ② 表头顶端不高于列表容器（位置在列表上方，不是被推到列表内部）。
+    const listHeader = page.getByText('名称', { exact: true });
+    await expect(listHeader).toBeVisible();
+    const headerInsideList = await listHeader.evaluate(
+      (el) => el.closest('[data-testid="page-file-browser-list"]') !== null,
+    );
+    expect(headerInsideList, '「名称」表头应固定在列表容器之外，而不是随条目滚动的后代').toBe(
+      false,
+    );
+    const [headerBox, listBox] = await Promise.all([
+      listHeader.boundingBox(),
+      page.getByTestId('page-file-browser-list').boundingBox(),
+    ]);
+    expect(headerBox, '量不到「名称」表头').not.toBeNull();
+    expect(listBox, '量不到列表容器').not.toBeNull();
+    expect(headerBox!.y, '「名称」表头应位于列表容器上方').toBeLessThanOrEqual(listBox!.y);
   });
 
   test('会话切换：新的终端会话带自己的窗格，折叠态跨会话保持', async ({ page }) => {
