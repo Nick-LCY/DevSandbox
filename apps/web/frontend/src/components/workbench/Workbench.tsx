@@ -27,7 +27,6 @@ import { ConnectionSetup } from './ConnectionSetup';
 import { CreateSandboxDialog } from './CreateSandboxDialog';
 import { DeleteSandboxDialog } from './DeleteSandboxDialog';
 import { EmptyState } from './EmptyState';
-import { FileBrowserPanel } from './FileBrowserPanel';
 import { SandboxDetailDialog } from './SandboxDetailDialog';
 import { SettingsDialog } from './SettingsDialog';
 import { StopSandboxDialog } from './StopSandboxDialog';
@@ -180,7 +179,6 @@ function WorkbenchView({
 
   const [createOpen, setCreateOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
-  const [filesOpen, setFilesOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const requestIdRef = useRef(0);
@@ -568,7 +566,6 @@ function WorkbenchView({
       if (name === selectedName) {
         return;
       }
-      setFilesOpen(false);
       navigate({ name: 'workbench-sandbox', sandboxName: name, sessionId: null });
     },
     [navigate, selectedName],
@@ -614,7 +611,6 @@ function WorkbenchView({
             onStart={() => void start()}
             onStop={openStop}
             onOpenDetail={() => setDetailOpen(true)}
-            onOpenFiles={() => setFilesOpen(true)}
             onDelete={openDelete}
           />
           <TerminalPanel
@@ -622,6 +618,8 @@ function WorkbenchView({
             sandboxRunning={running}
             activeSessionId={activeSessionId}
             onActiveSessionChange={selectSession}
+            sandboxWorkdir={detail?.workdir ?? ''}
+            desktop={desktop}
           />
         </>
       ) : (
@@ -652,16 +650,6 @@ function WorkbenchView({
         connection={connection}
         forwards={forwards}
         onForwardsChanged={reloadForwards}
-      />
-
-      <FileBrowserPanel
-        open={filesOpen}
-        onOpenChange={setFilesOpen}
-        sandbox={selectedName ?? ''}
-        initialPath={detail?.workdir?.trim() || '/'}
-        widthVw={widthVw}
-        onWidthChange={setWidthVw}
-        desktop={desktop}
       />
 
       <SettingsDialog

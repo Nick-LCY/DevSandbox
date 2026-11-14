@@ -248,6 +248,26 @@ const makeDetail = () => ({
   workdir: '',
 });
 
+/** 一个够用的终端会话记录（标签条的数据源是一条 = 一个会话）。 */
+function makeSessionRecord() {
+  return {
+    session_id: 'sess-1',
+    sandbox_name: 'acc-demo',
+    container_name: 'sandbox-acc-demo',
+    system_user: 'acc-demo',
+    created_at: '2026-10-30T01:00:00+00:00',
+    last_attached_at: '2026-10-30T01:00:00+00:00',
+    state: 'running',
+    exit_code: null,
+    exit_reason: null,
+    pid: 4242,
+    cols: 80,
+    rows: 24,
+    attached_count: 0,
+    host_pid: 0,
+  };
+}
+
 /** 把工作台架到一个运行中的沙箱上（选中 acc-demo）。 */
 function mockRunningSandbox(): void {
   mocks.health.mockResolvedValue({ version: '0.2.0' });
@@ -409,20 +429,40 @@ describe('沙箱详情与转发记录的合并轮询', () => {
   });
 });
 
-describe('运行期文件入口', () => {
-  it('沙箱操作区「文件」按钮打开独立抽屉，并只从容器内 workdir 起读目录', async () => {
+describe('文件抽屉退役与文件窗格', () => {
+  it('工作区头部没有「文件」按钮：抽屉入口在全应用范围内不存在', async () => {
     mockRunningSandbox();
 
     renderWorkbench();
 
-    const filesButton = await screen.findByTestId('page-sandbox-detail-files-button');
-    expect(filesButton.textContent).toContain('文件');
-    fireEvent.click(filesButton);
+    await screen.findByTestId('page-sandbox-detail-title');
+    expect(screen.queryByTestId('page-sandbox-detail-files-button')).toBeNull();
+    // 抽屉形态整体退役：那个标识一个都不剩。
+    expect(screen.queryByTestId('page-file-browser-dialog')).toBeNull();
+  });
 
-    expect(await screen.findByTestId('page-file-browser-dialog')).toBeTruthy();
-    // makeDetail 的 workdir 为空：home 是**宿主侧**路径（容器里不存在），
-    // 不能拿来做起始目录；兜底用任何镜像都有的根目录 `/`。
+  it('有终端会话时：文件窗格出现在终端右侧，并从 fallback 起点读目录', async () => {
+    mockRunningSandbox();
+    mocks.listTerminalSessions.mockResolvedValue([makeSessionRecord()]);
+
+    renderWorkbench();
+
+    expect(await screen.findByTestId('page-file-pane')).toBeTruthy();
+    // makeDetail 的 workdir 为空（home 是宿主侧路径，容器里不存在）：
+    // 兜底到任何镜像都有的容器根目录 `/`。
     await waitFor(() => expect(mocks.listFiles).toHaveBeenCalledWith('acc-demo', '/'));
+  });
+
+  it('没有终端会话时：窗格整体消失，内容区显示空态', async () => {
+    mockRunningSandbox();
+    mocks.listTerminalSessions.mockResolvedValue([]);
+
+    renderWorkbench();
+
+    const empty = await screen.findByTestId('page-sandbox-detail-terminal-empty-title');
+    expect(empty.textContent).toContain('没有终端会话');
+    expect(screen.getByTestId('page-sandbox-detail-terminal-empty-create-button')).toBeTruthy();
+    expect(screen.queryByTestId('page-file-pane')).toBeNull();
   });
 });
 

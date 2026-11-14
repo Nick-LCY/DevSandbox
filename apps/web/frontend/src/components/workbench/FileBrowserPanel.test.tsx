@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError, type DownloadFileResult, type TransferProgress } from '../../api/client';
 import type { FileListEntry } from '../../api/types';
+import { clearSessionPwd, setSessionPwd } from '../../lib/terminal-pwd';
 import { ToastProvider } from '../Toast';
 import { FileBrowserPanel } from './FileBrowserPanel';
 
@@ -69,22 +70,23 @@ function entry(overrides: Partial<FileListEntry>): FileListEntry {
 }
 
 interface PanelOverrides {
-  open?: boolean;
-  initialPath?: string;
-  desktop?: boolean;
   sandbox?: string;
+  sessionId?: string | null;
+  workdir?: string;
+  collapsed?: boolean;
+  desktop?: boolean;
+  onToggleCollapsed?: () => void;
 }
 
 function panelElement(overrides?: PanelOverrides) {
   return (
     <ToastProvider>
       <FileBrowserPanel
-        open={overrides?.open ?? true}
-        onOpenChange={() => {}}
         sandbox={overrides?.sandbox ?? 'demo-01'}
-        initialPath={overrides?.initialPath ?? '/home/acc-demo'}
-        widthVw={40}
-        onWidthChange={() => {}}
+        sessionId={overrides?.sessionId ?? 'sess-1'}
+        workdir={overrides?.workdir ?? '/home/acc-demo'}
+        collapsed={overrides?.collapsed ?? false}
+        onToggleCollapsed={overrides?.onToggleCollapsed ?? (() => {})}
         desktop={overrides?.desktop ?? false}
       />
     </ToastProvider>
@@ -239,6 +241,9 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
+  // pwd 缓存是模块级的：用例之间清掉（免得串到下一条）。
+  clearSessionPwd('sess-1');
+  clearSessionPwd('sess-2');
 });
 
 describe('列表与导航', () => {
@@ -390,21 +395,17 @@ describe('列表与导航', () => {
     expect(levelCells.every((cell) => measureRow?.contains(cell))).toBe(true);
   });
 
-  it('量宽基准节点后到（抽屉关闭时面板已挂载）：首次打开即挂观察器并量宽；关闭再打开会重挂', async () => {
+  it('量宽基准节点挂上即挂观察器并量宽；卸载时 disconnect', async () => {
     const observer = stubResizeObserver();
     const rect = stubCrumbLayout();
     /** 观察了某个节点的观察器实例（Base UI 自己的观察器不算）。 */
     const observersOf = (node: Element) =>
       observer.instances.filter((record) => record.observed.includes(node));
 
-    const view = renderPanel({ open: false });
+    const view = renderPanel();
 
-    // 抽屉关闭：Base UI 的 portal **不渲染内容** ⇒ 量宽基准节点还不存在，
-    // 观察器也就无处可挂（修前：面板常驻挂载 ⇒ 观察器**永远建不起来**）。
-    expect(screen.queryByTestId('page-file-browser-crumbs')).toBeNull();
-
-    // 打开：DOM 出现 ⇒ 回调 ref 触发 ⇒ 挂观察器 + 立即量一次。
-    view.rerender(panelElement({ open: true }));
+    // 窗格一直挂着（不再有「抽屉打开才渲染内容」那一层）：
+    // 回调 ref 在节点出现时触发 ⇒ 挂观察器 + 立即量一次。
     await screen.findByTestId('page-file-browser-crumbs');
 
     const levelsBox = crumbAt(1).parentElement?.parentElement as Element;
@@ -422,23 +423,16 @@ describe('列表与导航', () => {
       screen.getAllByTestId('page-file-browser-crumb').map((node) => node.getAttribute('data-depth')),
     ).toEqual(['-1', '1']);
 
-    // 关闭：DOM 卸载 ⇒ 回调 ref 收到 null ⇒ disconnect。
-    view.rerender(panelElement({ open: false }));
+    // 卸载：DOM 卸载 ⇒ 回调 ref 收到 null ⇒ disconnect。
+    view.unmount();
     await waitFor(() => expect(observersOf(levelsBox)[0].disconnected).toBe(true));
-
-    // 再打开：重新 observe（不是拿已断开的旧观察器凑数）。
-    view.rerender(panelElement({ open: true }));
-    await screen.findByTestId('page-file-browser-crumbs');
-    const reopenedBox = crumbAt(1).parentElement?.parentElement as Element;
-    await waitFor(() => expect(observersOf(reopenedBox)).toHaveLength(1));
-    expect(observersOf(reopenedBox)[0].disconnected).toBe(false);
   });
 
   it('回归：当前已是根目录时根 crumb 是静态（不可点）——点它不重读，列表不清空', async () => {
     // 口径：**当前层级去按钮化**（纯文本、不可点）⇒ 「当前就是根目录」时
     // 根 crumb 也是静态元素，**不再有**「点根 crumb 变空目录」这条交互路径。
     mocks.listFiles.mockResolvedValue([entry({ name: 'workspace', kind: 'dir' })]);
-    renderPanel({ initialPath: '/' });
+    renderPanel({ workdir: '/' });
 
     await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
     expect(mocks.listFiles).toHaveBeenCalledTimes(1);
@@ -754,8 +748,8 @@ describe('上传', () => {
   });
 });
 
-describe('关闭与切换收口', () => {
-  it('关闭抽屉：abort 在途上传、清空队列；重开不显示上一个沙箱的行', async () => {
+describe('卸载与切换收口', () => {
+  it('卸载窗格：abort 在途上传、清空队列；换沙箱不显示上一个沙箱的行', async () => {
     let firstSignal: AbortSignal | undefined;
     mocks.uploadFile.mockImplementation(
       (
@@ -783,23 +777,72 @@ describe('关闭与切换收口', () => {
     );
     await waitFor(() => expect(mocks.uploadFile).toHaveBeenCalledTimes(1));
 
-    view.rerender(panelElement({ open: false }));
+    // 窗格消失（会话没了 / 切到别的 tab）⇒ 在途上传收口。
+    view.unmount();
 
     await waitFor(() => expect(firstSignal?.aborted).toBe(true));
     await waitFor(() =>
       expect(screen.queryAllByTestId('page-file-browser-upload-row')).toHaveLength(0),
     );
+    expect(mocks.uploadFile).toHaveBeenCalledTimes(1);
+  });
 
-    // 重开到另一个沙箱：上一个沙箱的排队行不能残留，也不能继续上传。
-    view.rerender(panelElement({ open: true, sandbox: 'demo-02' }));
+  it('换沙箱：上一个沙箱的排队行不能残留，也不继续上传', async () => {
+    mocks.uploadFile.mockImplementation(
+      () => new Promise(() => {}),
+    );
+    const view = renderPanel();
+    await screen.findByTestId('page-file-browser-list');
+
+    chooseFiles(new File(['a'], 'one.txt', { type: 'text/plain' }));
     await waitFor(() =>
-      expect(mocks.listFiles).toHaveBeenLastCalledWith('demo-02', '/home/acc-demo'),
+      expect(screen.getAllByTestId('page-file-browser-upload-row')).toHaveLength(1),
+    );
+    await waitFor(() => expect(mocks.uploadFile).toHaveBeenCalledTimes(1));
+
+    // 换沙箱：窗格重新定位到新沙箱的 workdir，上一个沙箱的活儿全部收掉。
+    view.rerender(panelElement({ sandbox: 'demo-02', workdir: '/home/acc-other' }));
+    await waitFor(() =>
+      expect(mocks.listFiles).toHaveBeenLastCalledWith('demo-02', '/home/acc-other'),
     );
     expect(screen.queryAllByTestId('page-file-browser-upload-row')).toHaveLength(0);
     expect(mocks.uploadFile).toHaveBeenCalledTimes(1);
   });
 
-  it('关闭抽屉：在途下载的 AbortController 也被取消，行内进度清掉', async () => {
+  it('换沙箱（同起点 `/`）：旧沙箱的行立即清空，新沙箱慢查询返回前绝不残留', async () => {
+    let resolveNew: ((entries: FileListEntry[]) => void) | undefined;
+    mocks.listFiles.mockImplementation((sandbox: string) => {
+      if (sandbox === 'demo-01') {
+        return Promise.resolve([entry({ name: 'old.txt' })]);
+      }
+      return new Promise<FileListEntry[]>((resolve) => {
+        resolveNew = resolve;
+      });
+    });
+
+    // 两边都没 pwd / workdir ⇒ 同一起点 `/`（旧实现会走 applyPath 的同路径分支，
+    // 不碰 entries，旧行一直挂到新沙箱的慢查询返回）。
+    const view = renderPanel({ sandbox: 'demo-01', workdir: '' });
+    await waitFor(() => expect(rowOf('old.txt')).toBeTruthy());
+
+    view.rerender(panelElement({ sandbox: 'demo-02', workdir: '' }));
+    await waitFor(() =>
+      expect(mocks.listFiles).toHaveBeenLastCalledWith('demo-02', '/'),
+    );
+
+    // 新列表还没回来：窗格必须已经空掉，绝不显示旧沙箱的条目。
+    expect(screen.queryAllByTestId('page-file-browser-row')).toHaveLength(0);
+    expect(screen.queryByText('old.txt')).toBeNull();
+    expect(screen.getByTestId('page-file-browser-loading')).toBeTruthy();
+
+    await act(async () => {
+      resolveNew?.([entry({ name: 'new.txt' })]);
+    });
+    await waitFor(() => expect(rowOf('new.txt')).toBeTruthy());
+    expect(screen.queryByText('old.txt')).toBeNull();
+  });
+
+  it('卸载窗格：在途下载的 AbortController 也被取消，行内进度清掉', async () => {
     mocks.listFiles.mockResolvedValue([entry({ name: 'a.txt', kind: 'file' })]);
     let downloadSignal: AbortSignal | undefined;
     mocks.downloadFile.mockImplementation(
@@ -822,12 +865,9 @@ describe('关闭与切换收口', () => {
       ).toBeTruthy(),
     );
 
-    view.rerender(panelElement({ open: false }));
+    view.unmount();
 
     await waitFor(() => expect(downloadSignal?.aborted).toBe(true));
-    await waitFor(() =>
-      expect(screen.queryByTestId('page-file-browser-download-progress')).toBeNull(),
-    );
     expect(toastsOf('error')).toHaveLength(0);
   });
 });
@@ -1077,7 +1117,7 @@ describe('下载', () => {
     );
   });
 
-  it('桌面形态：关闭抽屉 → 取消在途下载并退掉进度订阅（不留半截文件）', async () => {
+  it('桌面形态：窗格被卸载 → 取消在途下载并退掉进度订阅（不留半截文件）', async () => {
     mocks.listFiles.mockResolvedValue([entry({ name: 'a.txt', kind: 'file' })]);
     desktopMocks.pickDownloadPath.mockResolvedValue('C:\\Users\\me\\a.txt');
     const unsubscribe = vi.fn();
@@ -1092,7 +1132,7 @@ describe('下载', () => {
       desktopMocks.downloadToDisk.mock.calls[0][0] as { downloadId: string }
     ).downloadId;
 
-    view.rerender(panelElement({ desktop: true, open: false }));
+    view.unmount();
 
     await waitFor(() =>
       expect(desktopMocks.cancelDesktopDownload).toHaveBeenCalledWith(downloadId),
@@ -1100,7 +1140,7 @@ describe('下载', () => {
     expect(unsubscribe).toHaveBeenCalled();
   });
 
-  it('桌面形态：订阅 IPC 往返期间关闭抽屉 → 退订且不发下载命令', async () => {
+  it('桌面形态：订阅 IPC 往返期间窗格被卸载 → 退订且不发下载命令', async () => {
     mocks.listFiles.mockResolvedValue([entry({ name: 'a.txt', kind: 'file' })]);
     desktopMocks.pickDownloadPath.mockResolvedValue('C:\\Users\\me\\a.txt');
     const unsubscribe = vi.fn();
@@ -1117,8 +1157,8 @@ describe('下载', () => {
     fireEvent.click(rowOf('a.txt'));
     await waitFor(() => expect(desktopMocks.listenDownloadEvents).toHaveBeenCalledTimes(1));
 
-    // 订阅还没回来，用户就把抽屉关了。
-    view.rerender(panelElement({ desktop: true, open: false }));
+    // 订阅还没回来，用户就把窗格关了（会话没了 / 切走了）。
+    view.unmount();
     await act(async () => {
       resolveListen?.(unsubscribe);
     });
@@ -1142,5 +1182,210 @@ describe('下载', () => {
       expect(screen.queryByTestId('page-file-browser-download-progress')).toBeNull(),
     );
     expect(toastsOf('error')).toHaveLength(0);
+  });
+});
+
+describe('窗格定位（fallback 链）与无自动跟随', () => {
+  it('会话 pwd 可得 ⇒ 从 pwd 起读目录', async () => {
+    setSessionPwd('sess-1', '/workspace/src');
+
+    renderPanel();
+
+    await waitFor(() =>
+      expect(mocks.listFiles).toHaveBeenCalledWith('demo-01', '/workspace/src'),
+    );
+  });
+
+  it('会话没上报 pwd ⇒ 从沙箱 workdir 起读目录', async () => {
+    renderPanel({ workdir: '/home/acc-demo/work' });
+
+    await waitFor(() =>
+      expect(mocks.listFiles).toHaveBeenCalledWith('demo-01', '/home/acc-demo/work'),
+    );
+  });
+
+  it('pwd 与 workdir 都不可得 ⇒ 兜底到容器根目录', async () => {
+    renderPanel({ workdir: '' });
+
+    await waitFor(() => expect(mocks.listFiles).toHaveBeenCalledWith('demo-01', '/'));
+  });
+
+  it('pwd 迟到：补定位一次；之后 pwd 再变也**不再联动**', async () => {
+    renderPanel();
+
+    await waitFor(() =>
+      expect(mocks.listFiles).toHaveBeenCalledWith('demo-01', '/home/acc-demo'),
+    );
+    expect(mocks.listFiles).toHaveBeenCalledTimes(1);
+
+    // pwd 迟到（shell 刚画提示符才报上来）⇒ 补定位一次。
+    act(() => {
+      setSessionPwd('sess-1', '/workspace');
+    });
+    await waitFor(() =>
+      expect(mocks.listFiles).toHaveBeenLastCalledWith('demo-01', '/workspace'),
+    );
+    expect(mocks.listFiles).toHaveBeenCalledTimes(2);
+
+    // 之后再变：窗格**一动不动**（无自动跟随）。
+    act(() => {
+      setSessionPwd('sess-1', '/elsewhere');
+    });
+    await waitFor(() => expect(mocks.listFiles).toHaveBeenCalledTimes(2));
+    expect(mocks.listFiles).not.toHaveBeenCalledWith('demo-01', '/elsewhere');
+  });
+
+  it('用户已经导航过：pwd 来了也不把窗格带走', async () => {
+    mocks.listFiles.mockImplementation((_sandbox: string, directory: string) =>
+      Promise.resolve(
+        directory === '/home/acc-demo'
+          ? [entry({ name: 'sub', kind: 'dir' })]
+          : [],
+      ),
+    );
+
+    renderPanel();
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+
+    // 用户自己进了子目录。
+    fireEvent.click(rowOf('sub'));
+    await waitFor(() =>
+      expect(mocks.listFiles).toHaveBeenLastCalledWith('demo-01', '/home/acc-demo/sub'),
+    );
+
+    // pwd 这时才到：不动（用户的目录优先）。
+    act(() => {
+      setSessionPwd('sess-1', '/workspace');
+    });
+    await waitFor(() => expect(mocks.listFiles).toHaveBeenCalledTimes(2));
+    expect(mocks.listFiles).not.toHaveBeenCalledWith('demo-01', '/workspace');
+  });
+
+  it('换会话：A 里导航到子目录后切到 B，落 B 的 fallback 起点（不留在 A 的子目录）', async () => {
+    setSessionPwd('sess-1', '/from-a');
+    mocks.listFiles.mockImplementation((_sandbox: string, directory: string) =>
+      Promise.resolve(
+        directory === '/from-a' ? [entry({ name: 'a-sub', kind: 'dir' })] : [],
+      ),
+    );
+
+    const view = renderPanel({ sessionId: 'sess-1', workdir: '/workdir' });
+    await waitFor(() =>
+      expect(mocks.listFiles).toHaveBeenCalledWith('demo-01', '/from-a'),
+    );
+
+    // 用户在会话 A 里导航走了。
+    fireEvent.click(rowOf('a-sub'));
+    await waitFor(() =>
+      expect(mocks.listFiles).toHaveBeenLastCalledWith('demo-01', '/from-a/a-sub'),
+    );
+
+    // 切到会话 B（没上报 pwd）：窗格必须按 B 的 fallback 链重新定位，
+    // 绝不留在 A 里用户去的目录（userNavigatedRef 已随会话复位）。
+    mocks.listFiles.mockClear();
+    view.rerender(panelElement({ sessionId: 'sess-2', workdir: '/workdir' }));
+    await waitFor(() =>
+      expect(mocks.listFiles).toHaveBeenLastCalledWith('demo-01', '/workdir'),
+    );
+    expect(
+      mocks.listFiles.mock.calls.some(([, directory]) => directory === '/from-a/a-sub'),
+    ).toBe(false);
+    expect(screen.queryByText('a-sub')).toBeNull();
+  });
+});
+
+describe('回跳按钮', () => {
+  it('pwd 已缓存：挂载首帧就显示回跳目标（不先闪「未上报」）', () => {
+    setSessionPwd('sess-1', '/workspace');
+    // 列表挂住不返回：只看首帧的回跳口径，不让异步列表掩盖问题。
+    mocks.listFiles.mockReturnValue(new Promise(() => {}));
+
+    renderPanel();
+
+    const jump = screen.getByTestId('page-file-pane-jump-button');
+    expect(jump.getAttribute('title')).toBe('跳转到终端当前目录：/workspace');
+    expect((jump as HTMLButtonElement).disabled).toBe(true); // 已在目标目录
+  });
+
+  it('会话没上报工作目录：禁用 + tooltip「当前会话未上报工作目录」', async () => {
+    renderPanel();
+
+    const jump = await screen.findByTestId('page-file-pane-jump-button');
+    expect((jump as HTMLButtonElement).disabled).toBe(true);
+    expect(jump.getAttribute('title')).toBe('当前会话未上报工作目录');
+  });
+
+  it('有 pwd：tooltip 是「跳转到终端当前目录：<路径>」，点击即导航', async () => {
+    setSessionPwd('sess-1', '/workspace');
+    mocks.listFiles.mockImplementation((_sandbox: string, directory: string) =>
+      Promise.resolve(
+        directory === '/workspace' ? [entry({ name: 'sub', kind: 'dir' })] : [],
+      ),
+    );
+
+    renderPanel();
+
+    await waitFor(() => expect(mocks.listFiles).toHaveBeenCalledWith('demo-01', '/workspace'));
+    const jump = await screen.findByTestId('page-file-pane-jump-button');
+    expect(jump.getAttribute('title')).toBe('跳转到终端当前目录：/workspace');
+
+    // 先走到别的目录，回跳按钮就能用了。
+    fireEvent.click(rowOf('sub'));
+    await waitFor(() =>
+      expect(mocks.listFiles).toHaveBeenLastCalledWith('demo-01', '/workspace/sub'),
+    );
+    expect((jump as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(jump);
+    await waitFor(() => expect(mocks.listFiles).toHaveBeenLastCalledWith('demo-01', '/workspace'));
+  });
+
+  it('窗格已在目标目录：回跳按钮禁用', async () => {
+    setSessionPwd('sess-1', '/workspace');
+
+    renderPanel();
+
+    await waitFor(() => expect(mocks.listFiles).toHaveBeenCalledWith('demo-01', '/workspace'));
+    const jump = await screen.findByTestId('page-file-pane-jump-button');
+    expect((jump as HTMLButtonElement).disabled).toBe(true);
+    expect(jump.getAttribute('title')).toBe('跳转到终端当前目录：/workspace');
+  });
+
+  it('pwd 变化：tooltip 跟着更新', async () => {
+    renderPanel();
+
+    const jump = await screen.findByTestId('page-file-pane-jump-button');
+    expect(jump.getAttribute('title')).toBe('当前会话未上报工作目录');
+
+    act(() => {
+      setSessionPwd('sess-1', '/workspace');
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId('page-file-pane-jump-button').getAttribute('title')).toBe(
+        '跳转到终端当前目录：/workspace',
+      ),
+    );
+  });
+});
+
+describe('折叠态', () => {
+  it('折叠：右缘竖条上只有展开按钮，没有任何文字', async () => {
+    renderPanel({ collapsed: true });
+
+    const collapsed = await screen.findByTestId('page-file-pane-collapsed');
+    expect(collapsed.querySelectorAll('button')).toHaveLength(1);
+    expect(collapsed.textContent).toBe('');
+    expect(screen.getByTestId('page-file-pane-expand-button')).toBeTruthy();
+    // 折叠态不渲染列表（竖条就是全部）。
+    expect(screen.queryByTestId('page-file-browser-list')).toBeNull();
+  });
+
+  it('点展开按钮：回调父组件切回展开', async () => {
+    const onToggleCollapsed = vi.fn();
+    renderPanel({ collapsed: true, onToggleCollapsed });
+
+    fireEvent.click(await screen.findByTestId('page-file-pane-expand-button'));
+    expect(onToggleCollapsed).toHaveBeenCalledTimes(1);
   });
 });

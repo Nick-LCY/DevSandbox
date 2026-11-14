@@ -1,7 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Loader2, Plus } from 'lucide-react';
 
 import { api } from '../api/client';
 import type { TerminalSessionRecord } from '../api/types';
+import {
+  FILE_PANE_COLLAPSED_WIDTH_PX,
+  FILE_PANE_DEFAULT_WIDTH_PX,
+  FILE_PANE_MIN_TERMINAL_WIDTH_PX,
+  FILE_PANE_MIN_WIDTH_PX,
+  clampFilePaneWidth,
+  filePaneWidthFromDrag,
+  shouldShowFilePane,
+  type WorkspaceTabKind,
+} from '../lib/file-pane';
+import { useFilePaneCollapsed } from '../lib/file-pane-collapsed';
 import { nextPollFailure } from '../lib/poll';
 import { sessionNumbering, sortSessionsByCreation } from '../lib/sessions';
 import { resolveActiveSession, type TerminalRefreshState } from '../lib/terminal-active';
@@ -22,6 +34,7 @@ import { clearSessionPwd } from '../lib/terminal-pwd';
 import { TerminalView, type TerminalState, type TerminalStatus } from './TerminalView';
 import { useToast } from './Toast';
 import { CloseSessionDialog } from './workbench/CloseSessionDialog';
+import { FileBrowserPanel } from './workbench/FileBrowserPanel';
 import { TerminalTabs, type TerminalTabItem } from './workbench/TerminalTabs';
 
 /** 状态标签文案。 */
@@ -68,6 +81,10 @@ interface TerminalPanelProps {
   activeSessionId: string | null;
   /** 选中终端会话发生变化（点标签、新建会话、关掉当前会话）。 */
   onActiveSessionChange: (sessionId: string | null) => void;
+  /** 沙箱工作目录（metadata `workdir`）：文件窗格定位 fallback 链的第二级。 */
+  sandboxWorkdir?: string;
+  /** 是否运行在桌面壳里（桌面形态下载 = 原生保存框 + Rust 落盘）。 */
+  desktop?: boolean;
 }
 
 /**
@@ -85,6 +102,8 @@ export function TerminalPanel({
   sandboxRunning,
   activeSessionId,
   onActiveSessionChange,
+  sandboxWorkdir,
+  desktop = false,
 }: TerminalPanelProps) {
   const { show } = useToast();
   /**
@@ -124,6 +143,28 @@ export function TerminalPanel({
   const [closingBusy, setClosingBusy] = useState(false);
   /** 每个会话的重试令牌：手动点重试时自增，终端视图据此重建连接。 */
   const [retryTokens, setRetryTokens] = useState<Record<string, number>>({});
+  /**
+   * 当前激活的工作区 tab 类型。
+   *
+   * 06 轮起 tabs 条最左会有一个固定的 Obsidian tab，那时这个取值由 tab 条上报。
+   * 本轮只有终端 tab，但**入口条件的结构先按两种取值搭好**：文件窗格是终端 tab
+   * 的伴生物，激活别的 tab 时窗格整体不出现（口径见 `shouldShowFilePane`）。
+   */
+  const [activeTabKind] = useState<WorkspaceTabKind>('terminal');
+  /**
+   * 文件窗格宽度（像素）：默认 340px，分隔条拖拽可改。
+   *
+   * **只在本次挂载内有效**（宽度不入存储；折叠态才需要持久，见 PRD FP-03）。
+   */
+  const [paneWidth, setPaneWidth] = useState<number>(FILE_PANE_DEFAULT_WIDTH_PX);
+  /** 文件窗格折叠态（前端本地记忆，跨会话关闭 / 重开保持）。 */
+  const { collapsed: paneCollapsed, toggle: togglePaneCollapsed } = useFilePaneCollapsed();
+  /** 分屏容器（量内容区宽度用）。 */
+  const splitRef = useRef<HTMLDivElement | null>(null);
+  /** 拖拽分隔条的进行中状态（起点指针位置 + 起点窗格宽度）。 */
+  const dragRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
+  /** 窗格宽度的最新值（按下分隔条时取，避免闭包里拿到旧值）。 */
+  const paneWidthRef = useRef<number>(paneWidth);
   /** 刷新令牌：自增。旧响应回来时令牌对不上，一律丢弃。 */
   const refreshTokenRef = useRef(0);
   /**
@@ -487,6 +528,100 @@ export function TerminalPanel({
     setFullscreen((previous) => !previous);
   }, []);
 
+  /* ---------------------------------------------------------- 分屏与窗格 */
+
+  /** 窗格宽度的最新值：跟随 state，供按下分隔条时读取。 */
+  useEffect(() => {
+    paneWidthRef.current = paneWidth;
+  }, [paneWidth]);
+
+  /**
+   * 文件窗格出不出现在分屏里。
+   *
+   * 口径（PRD FP-04）：窗格是**终端 tab 的伴生物**——只在「存在终端会话」
+   * **且**「激活的是终端 tab」时存在；关掉全部会话 ⇒ 窗格整体消失。
+   */
+  const paneVisible = shouldShowFilePane({
+    tabKind: activeTabKind,
+    hasActiveSession: activeId !== null,
+  });
+
+  /** 分隔条按下：记下起点（指针横坐标 + 当前窗格宽度）。 */
+  const handleSplitPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: paneWidthRef.current,
+    };
+    // 指针捕获：拖出分隔条也不丢事件。环境不支持时跳过（不影响其余逻辑）。
+    if (typeof event.currentTarget.setPointerCapture === 'function') {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
+  }, []);
+
+  /** 拖拽中：按指针位置算新宽度（钳位口径在 `filePaneWidthFromDrag` 里）。 */
+  const handleSplitPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    const container = splitRef.current;
+    if (!container) {
+      return;
+    }
+    setPaneWidth(
+      filePaneWidthFromDrag({
+        startWidth: drag.startWidth,
+        startX: drag.startX,
+        pointerX: event.clientX,
+        containerWidth: container.getBoundingClientRect().width,
+        minTerminalWidth: FILE_PANE_MIN_TERMINAL_WIDTH_PX,
+      }),
+    );
+  }, []);
+
+  /** 松手（或指针捕获丢失）：拖拽收口。 */
+  const handleSplitPointerUp = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (dragRef.current?.pointerId === event.pointerId) {
+      dragRef.current = null;
+    }
+    if (
+      typeof event.currentTarget.hasPointerCapture === 'function' &&
+      event.currentTarget.hasPointerCapture(event.pointerId)
+    ) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }, []);
+
+  /** 按方向键调宽（每次 16px）：分隔条能用键盘操作。 */
+  const handleSplitKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') {
+      return;
+    }
+    event.preventDefault();
+    const container = splitRef.current;
+    setPaneWidth((current) =>
+      clampFilePaneWidth(current + (event.key === 'ArrowLeft' ? 16 : -16), {
+        containerWidth: container ? container.getBoundingClientRect().width : null,
+        minTerminalWidth: FILE_PANE_MIN_TERMINAL_WIDTH_PX,
+      }),
+    );
+  }, []);
+
+  /**
+   * 分隔条的可调上限（`aria-valuemax`）。
+   *
+   * 直接问钳位函数「这个容器宽下最大能到多少」（传一个足够大的期望值，
+   * 返回值就是上限）：`min(720, 容器宽 − 终端最小宽)`；容器宽拿不到时是 720。
+   * 量容器宽是渲染期活读，拖动 / 键盘调宽导致的重渲染会带上当时的容器宽；
+   * **不挂 ResizeObserver**（窄窗口适配是本轮非目标，见 PRD）。
+   */
+  const paneMaxWidth = clampFilePaneWidth(Number.MAX_SAFE_INTEGER, {
+    containerWidth: splitRef.current?.getBoundingClientRect().width ?? null,
+    minTerminalWidth: FILE_PANE_MIN_TERMINAL_WIDTH_PX,
+  });
+
   const statusLabel = activeId ? STATUS_LABEL[activeStatus] : '未打开终端';
 
   return (
@@ -513,6 +648,10 @@ export function TerminalPanel({
         onToggleFullscreen={toggleFullscreen}
       />
 
+      {/*
+        内容区（**tabs 条下方**）：三段式——左终端面板 + 中可拖拽分隔条 +
+        右文件窗格。全屏时这一整块（含窗格）被 `fixed` 覆盖。
+      */}
       <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
         {activeId && activeStatus === 'failed' && (
           <div>
@@ -527,27 +666,120 @@ export function TerminalPanel({
           </div>
         )}
 
-        {activeId ? (
-          <TerminalView
-            key={activeId}
-            sessionId={activeId}
-            retryToken={retryTokens[activeId] ?? 0}
-            autoFocus={autoFocus}
-            onStateChange={(state) => {
-              handleStateChange(activeId, state);
-            }}
-          />
-        ) : (
-          // 没有会话时也留一个终端框：工作区不悬空，形状与真实终端一致。
+        <div
+          ref={splitRef}
+          className="flex min-h-0 flex-1"
+          data-testid="page-terminal-split"
+        >
+          {/*
+            左：终端面板。**最小宽度钳位**（`minWidth`）——拖分隔条时
+            终端不会被压没（钳位口径在 `src/lib/file-pane.ts`）。
+          */}
           <div
-            className="flex h-full min-h-0 items-center justify-center rounded-xl border border-border bg-terminal-bg p-3"
-            data-testid="page-sandbox-detail-terminal-placeholder"
+            className="flex min-h-0 flex-1 flex-col"
+            style={{ minWidth: FILE_PANE_MIN_TERMINAL_WIDTH_PX }}
+            data-testid="page-terminal-split-terminal"
           >
-            <span className="text-[12.5px] text-terminal-fg/60">
-              {sandboxRunning ? '还没有终端会话，点上方的 + 新建一个。' : '沙箱未运行，无法新建终端会话。'}
-            </span>
+            {activeId ? (
+              <TerminalView
+                key={activeId}
+                sessionId={activeId}
+                retryToken={retryTokens[activeId] ?? 0}
+                autoFocus={autoFocus}
+                onStateChange={(state) => {
+                  handleStateChange(activeId, state);
+                }}
+              />
+            ) : (
+              /*
+                没有会话：内容区空态（标题「没有终端会话」+ 新建会话入口）。
+                窗格此时**整体不出现**（它是终端会话的伴生物）。
+              */
+              <div
+                className="flex h-full min-h-0 items-center justify-center rounded-xl border border-border bg-terminal-bg p-3"
+                data-testid="page-sandbox-detail-terminal-placeholder"
+              >
+                <div className="flex flex-col items-center gap-3">
+                  <span
+                    className="text-[13px] text-terminal-fg/80"
+                    data-testid="page-sandbox-detail-terminal-empty-title"
+                  >
+                    没有终端会话
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void createTerminal()}
+                    disabled={busy || !sandboxRunning}
+                    title={sandboxRunning ? '新建终端会话' : '沙箱未运行，无法新建终端会话'}
+                    data-testid="page-sandbox-detail-terminal-empty-create-button"
+                    className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-[13px] text-foreground transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+                  >
+                    {busy ? (
+                      <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                    ) : (
+                      <Plus className="size-4" aria-hidden="true" />
+                    )}
+                    新建会话
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
-        )}
+
+          {/*
+            中：可拖拽分隔条（拖它改窗格宽度）。
+            折叠态不出分隔条（竖条上只有展开按钮，没有可拖的东西）。
+          */}
+          {paneVisible && !paneCollapsed && (
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="调整文件窗格宽度"
+              aria-valuemin={FILE_PANE_MIN_WIDTH_PX}
+              aria-valuemax={paneMaxWidth}
+              aria-valuenow={paneWidth}
+              tabIndex={0}
+              onPointerDown={handleSplitPointerDown}
+              onPointerMove={handleSplitPointerMove}
+              onPointerUp={handleSplitPointerUp}
+              onPointerCancel={handleSplitPointerUp}
+              onKeyDown={handleSplitKeyDown}
+              data-testid="page-terminal-split-handle"
+              className="group w-1.5 flex-none cursor-col-resize rounded-full bg-transparent transition-colors hover:bg-primary/40 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+            />
+          )}
+
+          {/*
+            右：文件窗格（默认 340px；折叠态是右缘 36px 纯图标竖条）。
+            宽度由分隔条拖拽决定，**不入存储**（折叠态才持久）。
+          */}
+          {paneVisible && (
+            <div
+              className="flex-none"
+              style={{
+                width: paneCollapsed ? FILE_PANE_COLLAPSED_WIDTH_PX : paneWidth,
+              }}
+              data-testid="page-file-pane"
+            >
+              {/*
+                按「沙箱:会话」强制重挂载：path / entries / 定位标记都是
+                组件内部状态，换会话或换沙箱时必须归零——否则同起点
+                （都兜底 `/`）时 applyPath 走同路径分支不清 entries，旧会话 /
+                旧沙箱的行会一直挂到新查询返回，期间点行还会把旧路径发给新
+                沙箱。折叠态与窗格宽度在父组件持有，不受重挂载影响。
+              */}
+              <FileBrowserPanel
+                key={`${sandboxName}:${activeId ?? 'none'}`}
+                sandbox={sandboxName}
+                sessionId={activeId}
+                workdir={sandboxWorkdir ?? ''}
+                collapsed={paneCollapsed}
+                onToggleCollapsed={togglePaneCollapsed}
+                desktop={desktop}
+              />
+            </div>
+          )}
+        </div>
       </div>
 
       <CloseSessionDialog

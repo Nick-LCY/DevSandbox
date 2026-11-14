@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Folder, Loader2, Upload, X } from 'lucide-react';
+import { Crosshair, Folder, Loader2, PanelRightClose, PanelRightOpen, Upload, X } from 'lucide-react';
 
 import { api } from '../../api/client';
 import type { FileListEntry } from '../../api/types';
@@ -27,21 +27,27 @@ import {
   trimBreadcrumbLevels,
   type BreadcrumbTrim,
 } from '../../lib/file-transfer';
+import { isSameContainerPath, resolveFilePaneStartPath } from '../../lib/file-pane';
+import { getSessionPwd, subscribeSessionPwd } from '../../lib/terminal-pwd';
 import { useToast } from '../Toast';
-import { DrawerShell } from './DrawerShell';
 import { ModalShell } from './ModalShell';
 
 interface FileBrowserPanelProps {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
   /** 沙箱名（三条文件端点都挂在它下面）。 */
   sandbox: string;
-  /** 首次打开时的目录（沙箱的容器内 workdir；缺省为根目录）。 */
-  initialPath: string;
-  /** 抽屉宽度（视口宽度的百分比）。 */
-  widthVw: number;
-  /** 宽度变化回调（工作台负责持久化）。 */
-  onWidthChange: (vw: number) => void;
+  /**
+   * 锚定的终端会话标识。
+   *
+   * `null` = 没有终端会话 ⇒ **窗格整体不出现**（父组件不渲染本组件）。
+   * 换会话 ⇒ 窗格重新按 fallback 链定位（窗格锚定当前激活的终端会话）。
+   */
+  sessionId: string | null;
+  /** 沙箱工作目录（metadata `workdir`）：定位 fallback 链的第二级。 */
+  workdir: string;
+  /** 是否折叠（折叠 = 右缘 36px 纯图标竖条）。 */
+  collapsed: boolean;
+  /** 折叠 / 展开切换（父组件负责落盘）。 */
+  onToggleCollapsed: () => void;
   /** 是否运行在桌面壳里（桌面形态下载 = 原生保存框 + Rust 落盘，见 `desktop-file.ts`）。 */
   desktop: boolean;
 }
@@ -189,9 +195,17 @@ const CRUMB_BUTTON_CLASS =
 const CRUMB_CURRENT_TEXT_CLASS = 'max-w-48 truncate text-foreground';
 
 /**
- * 运行期文件浏览面板（独立抽屉）。
+ * 运行期文件浏览面板（**终端旁的窗格**，不再是抽屉）。
  *
- * 口径：
+ * 形态口径（PRD「方案一 · 文件窗格」）：
+ * - 窗格是**终端 tab 的伴生物**：只在「存在终端会话且激活的是终端 tab」时出现
+ *   （入口条件由父组件判定，见 `shouldShowFilePane`）；
+ * - 定位走 **会话 pwd → 沙箱 workdir → `/`** 的 fallback 链（只用来**首次定位**）；
+ * - **无自动跟随**：shell 里 `cd` 之后窗格目录**一动不动**——唯一的联动入口是
+ *   工具条上的「回跳」准星按钮；
+ * - 折叠成右缘 **36px 纯图标竖条**（竖条上只有底部的展开按钮）；
+ *
+ * 面板自身的能力（沿用抽屉时期的那一套，行为不变）：
  * - 列表三列：图标 + 名称 / 大小 / 修改时间（无类型列）；文件夹在前、隐藏文件照常显示；
  * - **点击文件行本身即下载**（没有下载按钮）；
  * - 上传只进**当前浏览目录**（无路径输入框）；多文件排队逐个传，行内进度 + 可取消；
@@ -200,16 +214,20 @@ const CRUMB_CURRENT_TEXT_CLASS = 'max-w-48 truncate text-foreground';
  * - 界面没有副标题 / 解释说明性文字。
  */
 export function FileBrowserPanel({
-  open,
-  onOpenChange,
   sandbox,
-  initialPath,
-  widthVw,
-  onWidthChange,
+  sessionId,
+  workdir,
+  collapsed,
+  onToggleCollapsed,
   desktop,
 }: FileBrowserPanelProps) {
   const { show } = useToast();
-  const [path, setPath] = useState(() => normalizeContainerPath(initialPath) ?? '/');
+  const [path, setPath] = useState<string>(() =>
+    resolveFilePaneStartPath({
+      pwd: sessionId ? getSessionPwd(sessionId) : null,
+      workdir,
+    }),
+  );
   const [entries, setEntries] = useState<FileListEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -217,6 +235,23 @@ export function FileBrowserPanel({
   const [downloads, setDownloads] = useState<Map<string, DownloadItem>>(() => new Map());
   const [overwriteName, setOverwriteName] = useState<string | null>(null);
   const [preparingUpload, setPreparingUpload] = useState(false);
+  /**
+   * 当前会话上报的工作目录（pwd）。
+   *
+   * **连会话标识一起存**：`sessionPwd` 是派生值（只有键对得上才算数）——
+   * 换会话的那一提交里，state 里还是上一个会话的 pwd，不能拿它给新会话定位。
+   * `null` = **该会话没上报**（如 `dash` / `sh` 会话）⇒ 回跳按钮禁用，
+   * tooltip 改为「当前会话未上报工作目录」。
+   */
+  const [pwdState, setPwdState] = useState<{ sessionId: string | null; pwd: string | null }>(
+    () => ({
+      // 同步读缓存做初始值：pwd 已缓存时，挂载首帧就是正确状态
+      // （否则会先闪一帧「当前会话未上报工作目录」，见下方 layout effect 注释）。
+      sessionId,
+      pwd: sessionId ? getSessionPwd(sessionId) : null,
+    }),
+  );
+  const sessionPwd = pwdState.sessionId === sessionId ? pwdState.pwd : null;
 
   const pathRef = useRef(path);
   const entriesRef = useRef(entries);
@@ -237,13 +272,17 @@ export function FileBrowserPanel({
   const desktopPendingRef = useRef<Set<string>>(new Set());
   const overwriteResolverRef = useRef<((ok: boolean) => void) | null>(null);
   const overwriteItemIdRef = useRef<string | null>(null);
-  /** 抽屉是否还开着（异步收尾时判断要不要再弹提示）。 */
-  const openRef = useRef(open);
-  /** 抽屉会话代次：关闭时自增，旧队列 / 旧确认框的后续逻辑据此退出。 */
+  /** 组件是否还活着（卸载 / 换沙箱后不再提示、不再发请求）。 */
+  const aliveRef = useRef(true);
+  /** 换沙箱 / 卸载的代次：旧队列 / 旧确认框的后续逻辑据此退出。 */
   const generationRef = useRef(0);
   /** 当前 `entries` 是否来自当前目录的一次成功读取（否则不能用来判同名）。 */
   const listTrustedRef = useRef(false);
   const listPathRef = useRef<string | null>(null);
+  /** 用户是否导航过（导航过之后就不再被 pwd 定位带走）。 */
+  const userNavigatedRef = useRef(false);
+  /** 是否已经用会话 pwd 定位过（**定位只做一次**，见 PRD FP-06）。 */
+  const pwdPositionedRef = useRef(false);
 
   pathRef.current = path;
   entriesRef.current = entries;
@@ -286,25 +325,116 @@ export function FileBrowserPanel({
     [sandbox],
   );
 
-  // 每次打开都回到沙箱的起始目录；换沙箱同理。
+  /**
+   * 换会话时的 pwd 同步（**布局阶段**）。
+   *
+   * pwd 缓存是同步可读的：在 layout effect 里读，挂载 / 换会话的那一帧
+   * 就显示正确的回跳目标，不会先闪一次「当前会话未上报工作目录」
+   * （passive effect 要等绘制之后才跑，正好会露出这一帧）。
+   */
+  useLayoutEffect(() => {
+    setPwdState((previous) => {
+      const nextPwd = sessionId ? getSessionPwd(sessionId) : null;
+      if (previous.sessionId === sessionId && previous.pwd === nextPwd) {
+        // 初值已经从缓存同步读过：值没变就别多一次渲染。
+        return previous;
+      }
+      return { sessionId, pwd: nextPwd };
+    });
+  }, [sessionId]);
+
+  /**
+   * 会话 pwd 的订阅。
+   *
+   * pwd 是**异步到达**的（shell 画提示符时才报上来）：订阅变化，
+   * 回跳按钮的 tooltip 随它更新（PRD FP-07）。
+   */
   useEffect(() => {
-    if (!open) {
+    if (!sessionId) {
+      return undefined;
+    }
+    return subscribeSessionPwd(sessionId, () => {
+      setPwdState({ sessionId, pwd: getSessionPwd(sessionId) });
+    });
+  }, [sessionId]);
+
+  /** 换会话：定位状态复位（用户是否导航过 / 是否已用 pwd 定位过）。 */
+  useEffect(() => {
+    userNavigatedRef.current = false;
+    pwdPositionedRef.current = false;
+  }, [sessionId]);
+
+  /**
+   * 统一导航入口。
+   *
+   * **同路径必须强制重读**：`setPath` 传同值时 React 会 bail out（不重渲染），
+   * 于是「当前目录变化就重读列表」的 effect 不会重跑——列表被清空成
+   * 「空目录」（点根 crumb 回根、点当前层级 crumb 都会踩到：先 `setEntries([])`，
+   * 路径又没变，列表就永远停在空数组上）。
+   * 所以这里**不走「state 变化触发 effect」**：每次导航都**直接调
+   * `loadDirectory`**，同路径也一样重读。
+   *
+   * `userInitiated` = 用户自己点的导航（点目录行 / 点面包屑 / 点回跳）：
+   * 标记「用户导航过」⇒ 之后 pwd 再来也不把窗格带走（**无自动跟随**）。
+   */
+  const applyPath = useCallback(
+    (next: string, options?: { userInitiated?: boolean }): void => {
+      if (options?.userInitiated) {
+        userNavigatedRef.current = true;
+      }
+      const target = normalizeContainerPath(next) ?? '/';
+      if (target === pathRef.current) {
+        // 同路径：绕开 setState，直接重读一次。
+        void loadDirectory(target);
+        return;
+      }
+      setEntries([]);
+      // 清空的同时进加载态：不让「空目录」在换目录的间隙闪一下。
+      setLoading(true);
+      setPath(target);
+      void loadDirectory(target);
+    },
+    [loadDirectory],
+  );
+
+  /**
+   * 首次定位（fallback 链）：**会话 pwd → 沙箱 workdir → `/`**。
+   *
+   * 定位**只做一次**：
+   * - 用户已经导航过 ⇒ 不动（用户的目录优先）；
+   * - 已经用 pwd 定位过 ⇒ 不动（**无自动跟随**：pwd 变化绝不联动）；
+   * - 沙箱 workdir 迟到（详情还没读到）⇒ 补定位一次。
+   */
+  useEffect(() => {
+    if (userNavigatedRef.current || pwdPositionedRef.current) {
       return;
     }
-    setEntries([]);
-    listTrustedRef.current = false;
-    setPath(normalizeContainerPath(initialPath) ?? '/');
-  }, [open, sandbox, initialPath]);
+    const pwd = sessionId ? getSessionPwd(sessionId) : null;
+    if (pwd !== null) {
+      // pwd 已经拿到 ⇒ 起点就是它，不必再定位一次。
+      pwdPositionedRef.current = true;
+    }
+    applyPath(resolveFilePaneStartPath({ pwd, workdir }));
+  }, [sessionId, workdir, applyPath]);
 
-  // 当前目录变化（含首次打开）就重读列表。
+  /**
+   * pwd 迟到时的补定位。
+   *
+   * pwd 是异步到达的：会话刚建起来时窗格先落在 workdir（或 `/`），
+   * pwd 到了再挪一次——**只挪这一次**，且用户已经导航过就不挪。
+   */
   useEffect(() => {
-    if (!open) {
+    if (pwdPositionedRef.current || userNavigatedRef.current) {
       return;
     }
-    void loadDirectory(path);
-  }, [open, path, loadDirectory]);
+    if (sessionPwd === null) {
+      return;
+    }
+    pwdPositionedRef.current = true;
+    applyPath(sessionPwd);
+  }, [sessionPwd, applyPath]);
 
-  /** 收掉全部在途传输（关闭抽屉 / 卸载时用；只动 ref，不碰状态）。 */
+  /** 收掉全部在途传输（换沙箱 / 卸载时用；只动 ref，不碰状态）。 */
   const abortTransfers = useCallback((): void => {
     generationRef.current += 1;
     for (const controller of abortControllersRef.current.values()) {
@@ -334,23 +464,25 @@ export function FileBrowserPanel({
     resolver?.(false);
   }, []);
 
-  // 抽屉关闭（含切沙箱前的收口）：清空在途上传 / 下载、队列与确认框。
+  // 换沙箱：清空在途上传 / 下载、队列与确认框（上个沙箱的活儿不算数），
+  // 同时清空列表与列表可信标记——旧沙箱的行绝不能挂到新沙箱的慢查询返回为止。
+  // 主入口在 `TerminalPanel` 里按 `sandbox:session` 强制重挂载（path / entries /
+  // 定位标记一起归零）；这里的清理是「直接改 `sandbox` prop」时的兜底。
   useEffect(() => {
-    openRef.current = open;
-    if (open) {
-      return;
-    }
     abortTransfers();
+    setEntries([]);
+    listTrustedRef.current = false;
+    listPathRef.current = null;
     setUploads([]);
     setDownloads(new Map());
     setOverwriteName(null);
     setPreparingUpload(false);
-  }, [open, abortTransfers]);
+  }, [sandbox, abortTransfers]);
 
   // 卸载同样收口（AbortController 与 reader 都不留）。
   useEffect(
     () => () => {
-      openRef.current = false;
+      aliveRef.current = false;
       abortTransfers();
     },
     [abortTransfers],
@@ -358,28 +490,11 @@ export function FileBrowserPanel({
 
   /* ---------------------------------------------------------------- 导航 */
 
-  /**
-   * 统一导航入口。
-   *
-   * **同路径必须强制重读**：`setPath` 传同值时 React 会 bail out（不重渲染），
-   * 于是「当前目录变化就重读列表」的 effect 不会重跑——列表被清空成
-   * 「空目录」（点根 crumb 回根、点当前层级 crumb 都会踩到：先 `setEntries([])`，
-   * 路径又没变，列表就永远停在空数组上）。
-   * 所以同路径时**绕开 setState，直接重读一次**。
-   */
   const goToPath = useCallback(
     (next: string): void => {
-      const target = next === '' ? '/' : next;
-      if (target === pathRef.current) {
-        void loadDirectory(target);
-        return;
-      }
-      setEntries([]);
-      // 清空的同时进加载态：不让「空目录」在换目录的间隙闪一下。
-      setLoading(true);
-      setPath(target);
+      applyPath(next, { userInitiated: true });
     },
-    [loadDirectory],
+    [applyPath],
   );
 
   const enterDirectory = useCallback(
@@ -637,7 +752,7 @@ export function FileBrowserPanel({
         removeUpload(item.id);
         if (
           generation === generationRef.current &&
-          openRef.current &&
+          aliveRef.current &&
           !cancelledRef.current.has(item.id)
         ) {
           show('success', `已上传 ${item.file.name}`, { source: 'file-browser' });
@@ -649,7 +764,7 @@ export function FileBrowserPanel({
         removeUpload(item.id);
         if (
           generation === generationRef.current &&
-          openRef.current &&
+          aliveRef.current &&
           !cancelledRef.current.has(item.id) &&
           !isAbortError(exc)
         ) {
@@ -671,7 +786,7 @@ export function FileBrowserPanel({
     processingRef.current = true;
     const generation = generationRef.current;
     const active = (): boolean =>
-      openRef.current && generation === generationRef.current;
+      aliveRef.current && generation === generationRef.current;
     try {
       while (queueRef.current.length > 0) {
         if (!active()) {
@@ -729,7 +844,7 @@ export function FileBrowserPanel({
 
   const enqueueFiles = useCallback(
     async (files: File[]): Promise<void> => {
-      if (files.length === 0 || preparingRef.current || !openRef.current) {
+      if (files.length === 0 || preparingRef.current || !aliveRef.current) {
         return;
       }
       const directory = pathRef.current;
@@ -746,7 +861,7 @@ export function FileBrowserPanel({
         try {
           const loaded = await loadDirectory(directory);
           if (loaded === null) {
-            if (openRef.current) {
+            if (aliveRef.current) {
               show('error', '当前目录读取失败，已取消上传', { source: 'file-browser' });
             }
             return;
@@ -756,7 +871,7 @@ export function FileBrowserPanel({
           preparingRef.current = false;
           setPreparingUpload(false);
         }
-        if (!openRef.current || generation !== generationRef.current) {
+        if (!aliveRef.current || generation !== generationRef.current) {
           return;
         }
       }
@@ -831,7 +946,7 @@ export function FileBrowserPanel({
           // 用户取消保存框：静默返回。
           return;
         }
-        if (generation !== generationRef.current || !openRef.current) {
+        if (generation !== generationRef.current || !aliveRef.current) {
           return;
         }
 
@@ -865,7 +980,7 @@ export function FileBrowserPanel({
 
         // 订阅是 IPC 往返：这段窗口里抽屉可能已经关了 / 换了沙箱。此时**不发下载命令**
         // （否则会凭空起一个没人要的下载，也没人给它发取消），退订后直接退出。
-        if (generation !== generationRef.current || !openRef.current) {
+        if (generation !== generationRef.current || !aliveRef.current) {
           unsubscribe();
           return;
         }
@@ -891,7 +1006,7 @@ export function FileBrowserPanel({
           });
           if (
             generation === generationRef.current &&
-            openRef.current &&
+            aliveRef.current &&
             desktopDownloadsRef.current.get(entry.name) === slot
           ) {
             show('success', `已下载 ${entry.name} 到 ${result.target_path || target}`, {
@@ -902,7 +1017,7 @@ export function FileBrowserPanel({
           // 抽屉关了 / 切了沙箱 / 主动取消：静默收口（Rust 的取消文案不弹失败 toast）。
           if (
             generation === generationRef.current &&
-            openRef.current &&
+            aliveRef.current &&
             desktopDownloadsRef.current.get(entry.name) === slot &&
             errorMessage(exc) !== CANCELLED_MESSAGE
           ) {
@@ -924,7 +1039,7 @@ export function FileBrowserPanel({
         }
       } catch (exc) {
         // 保存框自身失败（桌面壳缺 dialog 权限 / 老版本没有这条命令）。
-        if (generation === generationRef.current && openRef.current) {
+        if (generation === generationRef.current && aliveRef.current) {
           show('error', errorMessage(exc), { source: 'file-browser' });
         }
       } finally {
@@ -986,7 +1101,7 @@ export function FileBrowserPanel({
         }
         if (
           generation === generationRef.current &&
-          openRef.current &&
+          aliveRef.current &&
           !controller.signal.aborted
         ) {
           show('success', `已下载 ${filename}`, { source: 'file-browser' });
@@ -994,7 +1109,7 @@ export function FileBrowserPanel({
       } catch (exc) {
         if (
           generation === generationRef.current &&
-          openRef.current &&
+          aliveRef.current &&
           !controller.signal.aborted &&
           !isAbortError(exc)
         ) {
@@ -1029,25 +1144,66 @@ export function FileBrowserPanel({
     [enterDirectory, startDownload],
   );
 
+  /* ------------------------------------------------------------ 回跳按钮 */
+
+  /**
+   * 回跳按钮（准星）的口径。
+   *
+   * - tooltip 固定格式「**跳转到终端当前目录：<路径>**」，路径随 pwd 订阅更新；
+   * - 会话**没上报**工作目录（`null`）⇒ 禁用 + tooltip「**当前会话未上报工作目录**」；
+   * - 窗格**已在目标目录** ⇒ 禁用（没什么可跳的）。
+   */
+  const jumpTarget = sessionPwd;
+  const jumpDisabled = jumpTarget === null || isSameContainerPath(path, jumpTarget);
+  const jumpHint =
+    jumpTarget === null ? '当前会话未上报工作目录' : `跳转到终端当前目录：${jumpTarget}`;
+
+  /** 点回跳：导航到目标目录（**强制重读**，即便已经在那里）。 */
+  const jumpToSessionDir = useCallback(() => {
+    if (jumpTarget === null) {
+      return;
+    }
+    applyPath(jumpTarget, { userInitiated: true });
+  }, [applyPath, jumpTarget]);
+
   /* ---------------------------------------------------------------- 渲染 */
+
+  /**
+   * 折叠态：右缘一条 **36px 纯图标竖条**。
+   *
+   * 竖条上**只有底部一个展开按钮**，**不显示任何文字**（PRD FP-03）。
+   */
+  if (collapsed) {
+    return (
+      <div
+        className="flex h-full min-h-0 w-full flex-col items-center justify-end border-l border-border bg-card"
+        data-testid="page-file-pane-collapsed"
+      >
+        <button
+          type="button"
+          onClick={onToggleCollapsed}
+          title="展开文件窗格"
+          aria-label="展开文件窗格"
+          data-testid="page-file-pane-expand-button"
+          className="grid size-8 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+        >
+          <PanelRightOpen className="size-4" aria-hidden="true" />
+        </button>
+      </div>
+    );
+  }
 
   return (
     <>
-      <DrawerShell
-        open={open}
-        title="文件"
-        testId="page-file-browser-dialog"
-        onOpenChange={onOpenChange}
-        widthVw={widthVw}
-        onWidthChange={onWidthChange}
+      {/*
+        面板根：**撑满分屏右侧那一格**（`h-full`）+ 列表自己内部滚动。
+      */}
+      <div
+        className="flex h-full min-h-0 w-full flex-col gap-2 border-l border-border bg-card p-2"
+        data-testid="page-file-pane-content"
       >
-        {/*
-          面板根：**撑满抽屉正文**（`h-full`）+ 列表自己内部滚动，
-          抽屉本体不再被内容撑出滚动条。
-        */}
-        <div className="flex h-full min-h-0 flex-col gap-3">
-          {/* 行：面包屑（占满剩余宽度）+ 上传按钮（定宽，同高 h-8） */}
-          <div className="flex flex-none items-center gap-2">
+        {/* 行：面包屑（占满剩余宽度）+ 回跳 / 上传 / 折叠（同高 h-8） */}
+        <div className="flex flex-none items-center gap-1.5">
             <nav
               aria-label="路径"
               data-testid="page-file-browser-crumbs"
@@ -1205,6 +1361,27 @@ export function FileBrowserPanel({
               </div>
             </nav>
 
+            {/*
+              回跳（准星）：跳到**当前会话上报的工作目录**。
+              - tooltip 固定格式「跳转到终端当前目录：<路径>」，随 pwd 订阅更新；
+              - 会话没上报 pwd ⇒ 禁用 + tooltip「当前会话未上报工作目录」；
+              - 窗格已在目标目录 ⇒ 禁用。
+              禁用按钮外面包一层带 title 的 span：Firefox 对 disabled 控件不弹 title。
+            */}
+            <span className="inline-flex" title={jumpHint}>
+              <button
+                type="button"
+                onClick={jumpToSessionDir}
+                disabled={jumpDisabled}
+                title={jumpHint}
+                aria-label={jumpHint}
+                data-testid="page-file-pane-jump-button"
+                className="grid size-8 flex-none place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+              >
+                <Crosshair className="size-4" aria-hidden="true" />
+              </button>
+            </span>
+
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
@@ -1230,6 +1407,18 @@ export function FileBrowserPanel({
                 void enqueueFiles(Array.from(event.target.files ?? []));
               }}
             />
+
+            {/* 折叠：收成右缘 36px 纯图标竖条（竖条上只有底部的展开按钮）。 */}
+            <button
+              type="button"
+              onClick={onToggleCollapsed}
+              title="折叠文件窗格"
+              aria-label="折叠文件窗格"
+              data-testid="page-file-pane-collapse-button"
+              className="grid size-8 flex-none place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+            >
+              <PanelRightClose className="size-4" aria-hidden="true" />
+            </button>
           </div>
 
           {/*
@@ -1440,8 +1629,7 @@ export function FileBrowserPanel({
               );
             })}
           </div>
-        </div>
-      </DrawerShell>
+      </div>
 
       <ModalShell
         open={overwriteName !== null}

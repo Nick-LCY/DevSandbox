@@ -15,8 +15,9 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ComponentProps } from 'react';
 
-import type { TerminalSessionRecord } from '../api/types';
-import { getSessionPwd, setSessionPwd } from '../lib/terminal-pwd';
+import type { FileListEntry, TerminalSessionRecord } from '../api/types';
+import { FILE_PANE_COLLAPSED_STORAGE_KEY } from '../lib/file-pane-collapsed';
+import { clearSessionPwd, getSessionPwd, setSessionPwd } from '../lib/terminal-pwd';
 import { TerminalPanel } from './TerminalPanel';
 import { ToastProvider } from './Toast';
 
@@ -24,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   listTerminalSessions: vi.fn(),
   createTerminalSession: vi.fn(),
   deleteTerminalSession: vi.fn(),
+  listFiles: vi.fn(),
 }));
 
 /** 终端视图上报的状态：默认「连接中」，用来验证「标签状态与后端记录任一 running 即按运行中」。 */
@@ -67,6 +69,7 @@ vi.mock('../api/client', async (importOriginal) => {
       listTerminalSessions: mocks.listTerminalSessions,
       createTerminalSession: mocks.createTerminalSession,
       deleteTerminalSession: mocks.deleteTerminalSession,
+      listFiles: mocks.listFiles,
     },
   };
 });
@@ -145,6 +148,23 @@ function makeRecord(overrides: Partial<TerminalSessionRecord> = {}): TerminalSes
   };
 }
 
+function fileEntry(overrides: Partial<FileListEntry> = {}): FileListEntry {
+  return {
+    name: 'a.txt',
+    kind: 'file',
+    size: 10,
+    mtime: 1_700_000_000,
+    ...overrides,
+  };
+}
+
+/** 文件窗格里的行（按 `data-name` 找）。 */
+function fileRow(name: string): HTMLElement | undefined {
+  return screen
+    .queryAllByTestId('page-file-browser-row')
+    .find((node) => node.getAttribute('data-name') === name);
+}
+
 /** 每个测试用独立的沙箱名：标签序号按沙箱登记，测试之间互不干扰。 */
 let sandboxSeq = 0;
 
@@ -196,6 +216,19 @@ function mockSessions(records: TerminalSessionRecord[]): void {
   mocks.listTerminalSessions.mockResolvedValue([]);
 }
 
+/**
+ * 造一个指针事件。
+ *
+ * **jsdom 没有 PointerEvent**（`window.PointerEvent` 是 undefined），
+ * `fireEvent.pointerDown` 的 init 字段会被丢掉 ⇒ 这里用 `MouseEvent` 带上
+ * `clientX`，再自己补一个 `pointerId`。
+ */
+function pointerEvent(type: string, clientX: number, pointerId: number): Event {
+  const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX });
+  Object.defineProperty(event, 'pointerId', { value: pointerId });
+  return event;
+}
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
@@ -203,10 +236,15 @@ afterEach(() => {
   mocks.listTerminalSessions.mockReset();
   mocks.createTerminalSession.mockReset();
   mocks.deleteTerminalSession.mockReset();
+  mocks.listFiles.mockReset();
   viewMocks.status = 'connecting';
   viewMocks.bySession = {};
   viewMocks.states = {};
   viewMocks.autoFocus = {};
+  window.localStorage.clear();
+  // pwd 是模块级缓存：用例之间清掉（免得串到下一条）。
+  clearSessionPwd('sess-a');
+  clearSessionPwd('sess-b');
 });
 
 describe('终端会话标签', () => {
@@ -1045,5 +1083,279 @@ describe('选中会话的稳定性', () => {
     const active = tabs.find((tab) => tab.getAttribute('data-active') === 'true');
     expect(active?.getAttribute('data-session-id')).toBe('sess-b');
     expect(onActiveSessionChange).not.toHaveBeenCalled();
+  });
+});
+
+describe('三段式分屏与文件窗格', () => {
+  it('有终端会话：左终端面板 + 中分隔条 + 右文件窗格（默认 340px）', async () => {
+    mockSessions([makeRecord({ session_id: 'sess-a' })]);
+
+    renderPanel();
+
+    await screen.findByTestId('page-sandbox-detail-terminal-tab');
+    expect(screen.getByTestId('page-terminal-split')).toBeTruthy();
+    expect(screen.getByTestId('page-terminal-split-terminal')).toBeTruthy();
+
+    const handle = screen.getByTestId('page-terminal-split-handle');
+    expect(handle.getAttribute('role')).toBe('separator');
+    expect(handle.getAttribute('aria-orientation')).toBe('vertical');
+    // 窗格宽度的可调范围：下限 = 窗格最小宽 240；上限默认 = 窗格最大宽 720。
+    expect(handle.getAttribute('aria-valuemin')).toBe('240');
+    expect(handle.getAttribute('aria-valuemax')).toBe('720');
+    expect(handle.getAttribute('aria-valuenow')).toBe('340');
+
+    const pane = screen.getByTestId('page-file-pane');
+    expect(pane.style.width).toBe('340px');
+  });
+
+  it('没有终端会话：窗格整体消失，内容区显示空态', async () => {
+    mockSessions([]);
+
+    renderPanel();
+
+    const empty = await screen.findByTestId('page-sandbox-detail-terminal-empty-title');
+    expect(empty.textContent).toContain('没有终端会话');
+    expect(screen.getByTestId('page-sandbox-detail-terminal-empty-create-button')).toBeTruthy();
+    expect(screen.queryByTestId('page-file-pane')).toBeNull();
+    expect(screen.queryByTestId('page-terminal-split-handle')).toBeNull();
+  });
+
+  it('空态里的「新建会话」入口：点了真的建会话', async () => {
+    mockSessions([]);
+    mocks.createTerminalSession.mockResolvedValue({
+      session_id: 'sess-new',
+      sandbox: 'demo',
+      container_name: 'sandbox-demo',
+      cols: 80,
+      rows: 24,
+      state: 'running',
+      created_at: '2026-10-30T01:00:00+00:00',
+    });
+    const onActiveSessionChange = vi.fn();
+
+    const { sandboxName } = renderPanel(onActiveSessionChange);
+
+    fireEvent.click(await screen.findByTestId('page-sandbox-detail-terminal-empty-create-button'));
+    await waitFor(() => expect(mocks.createTerminalSession).toHaveBeenCalledWith(sandboxName, 80, 24));
+    await waitFor(() => expect(onActiveSessionChange).toHaveBeenCalledWith('sess-new'));
+  });
+
+  it('折叠：收成 36px 纯图标竖条（无文字、只有展开按钮），折叠态落盘', async () => {
+    mockSessions([makeRecord({ session_id: 'sess-a' })]);
+
+    renderPanel();
+
+    await screen.findByTestId('page-file-pane');
+    fireEvent.click(screen.getByTestId('page-file-pane-collapse-button'));
+
+    const collapsed = await screen.findByTestId('page-file-pane-collapsed');
+    // 竖条上**只有底部一个展开按钮**，且**没有任何文字**。
+    expect(collapsed.querySelectorAll('button')).toHaveLength(1);
+    expect(collapsed.textContent).toBe('');
+    expect(screen.getByTestId('page-file-pane-expand-button')).toBeTruthy();
+    // 折叠态：36px 竖条，没有分隔条可拖。
+    expect(screen.getByTestId('page-file-pane').style.width).toBe('36px');
+    expect(screen.queryByTestId('page-terminal-split-handle')).toBeNull();
+    // 折叠态写进本地存储（跨会话关闭 / 重开保持）。
+    expect(window.localStorage.getItem(FILE_PANE_COLLAPSED_STORAGE_KEY)).toBe('1');
+  });
+
+  it('展开：恢复原宽度；折叠态从存储里读回', async () => {
+    window.localStorage.setItem(FILE_PANE_COLLAPSED_STORAGE_KEY, '1');
+    mockSessions([makeRecord({ session_id: 'sess-a' })]);
+
+    renderPanel();
+
+    await screen.findByTestId('page-file-pane-collapsed');
+    expect(screen.getByTestId('page-file-pane').style.width).toBe('36px');
+
+    fireEvent.click(screen.getByTestId('page-file-pane-expand-button'));
+
+    await screen.findByTestId('page-file-pane-content');
+    expect(screen.getByTestId('page-file-pane').style.width).toBe('340px');
+    expect(window.localStorage.getItem(FILE_PANE_COLLAPSED_STORAGE_KEY)).toBe('0');
+  });
+
+  it('拖分隔条：往左拖窗格变宽，往右拖变窄', async () => {
+    mockSessions([makeRecord({ session_id: 'sess-a' })]);
+
+    renderPanel();
+
+    const handle = await screen.findByTestId('page-terminal-split-handle');
+    fireEvent(handle, pointerEvent('pointerdown', 600, 1));
+    fireEvent(handle, pointerEvent('pointermove', 500, 1));
+    await waitFor(() => expect(screen.getByTestId('page-file-pane').style.width).toBe('440px'));
+
+    fireEvent(handle, pointerEvent('pointermove', 650, 1));
+    await waitFor(() => expect(screen.getByTestId('page-file-pane').style.width).toBe('290px'));
+  });
+
+  it('分隔条能用键盘调宽（每次 16px）', async () => {
+    mockSessions([makeRecord({ session_id: 'sess-a' })]);
+
+    renderPanel();
+
+    const handle = await screen.findByTestId('page-terminal-split-handle');
+    fireEvent.keyDown(handle, { key: 'ArrowLeft' });
+    await waitFor(() => expect(screen.getByTestId('page-file-pane').style.width).toBe('356px'));
+    fireEvent.keyDown(handle, { key: 'ArrowRight' });
+    await waitFor(() => expect(screen.getByTestId('page-file-pane').style.width).toBe('340px'));
+  });
+
+  it('分隔条 aria-valuemax 跟钳位函数的实际上限走（容器宽 900 ⇒ 上限 580）', async () => {
+    mockSessions([makeRecord({ session_id: 'sess-a' })]);
+
+    renderPanel();
+
+    const handle = await screen.findByTestId('page-terminal-split-handle');
+    const split = screen.getByTestId('page-terminal-split');
+    vi.spyOn(split, 'getBoundingClientRect').mockReturnValue({
+      width: 900,
+      height: 400,
+      top: 0,
+      left: 0,
+      right: 900,
+      bottom: 400,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
+
+    // 键盘调宽触发一次重渲染，aria-valuemax 按当时的容器宽重新求值：
+    // min(720, 900 − 320) = 580。
+    fireEvent.keyDown(handle, { key: 'ArrowLeft' });
+    await waitFor(() => expect(handle.getAttribute('aria-valuemax')).toBe('580'));
+    expect(handle.getAttribute('aria-valuenow')).toBe('356');
+  });
+
+  it('折叠态跨会话：关掉全部会话后再新建，窗格仍是折叠态', async () => {
+    window.localStorage.setItem(FILE_PANE_COLLAPSED_STORAGE_KEY, '1');
+    // 首轮没有会话；新建之后这一轮读到新会话。
+    mocks.listTerminalSessions.mockResolvedValueOnce([]);
+    mocks.listTerminalSessions.mockResolvedValue([makeRecord({ session_id: 'sess-new' })]);
+    mocks.createTerminalSession.mockResolvedValue({
+      session_id: 'sess-new',
+      sandbox: 'demo',
+      container_name: 'sandbox-demo',
+      cols: 80,
+      rows: 24,
+      state: 'running',
+      created_at: '2026-10-30T01:00:00+00:00',
+    });
+
+    renderPanel();
+
+    // 没有会话：窗格整体消失。
+    await screen.findByTestId('page-sandbox-detail-terminal-empty-title');
+    expect(screen.queryByTestId('page-file-pane')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-terminal-empty-create-button'));
+
+    // 新会话进来：窗格恢复，而且**仍是折叠态**（36px 纯图标竖条）。
+    const collapsed = await screen.findByTestId('page-file-pane-collapsed');
+    expect(collapsed.querySelectorAll('button')).toHaveLength(1);
+    expect(screen.getByTestId('page-file-pane').style.width).toBe('36px');
+  });
+
+  it('换会话：窗格按新会话重新定位，不沿用上一个会话的 pwd', async () => {
+    setSessionPwd('sess-a', '/from-a');
+    mockSessions([
+      makeRecord({ session_id: 'sess-a' }),
+      makeRecord({ session_id: 'sess-b' }),
+    ]);
+
+    const { sandboxName, rerender } = renderPanel(vi.fn(), {
+      activeSessionId: 'sess-a',
+      sandboxWorkdir: '/workdir',
+    });
+
+    // 会话 A：从它的 pwd 起读。
+    await waitFor(() => expect(mocks.listFiles).toHaveBeenCalledWith(sandboxName, '/from-a'));
+
+    // 切到会话 B（它还没上报 pwd）：定位走 fallback 链的 workdir，
+    // **不能**拿 A 的 pwd 顶上。
+    rerender({ activeSessionId: 'sess-b' });
+    await waitFor(() =>
+      expect(mocks.listFiles).toHaveBeenLastCalledWith(sandboxName, '/workdir'),
+    );
+    // 回跳按钮也立刻回到「未上报」态（tooltip 不残留 A 的路径）。
+    await waitFor(() =>
+      expect(screen.getByTestId('page-file-pane-jump-button').getAttribute('title')).toBe(
+        '当前会话未上报工作目录',
+      ),
+    );
+  });
+
+  it('换会话：A 里导航过的目录不带到 B（窗格落 B 的 fallback 起点）', async () => {
+    setSessionPwd('sess-a', '/from-a');
+    mockSessions([
+      makeRecord({ session_id: 'sess-a' }),
+      makeRecord({ session_id: 'sess-b' }),
+    ]);
+    mocks.listFiles.mockImplementation((_sandbox: string, directory: string) =>
+      Promise.resolve(
+        directory === '/from-a' ? [fileEntry({ name: 'a-sub', kind: 'dir' })] : [],
+      ),
+    );
+
+    const { sandboxName, rerender } = renderPanel(vi.fn(), {
+      activeSessionId: 'sess-a',
+      sandboxWorkdir: '/workdir',
+    });
+    await waitFor(() => expect(mocks.listFiles).toHaveBeenCalledWith(sandboxName, '/from-a'));
+
+    // 用户在会话 A 里导航到子目录。
+    await waitFor(() => expect(fileRow('a-sub')).toBeTruthy());
+    fireEvent.click(fileRow('a-sub')!);
+    await waitFor(() =>
+      expect(mocks.listFiles).toHaveBeenLastCalledWith(sandboxName, '/from-a/a-sub'),
+    );
+
+    // 切到会话 B（无 pwd）：必须按 B 的 fallback（workdir）重新起点，
+    // 绝不留在 A 里用户去的目录（userNavigatedRef 已复位）。
+    mocks.listFiles.mockClear();
+    rerender({ activeSessionId: 'sess-b' });
+    await waitFor(() =>
+      expect(mocks.listFiles).toHaveBeenLastCalledWith(sandboxName, '/workdir'),
+    );
+    expect(
+      mocks.listFiles.mock.calls.some(([, directory]) => directory === '/from-a/a-sub'),
+    ).toBe(false);
+    expect(screen.queryByText('a-sub')).toBeNull();
+  });
+
+  it('换沙箱自动退出全屏（全屏是「当前沙箱终端」的局部状态）', async () => {
+    mockSessions([makeRecord({ session_id: 'sess-a' })]);
+
+    const { rerender } = renderPanel(vi.fn(), { sandboxName: 'demo-fullscreen' });
+
+    await screen.findByTestId('page-file-pane');
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-terminal-fullscreen-button'));
+    expect(screen.getByTestId('page-sandbox-detail-terminal-panel').className).toContain('fixed');
+
+    rerender({ sandboxName: 'demo-other' });
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('page-sandbox-detail-terminal-panel').className,
+      ).not.toContain('fixed'),
+    );
+  });
+
+  it('全屏：内容区（含文件窗格）被 fixed 覆盖，tabs 条仍在全屏层内', async () => {
+    mockSessions([makeRecord({ session_id: 'sess-a' })]);
+
+    renderPanel();
+
+    await screen.findByTestId('page-file-pane');
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-terminal-fullscreen-button'));
+
+    const panel = screen.getByTestId('page-sandbox-detail-terminal-panel');
+    expect(panel.className).toContain('fixed');
+    expect(panel.className).toContain('inset-0');
+    expect(panel.className).toContain('z-40');
+    // 全屏层里 tabs 条可见（可切 tab），文件窗格也在层内。
+    expect(screen.getByTestId('page-sandbox-detail-terminal-tabs')).toBeTruthy();
+    expect(screen.getByTestId('page-file-pane')).toBeTruthy();
   });
 });
