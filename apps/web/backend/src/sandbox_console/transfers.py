@@ -598,3 +598,71 @@ async def run_list(
     """列目录（**阻塞部分在传输专用线程池**）。"""
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(TRANSFER_IO_EXECUTOR, manager.list, sandbox, dir_path)
+
+
+# ---------------------------------------------------------------- 只读读取
+#: ``max_bytes`` 非法（不是正整数）时的固定提示（**请求参数错误**，不经 stderr）。
+#: 口径对齐上传的 ``Content-Length`` 非法提示：**直接 400，不静默降级成「没有上限」**
+#: ——静默降级会把调用方声明的上限悄悄丢掉，变成「不限量读」的反向行为。
+INVALID_MAX_BYTES_MESSAGE = "max_bytes 非法：必须是正整数"
+
+
+def parse_max_bytes(value: int | None) -> int | None:
+    """校验只读读取的防护性上限（``None`` = 不传 = **不截断**）。
+
+    - **不传** ⇒ ``None``（核心包按文件实际大小读到 EOF）。这是本端点的默认口径：
+      正文本来就是流式的（内存有界），而预览的「大文件」语义是**不截断**（二次
+      确认 + 进度条 + 全文渲染）；默认上限会把「全量预览」变成「悄悄只看一截」。
+    - **正整数** ⇒ 原样透传。
+    - **其余**（0 / 负数 / 非整数）⇒ **400**（固定中文文案）。**不静默降级**：
+      0 等于「什么都不给」，与缺省语义相反；静默当成缺省会让调用方以为自己拿到了
+      限量结果。
+
+    非整数（``abc``）由 FastAPI 的参数校验拦住（400「请求参数不合法」），这里只需
+    管「是整数但不合法」（§0 / 负数）——两边合起来覆盖全部非法形态。
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or value <= 0:
+        raise HTTPException(
+            status_code=STATUS_BAD_REQUEST, detail=INVALID_MAX_BYTES_MESSAGE
+        )
+    return value
+
+
+async def open_read(
+    manager: FileTransferManager,
+    sandbox: str,
+    path: str,
+    max_bytes: int | None = None,
+) -> Any:
+    """起一条只读读取字节流（**阻塞部分在传输专用线程池**）。
+
+    核心包的 ``read()`` **先做分层探测**（只放行普通文件——FIFO 会挂死 ``cat``），
+    再起 ``cat`` 字节泵、**读掉首块做 NUL 嗅探**；返回的流带着二进制标记、探测
+    到的总字节数与（``max_bytes`` 比文件小时的）截断声明。
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        TRANSFER_IO_EXECUTOR, manager.read, sandbox, path, max_bytes
+    )
+
+
+async def iter_read_chunks(
+    stream: Any,
+    chunk_size: int = TRANSFER_CHUNK,
+    limit: int | None = None,
+) -> AsyncIterator[bytes]:
+    """把只读读取的字节流逐块吐给 ``StreamingResponse``。
+
+    **复用下载流的搬运口径**（:func:`iter_download_chunks`）：逐块读、按声明长度
+    裁剪、读完核对失败原因、无论怎么结束都在 ``finally`` 里关泵（客户端提前断开
+    ⇒ 关泵回收 exec，不留挂死进程）。只读读取的区别全在核心包那一侧：
+    ``ReadStream.read`` 到达 ``max_bytes`` 上限就**自己关泵**并让
+    ``raise_for_status`` 不给失败结论（那是我们主动停的，不是容器内失败）。
+
+    ``limit`` = 响应头声明的 ``Content-Length``（= ``min(总字节数, max_bytes)``）：
+    仍是「声明值与裁剪上限取同一个值」那套口径，响应体**永不超过**声明长度。
+    """
+    async for chunk in iter_download_chunks(stream, chunk_size, limit):
+        yield chunk

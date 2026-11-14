@@ -43,7 +43,9 @@ from sandbox_platform.transfer import (
     MSG_DAEMON_UNREACHABLE,
     MSG_EXEC_FAILED,
     MSG_EXEC_TIMEOUT,
+    MSG_INVALID_MAX_BYTES,
     MSG_IS_DIRECTORY,
+    MSG_NOT_PREVIEWABLE,
     MSG_NOT_A_DIRECTORY,
     MSG_NOT_FOUND,
     MSG_NOT_REGULAR,
@@ -61,6 +63,7 @@ from sandbox_platform.transfer import (
     MSG_INVALID_SIZE,
     MSG_SIZE_MISMATCH,
     PROBE_SCRIPT,
+    READ_SNIFF_BYTES,
     REASON_DAEMON_UNREACHABLE,
     REASON_EXEC_FAILED,
     REASON_INVALID_SIZE,
@@ -77,6 +80,7 @@ from sandbox_platform.transfer import (
     REASON_WRITE_FAILED,
     TEMP_PREFIX,
     UPLOAD_SCRIPT,
+    ReadStream,
     classify_stderr,
     validate_container_path,
 )
@@ -1426,3 +1430,255 @@ def test_package_exports_the_transfer_entry_points() -> None:
         assert name in sandbox_platform.__all__
         assert hasattr(sandbox_platform, name)
 
+
+
+# ---------------------------------------------------------------- 只读读取（预览）
+def test_read_starts_a_cat_pump_and_sniffs_the_first_chunk(
+    manager: FileTransferManager, daemon: FakeDaemon
+) -> None:
+    """只读读取：前置探测放行普通文件后起 ``cat -- <path>``，首块在内层读掉并嗅探。"""
+    daemon.queue(0, b"file\t11\t1\n")
+    daemon.queue(0, b"hello world")
+    stream = manager.read("demo", "/workspace/a.txt")
+    assert isinstance(stream, ReadStream)
+    # 探测值就是「总字节数」（响应头用它）
+    assert stream.size == 11
+    # 首块已经在 read() 返回之前读掉：NUL 嗅探要先于响应头发生
+    assert stream.head == b"hello world"
+    assert stream.is_binary is False
+    assert stream.truncated is False
+    assert stream.max_bytes is None
+    # 同一套字节泵形态（与下载逐字一致，只是 forward_id 不同）
+    assert daemon.spawned[-1] == [
+        "docker",
+        "exec",
+        "-i",
+        CONTAINER,
+        "cat",
+        "--",
+        "/workspace/a.txt",
+    ]
+    # 首块**只交一次**，随后从字节泵继续读
+    assert stream.read() == b"hello world"
+    assert stream.read() == b""
+    stream.close()
+
+
+def test_read_flags_a_nul_byte_in_the_first_chunk(
+    manager: FileTransferManager, daemon: FakeDaemon
+) -> None:
+    """首块命中 NUL ⇒ 二进制标记（前端据此掐掉正文）。"""
+    daemon.queue(0, b"file\t4\t1\n")
+    daemon.queue(0, b"\x7fELF\x00")
+    stream = manager.read("demo", "/workspace/a.bin")
+    assert stream.is_binary is True
+    stream.close()
+
+
+def test_read_without_a_nul_byte_is_text(
+    manager: FileTransferManager, daemon: FakeDaemon
+) -> None:
+    """首块没有 NUL ⇒ 不是二进制（UTF-8 解码是前端的活，核心包只嗅 NUL）。"""
+    daemon.queue(0, b"file\t6\t1\n")
+    daemon.queue(0, "# 标题\n".encode())
+    stream = manager.read("demo", "/workspace/note.md")
+    assert stream.is_binary is False
+    stream.close()
+
+
+def test_read_of_an_empty_file_is_text_with_zero_bytes(
+    manager: FileTransferManager, daemon: FakeDaemon
+) -> None:
+    """空文件：首块即 EOF ⇒ 不是二进制、总字节数 0。"""
+    daemon.queue(0, b"file\t0\t1\n")
+    daemon.queue(0, b"")
+    stream = manager.read("demo", "/workspace/empty.txt")
+    assert stream.head == b""
+    assert stream.is_binary is False
+    assert stream.size == 0
+    assert stream.read() == b""
+    stream.close()
+
+
+def test_read_truncates_at_max_bytes(
+    manager: FileTransferManager, daemon: FakeDaemon
+) -> None:
+    """``max_bytes`` 是**防护性上限**：只给前 N 字节，且**超出部分不读**。"""
+    daemon.queue(0, b"file\t10\t1\n")
+    daemon.queue(0, b"0123456789")
+    stream = manager.read("demo", "/workspace/a.txt", max_bytes=4)
+    assert stream.max_bytes == 4
+    assert stream.truncated is True
+    # 首块也同样按上限收紧（嗅探窗口不超过上限）
+    assert len(stream.head) == 4
+    assert stream.read() == b"0123"
+    # 到上限即关泵：不再读，下一次读直接空
+    assert stream.read() == b""
+    assert stream.limit_closed is True
+    # **我们自己关的泵**，非零退出码不能报成失败
+    stream.raise_for_status()
+    stream.close()
+
+
+def test_read_marks_truncation_when_head_fills_the_limit_after_probe_growth(
+    manager: FileTransferManager, daemon: FakeDaemon
+) -> None:
+    """探测后文件增长：首块恰好喂满上限时，早退分支也必须识别出**真截断**。
+
+    场景：``max_bytes`` 比文件实际大小小，但探测值被「探测之后文件又长胖」的
+    竞态污染（``probe.size`` ≤ ``max_bytes``）。首块（= 上限长度）交付后，下一次
+    读走 ``remaining <= 0`` 的早退分支——这里若漏评估截断标志，就会「声明未
+    截断却真截断」。
+    """
+    daemon.queue(0, b"file\t2\t1\n")  # 探测值：2 字节（文件其实已经长到 10）
+    daemon.queue(0, b"0123456789")
+    stream = manager.read("demo", "/workspace/a.txt", max_bytes=4)
+    # 初始声明按（被污染的）探测值：2 ≤ 4 ⇒ 未截断
+    assert stream.truncated is False
+    # 首块恰好把上限喂满
+    assert stream.head == b"0123"
+    assert stream.read() == b"0123"
+    # 早退分支：上限已满 ⇒ 必须识别出真实截断
+    assert stream.read() == b""
+    assert stream.truncated is True
+    assert stream.limit_closed is True
+    stream.raise_for_status()
+    stream.close()
+
+
+def test_read_at_exactly_max_bytes_is_not_truncated(
+    manager: FileTransferManager, daemon: FakeDaemon
+) -> None:
+    """文件恰好等于上限 ⇒ **不算截断**（没有“超出的部分”）。"""
+    daemon.queue(0, b"file\t4\t1\n")
+    daemon.queue(0, b"abcd")
+    stream = manager.read("demo", "/workspace/a.txt", max_bytes=4)
+    assert stream.truncated is False
+    assert stream.read() == b"abcd"
+    assert stream.read() == b""
+    stream.close()
+
+
+def test_read_below_the_limit_is_not_truncated(
+    manager: FileTransferManager, daemon: FakeDaemon
+) -> None:
+    """上限比文件大 ⇒ 读全量、不声明截断（正常流程：前端按列表 size 请求）。"""
+    daemon.queue(0, b"file\t4\t1\n")
+    daemon.queue(0, b"abcd")
+    stream = manager.read("demo", "/workspace/a.txt", max_bytes=1024)
+    assert stream.truncated is False
+    assert stream.read() == b"abcd"
+    assert stream.read() == b""
+    stream.close()
+
+
+@pytest.mark.parametrize("bad", [0, -1, 1.5, "5", [4]])
+def test_read_rejects_an_invalid_max_bytes(
+    manager: FileTransferManager, daemon: FakeDaemon, bad: object
+) -> None:
+    """``max_bytes`` 非法（0 / 负数 / 非整数）⇒ 固定文案 + ``invalid_size``，不起 exec。"""
+    with pytest.raises(TransferError) as excinfo:
+        manager.read("demo", "/workspace/a.txt", max_bytes=bad)  # type: ignore[arg-type]
+    assert str(excinfo.value) == MSG_INVALID_MAX_BYTES
+    assert excinfo.value.reason == REASON_INVALID_SIZE
+    assert daemon.spawned == []
+
+
+def test_read_rejects_non_regular_targets(
+    manager: FileTransferManager, daemon: FakeDaemon
+) -> None:
+    """目录 / FIFO / 设备 / 套接字 / 悬空链接 / 不存在：一律拒，**不起 cat**。"""
+    cases = [
+        (b"dir\n", MSG_IS_DIRECTORY),
+        (b"fifo\n", MSG_NOT_PREVIEWABLE),
+        (b"chardev\n", MSG_NOT_PREVIEWABLE),
+        (b"blockdev\n", MSG_NOT_PREVIEWABLE),
+        (b"socket\n", MSG_NOT_PREVIEWABLE),
+        (b"special\n", MSG_NOT_PREVIEWABLE),
+        (b"symlink\n", MSG_NOT_PREVIEWABLE),
+        (b"missing\n", MSG_NOT_FOUND),
+    ]
+    for token, message in cases:
+        daemon.queue(0, token)
+        with pytest.raises(TransferError) as excinfo:
+            manager.read("demo", "/workspace/target")
+        assert str(excinfo.value).startswith(message)
+    # 只有探测 exec（每个用例一次），**没有**一条 cat
+    assert len(daemon.spawned) == len(cases)
+    assert all(argv[-1] != "cat" for argv in daemon.spawned)
+
+
+def test_read_rejects_special_files_with_not_regular_reason(
+    manager: FileTransferManager, daemon: FakeDaemon
+) -> None:
+    """特殊文件的分类码是 ``not_regular``（服务端据此映射 400）。"""
+    daemon.queue(0, b"fifo\n")
+    with pytest.raises(TransferError) as excinfo:
+        manager.read("demo", "/workspace/pipe")
+    assert excinfo.value.reason == REASON_NOT_REGULAR
+
+
+def test_read_reports_a_missing_file_with_not_found_reason(
+    manager: FileTransferManager, daemon: FakeDaemon
+) -> None:
+    """不存在 ⇒ ``not_found``（服务端映射 404）。"""
+    daemon.queue(0, b"missing\n")
+    with pytest.raises(TransferError) as excinfo:
+        manager.read("demo", "/workspace/nope.txt")
+    assert excinfo.value.reason == REASON_NOT_FOUND
+
+
+def test_read_rejects_an_invalid_path_without_side_effects(
+    manager: FileTransferManager, daemon: FakeDaemon
+) -> None:
+    """非法路径（空 / 相对 / NUL）⇒ 一条 exec 都不起。"""
+    for bad in ("", "relative.txt", "/a\x00b"):
+        with pytest.raises(TransferError):
+            manager.read("demo", bad)
+    assert daemon.spawned == []
+
+
+def test_read_reports_the_exec_failure_after_the_stream(
+    manager: FileTransferManager, daemon: FakeDaemon
+) -> None:
+    """``cat`` 失败（原因只在 stderr 里）：读完流后能分类抛出。"""
+    daemon.queue(0, b"file\t5\t1\n")
+    daemon.queue(1, b"", "cat: /workspace/a.txt: Permission denied")
+    stream = manager.read("demo", "/workspace/a.txt")
+    assert stream.read() == b""
+    with pytest.raises(TransferError) as excinfo:
+        stream.raise_for_status()
+    assert excinfo.value.reason == REASON_PARENT_NOT_WRITABLE
+    stream.close()
+
+
+def test_read_without_runtime_reports_a_fixed_message() -> None:
+    """未装配沙箱侧能力：固定中文文案 + 分类码（不抛 AttributeError）。"""
+    manager = FileTransferManager()
+    with pytest.raises(TransferError) as excinfo:
+        manager.read("demo", "/a")
+    assert str(excinfo.value) == MSG_NO_RUNTIME
+    assert excinfo.value.reason == REASON_NO_RUNTIME
+
+
+def test_read_stream_is_exported_from_the_package_root() -> None:
+    """``ReadStream`` 进包导出（服务端从包根 import，不模块内直取）。"""
+    assert "ReadStream" in sandbox_platform.__all__
+    assert sandbox_platform.ReadStream is ReadStream
+
+
+def test_read_sniffs_at_most_the_first_chunk(
+    manager: FileTransferManager, daemon: FakeDaemon
+) -> None:
+    """NUL 嗅探只扫**首块**（``READ_SNIFF_BYTES``）：首块之外的字节不再扫。"""
+    payload = b"x" * (READ_SNIFF_BYTES + 5)
+    daemon.queue(0, f"file\t{len(payload)}\t1\n".encode())
+    daemon.queue(0, payload)
+    stream = manager.read("demo", "/workspace/a.txt")
+    assert len(stream.head) == READ_SNIFF_BYTES
+    assert stream.is_binary is False
+    # 首块交出去之后，剩余字节照常从字节泵流出
+    assert stream.read() == payload[:READ_SNIFF_BYTES]
+    assert stream.read() == b"xxxxx"
+    assert stream.is_binary is False
+    stream.close()

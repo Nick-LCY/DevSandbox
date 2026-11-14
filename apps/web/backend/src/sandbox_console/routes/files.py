@@ -1,8 +1,8 @@
-"""运行期文件传输路由：上传 / 下载 / 目录列表（三个端点）。
+"""运行期文件传输路由：上传 / 下载 / 只读读取 / 目录列表（四个端点）。
 
-三条端点全挂在 ``/api/sandboxes/{name}/files/`` 下，能力本体在核心包
-（``sandbox_platform.transfer``：路径校验、上传、探测、下载字节泵、目录列表），
-本模块只做**编排与转译**：入参校验、调用核心包、把结果翻成 HTTP 响应。
+四条端点全挂在 ``/api/sandboxes/{name}/files/`` 下，能力本体在核心包
+（``sandbox_platform.transfer``：路径校验、上传、探测、下载字节泵、只读读取、
+目录列表），本模块只做**编排与转译**：入参校验、调用核心包、把结果翻成 HTTP 响应。
 
 **三条硬口径**（ADR 0018）：
 
@@ -15,6 +15,10 @@
    FIFO·设备·套接字·其它可区分）——特殊文件一律拒（FIFO 会挂死 ``cat``）。
 3. **鉴权自动生效**：端点挂在 ``/api`` 前缀下即被令牌中间件保护（不另写鉴权
    分支）；本轮**只用 GET / POST**，**CORS 白名单零改动**。
+
+**只读读取（预览）是第四条端点**：正文依旧是**流式字节**（与下载同一套字节泵），
+但**元信息走响应头**（二进制标记 / 总字节数 / 截断声明）——前端拿到响应头就能
+先判二进制**立刻掐掉正文**，再按「已接收字节 / 总字节数」驱动进度条。
 
 **大小不限**（反代与后端都无 body 上限、不会 413），但**单次请求的总时长受
 部署链反代的读超时约束**（详见 ``API.md`` 的对应章节）。
@@ -32,14 +36,30 @@ from sandbox_platform import FileTransferManager
 
 from ..deps import get_transfer_manager
 from ..schemas import FileListEntry, FileUploadResponse
-from ..transfers import iter_download_chunks, open_download, run_list, run_upload
+from ..transfers import (
+    iter_download_chunks,
+    iter_read_chunks,
+    open_download,
+    open_read,
+    parse_max_bytes,
+    run_list,
+    run_upload,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["运行期文件传输"])
 
-#: 下载响应的 Content-Type（**固定**：一律是原始字节流，不做内容嗅探）
+#: 下载 / 只读读取响应的 Content-Type（**固定**：一律是原始字节流，不做内容嗅探）
 DOWNLOAD_CONTENT_TYPE = "application/octet-stream"
+#: 只读读取响应的 Content-Type（与下载同值：正文永远是原始字节）
+READ_CONTENT_TYPE = DOWNLOAD_CONTENT_TYPE
+#: 只读读取的**二进制标记**响应头：``true`` / ``false``（首块 NUL 嗅探的结果）
+READ_BINARY_HEADER = "X-File-Binary"
+#: 只读读取的**总字节数**响应头（探测值；探测不到时**不出现**）
+READ_SIZE_HEADER = "X-File-Size"
+#: 只读读取的**截断声明**响应头：**只在真的截断时出现**（值为 ``true``）
+READ_TRUNCATED_HEADER = "X-File-Truncated"
 #: 下载文件名取不到时的兜底名（ASCII 回退也用它）
 DEFAULT_DOWNLOAD_NAME = "download"
 #: ASCII 回退文件名里保留的字符（其余换下划线）
@@ -117,6 +137,61 @@ async def download_sandbox_file(
     return StreamingResponse(
         iter_download_chunks(stream, limit=declared),
         media_type=DOWNLOAD_CONTENT_TYPE,
+        headers=headers,
+    )
+
+
+# ---------------------------------------------------------------- 只读读取
+@router.get(
+    "/sandboxes/{name}/files/read",
+    summary="只读读取沙箱容器内的文件（流式响应 + 元信息响应头）",
+)
+async def read_sandbox_file(
+    name: str,
+    path: str,
+    max_bytes: int | None = None,
+    manager: FileTransferManager = Depends(get_transfer_manager),
+) -> StreamingResponse:
+    """把沙箱容器内的文件**只读**回给调用方（文件窗格 / Obsidian 预览的共同通道）。
+
+    **正文是流式字节**（与下载同一套 ``cat`` 字节泵），**元信息全在响应头**：
+
+    - ``X-File-Binary``：``true`` / ``false``——**首块** NUL 嗅探的结果。前端拿到
+      ``true`` 就**立即掐掉正文**（不必把一整份二进制读进内存）；
+    - ``X-File-Size``：**探测到的总字节数**（前端按「已接收字节 / 它」算进度条）；
+    - ``X-File-Truncated``：``true``——**仅在真的截断时出现**（缺省即不截断）。
+      正常流程前端按文件列表条目的 ``size`` 请求全量，所以**正常路径永远看不到
+      这个头**；它只是「防护性上限真的生效了」的事实告知。
+
+    ``max_bytes``：**防护性上限**（正整数；缺省 = **不截断**，读到 EOF）。超限时
+    只回前 ``max_bytes`` 字节并给截断声明（超出部分**不读**，到限即关泵）。
+
+    **先分层探测再放行**：只允许**普通文件**——目录回 400、FIFO·设备·套接字等
+    特殊文件回 400（防挂起）、不存在回 404。
+
+    响应头 ``Content-Length`` = ``min(总字节数, max_bytes)``（声明值与裁剪上限取
+    同一个值，响应体永不超过声明长度，避 h11 的 ``LocalProtocolError``）。
+
+    **客户端断开 → 关泵回收 exec**（二进制早退走的也是这条路）。
+    """
+    limit = parse_max_bytes(max_bytes)
+    stream = await open_read(manager, name, path, limit)
+    headers: dict[str, str] = {
+        READ_BINARY_HEADER: "true" if stream.is_binary else "false",
+    }
+    if stream.size is not None:
+        headers[READ_SIZE_HEADER] = str(stream.size)
+    # 声明值：既有响应头，也是**裁剪上限**（两者取同一个值）。
+    declared = stream.size
+    if declared is not None and stream.max_bytes is not None:
+        declared = min(declared, stream.max_bytes)
+    if declared is not None:
+        headers["Content-Length"] = str(declared)
+    if stream.truncated:
+        headers[READ_TRUNCATED_HEADER] = "true"
+    return StreamingResponse(
+        iter_read_chunks(stream, limit=declared),
+        media_type=READ_CONTENT_TYPE,
         headers=headers,
     )
 

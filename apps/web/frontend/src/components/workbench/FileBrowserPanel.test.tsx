@@ -15,7 +15,14 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ApiError, type DownloadFileResult, type TransferProgress } from '../../api/client';
+import {
+  ApiError,
+  IncompleteReadError,
+  TextNotPreviewableError,
+  type DownloadFileResult,
+  type ReadFileResult,
+  type TransferProgress,
+} from '../../api/client';
 import type { FileListEntry } from '../../api/types';
 import { clearSessionPwd, setSessionPwd } from '../../lib/terminal-pwd';
 import { ToastProvider } from '../Toast';
@@ -25,6 +32,7 @@ const mocks = vi.hoisted(() => ({
   listFiles: vi.fn(),
   uploadFile: vi.fn(),
   downloadFile: vi.fn(),
+  readFile: vi.fn(),
 }));
 
 /**
@@ -55,6 +63,7 @@ vi.mock('../../api/client', async (importOriginal) => {
       listFiles: mocks.listFiles,
       uploadFile: mocks.uploadFile,
       downloadFile: mocks.downloadFile,
+      readFile: mocks.readFile,
     },
   };
 });
@@ -202,6 +211,14 @@ beforeEach(() => {
   mocks.listFiles.mockReset();
   mocks.uploadFile.mockReset();
   mocks.downloadFile.mockReset();
+  mocks.readFile.mockReset();
+  mocks.readFile.mockResolvedValue({
+    text: 'hello',
+    binary: false,
+    size: 5,
+    bytes: 5,
+    truncated: false,
+  } satisfies ReadFileResult);
   desktopMocks.pickDownloadPath.mockReset();
   desktopMocks.downloadToDisk.mockReset();
   desktopMocks.listenDownloadEvents.mockReset();
@@ -1387,5 +1404,488 @@ describe('折叠态', () => {
 
     fireEvent.click(await screen.findByTestId('page-file-pane-expand-button'));
     expect(onToggleCollapsed).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('预览（窗格内的第二视图）', () => {
+  function previewButtonOf(name: string): HTMLElement {
+    return within(rowOf(name)).getByTestId('page-file-browser-row-preview-button');
+  }
+
+  function stubClipboard(writeText: (text: string) => Promise<void>): void {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+  }
+
+  it('hover 文件行时行尾浮现「预览」眼睛钮：不带文字、带 aria-label、150ms 淡入', async () => {
+    mocks.listFiles.mockResolvedValue([
+      entry({ name: 'a.txt', kind: 'file' }),
+      entry({ name: 'sub', kind: 'dir', size: 0 }),
+    ]);
+    renderPanel();
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(2));
+
+    const button = previewButtonOf('a.txt');
+    // 不带文字（纯图标）
+    expect(button.textContent).toBe('');
+    expect(button.getAttribute('aria-label')).toBe('预览 a.txt');
+    expect(button.getAttribute('title')).toBe('预览');
+    const tokens = classTokens(button);
+    // 约 150ms 淡入：默认透明、整行 hover 时浮现
+    expect(tokens).toContain('opacity-0');
+    expect(tokens).toContain('transition-opacity');
+    expect(tokens).toContain('duration-150');
+    expect(tokens).toContain('group-hover:opacity-100');
+    // 行本身有 group（hover 的锚）
+    expect(classTokens(rowOf('a.txt'))).toContain('group');
+    // **行尾**：眼睛钮挂在「修改时间」那一格（hover 时时间文字淡出，不叠字）
+    expect(
+      within(button.parentElement as HTMLElement).getByTestId('page-file-browser-row-mtime'),
+    ).toBeTruthy();
+    // 目录行没有预览钮
+    expect(
+      within(rowOf('sub')).queryByTestId('page-file-browser-row-preview-button'),
+    ).toBeNull();
+  });
+
+  it('行单击仍是下载（既有通道零改动）；点眼睛才读取预览', async () => {
+    mocks.listFiles.mockResolvedValue([entry({ name: 'a.txt', size: 5 })]);
+    renderPanel();
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+
+    fireEvent.click(rowOf('a.txt'));
+    await waitFor(() => expect(mocks.downloadFile).toHaveBeenCalledTimes(1));
+    // 行单击**没有**触发预览读取
+    expect(mocks.readFile).not.toHaveBeenCalled();
+  });
+
+  it('点眼睛：按列表 size 请求读取、渲染等宽正文 + 行号、工具条齐全', async () => {
+    mocks.listFiles.mockResolvedValue([entry({ name: 'a.md', size: 9 })]);
+    mocks.readFile.mockResolvedValue({
+      text: '# 标题\n正文\n',
+      binary: false,
+      size: 9,
+      bytes: 9,
+      truncated: false,
+    } satisfies ReadFileResult);
+    renderPanel();
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+
+    fireEvent.click(previewButtonOf('a.md'));
+    await waitFor(() => expect(mocks.readFile).toHaveBeenCalledTimes(1));
+
+    // 请求参数：沙箱 / 绝对路径 / **max_bytes = 列表条目的 size**（请求全量）
+    expect(mocks.readFile.mock.calls[0][0]).toBe('demo-01');
+    expect(mocks.readFile.mock.calls[0][1]).toBe('/home/acc-demo/a.md');
+    expect(mocks.readFile.mock.calls[0][2]).toMatchObject({ maxBytes: 9 });
+
+    // 预览是窗格内的第二视图：列表让位（不是弹层 / 抽屉）
+    await waitFor(() => expect(screen.queryByTestId('page-file-browser-row')).toBeNull());
+    expect(screen.getByTestId('page-file-preview')).toBeTruthy();
+    // 工具条 = 返回 + 文件名 / 大小 + 复制
+    expect(screen.getByTestId('page-file-preview-back-button')).toBeTruthy();
+    expect(screen.getByTestId('page-file-preview-title').textContent).toBe('a.md');
+    expect(screen.getByTestId('page-file-preview-size').textContent).toBe('9 B');
+    expect(screen.getByTestId('page-file-preview-copy-button')).toBeTruthy();
+    // 预览态里列表态的操作（回跳 / 上传）不出现，折叠钮还在
+    expect(screen.queryByTestId('page-file-browser-upload-button')).toBeNull();
+    expect(screen.queryByTestId('page-file-pane-jump-button')).toBeNull();
+    expect(screen.getByTestId('page-file-pane-collapse-button')).toBeTruthy();
+
+    // 正文：等宽 + 行号槽 + **纯文本**（`.md` 不渲染 markdown）
+    const body = screen.getByTestId('page-file-preview-body');
+    expect(classTokens(body)).toContain('font-mono');
+    const lines = screen.getAllByTestId('page-file-preview-line').map((node) => node.textContent);
+    expect(lines).toEqual(['# 标题', '正文']);
+    expect(
+      screen.getAllByTestId('page-file-preview-line-number').map((node) => node.textContent),
+    ).toEqual(['1', '2']);
+    expect(document.querySelector('h1')).toBeNull();
+    expect(document.querySelector('strong')).toBeNull();
+    expect(document.querySelector('pre code')).toBeNull();
+  });
+
+  it('Esc 与返回钮等价：退回列表；列表态没有返回钮', async () => {
+    mocks.listFiles.mockResolvedValue([entry({ name: 'a.txt' })]);
+    renderPanel();
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+
+    fireEvent.click(previewButtonOf('a.txt'));
+    await waitFor(() => expect(screen.getByTestId('page-file-preview')).toBeTruthy());
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByTestId('page-file-preview')).toBeNull());
+    expect(screen.getByTestId('page-file-browser-row')).toBeTruthy();
+    // 列表态（返回栈为空）：返回钮不出现
+    expect(screen.queryByTestId('page-file-preview-back-button')).toBeNull();
+
+    // 再进一次，用返回钮退出
+    fireEvent.click(previewButtonOf('a.txt'));
+    await waitFor(() => expect(screen.getByTestId('page-file-preview')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('page-file-preview-back-button'));
+    await waitFor(() => expect(screen.queryByTestId('page-file-preview')).toBeNull());
+  });
+
+  it('复制：成功零 toast、图标变对勾约 1 秒后复原', async () => {
+    mocks.listFiles.mockResolvedValue([entry({ name: 'a.txt' })]);
+    mocks.readFile.mockResolvedValue({
+      text: 'line-1\nline-2',
+      binary: false,
+      size: 13,
+      bytes: 13,
+      truncated: false,
+    } satisfies ReadFileResult);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    stubClipboard(writeText);
+    renderPanel();
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+
+    fireEvent.click(previewButtonOf('a.txt'));
+    await waitFor(() =>
+      expect(screen.getAllByTestId('page-file-preview-line')).toHaveLength(2),
+    );
+
+    // 换假计时器只为钉「约 1 秒复原」（不用 waitFor，纯推进时间）
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('page-file-preview-copy-button'));
+      });
+      expect(writeText).toHaveBeenCalledWith('line-1\nline-2');
+      // 对勾态：可访问名跟着变
+      expect(
+        screen.getByTestId('page-file-preview-copy-button').getAttribute('aria-label'),
+      ).toBe('已复制');
+      // **成功零 toast**
+      expect(toastsOf('success')).toHaveLength(0);
+      expect(toastsOf('error')).toHaveLength(0);
+
+      act(() => {
+        vi.advanceTimersByTime(999);
+      });
+      expect(
+        screen.getByTestId('page-file-preview-copy-button').getAttribute('aria-label'),
+      ).toBe('已复制');
+      act(() => {
+        vi.advanceTimersByTime(1);
+      });
+      expect(
+        screen.getByTestId('page-file-preview-copy-button').getAttribute('aria-label'),
+      ).toBe('复制');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('复制失败：失败才 toast（来源 file-browser），图标不变对勾', async () => {
+    mocks.listFiles.mockResolvedValue([entry({ name: 'a.txt' })]);
+    stubClipboard(() => Promise.reject(new Error('denied')));
+    renderPanel();
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+
+    fireEvent.click(previewButtonOf('a.txt'));
+    await waitFor(() => expect(screen.getByTestId('page-file-preview')).toBeTruthy());
+
+    fireEvent.click(screen.getByTestId('page-file-preview-copy-button'));
+    await waitFor(() =>
+      expect(
+        toastsOf('error').some(
+          (node) =>
+            node.textContent?.includes('复制到系统剪贴板失败') &&
+            node.getAttribute('data-toast-source') === 'file-browser',
+        ),
+      ).toBe(true),
+    );
+    expect(
+      screen.getByTestId('page-file-preview-copy-button').getAttribute('aria-label'),
+    ).toBe('复制');
+  });
+
+  it('大文件（> 2 MB）：先二次确认（取消不发请求），确认后进度条加载并渲染全文', async () => {
+    const big = 3 * 1024 * 1024;
+    mocks.listFiles.mockResolvedValue([entry({ name: 'big.txt', size: big })]);
+    let reportProgress: ((loaded: number) => void) | undefined;
+    let resolveRead: ((value: ReadFileResult) => void) | undefined;
+    mocks.readFile.mockImplementation(
+      (
+        _sandbox: string,
+        _path: string,
+        options?: { onProgress?: (loaded: number) => void },
+      ) => {
+        reportProgress = options?.onProgress;
+        return new Promise<ReadFileResult>((resolve) => {
+          resolveRead = resolve;
+        });
+      },
+    );
+    renderPanel();
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+
+    // 点预览 ⇒ 先弹二次确认，**一个请求都没发**
+    fireEvent.click(previewButtonOf('big.txt'));
+    await waitFor(() => expect(screen.getByTestId('page-file-preview-confirm-dialog')).toBeTruthy());
+    expect(mocks.readFile).not.toHaveBeenCalled();
+    expect(screen.getByTestId('page-file-preview-confirm-dialog').textContent).toContain('超过 2 MB');
+
+    // 取消：不发请求、留在列表态
+    fireEvent.click(screen.getByTestId('page-file-preview-confirm-cancel-button'));
+    await waitFor(() =>
+      expect(screen.queryByTestId('page-file-preview-confirm-dialog')).toBeNull(),
+    );
+    expect(mocks.readFile).not.toHaveBeenCalled();
+    expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1);
+
+    // 再点 + 确认：这时才发起读取
+    fireEvent.click(previewButtonOf('big.txt'));
+    await waitFor(() => expect(screen.getByTestId('page-file-preview-confirm-dialog')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('page-file-preview-confirm-button'));
+    await waitFor(() => expect(mocks.readFile).toHaveBeenCalledTimes(1));
+    expect(mocks.readFile.mock.calls[0][2]).toMatchObject({ maxBytes: big });
+
+    // 进度条：已接收字节 / size（transferPercent）
+    act(() => reportProgress?.(Math.floor(big / 2)));
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('page-file-preview-progress').getAttribute('aria-valuenow'),
+      ).toBe('50'),
+    );
+
+    // 加载完：全文渲染、进度条消失、**没有任何「文件过大」提示条**
+    act(() =>
+      resolveRead?.({
+        text: 'line-1\nline-2\nline-3',
+        binary: false,
+        size: big,
+        bytes: big,
+        truncated: false,
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getAllByTestId('page-file-preview-line').map((node) => node.textContent),
+      ).toEqual(['line-1', 'line-2', 'line-3']),
+    );
+    expect(screen.queryByTestId('page-file-preview-progress')).toBeNull();
+    const text = document.body.textContent ?? '';
+    expect(text).not.toContain('文件过大');
+    expect(text).not.toContain('仅展示前');
+  });
+
+  it('二次确认框开着按 Esc：只关框，不发起读取、也不退出列表态', async () => {
+    const big = 3 * 1024 * 1024;
+    mocks.listFiles.mockResolvedValue([entry({ name: 'big.txt', size: big })]);
+    renderPanel();
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+
+    fireEvent.click(previewButtonOf('big.txt'));
+    await waitFor(() => expect(screen.getByTestId('page-file-preview-confirm-dialog')).toBeTruthy());
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() =>
+      expect(screen.queryByTestId('page-file-preview-confirm-dialog')).toBeNull(),
+    );
+    // 只关框：留在列表态（预览栈未被动过），一个请求都没发
+    expect(screen.queryByTestId('page-file-preview')).toBeNull();
+    expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1);
+    expect(mocks.readFile).not.toHaveBeenCalled();
+  });
+
+  it('小文件：直接加载、不出现进度条', async () => {
+    mocks.listFiles.mockResolvedValue([entry({ name: 'a.txt', size: 300 })]);
+    mocks.readFile.mockImplementation(() => new Promise<ReadFileResult>(() => {}));
+    renderPanel();
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+
+    fireEvent.click(previewButtonOf('a.txt'));
+    await waitFor(() => expect(mocks.readFile).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId('page-file-preview-loading')).toBeTruthy();
+    expect(screen.queryByTestId('page-file-preview-progress')).toBeNull();
+    // 没有二次确认
+    expect(screen.queryByTestId('page-file-preview-confirm-dialog')).toBeNull();
+  });
+
+  it('二进制：空态构图（居中线框图标 + 文案 + 描边「下载文件」钮，点击走既有下载）', async () => {
+    mocks.listFiles.mockResolvedValue([entry({ name: 'a.bin', size: 16 })]);
+    mocks.readFile.mockResolvedValue({
+      text: '',
+      binary: true,
+      size: 16,
+      bytes: 0,
+      truncated: false,
+    } satisfies ReadFileResult);
+    renderPanel();
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+
+    fireEvent.click(previewButtonOf('a.bin'));
+    const empty = await waitFor(() => screen.getByTestId('page-file-preview-unsupported'));
+    expect(empty.textContent).toContain('二进制文件无法预览');
+    expect(screen.queryByTestId('page-file-preview-body')).toBeNull();
+    // 按钮是描边样式（border + background 类，不是主色实心）
+    const downloadButton = screen.getByTestId('page-file-preview-download-button');
+    expect(downloadButton.textContent).toBe('下载文件');
+    const tokens = classTokens(downloadButton);
+    expect(tokens).toContain('border');
+    expect(tokens.some((token) => token.startsWith('bg-primary'))).toBe(false);
+
+    // 点击走**既有下载通道**（同一路径）
+    fireEvent.click(downloadButton);
+    await waitFor(() => expect(mocks.downloadFile).toHaveBeenCalledTimes(1));
+    expect(mocks.downloadFile.mock.calls[0][1]).toBe('/home/acc-demo/a.bin');
+  });
+
+  it('非 UTF-8（解码失败）：同样按「无法展示」处理（空态 + 下载钮）', async () => {
+    mocks.listFiles.mockResolvedValue([entry({ name: 'a.txt', size: 16 })]);
+    mocks.readFile.mockRejectedValue(new TextNotPreviewableError());
+    renderPanel();
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+
+    fireEvent.click(previewButtonOf('a.txt'));
+    const empty = await waitFor(() => screen.getByTestId('page-file-preview-unsupported'));
+    expect(empty.textContent).toContain('文件不是 UTF-8 文本，无法预览');
+    expect(screen.getByTestId('page-file-preview-download-button')).toBeTruthy();
+    // 视图状态不是操作结果：不弹 toast
+    expect(toastsOf('error')).toHaveLength(0);
+  });
+
+  it('读取失败：就地错误态（role=alert），不弹 toast', async () => {
+    mocks.listFiles.mockResolvedValue([entry({ name: 'a.txt' })]);
+    mocks.readFile.mockRejectedValue(new ApiError('文件不存在：/home/acc-demo/a.txt', 404));
+    renderPanel();
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+
+    fireEvent.click(previewButtonOf('a.txt'));
+    const alert = await waitFor(() => screen.getByTestId('page-file-preview-error'));
+    expect(alert.getAttribute('role')).toBe('alert');
+    expect(alert.textContent).toContain('文件不存在');
+    expect(toastsOf('error')).toHaveLength(0);
+  });
+
+  it('流提前结束（IncompleteReadError）：就地错误态，不当合法空文件渲染', async () => {
+    mocks.listFiles.mockResolvedValue([entry({ name: 'a.txt', size: 10 })]);
+    mocks.readFile.mockRejectedValue(new IncompleteReadError());
+    renderPanel();
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+
+    fireEvent.click(previewButtonOf('a.txt'));
+    const alert = await waitFor(() => screen.getByTestId('page-file-preview-error'));
+    expect(alert.getAttribute('role')).toBe('alert');
+    expect(alert.textContent).toContain('读取中断，文件不完整');
+    // **不是**空文件：不渲染正文 / 行号，也不弹 toast
+    expect(screen.queryByTestId('page-file-preview-body')).toBeNull();
+    expect(screen.queryAllByTestId('page-file-preview-line')).toHaveLength(0);
+    expect(toastsOf('error')).toHaveLength(0);
+  });
+
+  it('复制钮只在 ready 态可用：loading / error / unsupported 均 disabled', async () => {
+    mocks.listFiles.mockResolvedValue([entry({ name: 'a.txt', size: 5 })]);
+    let rejectRead: ((reason?: unknown) => void) | undefined;
+    mocks.readFile.mockImplementation(
+      () =>
+        new Promise<ReadFileResult>((_resolve, reject) => {
+          rejectRead = reject;
+        }),
+    );
+    renderPanel();
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+
+    const copyButton = (): HTMLButtonElement =>
+      screen.getByTestId('page-file-preview-copy-button') as HTMLButtonElement;
+
+    // loading：不可复制（不然会复制空串还亮对勾）
+    fireEvent.click(previewButtonOf('a.txt'));
+    await waitFor(() => expect(screen.getByTestId('page-file-preview-loading')).toBeTruthy());
+    expect(copyButton().disabled).toBe(true);
+
+    // error：仍不可复制
+    await act(async () => {
+      rejectRead?.(new ApiError('读取失败', 500));
+    });
+    await waitFor(() => expect(screen.getByTestId('page-file-preview-error')).toBeTruthy());
+    expect(copyButton().disabled).toBe(true);
+
+    // unsupported（二进制）：仍不可复制
+    mocks.readFile.mockResolvedValue({
+      text: '',
+      binary: true,
+      size: 5,
+      bytes: 0,
+      truncated: false,
+    } satisfies ReadFileResult);
+    fireEvent.click(screen.getByTestId('page-file-preview-back-button'));
+    await waitFor(() => expect(screen.queryByTestId('page-file-preview')).toBeNull());
+    fireEvent.click(previewButtonOf('a.txt'));
+    await waitFor(() =>
+      expect(screen.getByTestId('page-file-preview-unsupported')).toBeTruthy(),
+    );
+    expect(copyButton().disabled).toBe(true);
+
+    // ready：才可复制
+    mocks.readFile.mockResolvedValue({
+      text: 'hello',
+      binary: false,
+      size: 5,
+      bytes: 5,
+      truncated: false,
+    } satisfies ReadFileResult);
+    fireEvent.click(screen.getByTestId('page-file-preview-back-button'));
+    await waitFor(() => expect(screen.queryByTestId('page-file-preview')).toBeNull());
+    fireEvent.click(previewButtonOf('a.txt'));
+    await waitFor(() =>
+      expect(screen.getAllByTestId('page-file-preview-line')).toHaveLength(1),
+    );
+    expect(copyButton().disabled).toBe(false);
+  });
+
+  it('面包屑联动：预览态下当前层级恢复可点，点它回该目录列表并强制重读', async () => {
+    mocks.listFiles.mockResolvedValue([entry({ name: 'a.txt' })]);
+    renderPanel();
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+
+    // 列表态：当前层级是纯文本（不可点）
+    const before = screen
+      .getAllByTestId('page-file-browser-crumb')
+      .find((node) => node.getAttribute('data-depth') === '1');
+    expect(before?.tagName).toBe('SPAN');
+
+    fireEvent.click(previewButtonOf('a.txt'));
+    await waitFor(() => expect(screen.getByTestId('page-file-preview')).toBeTruthy());
+
+    // 预览态：当前层级恢复为可点按钮
+    const current = screen
+      .getAllByTestId('page-file-browser-crumb')
+      .find((node) => node.getAttribute('data-depth') === '1');
+    expect(current?.tagName).toBe('BUTTON');
+    expect(current?.getAttribute('aria-current')).toBe('page');
+
+    const callsBefore = mocks.listFiles.mock.calls.length;
+    fireEvent.click(current as HTMLElement);
+    await waitFor(() => expect(screen.queryByTestId('page-file-preview')).toBeNull());
+    // **同路径强制重读**：点当前目录也重新拉数据
+    await waitFor(() =>
+      expect(mocks.listFiles.mock.calls.length).toBeGreaterThan(callsBefore),
+    );
+    expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1);
+  });
+
+  it('卸载窗格：在途预览读取被 abort（换会话 / 换沙箱靠重挂载收口）', async () => {
+    mocks.listFiles.mockResolvedValue([entry({ name: 'a.txt' })]);
+    let signal: AbortSignal | undefined;
+    mocks.readFile.mockImplementation(
+      (_sandbox: string, _path: string, options?: { signal?: AbortSignal }) => {
+        signal = options?.signal;
+        return new Promise<ReadFileResult>(() => {});
+      },
+    );
+    const view = renderPanel();
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+
+    fireEvent.click(previewButtonOf('a.txt'));
+    await waitFor(() => expect(mocks.readFile).toHaveBeenCalledTimes(1));
+    expect(signal?.aborted).toBe(false);
+
+    view.unmount();
+    expect(signal?.aborted).toBe(true);
   });
 });

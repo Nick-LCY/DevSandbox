@@ -46,6 +46,7 @@ from sandbox_console.transfers import (
     RequestBodyBridge,
     _translate_upload_failure,
     iter_download_chunks,
+    iter_read_chunks,
 )
 
 from conftest import auth_headers
@@ -114,6 +115,14 @@ class FakeTransferManager:
         self.thread_names: list[str] = []
         # 容器内**目标文件的内容**（模拟容器侧）：字节数核对不过时**保持原样**
         self.targets: dict[str, bytes] = {}
+        # -- 只读读取（预览）
+        self.read_calls: list[tuple[str, str, int | None]] = []
+        self.read_error: Exception | None = None
+        self.read_payload = b""
+        self.read_size: int | None = None
+        self.read_binary = False
+        self.read_truncated = False
+        self.read_streams: list[FakeReadStream] = []
 
     # -- 上传
     def upload(
@@ -169,6 +178,11 @@ class FakeTransferManager:
         stream = FakeDownloadStream(path, self.download_size, self.download_payload)
         self.streams.append(stream)
         return stream
+
+    # -- 只读读取（预览）
+    def read(self, sandbox: str, path: str, max_bytes: int | None = None) -> FakeReadStream:
+        """起一条只读读取流（核心包：先分层探测、只放行普通文件、读首块嗅探）。"""
+        return _fake_read(self, sandbox, path, max_bytes)
 
     # -- 目录列表
     def list(self, sandbox: str, dir_path: str) -> list[ListEntry]:
@@ -820,3 +834,263 @@ def test_body_bridge_finishes_normally() -> None:
     bridge.finish()
     assert list(bridge) == [b"chunk-0"]
     assert bridge.consumed_bytes == len(b"chunk-0")
+
+
+# ---------------------------------------------------------------- 只读读取（预览）
+READ_URL = "/api/sandboxes/demo/files/read"
+
+
+class FakeReadStream:
+    """假只读读取流：语义对齐核心包的 ``ReadStream``。
+
+    - 带上首块嗅探出来的 ``is_binary`` / ``size`` / ``truncated`` / ``max_bytes``；
+    - ``read`` 逐块返回字节（首块先交），读完返空字节；
+    - ``raise_for_status`` / ``close`` 记账（读完核对、客户端断开回收字节泵）。
+    """
+
+    def __init__(
+        self,
+        path: str,
+        payload: bytes,
+        *,
+        size: int | None = None,
+        is_binary: bool = False,
+        max_bytes: int | None = None,
+        truncated: bool = False,
+    ) -> None:
+        self.path = path
+        self.size = len(payload) if size is None else size
+        self.is_binary = is_binary
+        self.max_bytes = max_bytes
+        self.truncated = truncated
+        self._payload = payload[:max_bytes] if max_bytes is not None else payload
+        self._offset = 0
+        self.closed = False
+        self.status_checked = False
+        self.close_threads: list[str] = []
+
+    def read(self, size: int = 65536) -> bytes:
+        """读一块字节；读完返空字节（EOF）。"""
+        if self.closed:
+            return b""
+        chunk = self._payload[self._offset : self._offset + size]
+        self._offset += len(chunk)
+        return chunk
+
+    def raise_for_status(self) -> None:
+        """核对失败原因（核心包：读完要核对）。"""
+        self.status_checked = True
+
+    def close(self) -> None:
+        """回收字节泵（幂等）。"""
+        self.close_threads.append(threading.current_thread().name)
+        self.closed = True
+
+
+def _fake_read(manager: "FakeTransferManager", sandbox: str, path: str, max_bytes=None):
+    """服务端测试用的 ``manager.read`` 实现（读参数 + 返回脚本化好的流）。"""
+    manager.read_calls.append((sandbox, path, max_bytes))
+    if manager.read_error is not None:
+        raise manager.read_error
+    size = (
+        manager.read_size
+        if manager.read_size is not None
+        else len(manager.read_payload)
+    )
+    # **截断声明**：上限比文件小 ⇒ 真的截断了（与核心包同一口径）
+    truncated = manager.read_truncated or (
+        max_bytes is not None and size is not None and size > max_bytes
+    )
+    stream = FakeReadStream(
+        path,
+        manager.read_payload,
+        size=size,
+        is_binary=manager.read_binary,
+        max_bytes=max_bytes,
+        truncated=truncated,
+    )
+    manager.read_streams.append(stream)
+    return stream
+
+
+def test_read_requires_a_token(manager: FakeTransferManager, platform_home: Path) -> None:
+    """无令牌 / 错令牌：只读读取端点一律 401（靠 ``/api`` 中间件，不另写鉴权分支）。"""
+    app = create_app()
+    app.dependency_overrides[get_transfer_manager] = lambda: manager
+    with TestClient(app) as http_client:
+        assert (
+            http_client.get(f"{READ_URL}?path=/workspace/a.txt").status_code == 401
+        )
+        wrong = http_client.get(
+            f"{READ_URL}?path=/workspace/a.txt",
+            headers={"Authorization": "Bearer wrong-token"},
+        )
+        assert wrong.status_code == 401
+    # 两次都没走到编排层（鉴权在中间件层就拦住了）
+    assert manager.read_calls == []
+
+
+def test_read_returns_streamed_text_with_metadata_headers(
+    client: TestClient, manager: FakeTransferManager
+) -> None:
+    """正文是流式字节；响应头给出二进制标记 + 总字节数；未截断**不给截断头**。"""
+    text = "# 标题\n正文\n".encode()
+    manager.read_payload = text
+    response = client.get(f"{READ_URL}?path=/workspace/note.md")
+    assert response.status_code == 200
+    assert response.content == text
+    assert response.headers["content-type"] == "application/octet-stream"
+    assert response.headers["content-length"] == str(len(text))
+    assert response.headers["x-file-binary"] == "false"
+    assert response.headers["x-file-size"] == str(len(text))
+    # 正常流程（不截断）：**没有**截断声明
+    assert "x-file-truncated" not in response.headers
+
+
+def test_read_flags_a_binary_file(
+    client: TestClient, manager: FakeTransferManager
+) -> None:
+    """首块 NUL 命中 ⇒ ``X-File-Binary: true``（前端据此早退）。"""
+    manager.read_payload = b"\x7fELF\x00\x01"
+    manager.read_binary = True
+    response = client.get(f"{READ_URL}?path=/workspace/a.bin")
+    assert response.status_code == 200
+    assert response.headers["x-file-binary"] == "true"
+
+
+def test_read_truncates_at_max_bytes_and_declares_it(
+    client: TestClient, manager: FakeTransferManager
+) -> None:
+    """``max_bytes`` 是防护性上限：只回前 N 字节 + 截断声明（``Content-Length`` 同步）。"""
+    manager.read_payload = b"0123456789"
+    response = client.get(f"{READ_URL}?path=/workspace/a.txt&max_bytes=4")
+    assert response.status_code == 200
+    # 上限透传到核心包（核心包负责「超出部分不读」）
+    assert manager.read_calls[-1][2] == 4
+    assert response.content == b"0123"
+    assert response.headers["x-file-truncated"] == "true"
+    assert response.headers["x-file-size"] == "10"
+    assert response.headers["content-length"] == "4"
+
+
+def test_read_without_max_bytes_reads_everything(
+    client: TestClient, manager: FakeTransferManager
+) -> None:
+    """**缺省不截断**（读到 EOF）：核心包拿到 ``max_bytes=None``。"""
+    manager.read_payload = b"0123456789"
+    response = client.get(f"{READ_URL}?path=/workspace/a.txt")
+    assert response.status_code == 200
+    assert manager.read_calls[-1][2] is None
+    assert response.content == b"0123456789"
+
+
+@pytest.mark.parametrize("bad", ["0", "-1", "-100"])
+def test_read_with_an_invalid_max_bytes_returns_400(
+    client: TestClient, manager: FakeTransferManager, bad: str
+) -> None:
+    """``max_bytes`` 非正整数 ⇒ **400 + 固定中文文案**（不静默降级成「不截断」）。"""
+    response = client.get(f"{READ_URL}?path=/workspace/a.txt&max_bytes={bad}")
+    assert response.status_code == 400
+    assert response.json() == {"detail": "max_bytes 非法：必须是正整数"}
+    # 参数非法：一条读取都没起
+    assert manager.read_calls == []
+
+
+def test_read_with_a_non_numeric_max_bytes_returns_400(
+    client: TestClient, manager: FakeTransferManager
+) -> None:
+    """``max_bytes=abc`` ⇒ 400（FastAPI 参数校验，统一中文文案形状）。"""
+    response = client.get(f"{READ_URL}?path=/workspace/a.txt&max_bytes=abc")
+    assert response.status_code == 400
+    assert "detail" in response.json()
+    assert manager.read_calls == []
+
+
+def test_read_closes_the_byte_pump_after_the_body(
+    client: TestClient, manager: FakeTransferManager
+) -> None:
+    """读完要**关泵回收 exec**，并核对失败原因（在传输专用线程池里关）。"""
+    manager.read_payload = b"data"
+    response = client.get(f"{READ_URL}?path=/workspace/a.txt")
+    assert response.status_code == 200
+    assert manager.read_streams
+    stream = manager.read_streams[0]
+    assert stream.closed is True
+    assert stream.status_checked is True
+    assert stream.close_threads
+    assert all(name.startswith("sandbox-transfer-io") for name in stream.close_threads)
+
+
+def test_read_of_missing_file_returns_404(
+    client: TestClient, manager: FakeTransferManager
+) -> None:
+    """文件不存在：404 + 后端 ``detail`` 原文。"""
+    manager.read_error = TransferError("文件不存在：/workspace/a.txt", reason=REASON_NOT_FOUND)
+    response = client.get(f"{READ_URL}?path=/workspace/a.txt")
+    assert response.status_code == 404
+    assert "文件不存在" in response.json()["detail"]
+
+
+def test_read_of_a_special_file_returns_400(
+    client: TestClient, manager: FakeTransferManager
+) -> None:
+    """特殊文件（FIFO·设备·套接字）：400（防挂起，不放行）。"""
+    manager.read_error = TransferError(
+        "目标不是普通文件，无法预览：/workspace/fifo", reason=REASON_NOT_REGULAR
+    )
+    response = client.get(f"{READ_URL}?path=/workspace/fifo")
+    assert response.status_code == 400
+    assert "无法预览" in response.json()["detail"]
+
+
+def test_read_with_a_stopped_sandbox_returns_409(
+    client: TestClient, manager: FakeTransferManager
+) -> None:
+    """沙箱已停止：409（与上传 / 下载同一套分类映射）。"""
+    manager.read_error = TransferError(
+        "沙箱已停止，无法传输文件", reason=REASON_SANDBOX_STOPPED
+    )
+    response = client.get(f"{READ_URL}?path=/workspace/a.txt")
+    assert response.status_code == 409
+
+
+def test_read_with_a_relative_path_returns_400(
+    client: TestClient, manager: FakeTransferManager
+) -> None:
+    """路径校验沿用既有口径：非绝对路径 ⇒ 400 + 固定文案。"""
+    manager.read_error = TransferError(
+        "容器内路径必须是绝对路径：a.txt", reason=REASON_INVALID_PATH
+    )
+    response = client.get(f"{READ_URL}?path=a.txt")
+    assert response.status_code == 400
+    assert "绝对路径" in response.json()["detail"]
+
+
+def test_read_generator_closes_the_stream_on_a_binary_early_exit() -> None:
+    """**二进制早退**（前端拿到响应头就断开）⇒ ``finally`` 里关泵仍被调用。"""
+    stream = FakeReadStream("/workspace/a.bin", b"\x00\x01\x02", is_binary=True)
+
+    async def _drive() -> None:
+        generator = iter_read_chunks(stream)
+        # 二进制早退：拿到首块就掐断（不等 EOF）
+        assert await anext(generator) == b"\x00\x01\x02"
+        await generator.aclose()
+
+    asyncio.run(_drive())
+    assert stream.closed is True
+
+
+def test_read_streams_incrementally_in_the_thread_pool() -> None:
+    """逐块读（**不整份缓冲**），读操作走传输专用线程池。"""
+    stream = FakeReadStream("/workspace/a.txt", b"x" * (65536 * 2 + 1))
+
+    async def _drive() -> bytes:
+        chunks: list[bytes] = []
+        async for chunk in iter_read_chunks(stream):
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    payload = asyncio.run(_drive())
+    assert len(payload) == 65536 * 2 + 1
+    # 关泵在传输专用线程池里（不在事件循环线程上同步做）
+    assert all(name.startswith("sandbox-transfer-io") for name in stream.close_threads)

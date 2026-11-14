@@ -390,3 +390,153 @@ describe('文件传输接口', () => {
     });
   });
 });
+
+describe('只读读取（预览）接口', () => {
+  it('请求带 path 与 max_bytes：进度回调给已接收字节，返回文本与元信息', async () => {
+    fetchMock.mockResolvedValue(
+      new Response('中文内容', {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': '12',
+          'X-File-Binary': 'false',
+          'X-File-Size': '12',
+        },
+      }),
+    );
+    const progress: number[] = [];
+
+    const result = await api.readFile('demo-01', '/home/acc-demo/笔记.md', {
+      maxBytes: 12,
+      onProgress: (loaded) => progress.push(loaded),
+    });
+
+    expect(result).toEqual({
+      text: '中文内容',
+      binary: false,
+      size: 12,
+      bytes: 12,
+      truncated: false,
+    });
+    expect(progress.at(-1)).toBe(12);
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(
+      `${DEFAULT_BACKEND_BASE_URL}/api/sandboxes/demo-01/files/read?path=${encodeURIComponent(
+        '/home/acc-demo/笔记.md',
+      )}&max_bytes=12`,
+    );
+    expect((init.headers as Headers).get('Authorization')).toBe('Bearer sbx_test');
+  });
+
+  it('不传 maxBytes：查询参数里不出现 max_bytes（服务端缺省 = 不截断）', async () => {
+    fetchMock.mockResolvedValue(new Response('abc', { status: 200 }));
+
+    await api.readFile('demo-01', '/x.txt');
+
+    const url = fetchMock.mock.calls[0][0] as string;
+    expect(url).not.toContain('max_bytes');
+  });
+
+  it('二进制早退：拿到响应头就掐掉正文（不读 reader），text 为空', async () => {
+    const read = vi.fn();
+    const cancel = vi.fn(async () => {});
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({
+        'X-File-Binary': 'true',
+        'X-File-Size': '81920',
+      }),
+      body: { getReader: () => ({ read, cancel }), cancel },
+    } as unknown as Response);
+
+    const result = await api.readFile('demo-01', '/home/acc-demo/a.bin');
+
+    expect(result).toEqual({
+      text: '',
+      binary: true,
+      size: 81920,
+      bytes: 0,
+      truncated: false,
+    });
+    // 正文**一个字节都没读**，连接被取消
+    expect(read).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('流提前结束（收到字节数 < X-File-Size）：抛 IncompleteReadError，不当空文件', async () => {
+    fetchMock.mockResolvedValue(
+      new Response('ab', {
+        status: 200,
+        headers: {
+          'Content-Length': '2',
+          'X-File-Binary': 'false',
+          'X-File-Size': '10',
+        },
+      }),
+    );
+
+    await expect(api.readFile('demo-01', '/a.txt')).rejects.toMatchObject({
+      name: 'IncompleteReadError',
+      message: '读取中断，文件不完整',
+    });
+  });
+
+  it('主动截断（truncated=true）不算读取中断：如实返回已收到的字节', async () => {
+    fetchMock.mockResolvedValue(
+      new Response('0123', {
+        status: 200,
+        headers: {
+          'Content-Length': '4',
+          'X-File-Binary': 'false',
+          'X-File-Size': '10',
+          'X-File-Truncated': 'true',
+        },
+      }),
+    );
+
+    const result = await api.readFile('demo-01', '/a.txt', { maxBytes: 4 });
+
+    expect(result.truncated).toBe(true);
+    expect(result.text).toBe('0123');
+    expect(result.size).toBe(10);
+  });
+
+  it('非 UTF-8：抛 TextNotPreviewableError（不当成乱码文本展示）', async () => {
+    fetchMock.mockResolvedValue(
+      new Response(new Uint8Array([0xff, 0xfe, 0x00, 0x41]), {
+        status: 200,
+        headers: { 'X-File-Binary': 'false' },
+      }),
+    );
+
+    await expect(api.readFile('demo-01', '/a.txt')).rejects.toMatchObject({
+      name: 'TextNotPreviewableError',
+    });
+  });
+
+  it('令牌缺失：一个请求都不发', async () => {
+    setConnectionConfig({ backendBaseUrl: DEFAULT_BACKEND_BASE_URL, token: '' });
+
+    await expect(api.readFile('demo-01', '/a.txt')).rejects.toBeInstanceOf(
+      ConnectionNotConfiguredError,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('读取失败：取后端 detail 原文与状态码', async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ detail: '目标不是普通文件，无法预览：/a' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    await expect(api.readFile('demo-01', '/a')).rejects.toMatchObject({
+      name: 'ApiError',
+      message: '目标不是普通文件，无法预览：/a',
+      status: 400,
+    });
+  });
+});

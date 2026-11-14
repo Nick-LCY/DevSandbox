@@ -1,7 +1,20 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Crosshair, Folder, Loader2, PanelRightClose, PanelRightOpen, Upload, X } from 'lucide-react';
+import {
+  ArrowLeft,
+  Check,
+  Copy,
+  Crosshair,
+  Eye,
+  FileWarning,
+  Folder,
+  Loader2,
+  PanelRightClose,
+  PanelRightOpen,
+  Upload,
+  X,
+} from 'lucide-react';
 
-import { api } from '../../api/client';
+import { api, TextNotPreviewableError } from '../../api/client';
 import type { FileListEntry } from '../../api/types';
 import { cn } from '../../lib/cn';
 import {
@@ -12,6 +25,13 @@ import {
   pickDownloadPath,
 } from '../../lib/desktop-file';
 import { fileIconUrl } from '../../lib/file-icon-assets';
+import {
+  currentPreview,
+  isLargePreviewFile,
+  previewStackReducer,
+  splitPreviewLines,
+  type PreviewTarget,
+} from '../../lib/file-preview';
 import {
   childContainerPath,
   formatFileMtime,
@@ -79,6 +99,39 @@ interface DownloadItem {
 }
 
 let uploadSeq = 0;
+
+/** 复制成功的对勾显示时长（毫秒）：图标变对勾约 1 秒后复原。 */
+const COPY_FEEDBACK_MS = 1000;
+
+/** 二进制文件的固定文案（PRD PV-05）。 */
+const BINARY_PREVIEW_MESSAGE = '二进制文件无法预览';
+
+/** 预览（窗格内第二视图）的状态。 */
+type PreviewStatus = 'loading' | 'ready' | 'unsupported' | 'error';
+
+interface PreviewView {
+  status: PreviewStatus;
+  /** 正文文本（`ready` 时有效）。 */
+  text: string;
+  /** 已接收字节数（进度条分子）。 */
+  loaded: number;
+  /** 总字节数（进度条分母；列表条目的 `size` 或响应头 `X-File-Size`）。 */
+  total: number | null;
+  /** `unsupported` / `error` 的文案。 */
+  message: string | null;
+  /** 是否走大文件流程（> 2 MB ⇒ 加载时显示进度条）。 */
+  large: boolean;
+}
+
+/** 预览视图的初始态（列表态不渲染它）。 */
+const EMPTY_PREVIEW_VIEW: PreviewView = {
+  status: 'loading',
+  text: '',
+  loaded: 0,
+  total: null,
+  message: null,
+  large: false,
+};
 
 function nextUploadId(): string {
   uploadSeq += 1;
@@ -194,6 +247,208 @@ const CRUMB_BUTTON_CLASS =
  */
 const CRUMB_CURRENT_TEXT_CLASS = 'max-w-48 truncate text-foreground';
 
+interface FilePreviewViewProps {
+  /** 当前预览目标（栈顶）。 */
+  target: PreviewTarget;
+  /** 返回栈是否非空；**栈空（列表态）时隐藏返回钮**。 */
+  canGoBack: boolean;
+  /** 预览载荷状态。 */
+  view: PreviewView;
+  /** 复制成功的对勾是否在显示（约 1 秒后复原）。 */
+  copied: boolean;
+  onBack: () => void;
+  onCopy: () => void;
+  onDownload: () => void;
+}
+
+/**
+ * 预览视图（**窗格内的第二视图**，不是弹层、不是抽屉）。
+ *
+ * 构图（PRD PV-02 / PV-03 / PV-04 / PV-05）：
+ *
+ * - 工具条 = **返回** + 文件名 / 大小 + **复制**；返回钮在栈空时**不渲染**；
+ * - 正文 = **等宽字体 + 行号槽**，**全文渲染**（不做虚拟化：用户已拍板大文件
+ *   全量加载进内存）；
+ * - **`.md` 一律纯文本**（这里压根没有任何 markdown 渲染能力）；
+ * - **大文件（> 2 MB）**：加载时给**进度条**（已接收字节 / 总大小）；小文件只有
+ *   一行「正在读取…」，**不出现进度条**；
+ * - **二进制 / 非 UTF-8**：空态构图（居中线框图标 + 文案 + 描边「下载文件」钮）。
+ * - **不存在任何「文件过大，仅展示前 N KB」提示条**（PRD 明令删除）。
+ */
+function FilePreviewView({
+  target,
+  canGoBack,
+  view,
+  copied,
+  onBack,
+  onCopy,
+  onDownload,
+}: FilePreviewViewProps) {
+  const lines = view.status === 'ready' ? splitPreviewLines(view.text) : [];
+  const percent = transferPercent(view.loaded, view.total);
+  const toolButton =
+    'grid size-8 flex-none place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none';
+
+  return (
+    <div
+      data-testid="page-file-preview"
+      className="flex min-h-0 flex-1 flex-col gap-2"
+    >
+      {/* 工具条：返回 + 文件名 / 大小 + 复制 */}
+      <div className="flex flex-none items-center gap-1.5">
+        {canGoBack && (
+          <button
+            type="button"
+            onClick={onBack}
+            title="返回"
+            aria-label="返回"
+            data-testid="page-file-preview-back-button"
+            className={toolButton}
+          >
+            <ArrowLeft className="size-4" aria-hidden="true" />
+          </button>
+        )}
+        <span
+          data-testid="page-file-preview-title"
+          title={target.name}
+          className="min-w-0 flex-1 truncate text-[13px] font-medium"
+        >
+          {target.name}
+        </span>
+        <span
+          data-testid="page-file-preview-size"
+          className="flex-none font-mono text-[11.5px] tabular-nums text-muted-foreground"
+        >
+          {formatFileSize(target.size)}
+        </span>
+        <button
+          type="button"
+          onClick={onCopy}
+          disabled={view.status !== 'ready'}
+          title={copied ? '已复制' : '复制'}
+          aria-label={copied ? '已复制' : '复制'}
+          data-testid="page-file-preview-copy-button"
+          className={cn(
+            toolButton,
+            'disabled:pointer-events-none disabled:opacity-50',
+          )}
+        >
+          {copied ? (
+            <Check className="size-4" aria-hidden="true" />
+          ) : (
+            <Copy className="size-4" aria-hidden="true" />
+          )}
+        </button>
+      </div>
+
+      {view.status === 'loading' &&
+        (view.large ? (
+          /* 大文件：进度条（已接收字节 / 总大小），加载完渲染全文 */
+          <div
+            data-testid="page-file-preview-loading"
+            className="flex flex-none flex-col gap-1.5 rounded-lg border border-border bg-muted/40 px-3 py-2"
+          >
+            <div className="flex items-center justify-between gap-2 text-[12px] text-muted-foreground">
+              <span className="inline-flex items-center gap-1.5">
+                <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                正在读取…
+              </span>
+              {percent !== null && (
+                <span className="font-mono tabular-nums">{percent}%</span>
+              )}
+            </div>
+            <div
+              role="progressbar"
+              aria-label={`读取 ${target.name}`}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={percent ?? undefined}
+              data-testid="page-file-preview-progress"
+              className="h-1 overflow-hidden rounded-full bg-muted"
+            >
+              <div
+                className="h-full rounded-full bg-primary transition-[width]"
+                style={{ width: `${percent ?? 0}%` }}
+              />
+            </div>
+          </div>
+        ) : (
+          /* 小文件：直接加载，**不出现进度条** */
+          <div
+            data-testid="page-file-preview-loading"
+            className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-[12.5px] text-muted-foreground"
+          >
+            <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+            正在读取…
+          </div>
+        ))}
+
+      {view.status === 'error' && (
+        <div
+          role="alert"
+          data-testid="page-file-preview-error"
+          className="rounded-lg border border-border bg-card px-3 py-4 text-[12.5px] text-destructive"
+        >
+          {view.message}
+        </div>
+      )}
+
+      {view.status === 'unsupported' && (
+        /* 二进制 / 非 UTF-8：空态构图（居中线框图标 + 文案 + 描边「下载文件」） */
+        <div
+          data-testid="page-file-preview-unsupported"
+          className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 rounded-lg border border-border bg-card px-3 text-center"
+        >
+          <FileWarning className="size-8 text-muted-foreground" aria-hidden="true" />
+          <p className="text-[13px] text-muted-foreground">{view.message}</p>
+          <button
+            type="button"
+            onClick={onDownload}
+            data-testid="page-file-preview-download-button"
+            className="inline-flex h-8 items-center justify-center rounded-lg border border-border bg-background px-3 text-[13px] text-foreground transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+          >
+            下载文件
+          </button>
+        </div>
+      )}
+
+      {view.status === 'ready' &&
+        (lines.length === 0 ? (
+          <div
+            data-testid="page-file-preview-body"
+            className="min-h-0 flex-1 overflow-auto rounded-lg border border-border bg-card px-3 py-2 font-mono text-[12px] text-muted-foreground"
+          >
+            空文件
+          </div>
+        ) : (
+          /* 全文渲染 + 行号槽（等宽字体；不做虚拟化） */
+          <div
+            data-testid="page-file-preview-body"
+            className="min-h-0 flex-1 overflow-auto rounded-lg border border-border bg-card py-1 font-mono text-[12px] leading-5"
+          >
+            {lines.map((line, index) => (
+              <div key={index} className="flex">
+                <span
+                  aria-hidden="true"
+                  data-testid="page-file-preview-line-number"
+                  className="w-10 shrink-0 select-none border-r border-border pr-2 text-right text-[11px] tabular-nums text-faint"
+                >
+                  {index + 1}
+                </span>
+                <span
+                  data-testid="page-file-preview-line"
+                  className="whitespace-pre px-2 pr-3"
+                >
+                  {line}
+                </span>
+              </div>
+            ))}
+          </div>
+        ))}
+    </div>
+  );
+}
+
 /**
  * 运行期文件浏览面板（**终端旁的窗格**，不再是抽屉）。
  *
@@ -235,6 +490,14 @@ export function FileBrowserPanel({
   const [downloads, setDownloads] = useState<Map<string, DownloadItem>>(() => new Map());
   const [overwriteName, setOverwriteName] = useState<string | null>(null);
   const [preparingUpload, setPreparingUpload] = useState(false);
+  /** 预览返回栈（**空栈 = 列表态**）。 */
+  const [previewStack, setPreviewStack] = useState<PreviewTarget[]>([]);
+  /** 预览载荷（加载中 / 正文 / 二进制 / 失败）。 */
+  const [previewView, setPreviewView] = useState<PreviewView>(EMPTY_PREVIEW_VIEW);
+  /** 大文件二次确认的目标（`null` = 没有弹框）。 */
+  const [previewConfirm, setPreviewConfirm] = useState<PreviewTarget | null>(null);
+  /** 复制成功的对勾是否在显示（约 1 秒后复原）。 */
+  const [copied, setCopied] = useState(false);
   /**
    * 当前会话上报的工作目录（pwd）。
    *
@@ -272,6 +535,10 @@ export function FileBrowserPanel({
   const desktopPendingRef = useRef<Set<string>>(new Set());
   const overwriteResolverRef = useRef<((ok: boolean) => void) | null>(null);
   const overwriteItemIdRef = useRef<string | null>(null);
+  /** 在途的预览读取（换目录 / 换会话 / 卸载 / 换沙箱时 abort）。 */
+  const previewControllerRef = useRef<AbortController | null>(null);
+  /** 复制对勾的复原定时器。 */
+  const copyTimerRef = useRef<number | null>(null);
   /** 组件是否还活着（卸载 / 换沙箱后不再提示、不再发请求）。 */
   const aliveRef = useRef(true);
   /** 换沙箱 / 卸载的代次：旧队列 / 旧确认框的后续逻辑据此退出。 */
@@ -445,6 +712,13 @@ export function FileBrowserPanel({
       controller.abort();
     }
     downloadControllersRef.current.clear();
+    // **预览收口**：在途的只读读取与复制定时器一并收掉。
+    previewControllerRef.current?.abort();
+    previewControllerRef.current = null;
+    if (copyTimerRef.current !== null) {
+      window.clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = null;
+    }
     // 桌面形态在途下载：退掉进度订阅 + 让 Rust 侧停流并删临时文件。
     for (const item of desktopDownloadsRef.current.values()) {
       item.unsubscribe();
@@ -477,6 +751,11 @@ export function FileBrowserPanel({
     setDownloads(new Map());
     setOverwriteName(null);
     setPreparingUpload(false);
+    // 预览栈与载荷也要归零（旧沙箱的文件不能留在新沙箱的视图里）
+    setPreviewStack([]);
+    setPreviewView(EMPTY_PREVIEW_VIEW);
+    setPreviewConfirm(null);
+    setCopied(false);
   }, [sandbox, abortTransfers]);
 
   // 卸载同样收口（AbortController 与 reader 都不留）。
@@ -1050,11 +1329,14 @@ export function FileBrowserPanel({
   );
 
   const startDownload = useCallback(
-    async (entry: FileListEntry): Promise<void> => {
+    async (entry: FileListEntry, targetPathOverride?: string): Promise<void> => {
       if (downloadControllersRef.current.has(entry.name)) {
         return;
       }
-      const targetPath = childContainerPath(pathRef.current, entry.name);
+      // `targetPathOverride` 只给「预览空态里的下载钮」用（它手上的路径是**快照**）：
+      // 列表行的下载路径**零改动**（仍是「当前目录 + 条目名」）。
+      const targetPath =
+        targetPathOverride ?? childContainerPath(pathRef.current, entry.name);
       if (targetPath === null) {
         return;
       }
@@ -1144,6 +1426,270 @@ export function FileBrowserPanel({
     [enterDirectory, startDownload],
   );
 
+  /* ------------------------------------------------------------ 预览 */
+
+  /** 栈顶预览目标（`null` = 列表态）。 */
+  const activePreview = currentPreview(previewStack);
+  /** 是否处于预览态（窗格内的第二视图）。 */
+  const inPreview = activePreview !== null;
+
+  /** 退出预览态（不发送任何请求；在途读取被 abort）。 */
+  const clearPreview = useCallback((): void => {
+    previewControllerRef.current?.abort();
+    previewControllerRef.current = null;
+    setPreviewStack((stack) => previewStackReducer(stack, { type: 'clear' }));
+    setPreviewView(EMPTY_PREVIEW_VIEW);
+    setCopied(false);
+  }, []);
+
+  /**
+   * 发起一次预览读取（**只有确认 / 小文件才走到这里**）。
+   *
+   * 请求参数（PRD API-02）：`max_bytes` 传**列表条目的 `size`** ⇒ 正常流程请求
+   * **全量**，因此前端正常路径**永远看不到截断声明**。
+   */
+  const startPreview = useCallback(
+    async (target: PreviewTarget): Promise<void> => {
+      previewControllerRef.current?.abort();
+      const controller = new AbortController();
+      previewControllerRef.current = controller;
+      const generation = generationRef.current;
+      const large = isLargePreviewFile(target.size);
+      const total = target.size > 0 ? target.size : null;
+      setPreviewStack((stack) => previewStackReducer(stack, { type: 'push', target }));
+      setCopied(false);
+      setPreviewView({
+        status: 'loading',
+        text: '',
+        loaded: 0,
+        total,
+        message: null,
+        large,
+      });
+      const alive = (): boolean =>
+        aliveRef.current &&
+        generation === generationRef.current &&
+        !controller.signal.aborted;
+      try {
+        const result = await api.readFile(sandbox, target.path, {
+          // 按列表 size 请求全量（0 字节文件不传上限）
+          maxBytes: target.size > 0 ? target.size : null,
+          signal: controller.signal,
+          onProgress: (loaded) => {
+            if (!alive()) {
+              return;
+            }
+            setPreviewView((current) =>
+              current.status === 'loading' ? { ...current, loaded } : current,
+            );
+          },
+        });
+        if (!alive()) {
+          return;
+        }
+        if (result.binary) {
+          setPreviewView({
+            status: 'unsupported',
+            text: '',
+            loaded: result.bytes,
+            total: result.size ?? total,
+            message: BINARY_PREVIEW_MESSAGE,
+            large,
+          });
+          return;
+        }
+        setPreviewView({
+          status: 'ready',
+          text: result.text,
+          loaded: result.bytes,
+          total: result.size ?? total,
+          message: null,
+          large,
+        });
+      } catch (exc) {
+        if (!alive() || isAbortError(exc)) {
+          return;
+        }
+        if (exc instanceof TextNotPreviewableError) {
+          // 非 UTF-8：与二进制同一套空态（PRD PV-05）
+          setPreviewView({
+            status: 'unsupported',
+            text: '',
+            loaded: 0,
+            total,
+            message: exc.message,
+            large,
+          });
+          return;
+        }
+        // 读取失败是**视图状态**（就地错误态），不弹 toast
+        // （与「目录读取失败」同一口径）。
+        setPreviewView({
+          status: 'error',
+          text: '',
+          loaded: 0,
+          total,
+          message: errorMessage(exc),
+          large,
+        });
+      } finally {
+        if (previewControllerRef.current === controller) {
+          previewControllerRef.current = null;
+        }
+      }
+    },
+    [sandbox],
+  );
+
+  /**
+   * 点「预览」眼睛钮：**大文件先弹二次确认**（确认才发请求，取消一个请求都不发）。
+   *
+   * 目录行没有预览（目录不可预览）；条目名为空 / 含 `/` 时也静默不动作。
+   */
+  const requestPreview = useCallback(
+    (entry: FileListEntry): void => {
+      if (entry.kind !== 'file') {
+        return;
+      }
+      const targetPath = childContainerPath(pathRef.current, entry.name);
+      if (targetPath === null) {
+        return;
+      }
+      const target: PreviewTarget = {
+        path: targetPath,
+        name: entry.name,
+        size: entry.size,
+      };
+      if (isLargePreviewFile(entry.size)) {
+        setPreviewConfirm(target);
+        return;
+      }
+      void startPreview(target);
+    },
+    [startPreview],
+  );
+
+  /** 二次确认：**确认才发起读取**。 */
+  const confirmLargePreview = useCallback((): void => {
+    const target = previewConfirm;
+    setPreviewConfirm(null);
+    if (target !== null) {
+      void startPreview(target);
+    }
+  }, [previewConfirm, startPreview]);
+
+  /** 二次确认：**取消不发请求**（留在列表态）。 */
+  const cancelLargePreview = useCallback((): void => {
+    setPreviewConfirm(null);
+  }, []);
+
+  /** 返回（工具条返回钮与 `Esc` 等价）：退一层预览栈，栈空即回列表。 */
+  const backFromPreview = useCallback((): void => {
+    previewControllerRef.current?.abort();
+    previewControllerRef.current = null;
+    setPreviewStack((stack) => previewStackReducer(stack, { type: 'pop' }));
+    setPreviewView(EMPTY_PREVIEW_VIEW);
+    setCopied(false);
+  }, []);
+
+  /**
+   * `Esc` 与返回钮等价（**只在预览态监听**；二次确认弹框开着时交给弹框自己）。
+   */
+  useEffect(() => {
+    if (!inPreview) {
+      return undefined;
+    }
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape' || previewConfirm !== null) {
+        return;
+      }
+      backFromPreview();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [inPreview, previewConfirm, backFromPreview]);
+
+  /**
+   * 复制预览正文：**成功零 toast**（图标变对勾约 1 秒后复原），**失败才 toast**
+   * （与终端剪贴板同一套口径，来源标识用 `file-browser`）。
+   */
+  const copyPreviewText = useCallback((): void => {
+    // 非 ready（loading / error / unsupported）不复制：否则会往剪贴板写空串，
+    // 还亮对勾 1 秒。按钮本身已 disabled，这里做第二道防线。
+    if (previewView.status !== 'ready') {
+      return;
+    }
+    const text = previewView.text;
+    const reportFailure = (): void => {
+      if (aliveRef.current) {
+        show('error', '复制到系统剪贴板失败', { source: 'file-browser' });
+      }
+    };
+    try {
+      const clipboard = navigator.clipboard;
+      if (!clipboard || typeof clipboard.writeText !== 'function') {
+        reportFailure();
+        return;
+      }
+      void clipboard
+        .writeText(text)
+        .then(() => {
+          if (!aliveRef.current) {
+            return;
+          }
+          setCopied(true);
+          if (copyTimerRef.current !== null) {
+            window.clearTimeout(copyTimerRef.current);
+          }
+          copyTimerRef.current = window.setTimeout(() => {
+            copyTimerRef.current = null;
+            setCopied(false);
+          }, COPY_FEEDBACK_MS);
+        })
+        .catch(reportFailure);
+    } catch {
+      reportFailure();
+    }
+  }, [previewView.status, previewView.text, show]);
+
+  /** 空态里的「下载文件」：走**既有下载通道**（路径用预览目标的快照）。 */
+  const downloadPreviewedFile = useCallback((): void => {
+    if (activePreview === null) {
+      return;
+    }
+    void startDownload(
+      {
+        name: activePreview.name,
+        kind: 'file',
+        size: activePreview.size,
+        mtime: 0,
+      },
+      activePreview.path,
+    );
+  }, [activePreview, startDownload]);
+
+  /**
+   * 点**根**面包屑：预览态下**先清预览栈**（PRD：点面包屑 = 返回该目录列表），
+   * 再按**同路径强制重读**的既有约定重读该目录。
+   */
+  const navigateToRootCrumb = useCallback((): void => {
+    if (previewStack.length > 0) {
+      clearPreview();
+    }
+    navigateToRoot();
+  }, [clearPreview, navigateToRoot, previewStack.length]);
+
+  /** 点某个**层级**面包屑：预览态下先清预览栈（同上）。 */
+  const navigateToDepthCrumb = useCallback(
+    (depth: number): void => {
+      if (previewStack.length > 0) {
+        clearPreview();
+      }
+      navigateToDepth(depth);
+    },
+    [clearPreview, navigateToDepth, previewStack.length],
+  );
+
   /* ------------------------------------------------------------ 回跳按钮 */
 
   /**
@@ -1218,7 +1764,7 @@ export function FileBrowserPanel({
                   `aria-current="page"` 仍留在 span 上（e2e 断言依赖它），
                   `data-testid` / `data-depth` 保持原值。
               */}
-              {segments.length === 0 ? (
+              {segments.length === 0 && !inPreview ? (
                 <span
                   title="根目录"
                   aria-label="根目录"
@@ -1232,9 +1778,10 @@ export function FileBrowserPanel({
               ) : (
                 <button
                   type="button"
-                  onClick={navigateToRoot}
+                  onClick={navigateToRootCrumb}
                   title="根目录"
                   aria-label="根目录"
+                  aria-current={segments.length === 0 ? 'page' : undefined}
                   data-testid="page-file-browser-crumb"
                   data-depth="-1"
                   className={cn(
@@ -1268,7 +1815,10 @@ export function FileBrowserPanel({
                 )}
                 {segments.slice(crumbTrim?.start ?? 0).map((segment, offset) => {
                   const index = (crumbTrim?.start ?? 0) + offset;
-                  const isCurrent = index === segments.length - 1;
+                  const isLast = index === segments.length - 1;
+                  // **预览态下面包屑全部可点**（PRD FP-08：进预览后面包屑恢复可点，
+                  // 点击 = 返回该目录列表并清预览栈）。
+                  const isPlain = isLast && !inPreview;
                   return (
                     <span
                       key={`${index}-${segment}`}
@@ -1277,7 +1827,7 @@ export function FileBrowserPanel({
                       <span aria-hidden="true" className="shrink-0 text-faint">
                         /
                       </span>
-                      {isCurrent ? (
+                      {isPlain ? (
                         /*
                           **当前层级**：纯文本（span）——不可点、无 hover /
                           下划线 / 底色 / 焦点环、不进 tab 序；
@@ -1293,10 +1843,15 @@ export function FileBrowserPanel({
                           {segment}
                         </span>
                       ) : (
-                        /* 父级：可点的链接样式钮（`text-primary` + hover 下划线）。 */
+                        /*
+                          父级：可点的链接样式钮（`text-primary` + hover 下划线）。
+                          **预览态下当前层级也走这一支**（点它 = 回该目录列表），
+                          此时补 `aria-current="page"`（e2e 断言依赖它）。
+                        */
                         <button
                           type="button"
-                          onClick={() => navigateToDepth(index)}
+                          onClick={() => navigateToDepthCrumb(index)}
+                          aria-current={isLast ? 'page' : undefined}
                           data-testid="page-file-browser-crumb"
                           data-depth={index}
                           className={cn(CRUMB_LINK_CLASS, CRUMB_BUTTON_CLASS)}
@@ -1362,6 +1917,13 @@ export function FileBrowserPanel({
             </nav>
 
             {/*
+              回跳 / 上传是**列表态**的操作：预览态（窗格内的第二视图）里不出现
+              （预览只读，避免「预览着一个文件、却往它所在目录上传」的歧义）。
+              折叠钮在两种视图下都在（窗格本身的开关）。
+            */}
+            {!inPreview && (
+              <>
+            {/*
               回跳（准星）：跳到**当前会话上报的工作目录**。
               - tooltip 固定格式「跳转到终端当前目录：<路径>」，随 pwd 订阅更新；
               - 会话没上报 pwd ⇒ 禁用 + tooltip「当前会话未上报工作目录」；
@@ -1407,6 +1969,8 @@ export function FileBrowserPanel({
                 void enqueueFiles(Array.from(event.target.files ?? []));
               }}
             />
+              </>
+            )}
 
             {/* 折叠：收成右缘 36px 纯图标竖条（竖条上只有底部的展开按钮）。 */}
             <button
@@ -1422,11 +1986,21 @@ export function FileBrowserPanel({
           </div>
 
           {/*
-            列表：**自己内部滚动**（`flex-1 min-h-0 overflow-y-auto`），
-            表头 sticky 住（行内进度行随列表滚动，不固定）。
-            横向用 `overflow-x-auto`（不是 `hidden`）：窄抽屉（1280px 视口下
-            256px 宽）里 `hidden` 会把「修改时间」列直接切掉，滚动兜底更稳。
+            **两种视图二选一**（不是弹层、不是抽屉）：
+            - 预览态 ⇒ 窗格内的第二视图（工具条 + 行号正文 / 空态）；
+            - 列表态 ⇒ 目录列表（下面的原有结构，行为零改动）。
           */}
+          {inPreview && activePreview !== null ? (
+            <FilePreviewView
+              target={activePreview}
+              canGoBack={previewStack.length > 0}
+              view={previewView}
+              copied={copied}
+              onBack={backFromPreview}
+              onCopy={copyPreviewText}
+              onDownload={downloadPreviewedFile}
+            />
+          ) : (
           <div
             data-testid="page-file-browser-list"
             className="min-h-0 flex-1 overflow-x-auto overflow-y-auto rounded-lg border border-border bg-card"
@@ -1566,7 +2140,8 @@ export function FileBrowserPanel({
                   data-kind={entry.kind}
                   className={cn(
                     rowGrid,
-                    'cursor-pointer border-b border-border px-3 py-2 transition-colors last:border-b-0 hover:bg-muted/60 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none',
+                    // `group`：hover 整行时行尾浮现「预览」眼睛钮（`group-hover`）
+                    'group cursor-pointer border-b border-border px-3 py-2 transition-colors last:border-b-0 hover:bg-muted/60 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none',
                   )}
                 >
                   <div className="flex min-w-0 items-center gap-2">
@@ -1619,16 +2194,44 @@ export function FileBrowserPanel({
                   >
                     {entry.kind === 'dir' ? '—' : formatFileSize(entry.size)}
                   </span>
-                  <span
-                    data-testid="page-file-browser-row-mtime"
-                    className="text-right font-mono text-[11.5px] tabular-nums text-muted-foreground"
-                  >
-                    {formatFileMtime(entry.mtime)}
-                  </span>
+                  <div className="relative flex items-center justify-end">
+                    <span
+                      data-testid="page-file-browser-row-mtime"
+                      className="text-right font-mono text-[11.5px] tabular-nums text-muted-foreground transition-opacity duration-150 group-hover:opacity-0"
+                    >
+                      {formatFileMtime(entry.mtime)}
+                    </span>
+                    {/*
+                      「预览」眼睛钮：**行尾浮现**、约 150ms 淡入、**不带文字**。
+                      - 行单击仍是**下载**（既有口径零改动）⇒ click 与 Enter / Space
+                        都要 `stopPropagation`（否则行上的键盘处理器会把「预览」当成下载）；
+                      - 目录行没有预览（目录不可预览）；
+                      - 它盖在修改时间那一格上，hover 时时间文字淡出，不叠字。
+                    */}
+                    {entry.kind !== 'dir' && (
+                      <button
+                        type="button"
+                        title="预览"
+                        aria-label={`预览 ${entry.name}`}
+                        data-testid="page-file-browser-row-preview-button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          requestPreview(entry);
+                        }}
+                        onKeyDown={(event) => {
+                          event.stopPropagation();
+                        }}
+                        className="absolute right-0 top-1/2 grid size-6 -translate-y-1/2 place-items-center rounded-md text-muted-foreground opacity-0 transition-opacity duration-150 group-hover:opacity-100 hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+                      >
+                        <Eye className="size-3.5" aria-hidden="true" />
+                      </button>
+                    )}
+                  </div>
                 </div>
               );
             })}
           </div>
+          )}
       </div>
 
       <ModalShell
@@ -1663,6 +2266,48 @@ export function FileBrowserPanel({
         }
       >
         <p className="text-[13px]">「{overwriteName}」已存在，确认覆盖？</p>
+      </ModalShell>
+
+      {/*
+        大文件（> 2 MB）二次确认：**确认才发起读取**，**取消不发任何请求**
+        （PRD PV-04）。提醒内容是「文件超过 2 MB、是否预览」，不含「仅展示前 N KB」
+        之类的截断说法（截断提示条已按 PRD 删除）。
+      */}
+      <ModalShell
+        open={previewConfirm !== null}
+        title="预览大文件"
+        testId="page-file-preview-confirm-dialog"
+        onOpenChange={(next) => {
+          if (!next) {
+            cancelLargePreview();
+          }
+        }}
+        maxWidthPx={400}
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={cancelLargePreview}
+              data-testid="page-file-preview-confirm-cancel-button"
+              className="inline-flex h-8 items-center justify-center rounded-lg border border-border bg-background px-3 text-[13px] text-foreground transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={confirmLargePreview}
+              data-testid="page-file-preview-confirm-button"
+              className="inline-flex h-8 items-center justify-center rounded-lg border border-transparent bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/80 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+            >
+              预览
+            </button>
+          </>
+        }
+      >
+        <p className="text-[13px]">
+          「{previewConfirm?.name ?? ''}」超过 2 MB（
+          {formatFileSize(previewConfirm?.size ?? 0)}），确认预览？
+        </p>
       </ModalShell>
     </>
   );

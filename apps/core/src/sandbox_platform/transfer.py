@@ -58,7 +58,7 @@ import subprocess
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable, Protocol
 
 from .daemon import UserDaemon
@@ -157,6 +157,17 @@ MSG_TEMP_NAME_EXISTS = "目标目录里的临时文件名已被占用，请重�
 MSG_SIZE_MISMATCH = "上传中断，目标文件未完整写入"
 #: 期望字节数非法的固定文案
 MSG_INVALID_SIZE = "期望字节数非法"
+#: 只读读取（预览）遇到非普通文件时的固定文案。
+#:
+#: 与下载的 :data:`MSG_NOT_REGULAR`（「目标不是普通文件，不能下载」）分开：
+#: 预览端点不该说「不能下载」——它压根不下载，用户看到的是「无法预览」。
+MSG_NOT_PREVIEWABLE = "目标不是普通文件，无法预览"
+#: ``max_bytes`` 非法（不是正整数）的固定文案。
+#:
+#: 与上传的 :data:`MSG_INVALID_SIZE`（期望字节数）分开：``max_bytes`` 是**读取**
+#: 侧的防护性上限，正整数（0 与负数都没有意义：0 等于「什么都不给」，与缺省
+#: 「不截断」的语义冲突）。
+MSG_INVALID_MAX_BYTES = "最大读取字节数非法：必须是正整数"
 
 #: stderr 关键词子串 → （失败分类码, 固定中文文案）。
 #:
@@ -364,6 +375,12 @@ UPLOAD_FINISH_TIMEOUT = 300
 EXEC_CHUNK = 65536
 #: 下载字节流的默认读取块大小
 DOWNLOAD_CHUNK = 65536
+#: 只读读取（预览）首块嗅探的读取上限（字节）
+#:
+#: **只看首块**：NUL 字节嗅探按 ADR 0018 与 PRD 的口径只扫首块（文本文件里出现
+#: NUL 的窗口极窄；整份扫描要么要把全文读进内存，要么要在流里做有状态判定——
+#: 两者都不必要）。首块也按 ``max_bytes`` 收紧（上限比首块小时只嗅探上限内的字节）。
+READ_SNIFF_BYTES = 65536
 #: 下载流读完之后等 exec 退出码的等待上限（秒）
 DOWNLOAD_STATUS_TIMEOUT = 5
 #: 取 stderr 尾部前的**短等**上限（秒）：排空线程还没跑完就等一下
@@ -494,6 +511,108 @@ class DownloadStream:
         self.close()
 
 
+@dataclass
+class ReadStream(DownloadStream):
+    """只读读取（预览）字节流：**流式正文 + 首块嗅探出的元信息**。
+
+    与 :class:`DownloadStream` 同一套字节泵资产（``cat -- <path>``），额外带三件
+    元信息，供调用方**在读完正文之前**决定怎么处理：
+
+    - :attr:`is_binary`：**首块**里出现了 NUL 字节（``b"\\x00"``）⇒ 二进制；
+      调用方（服务端）据此在**响应头**里给出二进制标记，前端拿到响应头就能
+      **立刻掐掉正文**（不把一整份二进制读进内存）；
+    - :attr:`size`：**探测到的总字节数**（``stat -L -c %s``，跟随符号链接）；
+    - :attr:`truncated`：**声明式截断**——``max_bytes`` 比文件小 ⇒ 本轮只给出
+      前 ``max_bytes`` 字节（超出部分**不读**，字节泵在到达上限时就关掉，
+      容器内的 ``cat`` 不会被晾在那里）。
+
+    ``max_bytes`` 只是**防护性上限**（PRD 口径）：正常流程调用方按文件列表条目
+    的 ``size`` 请求**全量**，因此**正常路径永远看不到截断**。
+
+    读取语义：
+
+    - 首块在 :meth:`FileTransferManager.read` 里已经读掉（要嗅探就不能等调用方），
+      由 :meth:`read` **先交出去**，再继续从字节泵读；
+    - 到达 ``max_bytes`` 上限时**立即关泵**（按进程组回收）并置
+      :attr:`truncated`；关泵是**我们自己**发起的，所以 :meth:`raise_for_status`
+      **不给失败结论**（否则一次正常的截断读取会被报成「命令执行失败」）。
+
+    调用方**必须**关闭它（``close()`` 或用 ``with``）：否则 exec 进程不退。
+    """
+
+    is_binary: bool = False
+    truncated: bool = False
+    max_bytes: int | None = None
+    #: 首块（已读、待交付）；交付后清空
+    head: bytes = field(default=b"", repr=False)
+    #: 已交付给调用方的字节数
+    delivered: int = 0
+    #: 是否因到达 ``max_bytes`` 上限而主动关泵
+    limit_closed: bool = False
+
+    def read(self, size: int = DOWNLOAD_CHUNK) -> bytes:
+        """读一块字节；对端关闭、或已到 ``max_bytes`` 上限时返回空字节。"""
+        if self.head:
+            chunk = self.head
+            self.head = b""
+            self.delivered += len(chunk)
+            return chunk
+        if self.limit_closed:
+            return b""
+        ask = size
+        if self.max_bytes is not None:
+            remaining = self.max_bytes - self.delivered
+            if remaining <= 0:
+                # 首块恰好把上限喂满：这里**也要**评估截断标志，否则「探测值被
+                # 增长竞态污染（size ≤ max_bytes）+ 首块喂满上限」会声明未截断
+                # 却真的截断（姊妹分支评估了，这里漏评估就是盲区）。
+                self._mark_truncated_at_limit()
+                self._close_at_limit()
+                return b""
+            ask = min(size, remaining)
+        chunk = self.pump.read(ask)
+        if not chunk:
+            return b""
+        self.delivered += len(chunk)
+        if self.max_bytes is not None and self.delivered >= self.max_bytes:
+            # 到达上限：**不再读**（超出部分本来就不要），关泵回收容器内的 cat。
+            # 是否「真的截断了」看探测值：文件恰好等于上限时不算截断。
+            self._mark_truncated_at_limit()
+            self._close_at_limit()
+        return chunk
+
+    def _mark_truncated_at_limit(self) -> None:
+        """到达上限时评估截断标志（两个到限分支共用同一条判定）。
+
+        探测值**大于**上限 ⇒ 本轮注定读不全；探测值**小于**上限、却已经交付了
+        上限那么多字节 ⇒ 探测之后文件又长胖了（增长竞态），同样是真截断。
+        只有「探测值恰好等于上限」才按「文件恰好等于上限」处理、不算截断。
+        探测值未知时**宁可报截断**（不能声称已读全）。
+        """
+        if self.size is None or self.size != self.max_bytes:
+            self.truncated = True
+
+    def raise_for_status(self) -> None:
+        """流读完之后调用：exec 失败时抛分类后的异常。
+
+        **因到达上限而主动关泵时不给失败结论**：那种非零退出码（SIGTERM /
+        SIGKILL）是**我们自己**造成的，不是容器内的失败。
+        """
+        if self.limit_closed:
+            return
+        super().raise_for_status()
+
+    def _close_at_limit(self) -> None:
+        """到达 ``max_bytes`` 上限：置位并关泵（幂等）。"""
+        self.limit_closed = True
+        try:
+            self.pump.close()
+        except Exception:  # pragma: no cover - 关泵失败不该盖掉读取结果
+            logger.warning("关闭读取字节泵失败：%s", self.path, exc_info=True)
+
+
+
+
 # ---------------------------------------------------------------- 路径校验
 def validate_container_path(path: str) -> str:
     """校验容器内路径（**绝对路径**、**词法校验**、**无黑名单**）。
@@ -592,6 +711,28 @@ def _normalize_expected_bytes(expected_bytes: int | None) -> int | None:
         raise TransferError(MSG_INVALID_SIZE, reason=REASON_INVALID_SIZE) from exc
     if value < 0:
         raise TransferError(MSG_INVALID_SIZE, reason=REASON_INVALID_SIZE)
+    return value
+
+
+def _normalize_max_bytes(max_bytes: int | None) -> int | None:
+    """把只读读取的防护性上限规整成 ``int | None``（``None`` = 不截断）。
+
+    **只接受正整数**：``0`` 与负数在「最多读多少字节」这件事上没有意义（0 等于
+    「什么都不给」，与缺省「读全量」的语义冲突，而且会让调用方拿到一个空正文却
+    不是错误）；小数 / 字符串同样非法（``int(1.5)`` 静默截断是错值）。
+
+    **与上传的期望字节数分开**：那边的值是「再核对一次写进去多少」的契约值，
+    0 是合法的（空文件上传）；这边的值是**读取上限**，0 没有意义。两边的文案
+    也不同（:data:`MSG_INVALID_MAX_BYTES` / :data:`MSG_INVALID_SIZE`）。
+    """
+    if max_bytes is None:
+        return None
+    try:
+        value = operator.index(max_bytes)
+    except TypeError as exc:
+        raise TransferError(MSG_INVALID_MAX_BYTES, reason=REASON_INVALID_SIZE) from exc
+    if value <= 0:
+        raise TransferError(MSG_INVALID_MAX_BYTES, reason=REASON_INVALID_SIZE)
     return value
 
 
@@ -882,6 +1023,96 @@ class FileTransferManager:
         """
         target = validate_container_path(path)
         daemon, container = self._resolve(sandbox)
+        probe = self._require_regular_file(daemon, container, target, MSG_NOT_REGULAR)
+        # 路径 argv 直传；``--`` 挡住「以 - 开头的路径」被当成选项
+        # （路径是绝对路径，理论上不会以 - 开头，双保险）。
+        argv = ["docker", "exec", "-i", container, "cat", "--", target]
+        process = daemon.spawn_stream(argv)
+        pump = BytePump(process=process, forward_id=f"download:{sandbox}")
+        return DownloadStream(path=target, size=probe.size, pump=pump)
+
+    # ------------------------------------------------------------ 只读读取
+    def read(
+        self, sandbox: str, path: str, max_bytes: int | None = None
+    ) -> ReadStream:
+        """起一条**只读读取**字节流（``cat -- <path>``），并先把首块嗅探掉。
+
+        用途：文件窗格 / Obsidian tab 的**文本预览**。响应正文是**流式字节**，
+        二进制标记 / 总字节数 / 截断声明都**在正文之前**就确定（写进响应头），
+        前端据此可以先判二进制、再按字节数驱动进度条。
+
+        与 :meth:`download` 的**唯一区别**是「谁来读首块」与「给什么元信息」：
+
+        - **首块在本方法内读掉**（:data:`READ_SNIFF_BYTES` 字节，且不超过
+          ``max_bytes``）：NUL 嗅探必须在**返回之前**完成，否则调用方拿不到
+          二进制标记、改不了已经发出去的响应头；
+        - **元信息多三件**：:attr:`ReadStream.is_binary`（首块 NUL 命中）、
+          :attr:`ReadStream.size`（探测到的总字节数）、
+          :attr:`ReadStream.truncated`（``max_bytes`` 比文件小时为真）。
+
+        **前置分层探测是必须项**（与下载同款）：目录 / 特殊文件（FIFO·设备·
+        套接字）/ 不存在各自报错，**只放行普通文件**——FIFO 会把 exec 挂死，
+        一条预览请求就能占住一条 exec 进程。
+
+        ``max_bytes``：**防护性上限**（PRD 口径），**正整数**；
+
+        - **缺省（``None``）= 不截断**：按文件实际大小读到 EOF。这是本端点的
+          默认口径——正文本来就是流式的（内存有界），而预览的「大文件」语义是
+          **不截断**（二次确认 + 进度条 + 全文渲染），默认上限会与它冲突；
+        - **给了值**：只读到前 ``max_bytes`` 字节，**超出部分不读**（到达上限即
+          关泵，容器内的 ``cat`` 不会被晾着），:attr:`ReadStream.truncated` 置真
+          （文件恰好等于上限时**不算**截断）；
+        - **非法值**（0 / 负数 / 非整数）⇒ :class:`TransferError`
+          （:data:`REASON_INVALID_SIZE` + :data:`MSG_INVALID_MAX_BYTES`）。
+
+        返回的 :class:`ReadStream` 必须由调用方关闭（否则 exec 进程不退）。
+        """
+        target = validate_container_path(path)
+        limit = _normalize_max_bytes(max_bytes)
+        daemon, container = self._resolve(sandbox)
+        probe = self._require_regular_file(
+            daemon, container, target, MSG_NOT_PREVIEWABLE
+        )
+        argv = ["docker", "exec", "-i", container, "cat", "--", target]
+        process = daemon.spawn_stream(argv)
+        pump = BytePump(process=process, forward_id=f"read:{sandbox}")
+        # 首块嗅探：读多少由「嗅探窗口」与「防护性上限」里更小的那个定。
+        sniff = READ_SNIFF_BYTES if limit is None else min(READ_SNIFF_BYTES, limit)
+        try:
+            head = pump.read(sniff)
+        except (OSError, ValueError) as exc:
+            # 读首块就撞上关掉的管道（客户端已断开 / 泵被回收）：收口成固定分类。
+            pump.close()
+            raise TransferError(
+                f"{MSG_EXEC_FAILED}：{target}", reason=REASON_EXEC_FAILED
+            ) from exc
+        return ReadStream(
+            path=target,
+            size=probe.size,
+            pump=pump,
+            is_binary=b"\x00" in head,
+            # **声明式截断**：探测值比上限大 ⇒ 这一轮注定读不全。探测值未知时
+            # 交给流自己判（读到上限还读得动才算截断，见 ``ReadStream.read``）。
+            truncated=(
+                limit is not None and probe.size is not None and probe.size > limit
+            ),
+            max_bytes=limit,
+            head=head,
+        )
+
+    def _require_regular_file(
+        self,
+        daemon: UserDaemon,
+        container: str,
+        target: str,
+        not_regular_message: str,
+    ) -> ProbeResult:
+        """前置分层探测：**只放行普通文件**（下载与只读读取共用）。
+
+        不存在 → ``not_found``；目录 → ``target_is_dir``；FIFO·设备·套接字·
+        悬空符号链接·其它特殊文件 → ``not_regular``（文案按调用场景给：下载说
+        「不能下载」，预览说「无法预览」）。
+        """
         probe = self._probe(daemon, container, target)
         if probe.kind == KIND_MISSING:
             raise TransferError(
@@ -893,14 +1124,9 @@ class FileTransferManager:
             )
         if probe.kind not in DOWNLOADABLE_KINDS:
             raise TransferError(
-                f"{MSG_NOT_REGULAR}：{target}", reason=REASON_NOT_REGULAR
+                f"{not_regular_message}：{target}", reason=REASON_NOT_REGULAR
             )
-        # 路径 argv 直传；``--`` 挡住「以 - 开头的路径」被当成选项
-        # （路径是绝对路径，理论上不会以 - 开头，双保险）。
-        argv = ["docker", "exec", "-i", container, "cat", "--", target]
-        process = daemon.spawn_stream(argv)
-        pump = BytePump(process=process, forward_id=f"download:{sandbox}")
-        return DownloadStream(path=target, size=probe.size, pump=pump)
+        return probe
 
     # ---------------------------------------------------------------- 列表
     def list(self, sandbox: str, dir_path: str) -> list[ListEntry]:

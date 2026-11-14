@@ -598,12 +598,19 @@ def test_cors_method_and_header_allowlists_are_unchanged(auth_client: TestClient
 
 
 def test_cors_exposes_content_disposition_for_downloads(auth_client: TestClient) -> None:
-    """跨源时浏览器要能从 JS 读到下载文件名（`Content-Disposition`）。
+    """跨源时浏览器要能从 JS 读到下载文件名与预览元信息。
 
-    这个头不在 CORS 安全列表里：不登记 ``expose_headers``，前端拿到的永远是
-    空值，「从响应头解析文件名」就是死代码。
+    ``Content-Disposition``（下载文件名）与 ``X-File-Binary`` / ``X-File-Size`` /
+    ``X-File-Truncated``（只读读取的二进制标记 / 总字节数 / 截断声明）都**不在**
+    CORS 安全列表里：不登记 ``expose_headers``，前端拿到的永远是空值——下载文件名
+    解析与预览的二进制早退 / 进度条都会变成死代码。
     """
-    assert set(CORS_EXPOSED_HEADERS) == {"Content-Disposition"}
+    assert set(CORS_EXPOSED_HEADERS) == {
+        "Content-Disposition",
+        "X-File-Binary",
+        "X-File-Size",
+        "X-File-Truncated",
+    }
 
     response = auth_client.get(
         "/api/health", headers={"Origin": "http://localhost:5173"}

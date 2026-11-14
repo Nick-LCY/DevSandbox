@@ -84,9 +84,15 @@ CORS_ALLOWED_METHODS = ("GET", "POST", "DELETE", "OPTIONS")
 # 允许的请求头：认证头与 JSON 请求体
 # 同上：新增接口用到新请求头时（如 `X-Forward-*`），必须同步改这份清单。
 CORS_ALLOWED_HEADERS = ("Authorization", "Content-Type")
-# 允许脚本读取的响应头：下载接口用 `Content-Disposition` 给出文件名。
-# 跨源时浏览器默认不把非安全列表头暴露给 JS，不登记这里前端就解析不到文件名。
-CORS_EXPOSED_HEADERS = ("Content-Disposition",)
+# 允许脚本读取的响应头：下载接口用 `Content-Disposition` 给出文件名；只读读取
+# （预览）用 `X-File-*` 三件套给出二进制标记 / 总字节数 / 截断声明。
+# 跨源时浏览器默认不把非安全列表头暴露给 JS，不登记这里前端就解析不到。
+CORS_EXPOSED_HEADERS = (
+    "Content-Disposition",
+    "X-File-Binary",
+    "X-File-Size",
+    "X-File-Truncated",
+)
 
 # ---------------------------------------------------------------- WebSocket 豁免清单
 # 中间件对 WebSocket scope **默认拒绝**（fail-closed）：只有这里显式登记的

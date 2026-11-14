@@ -185,11 +185,82 @@ export interface DownloadFileResult {
   contentDisposition: string | null;
 }
 
+/**
+ * 只读读取（预览）的可选参数。
+ *
+ * `maxBytes` 是**防护性上限**：正常流程传**文件列表条目的 `size`**（= 请求全量），
+ * 不应看到截断；不传 = 不截断（服务端缺省）。
+ */
+export interface ReadFileOptions {
+  /** 防护性上限（正常流程传列表条目的 `size`）。 */
+  maxBytes?: number | null;
+  /** 进度回调：**已接收字节数**（总大小看返回值的 `size`）。 */
+  onProgress?: (loaded: number) => void;
+  /** 取消信号（返回列表 / 换会话 / 卸载时 abort）。 */
+  signal?: AbortSignal;
+}
+
+/** 只读读取（预览）的结果。 */
+export interface ReadFileResult {
+  /**
+   * 正文文本（UTF-8 解码后）。
+   *
+   * 二进制早退（响应头 `X-File-Binary: true`）时为**空串**：此时 `binary` 为真、
+   * 正文**一个字节都没读**。
+   */
+  text: string;
+  /** 是不是二进制（首块 NUL 嗅探的结果）。 */
+  binary: boolean;
+  /** 服务端给出的总字节数（响应头 `X-File-Size`）；拿不到时为 `null`。 */
+  size: number | null;
+  /** 实际接收到的字节数。 */
+  bytes: number;
+  /**
+   * 服务端是否声明了截断（响应头 `X-File-Truncated`）。
+   *
+   * **正常流程不应为真**（前端按列表 `size` 请求全量）；为真说明文件在列目录
+   * 之后变大了——按 PRD 口径**不给任何提示条**，直接展示已拿到的全文。
+   */
+  truncated: boolean;
+}
+
+/**
+ * 正文**不是可解码的 UTF-8**（或根本不该当文本看）：向上抛出，由视图层按「无法
+ * 展示」处理（与二进制同一套空态构图）。
+ *
+ * **不是** `ApiError`：后端返回成功（HTTP 200），失败发生在本地解码这一步，
+ * 没有状态码可给。
+ */
+export class TextNotPreviewableError extends Error {
+  constructor(message = '文件不是 UTF-8 文本，无法预览') {
+    super(message);
+    this.name = 'TextNotPreviewableError';
+  }
+}
+
+/**
+ * 读取流**提前结束**：响应头声明的总字节数还没读满就 EOF（连接中断 / 代理截断 /
+ * exec 泵中途失败）。
+ *
+ * HTTP 已经是 200、`Content-Length` 也已经发出，服务端无法再用状态码表达失败；
+ * 客户端只能靠「实际收到的字节数 < `X-File-Size`」识别。**不能把它当合法的空文件 /
+ * 短文件渲染**（`truncated` 为真时除外——那是服务端声明过的主动截断）。
+ */
+export class IncompleteReadError extends Error {
+  constructor(message = '读取中断，文件不完整') {
+    super(message);
+    this.name = 'IncompleteReadError';
+  }
+}
+
 function transferUrl(config: ConnectionConfig, path: string): string {
   return `${resolveApiBaseUrl(config.backendBaseUrl)}${path}`;
 }
 
-function filesPath(name: string, action: 'upload' | 'download' | 'list'): string {
+function filesPath(
+  name: string,
+  action: 'upload' | 'download' | 'read' | 'list',
+): string {
   return `${pathOf(name)}/files/${action}`;
 }
 
@@ -390,6 +461,162 @@ async function downloadFileWithProgress(
   return { blob, contentDisposition };
 }
 
+/** 只读读取的元信息响应头名（服务端见 `apps/web/backend/API.md` 16.7）。 */
+export const READ_BINARY_HEADER = 'X-File-Binary';
+export const READ_SIZE_HEADER = 'X-File-Size';
+export const READ_TRUNCATED_HEADER = 'X-File-Truncated';
+
+/** 解析一个整数响应头（缺失 / 非法一律 `null`）。 */
+function readIntHeader(headers: Headers, name: string): number | null {
+  const raw = headers.get(name);
+  if (raw === null) {
+    return null;
+  }
+  const text = raw.trim();
+  if (text === '' || !/^\d+$/.test(text)) {
+    return null;
+  }
+  const value = Number(text);
+  return Number.isFinite(value) ? value : null;
+}
+
+/** 解析布尔响应头（只认 `true`；缺失 / 其余值一律 `false`）。 */
+function readBooleanHeader(headers: Headers, name: string): boolean {
+  return (headers.get(name) ?? '').trim().toLowerCase() === 'true';
+}
+
+/**
+ * 只读读取一次文件用于**预览**（fetch 流式读 + 元信息走响应头）。
+ *
+ * 口径（PRD API-02 / PV-05）：
+ *
+ * - **先看响应头再决定读不读正文**：`X-File-Binary: true` ⇒ **立即掐掉正文**
+ *   （`reader.cancel()`），返回 `binary: true`、`text: ''`——不把一整份二进制
+ *   读进内存；
+ * - **进度按已接收字节回调**（`onProgress(loaded)`），总大小看返回值的 `size`
+ *   （前端用它算百分比：`transferPercent(loaded, size)`）；
+ * - **UTF-8 解码用 `fatal: true`**：非法字节序列**抛 `TextNotPreviewableError`**
+ *   （不上抛成 `ApiError`：HTTP 是 200，失败在本地解码）；
+ * - **流提前结束也抛错**：实际收到字节数 < `X-File-Size` 且服务端**没**声明
+ *   `truncated` ⇒ `IncompleteReadError`（不能当合法空文件 / 短文件渲染）；
+ * - **截断标记只如实转发**（`truncated`）——正常流程不应出现。
+ *
+ * 鉴权 / 错误处理与下载（`downloadFileWithProgress`）同款：令牌缺失不发请求
+ * （`ConnectionNotConfiguredError`），非 2xx 用后端 `detail`（`ApiError`）。
+ */
+async function readFileWithProgress(
+  sandbox: string,
+  path: string,
+  options: ReadFileOptions = {},
+): Promise<ReadFileResult> {
+  const config = getConnectionConfig();
+  if (config.token.trim() === '') {
+    throw new ConnectionNotConfiguredError(NOT_CONFIGURED_MESSAGE);
+  }
+
+  const query = new URLSearchParams({ path });
+  const maxBytes = options.maxBytes;
+  if (typeof maxBytes === 'number' && Number.isFinite(maxBytes) && maxBytes > 0) {
+    query.set('max_bytes', String(Math.floor(maxBytes)));
+  }
+  const url = transferUrl(config, `${filesPath(sandbox, 'read')}?${query.toString()}`);
+  const headers = new Headers({ Authorization: `Bearer ${config.token}` });
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      credentials: 'same-origin',
+      headers,
+      signal: options.signal,
+    });
+  } catch {
+    if (options.signal?.aborted) {
+      throw new DOMException('预览已取消', 'AbortError');
+    }
+    throw new ApiError(NETWORK_ERROR_MESSAGE, 0);
+  }
+
+  if (!response.ok) {
+    throw new ApiError(await readDetail(response), response.status);
+  }
+
+  const size = readIntHeader(response.headers, READ_SIZE_HEADER);
+  const truncated = readBooleanHeader(response.headers, READ_TRUNCATED_HEADER);
+  const binary = readBooleanHeader(response.headers, READ_BINARY_HEADER);
+
+  // **二进制早退**：响应头已经说清楚了，正文一个字节都不读（cancel 会关连接，
+  // 服务端随之关泵回收 exec 进程）。
+  if (binary) {
+    try {
+      await response.body?.cancel();
+    } catch {
+      // 连接已断：与「主动取消」同义，忽略。
+    }
+    return { text: '', binary: true, size, bytes: 0, truncated };
+  }
+
+  const chunks: Uint8Array[] = [];
+  let loaded = 0;
+  if (response.body) {
+    const reader = response.body.getReader();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        if (value) {
+          chunks.push(value);
+          loaded += value.byteLength;
+          options.onProgress?.(loaded);
+        }
+      }
+    } catch (exc) {
+      // 读流失败 / 进度回调抛错：把 reader 收掉，不占着连接。
+      try {
+        await reader.cancel();
+      } catch {
+        // 连接已断：忽略，保留原始错误。
+      }
+      if (options.signal?.aborted) {
+        throw new DOMException('预览已取消', 'AbortError');
+      }
+      throw exc;
+    }
+  } else {
+    // 没有流式 body（极少见）：整体取字节，仍然走同一套解码与校验。
+    const buffer = new Uint8Array(await response.arrayBuffer());
+    chunks.push(buffer);
+    loaded = buffer.byteLength;
+    options.onProgress?.(loaded);
+  }
+
+  const merged = new Uint8Array(loaded);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  // **流提前结束 ≠ 合法空文件**：exec 泵中途失败时，服务端只能给出干净的 EOF
+  // （200 + `Content-Length` 已经发出，来不及改状态码），客户端表现为「收到的
+  // 字节数 < 响应头里的总大小」。主动截断（`truncated`）是服务端声明过的，不算。
+  if (!truncated && size !== null && loaded < size) {
+    throw new IncompleteReadError();
+  }
+
+  let text: string;
+  try {
+    // **只认 UTF-8**：非法序列直接抛（`fatal: true`）——否则会拿到一串替换符
+    // （U+FFFD），把二进制显示成“乱码文本”。
+    text = new TextDecoder('utf-8', { fatal: true }).decode(merged);
+  } catch {
+    throw new TextNotPreviewableError();
+  }
+
+  return { text, binary: false, size, bytes: loaded, truncated };
+}
+
 export const api = {
   /**
    * 后端健康自检。给了连接配置就用它（设置抽屉的「测试连接」用草稿值试），
@@ -551,4 +778,16 @@ export const api = {
    */
   downloadFile: (name: string, path: string, options?: TransferOptions) =>
     downloadFileWithProgress(name, path, options),
+
+  /**
+   * 只读读取容器内文件用于**预览**（流式读 + 元信息走响应头）。
+   *
+   * **二进制早退**：响应头说二进制就不读正文（`binary: true` / `text: ''`）。
+   * **非 UTF-8** 抛 `TextNotPreviewableError`（视图层按「无法展示」处理）；
+   * **流提前结束**（收到字节数 < `X-File-Size` 且未声明截断）抛
+   * `IncompleteReadError`（视图层按就地错误态处理）。
+   * 进度回调给的是**已接收字节数**，总大小看返回值的 `size`。
+   */
+  readFile: (name: string, path: string, options?: ReadFileOptions) =>
+    readFileWithProgress(name, path, options),
 };

@@ -679,10 +679,11 @@ docker exec -i <转发容器> socat - TCP:<沙箱容器名>:<容器端口>
 | GET / POST / DELETE | `/api/templates`、`/api/templates/{id}/rename` | `TemplateCreateRequest` / `TemplateRenameRequest` | `TemplateResponse[]` / `TemplateResponse` / `TemplateDeleteResponse` | 启动模板（见第 13 节） |
 | POST | `/api/sandboxes/{name}/files/upload` | **raw body**（`application/octet-stream`，**流式读**，无 multipart） | `FileUploadResponse` | 运行期文件传输（见第 16 章） |
 | GET | `/api/sandboxes/{name}/files/download` | 查询参数 `path` | `StreamingResponse`（字节流 + `Content-Disposition`） | 运行期文件传输（见第 16 章） |
+| GET | `/api/sandboxes/{name}/files/read` | 查询参数 `path`、`max_bytes`（可选） | `StreamingResponse`（字节流 + `X-File-*` 元信息响应头） | 运行期文件传输（见第 16 章） |
 | GET | `/api/sandboxes/{name}/files/list` | 查询参数 `path` | `FileListEntry[]`（裸数组） | 运行期文件传输（见第 16 章） |
 
 > 三期新增的**端口转发接口**（三条 REST + 隧道 WebSocket）见**第 15 章**；
-> 运行期文件传输的**三个端点**（上传 / 下载 / 目录列表）见**第 16 章**。
+> 运行期文件传输的**四个端点**（上传 / 下载 / 只读读取 / 目录列表）见**第 16 章**。
 
 ### 11.2 请求字段
 
@@ -1339,7 +1340,7 @@ WS 握手通过
 
 ---
 
-## 16. 运行期文件传输接口（上传 / 下载 / 目录列表）
+## 16. 运行期文件传输接口（上传 / 下载 / 只读读取 / 目录列表）
 
 把文件搬进**运行中**的沙箱、或从里面取出来。与「创建时文件注入」是**两条独立
 通道**（时序、方向、生命周期都不同），与命令行也**互不影响**。
@@ -1359,10 +1360,12 @@ WS 握手通过
 |---|---|---|---|---|
 | POST | `/api/sandboxes/{name}/files/upload?path=<容器内绝对路径>` | **raw body**（`application/octet-stream`，**无 multipart`，**流式读**；**带 `Content-Length` 时核对字节数**，见 16.2） | `FileUploadResponse`（`{path, bytes}`） | 覆盖语义：写同目录临时名 → `mv` **原子替换**；**目标是已存在目录 → 前置拒绝**；父目录不自动创建 |
 | GET | `/api/sandboxes/{name}/files/download?path=<容器内绝对路径>` | 查询参数 `path` | `StreamingResponse`（`application/octet-stream` + `Content-Length` + `Content-Disposition`） | **前置分层探测**，只放行**普通文件**（目录 / FIFO·设备·套接字等特殊文件一律拒，防挂起）；**`Content-Length` = 探测值声明 + 服务端按声明长度裁剪**（实际流超出即截断，响应体**永不超过**声明长度，见 16.2） |
+| GET | `/api/sandboxes/{name}/files/read?path=<容器内绝对路径>&max_bytes=<正整数>` | 查询参数 `path`、`max_bytes`（**可选**，缺省 = 不截断） | `StreamingResponse`（`application/octet-stream` + `X-File-Binary` / `X-File-Size` / `X-File-Truncated` + `Content-Length`） | **只读读取**（预览用）：正文流式字节、**元信息走响应头**；**前置分层探测**只放行普通文件；**首块 NUL 嗅探**给二进制标记；`max_bytes` 只是防护性上限（见 16.7） |
 | GET | `/api/sandboxes/{name}/files/list?path=<容器内目录>` | 查询参数 `path` | `FileListEntry[]`（**裸数组**，不包对象） | 名称 / 类型 / 大小 / 修改时间；**隐藏文件（`.` 开头）包含在内** |
 
-> 三条端点全挂在 `/api` 前缀下 ⇒ **被令牌中间件自动保护**（见 16.4）；
-> 本轮**只用 GET / POST** ⇒ **CORS 白名单零改动**；**不新增 WebSocket**。
+> 四条端点全挂在 `/api` 前缀下 ⇒ **被令牌中间件自动保护**（见 16.4）；
+> 本轮**只用 GET / POST** ⇒ **CORS 白名单零改动**（只读读取的 `X-File-*` 三个响应头已登记进
+> `expose_headers`，否则跨源时前端读不到它们）；**不新增 WebSocket**。
 
 ### 16.2 请求与响应字段
 
@@ -1479,7 +1482,7 @@ WS 握手通过
 
 | 项 | 口径 |
 |---|---|
-| 鉴权 | 三条端点全挂在 `/api` 前缀下 ⇒ **被 Bearer 令牌中间件自动保护**（**不另写鉴权分支**）：无令牌 / 错令牌一律 **401**（缺失与错误不区分，同一句文案） |
+| 鉴权 | 四条端点全挂在 `/api` 前缀下 ⇒ **被 Bearer 令牌中间件自动保护**（**不另写鉴权分支**）：无令牌 / 错令牌一律 **401**（缺失与错误不区分，同一句文案） |
 | 跨源 | **CORS 白名单零改动**：本轮只用 GET / POST（既有白名单已含），**不新增 WebSocket** |
 | 令牌 | 与其它 `/api` 接口同一套令牌（环境变量注入优先，否则平台数据根下的令牌文件），详见第 14 章 |
 
@@ -1502,7 +1505,118 @@ WS 握手通过
 
 | 模块 | 职责 |
 |---|---|
-| `sandbox_console/transfers.py` | 传输服务端的装配层：传输 I/O **专用线程池**（32 线程）、**请求体桥接**（异步 body 流 ⇄ 同步字节块迭代器，**有界缓冲** ⇒ 端到端内存有界；**带字节计数**：投递侧 / 消费侧）、上传编排的并发装配、**期望字节数（`Content-Length`）的取用与非法头的前置 400**（含**超长数字串**）、**上传中断的服务端字节计数兜底**（改判 `size_mismatch`）、下载流的逐块读取（**按声明长度裁剪**）与收尾（**关泵走线程池**） |
-| `sandbox_console/routes/files.py` | 三个端点（上传 / 下载 / 目录列表）+ `Content-Disposition` 构造（ASCII 回退 + UTF-8 百分号编码）+ **下载的声明长度**（响应头与裁剪上限取同一个值） |
+| `sandbox_console/transfers.py` | 传输服务端的装配层：传输 I/O **专用线程池**（32 线程）、**只读读取的编排与 `max_bytes` 前置校验**（`parse_max_bytes` / `open_read` / `iter_read_chunks`，复用下载流的搬运与收尾口径）、**请求体桥接**（异步 body 流 ⇄ 同步字节块迭代器，**有界缓冲** ⇒ 端到端内存有界；**带字节计数**：投递侧 / 消费侧）、上传编排的并发装配、**期望字节数（`Content-Length`）的取用与非法头的前置 400**（含**超长数字串**）、**上传中断的服务端字节计数兜底**（改判 `size_mismatch`）、下载流的逐块读取（**按声明长度裁剪**）与收尾（**关泵走线程池**） |
+| `sandbox_console/routes/files.py` | 四个端点（上传 / 下载 / 只读读取 / 目录列表）+ `Content-Disposition` 构造（ASCII 回退 + UTF-8 百分号编码）+ **下载的声明长度**（响应头与裁剪上限取同一个值）+ **只读读取的三个元信息响应头**（`X-File-Binary` / `X-File-Size` / `X-File-Truncated`） |
 | `sandbox_console/errors.py` | 传输链路的**失败分类码 → 状态码**映射表（`TRANSFER_STATUS_BY_REASON`）与文案口径（`classify_transfer_error`）+ `TransferError` 的异常处理器（含**日志单行化**）+ **上传请求头非法时的固定提示**（`INVALID_CONTENT_LENGTH_MESSAGE` / `INVALID_CONTENT_LENGTH_TOO_LONG_MESSAGE`） |
 | `sandbox_console/deps.py` | 传输编排入口的依赖注入（**取生命周期服务持有的那一个，不另建实例**） |
+
+### 16.7 只读读取（预览）端点
+
+给**文件窗格的纯文本预览**与 **Obsidian tab 的 markdown 预览**共用的一条**只读**
+通道。语义与下载**刻意不同**：正文同样流式，但**元信息走响应头**——调用方拿到
+响应头就能先判二进制（不必把二进制读进内存）、再按「已接收字节 / 总字节数」驱动
+进度条。
+
+#### 请求
+
+`GET /api/sandboxes/{name}/files/read?path=<容器内绝对路径>&max_bytes=<正整数>`
+
+| 参数 | 位置 | 必填 | 说明 |
+|---|---|---|---|
+| `path` | 查询参数 | 是 | 容器内**绝对路径**。校验口径与上传 / 下载**完全一致**：绝对路径 + 拒 NUL + 词法校验，**不拦 `..`**（容器内权限由容器自身决定，ADR 0018） |
+| `max_bytes` | 查询参数 | 否 | **防护性上限**（**正整数**）。**缺省（不传）= 不截断**，按文件实际大小读到 EOF |
+
+**`max_bytes` 的缺省行为（定稿口径）**：**不传 = 不截断**。理由：正文本来就是
+流式的（内存有界），而本端点服务的「大文件预览」语义是**不截断**（二次确认 +
+进度条 + 全文渲染，PRD PV-04 / OBS-11）——给一个默认上限会把「全量预览」变成
+「悄悄只看一截」，且界面上**不允许**出现「文件过大，仅展示前 N KB」的提示条。
+因此**上限只在调用方显式给出时生效**，`max_bytes` 只承担「调用方自己定的防护性
+上限」这一件事。
+
+**正常流程**：前端按**文件列表条目的 `size`** 请求（`max_bytes=size`），因此
+**前端正常路径永远看不到截断声明**。`max_bytes` 比文件小时仍按上限截断并在响应头
+**声明截断**（事实告知，不是错误）。
+
+#### 响应头
+
+| 响应头 | 取值 | 说明 |
+|---|---|---|
+| `Content-Type` | `application/octet-stream` | 固定：正文永远是**原始字节**（不做内容嗅探；UTF-8 解码由调用方做） |
+| `X-File-Binary` | `true` / `false` | **二进制标记**：**首块**（默认读到 64 KiB，且不超过 `max_bytes`）里出现 NUL 字节（`0x00`）即为 `true`。调用方拿到 `true` 应**立即放弃正文**（取消读取 / 断开连接，服务端随之关泵回收 exec） |
+| `X-File-Size` | 非负整数 | **总字节数**（容器内 `stat -L -c %s` 的探测值，跟随符号链接）。用于进度条「已接收 / 总大小」。探测不到时**该头不出现** |
+| `X-File-Truncated` | `true` | **截断声明**：**只在真的截断时出现**（`max_bytes` 比文件小）。不出现 = 没有截断（**不是** `false`） |
+| `Content-Length` | 非负整数 | 本次响应体的字节数 = `min(总字节数, max_bytes)`；声明值与服务端裁剪上限取**同一个值**（响应体**永不超过**声明长度，避免与 `Content-Length` 冲突触发协议层 `LocalProtocolError`） |
+
+#### 示例
+
+```
+GET /api/sandboxes/demo/files/read?path=/workspace/notes/a.md&max_bytes=11
+Authorization: Bearer <令牌>
+
+HTTP/1.1 200 OK
+Content-Type: application/octet-stream
+Content-Length: 11
+X-File-Binary: false
+X-File-Size: 11
+
+# 标题
+正文
+```
+
+带截断的示例（`max_bytes` 比文件小）：
+
+```
+GET /api/sandboxes/demo/files/read?path=/workspace/a.txt&max_bytes=4
+
+HTTP/1.1 200 OK
+Content-Type: application/octet-stream
+Content-Length: 4
+X-File-Binary: false
+X-File-Size: 10
+X-File-Truncated: true
+
+0123
+```
+
+二进制早退（前端只读响应头，随后取消正文）：
+
+```
+HTTP/1.1 200 OK
+Content-Type: application/octet-stream
+X-File-Binary: true
+X-File-Size: 81920
+```
+
+#### 错误
+
+错误形状与其它传输端点一致：`{"detail": "<中文>"}`，**容器内 stderr 原文只进
+日志**。分类码映射沿用 16.3 的表，本端点特有两条：
+
+| 场景 | 状态码 | 响应 `detail` |
+|---|---|---|
+| `max_bytes` 不是正整数（`0` / 负数；非数字由参数校验拦住） | 400 | `{"detail": "max_bytes 非法：必须是正整数"}` |
+| 目标是**目录** | 400 | `{"detail": "目标是目录：<路径>"}` |
+| 目标是**特殊文件**（FIFO / 设备 / 套接字 / 悬空符号链接） | 400 | `{"detail": "目标不是普通文件，无法预览：<路径>"}`（分类码 `not_regular`） |
+| 目标不存在 | 404 | `{"detail": "文件不存在：<路径>"}` |
+| 路径非绝对 / 含 NUL / 空串 | 400 | `{"detail": "容器内路径必须是绝对路径：<路径>"}` 等（分类码 `invalid_path`） |
+| 沙箱已停止 | 409 | `{"detail": "沙箱已停止，无法传输文件"}` |
+| 沙箱不存在 | 404 | `{"detail": "沙箱不存在：<名字>"}` |
+| 无令牌 / 错令牌 | 401 | 与其它 `/api` 接口同一句文案（中间件层拦截） |
+
+> **`max_bytes` 非法不静默降级**：静默当成「不传」会让调用方以为自己拿到了限量
+> 结果（恰恰相反：拿到的是全量）。口径与上传的 `Content-Length` 非法一致——
+> **直接 400**。
+>
+> **特殊文件一律拒**：FIFO 会把 `docker exec` **挂死**（GNU 与 busybox 都挂），
+> 一条预览请求就能占住一条 exec 进程；`/dev/null` 会「成功地」返回一份空的
+> 文本预览。**前置分层探测是必须项，不是优化。**
+
+#### 与下载端点的差异（一句话对照）
+
+| 项 | 下载（16.1） | 只读读取（本节） |
+|---|---|---|
+| 正文 | 流式字节 | 流式字节（同一条 `cat` 字节泵） |
+| 文件名的表达 | `Content-Disposition: attachment` | **不给**（预览不落盘，文件名由调用方已有的列表条目提供） |
+| 元信息 | `Content-Length` | `X-File-Binary` / `X-File-Size` / `X-File-Truncated` + `Content-Length` |
+| 首块 | 不预处理 | **由服务端读掉做 NUL 嗅探**（必须在响应头发出前完成） |
+| 上限 | 无（按探测值裁剪） | `max_bytes`（调用方可选；**缺省不截断**） |
