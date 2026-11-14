@@ -18,13 +18,17 @@ import {
   isPathWithinVaultRoot,
   isVaultEntry,
   normalizeVaultRoot,
+  OBSIDIAN_SELECTED_STORAGE_PREFIX,
   readStoredExpandedPaths,
+  readStoredSelection,
   readStoredVaultRoot,
   vaultChildPath,
   vaultExpandedStorageKey,
   vaultFileName,
   vaultRootStorageKey,
+  vaultSelectedStorageKey,
   writeStoredExpandedPaths,
+  writeStoredSelection,
   writeStoredVaultRoot,
 } from './obsidian-vault';
 
@@ -272,5 +276,69 @@ describe('路径拼接与根内判定', () => {
     expect(vaultFileName('/vault/notes/a.md')).toBe('a.md');
     expect(vaultFileName('/a.md')).toBe('a.md');
     expect(vaultFileName('/')).toBe('/');
+  });
+});
+
+describe('阅读位（07 轮可选评估项）', () => {
+  it('键按沙箱拼，写入后可原样读回（路径归一后落盘）', () => {
+    const storage = new MemoryStorage();
+    expect(vaultSelectedStorageKey('demo')).toBe(
+      `${OBSIDIAN_SELECTED_STORAGE_PREFIX}demo`,
+    );
+    writeStoredSelection('demo', { path: '/vault//notes/a.md', name: 'a.md', size: 12 }, storage);
+    expect(readStoredSelection('demo', storage)).toEqual({
+      path: '/vault/notes/a.md',
+      name: 'a.md',
+      size: 12,
+    });
+    // 按沙箱隔离
+    expect(readStoredSelection('other', storage)).toBeNull();
+  });
+
+  it('写 null 清键（没在读任何文件）', () => {
+    const storage = new MemoryStorage();
+    writeStoredSelection('demo', { path: '/vault/a.md', name: 'a.md', size: 1 }, storage);
+    writeStoredSelection('demo', null, storage);
+    expect(readStoredSelection('demo', storage)).toBeNull();
+  });
+
+  it('脏值一律回落 null：坏 JSON / 形状不对 / 路径非法 / 大小非法', () => {
+    const storage = new MemoryStorage();
+    const key = vaultSelectedStorageKey('demo');
+    for (const raw of [
+      '{',
+      'null',
+      '[]',
+      JSON.stringify({ path: 'relative', name: 'a.md', size: 1 }),
+      JSON.stringify({ path: '/vault/a.md', name: '', size: 1 }),
+      JSON.stringify({ path: '/vault/a.md', name: 'a/b.md', size: 1 }),
+      JSON.stringify({ path: '/vault/a.md', name: 'a.md', size: -1 }),
+      JSON.stringify({ path: '/vault/a.md', name: 'a.md', size: 'big' }),
+      JSON.stringify({ path: '/vault/a.md' }),
+    ]) {
+      storage.setItem(key, raw);
+      expect(readStoredSelection('demo', storage)).toBeNull();
+    }
+  });
+
+  it('存储不可用（隐私模式）时静默忽略', () => {
+    expect(
+      readStoredSelection('demo', {
+        getItem: () => {
+          throw new Error('denied');
+        },
+      } as unknown as Storage),
+    ).toBeNull();
+    expect(() =>
+      writeStoredSelection(
+        'demo',
+        { path: '/vault/a.md', name: 'a.md', size: 1 },
+        {
+          setItem: () => {
+            throw new Error('denied');
+          },
+        } as unknown as Storage,
+      ),
+    ).not.toThrow();
   });
 });

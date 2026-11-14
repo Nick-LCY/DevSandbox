@@ -51,6 +51,8 @@ import { isSameContainerPath, resolveFilePaneStartPath } from '../../lib/file-pa
 import { getSessionPwd, subscribeSessionPwd } from '../../lib/terminal-pwd';
 import { useToast } from '../Toast';
 import { ModalShell } from './ModalShell';
+import { PreviewConfirmDialog } from './PreviewConfirmDialog';
+import { PreviewLoading } from './PreviewLoading';
 
 interface FileBrowserPanelProps {
   /** 沙箱名（三条文件端点都挂在它下面）。 */
@@ -285,7 +287,6 @@ function FilePreviewView({
   onDownload,
 }: FilePreviewViewProps) {
   const lines = view.status === 'ready' ? splitPreviewLines(view.text) : [];
-  const percent = transferPercent(view.loaded, view.total);
   const toolButton =
     'grid size-8 flex-none place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none';
 
@@ -341,47 +342,16 @@ function FilePreviewView({
         </button>
       </div>
 
-      {view.status === 'loading' &&
-        (view.large ? (
-          /* 大文件：进度条（已接收字节 / 总大小），加载完渲染全文 */
-          <div
-            data-testid="page-file-preview-loading"
-            className="flex flex-none flex-col gap-1.5 rounded-lg border border-border bg-muted/40 px-3 py-2"
-          >
-            <div className="flex items-center justify-between gap-2 text-[12px] text-muted-foreground">
-              <span className="inline-flex items-center gap-1.5">
-                <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-                正在读取…
-              </span>
-              {percent !== null && (
-                <span className="font-mono tabular-nums">{percent}%</span>
-              )}
-            </div>
-            <div
-              role="progressbar"
-              aria-label={`读取 ${target.name}`}
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={percent ?? undefined}
-              data-testid="page-file-preview-progress"
-              className="h-1 overflow-hidden rounded-full bg-muted"
-            >
-              <div
-                className="h-full rounded-full bg-primary transition-[width]"
-                style={{ width: `${percent ?? 0}%` }}
-              />
-            </div>
-          </div>
-        ) : (
-          /* 小文件：直接加载，**不出现进度条** */
-          <div
-            data-testid="page-file-preview-loading"
-            className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-[12.5px] text-muted-foreground"
-          >
-            <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-            正在读取…
-          </div>
-        ))}
+      {view.status === 'loading' && (
+        /* 大文件给进度条、小文件只有一行「正在读取…」（共用组件，口径见
+           `PreviewLoading`；标识仍是文件窗格那一套）。 */
+        <PreviewLoading
+          name={target.name}
+          large={view.large}
+          loaded={view.loaded}
+          total={view.total}
+        />
+      )}
 
       {view.status === 'error' && (
         <div
@@ -2270,45 +2240,16 @@ export function FileBrowserPanel({
 
       {/*
         大文件（> 2 MB）二次确认：**确认才发起读取**，**取消不发任何请求**
-        （PRD PV-04）。提醒内容是「文件超过 2 MB、是否预览」，不含「仅展示前 N KB」
-        之类的截断说法（截断提示条已按 PRD 删除）。
+        （PRD PV-04）。对话框与 Obsidian 阅读器共用同一个组件
+        （`PreviewConfirmDialog`），标识仍是文件窗格那一套。
       */}
-      <ModalShell
+      <PreviewConfirmDialog
         open={previewConfirm !== null}
-        title="预览大文件"
-        testId="page-file-preview-confirm-dialog"
-        onOpenChange={(next) => {
-          if (!next) {
-            cancelLargePreview();
-          }
-        }}
-        maxWidthPx={400}
-        footer={
-          <>
-            <button
-              type="button"
-              onClick={cancelLargePreview}
-              data-testid="page-file-preview-confirm-cancel-button"
-              className="inline-flex h-8 items-center justify-center rounded-lg border border-border bg-background px-3 text-[13px] text-foreground transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
-            >
-              取消
-            </button>
-            <button
-              type="button"
-              onClick={confirmLargePreview}
-              data-testid="page-file-preview-confirm-button"
-              className="inline-flex h-8 items-center justify-center rounded-lg border border-transparent bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/80 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
-            >
-              预览
-            </button>
-          </>
-        }
-      >
-        <p className="text-[13px]">
-          「{previewConfirm?.name ?? ''}」超过 2 MB（
-          {formatFileSize(previewConfirm?.size ?? 0)}），确认预览？
-        </p>
-      </ModalShell>
+        name={previewConfirm?.name ?? ''}
+        size={previewConfirm?.size ?? 0}
+        onConfirm={confirmLargePreview}
+        onCancel={cancelLargePreview}
+      />
     </>
   );
 }

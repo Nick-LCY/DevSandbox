@@ -24,16 +24,21 @@ import { BookOpen, ChevronRight, FileText, Folder, Loader2 } from 'lucide-react'
 import { api } from '../../api/client';
 import type { FileListEntry } from '../../api/types';
 import { cn } from '../../lib/cn';
+import { isLargePreviewFile } from '../../lib/file-preview';
 import {
   filterVaultEntries,
   isPathWithinVaultRoot,
   normalizeVaultRoot,
   readStoredExpandedPaths,
+  readStoredSelection,
   readStoredVaultRoot,
   vaultChildPath,
   writeStoredExpandedPaths,
+  writeStoredSelection,
   writeStoredVaultRoot,
 } from '../../lib/obsidian-vault';
+import { ObsidianPreview } from './ObsidianPreview';
+import { PreviewConfirmDialog } from './PreviewConfirmDialog';
 
 /** 目录列举的状态：还没读 / 读到了 / 读失败。 */
 interface DirState {
@@ -239,8 +244,41 @@ export function ObsidianWorkspace({ sandbox, workdir }: ObsidianWorkspaceProps) 
   const [draftPath, setDraftPath] = useState('');
   /** 是否处在「更改根」的引导态（根还在，但右栏切回引导态）。 */
   const [changingRoot, setChangingRoot] = useState(false);
-  /** 当前选中的 `.md` 文件（右侧渲染在 07 轮）。 */
-  const [selected, setSelected] = useState<VaultSelectedFile | null>(null);
+  /**
+   * 预览历史栈（**栈顶 = 当前在读的文件**）。
+   *
+   * - 点树上的文件 ⇒ **重置栈**（新的一次阅读）；
+   * - 点 wikilink 命中 ⇒ **压栈**（返回键逐层退回）；
+   * - 初值从按沙箱记的**阅读位**恢复：Obsidian tab 与终端 tab 往返时本组件整体
+   *   重挂载（06 的二选一渲染），不恢复就丢了阅读位（任务 07 可选评估项）。
+   *   大文件不自动恢复——恢复路径不该绕过「> 2 MB 先二次确认」的口径。
+   */
+  const [stack, setStack] = useState<VaultSelectedFile[]>(() => {
+    const stored = readStoredSelection(sandbox);
+    if (stored === null || root === null || !isPathWithinVaultRoot(root, stored.path)) {
+      return [];
+    }
+    if (isLargePreviewFile(stored.size)) {
+      return [];
+    }
+    return [stored];
+  });
+  /** 当前在读的文件（历史栈栈顶；`null` = 还没选）。 */
+  const selected = stack.length === 0 ? null : stack[stack.length - 1];
+  /**
+   * 大文件二次确认的待办（`null` = 没有弹框）。
+   *
+   * 树里的文件与 wikilink 命中的目标**都从这里过**：> 2 MB 时**确认才读**、
+   * 取消一个请求都不发（与文件窗格预览同一个对话框组件）。
+   */
+  const [confirmTarget, setConfirmTarget] = useState<{
+    target: VaultSelectedFile;
+    push: boolean;
+  } | null>(null);
+  /** 上一次的根：用来区分「挂载」与「真的换了根」（换根才清阅读位）。 */
+  const previousRootRef = useRef<string | null>(root);
+  /** 挂载那一拍不写存储（沿用根 / 展开态「挂载不写」的惯例）。 */
+  const skipSelectionWriteRef = useRef(true);
   /**
    * 列举结果的代次：换根 / 换沙箱时自增，旧响应回来一律丢弃
    * （否则旧根的目录会覆盖新根的树）。
@@ -294,17 +332,34 @@ export function ObsidianWorkspace({ sandbox, workdir }: ObsidianWorkspaceProps) 
     [sandbox],
   );
 
-  // 换根（或首次设根）：代次自增、清缓存与选中，重新列举根目录。
+  /**
+   * 阅读位落盘：**状态变化后**写（不放副作用进 state updater，StrictMode
+   * 双调用也不会重复写）；挂载那一拍跳过（读到什么就是什么）。
+   */
+  useEffect(() => {
+    if (skipSelectionWriteRef.current) {
+      skipSelectionWriteRef.current = false;
+      return;
+    }
+    writeStoredSelection(sandbox, selected);
+  }, [sandbox, selected]);
+
+  // 换根（或首次设根）：代次自增、清缓存，重新列举根目录。
   useEffect(() => {
     generationRef.current += 1;
     requestedPathsRef.current.clear();
     setDirs({});
-    setSelected(null);
+    // **只在真的换根时**清阅读位：挂载那一拍要把恢复的阅读位留住。
+    if (previousRootRef.current !== root) {
+      previousRootRef.current = root;
+      setStack([]);
+      writeStoredSelection(sandbox, null);
+    }
     if (root === null) {
       return;
     }
     void loadDir(root);
-  }, [root, loadDir]);
+  }, [root, loadDir, sandbox]);
 
   /**
    * 刷新后恢复展开态：已记的展开目录在根之内、且还没列举过的，补一次列举。
@@ -341,10 +396,61 @@ export function ObsidianWorkspace({ sandbox, workdir }: ObsidianWorkspaceProps) 
     [sandbox],
   );
 
-  /** 选中一个 `.md` 文件（右侧渲染在 07 轮）。 */
-  const selectFile = useCallback((file: VaultSelectedFile) => {
-    setSelected(file);
+  /** 真正落到栈上（**大文件已经确认过**才走到这里）。 */
+  const applyOpen = useCallback((next: VaultSelectedFile, push: boolean) => {
+    setStack((previous) => (push ? [...previous, next] : [next]));
     setChangingRoot(false);
+  }, []);
+
+  /**
+   * 打开一个文件：**> 2 MB 先弹二次确认**（PRD OBS-11 与文件窗格预览同口径）。
+   *
+   * `push` = 沿历史栈前进（wikilink 命中），`false` = 重置栈（树里点文件）。
+   */
+  const openFile = useCallback(
+    (next: VaultSelectedFile, push: boolean) => {
+      if (isLargePreviewFile(next.size)) {
+        setConfirmTarget({ target: next, push });
+        return;
+      }
+      applyOpen(next, push);
+    },
+    [applyOpen],
+  );
+
+  /** 树里点 `.md`：重置历史栈（新的一次阅读）。 */
+  const selectFile = useCallback(
+    (file: VaultSelectedFile) => {
+      openFile(file, false);
+    },
+    [openFile],
+  );
+
+  /** wikilink 命中：**压栈**（返回键能退回上一篇）。 */
+  const openWikilinkTarget = useCallback(
+    (file: VaultSelectedFile) => {
+      openFile(file, true);
+    },
+    [openFile],
+  );
+
+  /** 返回上一层（栈底那层不渲染返回钮）。 */
+  const backFromPreview = useCallback(() => {
+    setStack((previous) => previous.slice(0, -1));
+  }, []);
+
+  /** 二次确认：**确认才发起读取**（压栈或重置栈）。 */
+  const confirmLargePreview = useCallback(() => {
+    const pending = confirmTarget;
+    setConfirmTarget(null);
+    if (pending !== null) {
+      applyOpen(pending.target, pending.push);
+    }
+  }, [applyOpen, confirmTarget]);
+
+  /** 二次确认：**取消不发请求**（留在原来的视图）。 */
+  const cancelLargePreview = useCallback(() => {
+    setConfirmTarget(null);
   }, []);
 
   /** 设根：归一并落盘，退出引导态。 */
@@ -540,16 +646,32 @@ export function ObsidianWorkspace({ sandbox, workdir }: ObsidianWorkspaceProps) 
             </span>
           </div>
         ) : (
-          <div
-            className="flex h-full items-center justify-center p-6"
-            data-testid="page-sandbox-detail-obsidian-preview-placeholder"
-          >
-            <span className="max-w-full break-all font-mono text-[12px] text-muted-foreground">
-              {selected.path}
-            </span>
-          </div>
+          /* 07 轮：占位换成真正的阅读器（markdown 渲染 / 源码 / wikilink 跳转）。 */
+          <ObsidianPreview
+            sandbox={sandbox}
+            root={root}
+            target={selected}
+            canGoBack={stack.length > 1}
+            onBack={backFromPreview}
+            onOpenTarget={openWikilinkTarget}
+          />
         )}
       </section>
+
+      {/*
+        大文件（> 2 MB）二次确认：**确认才发起读取**、**取消不发任何请求**。
+        与文件窗格预览**同一个对话框组件**（PRD OBS-11），标识换成本页命名空间。
+      */}
+      <PreviewConfirmDialog
+        open={confirmTarget !== null}
+        name={confirmTarget?.target.name ?? ''}
+        size={confirmTarget?.target.size ?? 0}
+        onConfirm={confirmLargePreview}
+        onCancel={cancelLargePreview}
+        dialogTestId="page-sandbox-detail-obsidian-preview-confirm-dialog"
+        confirmTestId="page-sandbox-detail-obsidian-preview-confirm-button"
+        cancelTestId="page-sandbox-detail-obsidian-preview-confirm-cancel-button"
+      />
     </div>
   );
 }

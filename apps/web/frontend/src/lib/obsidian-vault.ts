@@ -4,13 +4,15 @@
  * 口径来源：PRD「方案四 · Obsidian tab」+ 任务 06「Obsidian tab 骨架」。
  *
  * 这里只放**纯函数与存储读写**：不碰 DOM、不碰网络（目录列举由组件层调
- * `api.listFiles`）。收敛的四件事：
+ * `api.listFiles`）。收敛的五件事：
  *
  * 1. **vault 根归一**（`normalizeVaultRoot`）：绝对路径、拒 NUL、拒 `.` / `..`；
- * 2. **按沙箱记的存储**（根与展开态）——换沙箱各自记忆，**不入后端**；
+ * 2. **按沙箱记的存储**（根、展开态与**阅读位**）——换沙箱各自记忆，**不入后端**；
  * 3. **树过滤 / 定序**（`filterVaultEntries`）：**只列目录与 `.md` 文件**，
  *    目录在前、同类型按名称自然序；
- * 4. **子路径拼接**（`vaultChildPath`）与**根内判定**（`isPathWithinVaultRoot`）。
+ * 4. **子路径拼接**（`vaultChildPath`）与**根内判定**（`isPathWithinVaultRoot`）；
+ * 5. **阅读位存取**（`readStoredSelection` / `writeStoredSelection`）：Obsidian tab
+ *    与终端 tab 往返时把「在读哪一篇」记住（目录缓存不持久化）。
  *
  * 存储键惯例与 `src/lib/file-pane-collapsed.ts` / `src/lib/sidebar-collapsed.ts`
  * 同款：键前缀 `sandbox-console-`，**沙箱名做键的后缀**；读不到 / 值非法一律
@@ -28,6 +30,15 @@ export const OBSIDIAN_VAULT_ROOT_STORAGE_PREFIX = 'sandbox-console-obsidian-vaul
 /** 树展开态的存储键前缀：`<前缀><沙箱名>`，值是绝对路径的 JSON 数组。 */
 export const OBSIDIAN_VAULT_EXPANDED_STORAGE_PREFIX = 'sandbox-console-obsidian-expanded:';
 
+/**
+ * **阅读位**（当前在读的 `.md`）的存储键前缀：`<前缀><沙箱名>`。
+ *
+ * Obsidian tab 与终端 tab 之间往返时 `ObsidianWorkspace` 会整体重挂载（06 的
+ * 二选一渲染），选中态不记就丢了——记下来，回来还停在原来那一篇（任务 07 的
+ * 可选评估项）。目录缓存仍不持久化（成本高、收益低），回来按需重新列举。
+ */
+export const OBSIDIAN_SELECTED_STORAGE_PREFIX = 'sandbox-console-obsidian-selected:';
+
 /** vault 根在 localStorage 里的键（按沙箱）。 */
 export function vaultRootStorageKey(sandbox: string): string {
   return `${OBSIDIAN_VAULT_ROOT_STORAGE_PREFIX}${sandbox}`;
@@ -36,6 +47,11 @@ export function vaultRootStorageKey(sandbox: string): string {
 /** 树展开态在 localStorage 里的键（按沙箱）。 */
 export function vaultExpandedStorageKey(sandbox: string): string {
   return `${OBSIDIAN_VAULT_EXPANDED_STORAGE_PREFIX}${sandbox}`;
+}
+
+/** 阅读位在 localStorage 里的键（按沙箱）。 */
+export function vaultSelectedStorageKey(sandbox: string): string {
+  return `${OBSIDIAN_SELECTED_STORAGE_PREFIX}${sandbox}`;
 }
 
 /* ------------------------------------------------------------ 根路径 */
@@ -178,6 +194,88 @@ export function writeStoredExpandedPaths(
     store.setItem(vaultExpandedStorageKey(sandbox), JSON.stringify(normalized));
   } catch {
     // 忽略：存不下就算了，本次挂载内的展开态仍然生效。
+  }
+}
+
+/* ------------------------------------------------------------ 阅读位 */
+
+/** 记下来的阅读位（`.md` 文件的路径 / 名字 / 字节数）。 */
+export interface VaultStoredSelection {
+  /** 文件绝对路径（归一后的值）。 */
+  path: string;
+  /** 文件名（路径最后一段）。 */
+  name: string;
+  /** 字节数（大文件判定与 `max_bytes` 用）。 */
+  size: number;
+}
+
+/**
+ * 读某个沙箱记下来的阅读位。
+ *
+ * 只认形状完整的一条：`path` 归一后仍是绝对路径、`name` 是非空且不含 `/` 的
+ * 字符串、`size` 是非负有限数。任何一项不合法都当作「没记过」。
+ */
+export function readStoredSelection(
+  sandbox: string,
+  storage?: Storage | null,
+): VaultStoredSelection | null {
+  const store = resolveStorage(storage);
+  if (!store) {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    const raw = store.getItem(vaultSelectedStorageKey(sandbox));
+    if (raw === null) {
+      return null;
+    }
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== 'object' || parsed === null) {
+    return null;
+  }
+  const record = parsed as Record<string, unknown>;
+  const path = typeof record.path === 'string' ? normalizeContainerPath(record.path) : null;
+  const name = record.name;
+  const size = record.size;
+  if (path === null || typeof name !== 'string' || name === '' || name.includes('/')) {
+    return null;
+  }
+  if (typeof size !== 'number' || !Number.isFinite(size) || size < 0) {
+    return null;
+  }
+  return { path, name, size };
+}
+
+/** 写某个沙箱的阅读位；传 `null` 表示清掉（没在读任何文件）。写不进就静默忽略。 */
+export function writeStoredSelection(
+  sandbox: string,
+  selection: VaultStoredSelection | null,
+  storage?: Storage | null,
+): void {
+  const store = resolveStorage(storage);
+  if (!store) {
+    return;
+  }
+  const key = vaultSelectedStorageKey(sandbox);
+  try {
+    if (selection === null) {
+      store.removeItem(key);
+      return;
+    }
+    const path = normalizeContainerPath(selection.path);
+    if (path === null) {
+      store.removeItem(key);
+      return;
+    }
+    store.setItem(
+      key,
+      JSON.stringify({ path, name: selection.name, size: selection.size }),
+    );
+  } catch {
+    // 忽略：存不下就算了，本次挂载内的状态仍然生效。
   }
 }
 

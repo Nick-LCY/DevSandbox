@@ -7,22 +7,27 @@
  * markdown 渲染与 wikilink 在 07 轮，这里只断言「选中路径先搭好」。
  */
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { TextNotPreviewableError, type ReadFileResult } from '../../api/client';
 import type { FileListEntry } from '../../api/types';
 import {
   readStoredExpandedPaths,
+  readStoredSelection,
   readStoredVaultRoot,
   vaultExpandedStorageKey,
   vaultRootStorageKey,
   writeStoredExpandedPaths,
+  writeStoredSelection,
   writeStoredVaultRoot,
 } from '../../lib/obsidian-vault';
+import { ToastProvider } from '../Toast';
 import { ObsidianWorkspace } from './ObsidianWorkspace';
 
 const mocks = vi.hoisted(() => ({
   listFiles: vi.fn(),
+  readFile: vi.fn(),
 }));
 
 vi.mock('../../api/client', async (importOriginal) => {
@@ -32,9 +37,17 @@ vi.mock('../../api/client', async (importOriginal) => {
     api: {
       ...actual.api,
       listFiles: mocks.listFiles,
+      readFile: mocks.readFile,
     },
   };
 });
+
+/** 假文件内容（`path → 原文`）：`readFile` 的默认实现从这里取。 */
+const FILE_CONTENTS = new Map<string, string>();
+
+function setFile(path: string, text: string): void {
+  FILE_CONTENTS.set(path, text);
+}
 
 function entry(overrides: Partial<FileListEntry>): FileListEntry {
   return { name: 'a.md', kind: 'file', size: 10, mtime: 1_700_000_000, ...overrides };
@@ -70,7 +83,9 @@ function mockVault(): void {
 
 function renderWorkspace(props: { sandbox?: string; workdir?: string } = {}) {
   return render(
-    <ObsidianWorkspace sandbox={props.sandbox ?? 'demo'} workdir={props.workdir ?? '/work'} />,
+    <ToastProvider>
+      <ObsidianWorkspace sandbox={props.sandbox ?? 'demo'} workdir={props.workdir ?? '/work'} />
+    </ToastProvider>,
   );
 }
 
@@ -81,10 +96,29 @@ function treeNode(testId: string, path: string): HTMLElement | undefined {
     .find((node) => node.getAttribute('data-path') === path);
 }
 
+beforeEach(() => {
+  // `readFile` 默认按 `FILE_CONTENTS` 返回全文（每个用例可自行覆盖）。
+  mocks.readFile.mockImplementation((_sandbox: string, path: string) => {
+    const text = FILE_CONTENTS.get(path);
+    if (text === undefined) {
+      return Promise.reject(new Error(`读不到文件：${path}`));
+    }
+    return Promise.resolve({
+      text,
+      binary: false,
+      size: text.length,
+      bytes: text.length,
+      truncated: false,
+    } satisfies ReadFileResult);
+  });
+});
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   mocks.listFiles.mockReset();
+  mocks.readFile.mockReset();
+  FILE_CONTENTS.clear();
   window.localStorage.clear();
 });
 
@@ -178,7 +212,11 @@ describe('引导态（未设根）', () => {
     mockVault();
     writeStoredVaultRoot('demo-a', ROOT);
 
-    render(<ObsidianWorkspace sandbox="demo-b" workdir="/work" />);
+    render(
+      <ToastProvider>
+        <ObsidianWorkspace sandbox="demo-b" workdir="/work" />
+      </ToastProvider>,
+    );
 
     expect(screen.getByTestId('page-sandbox-detail-obsidian-onboarding')).toBeTruthy();
     expect(readStoredVaultRoot('demo-a')).toBe(ROOT);
@@ -378,8 +416,9 @@ describe('更改根与选中态', () => {
     ).toBe(mediaCallsBefore);
   });
 
-  it('右侧预览区先落占位：默认「从左侧选择文件」，点 .md 后带上选中路径', async () => {
+  it('右侧预览区：默认「从左侧选择文件」，点 .md 后进入阅读器并带上选中路径', async () => {
     mockVault();
+    setFile('/vault/index.md', '# 首页\n');
     writeStoredVaultRoot('demo', ROOT);
 
     renderWorkspace();
@@ -401,9 +440,11 @@ describe('更改根与选中态', () => {
       'true',
     );
     expect(screen.queryByTestId('page-sandbox-detail-obsidian-preview-empty')).toBeNull();
-    expect(
-      screen.getByTestId('page-sandbox-detail-obsidian-preview-placeholder').textContent,
-    ).toBe('/vault/index.md');
+    // 07 轮：占位（`-preview-placeholder`）退役，换成真正的阅读器。
+    expect((await screen.findByTestId('page-sandbox-detail-obsidian-preview-title')).textContent).toBe(
+      'index.md',
+    );
+    expect(screen.queryByTestId('page-sandbox-detail-obsidian-preview-placeholder')).toBeNull();
   });
 });
 
@@ -412,5 +453,731 @@ describe('沙箱键一致性', () => {
     expect(vaultRootStorageKey('demo')).toBe('sandbox-console-obsidian-vault-root:demo');
     expect(vaultExpandedStorageKey('demo')).toBe('sandbox-console-obsidian-expanded:demo');
     expect(window.localStorage.getItem(vaultRootStorageKey('demo'))).toBeNull();
+  });
+});
+
+/* ---------------------------------------------------- 07 轮：阅读器 */
+
+const READER_INDEX = [
+  '---',
+  'title: 文档',
+  'tags: [a]',
+  '---',
+  '',
+  '# 标题一',
+  '',
+  '## 标题二',
+  '',
+  '段落：**粗体**、`行内码`、[[target]]、[[notes/deep|别名]]、[[#小节]]、[[missing]]。',
+  '',
+  '- 列表项一',
+  '- 列表项二',
+  '',
+  '- [ ] 待办',
+  '- [x] 已办',
+  '',
+  '> 引用块',
+  '',
+  '```js',
+  'const a = 1;',
+  '```',
+  '',
+  '<script>window.__pwn = 1;</script>',
+  '',
+].join('\n');
+
+/** 阅读器用的 vault：根上 index / target / big，子目录 notes。 */
+function mockReaderVault(options: { bigSize?: number; linkBig?: boolean } = {}): void {
+  const rootEntries: FileListEntry[] = [
+    entry({ name: 'notes', kind: 'dir' }),
+    entry({ name: 'index.md', size: READER_INDEX.length }),
+    entry({ name: 'target.md', size: 40 }),
+  ];
+  if (options.bigSize !== undefined) {
+    rootEntries.push(entry({ name: 'big.md', size: options.bigSize }));
+  }
+  mocks.listFiles.mockImplementation((_sandbox: string, path: string) => {
+    if (path === ROOT) {
+      return Promise.resolve(rootEntries);
+    }
+    if (path === '/vault/notes') {
+      return Promise.resolve([entry({ name: 'deep.md', size: 30 })]);
+    }
+    return Promise.resolve([]);
+  });
+  setFile(
+    '/vault/index.md',
+    options.linkBig === true ? `${READER_INDEX}\n[[big]]\n` : READER_INDEX,
+  );
+  setFile('/vault/target.md', '# 目标\n\n被链接到的目标文件。\n');
+  setFile('/vault/notes/deep.md', '# 深\n');
+  setFile('/vault/big.md', '# 大文件正文\n');
+}
+
+/** 点树上的根级文件（阅读器用例都在根上取文件）。 */
+async function openReaderFile(path: string): Promise<void> {
+  const node = await waitFor(() => {
+    const found = treeNode('page-sandbox-detail-obsidian-tree-file', path);
+    expect(found).toBeTruthy();
+    return found as HTMLElement;
+  });
+  fireEvent.click(node);
+}
+
+/** 渲染态里 data-target 对得上的那条 wikilink。 */
+async function wikilinkOf(target: string): Promise<HTMLElement> {
+  return waitFor(() => {
+    const found = screen
+      .queryAllByTestId('page-sandbox-detail-obsidian-preview-wikilink')
+      .find((node) => node.getAttribute('data-target') === target);
+    expect(found).toBeTruthy();
+    return found as HTMLElement;
+  });
+}
+
+function toasts(): HTMLElement[] {
+  return screen.queryAllByTestId('page-toast-item');
+}
+
+describe('阅读器：工具条与渲染 / 源码双态（OBS-06 / OBS-07）', () => {
+  it('工具条 = 文件名 / 大小 / 渲染·源码分段 / 复制；栈底不渲染返回钮', async () => {
+    mockReaderVault();
+    writeStoredVaultRoot('demo', ROOT);
+    renderWorkspace();
+
+    await openReaderFile('/vault/index.md');
+
+    expect((await screen.findByTestId('page-sandbox-detail-obsidian-preview-title')).textContent).toBe(
+      'index.md',
+    );
+    expect(
+      screen.getByTestId('page-sandbox-detail-obsidian-preview-size').textContent,
+    ).toBe(`${READER_INDEX.length} B`);
+
+    const renderMode = screen.getByTestId('page-sandbox-detail-obsidian-preview-mode-render');
+    const sourceMode = screen.getByTestId('page-sandbox-detail-obsidian-preview-mode-source');
+    expect(renderMode.textContent).toBe('渲染');
+    expect(sourceMode.textContent).toBe('源码');
+    expect(renderMode.getAttribute('aria-pressed')).toBe('true');
+    expect(sourceMode.getAttribute('aria-pressed')).toBe('false');
+    expect(renderMode.getAttribute('data-active')).toBe('true');
+
+    // 只有一层历史：返回钮不渲染。
+    expect(screen.queryByTestId('page-sandbox-detail-obsidian-preview-back-button')).toBeNull();
+    expect(screen.getByTestId('page-sandbox-detail-obsidian-preview-copy-button')).toBeTruthy();
+  });
+
+  it('渲染态：620px 居中列 + 标题 / 深底代码块 / 列表 / 任务列表 / 引用 / 行内码 / 粗体；frontmatter 隐藏', async () => {
+    mockReaderVault();
+    writeStoredVaultRoot('demo', ROOT);
+    renderWorkspace();
+
+    await openReaderFile('/vault/index.md');
+    const body = await screen.findByTestId('page-sandbox-detail-obsidian-preview-body');
+    expect(body.getAttribute('data-mode')).toBe('render');
+
+    const content = within(body).getByTestId('page-sandbox-detail-obsidian-preview-content');
+    expect(content.className).toContain('max-w-[620px]');
+    expect(content.className).toContain('mx-auto');
+
+    // 标题层级
+    expect(within(content).getByRole('heading', { level: 1 }).textContent).toBe('标题一');
+    expect(within(content).getByRole('heading', { level: 2 }).textContent).toBe('标题二');
+
+    // 深底代码块（终端恒定深色令牌）
+    const pre = content.querySelector('pre');
+    expect(pre).toBeTruthy();
+    expect(pre?.className).toContain('bg-terminal-bg');
+    expect(pre?.textContent).toContain('const a = 1;');
+
+    // 列表 + 任务列表（静态不可勾）
+    expect(content.querySelectorAll('ul li').length).toBeGreaterThanOrEqual(4);
+    const checkboxes = content.querySelectorAll('input[type="checkbox"]');
+    expect(checkboxes.length).toBe(2);
+    for (const box of checkboxes) {
+      expect((box as HTMLInputElement).disabled).toBe(true);
+    }
+
+    // 引用块 / 行内码 / 粗体
+    expect(content.querySelector('blockquote')?.textContent).toContain('引用块');
+    expect(content.querySelectorAll('code').length).toBeGreaterThanOrEqual(2);
+    expect(content.querySelector('strong')?.textContent).toBe('粗体');
+
+    // frontmatter：渲染态隐藏
+    expect(content.textContent).not.toContain('title: 文档');
+    expect(content.textContent).not.toContain('tags: [a]');
+  });
+
+  it('不放行原始 HTML：<script> 不渲染为标签、不执行', async () => {
+    mockReaderVault();
+    writeStoredVaultRoot('demo', ROOT);
+    renderWorkspace();
+
+    await openReaderFile('/vault/index.md');
+    const body = await screen.findByTestId('page-sandbox-detail-obsidian-preview-body');
+
+    expect(body.querySelector('script')).toBeNull();
+    expect((window as unknown as { __pwn?: number }).__pwn).toBeUndefined();
+    // 原文被转义成文本（不是标签）
+    expect(body.textContent).toContain('<script>window.__pwn = 1;</script>');
+  });
+
+  it('源码态：原文（frontmatter 可见）、不做 markdown 渲染', async () => {
+    mockReaderVault();
+    writeStoredVaultRoot('demo', ROOT);
+    renderWorkspace();
+
+    await openReaderFile('/vault/index.md');
+    await screen.findByTestId('page-sandbox-detail-obsidian-preview-body');
+
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-obsidian-preview-mode-source'));
+    const source = await screen.findByTestId('page-sandbox-detail-obsidian-preview-source');
+    expect(source.getAttribute('data-mode')).toBe('source');
+    expect(source.textContent).toContain('title: 文档');
+    expect(source.textContent).toContain('---');
+    expect(source.textContent).toContain('# 标题一');
+    // 源码态没有渲染产物
+    expect(screen.queryByTestId('page-sandbox-detail-obsidian-preview-body')).toBeNull();
+    expect(
+      screen.getByTestId('page-sandbox-detail-obsidian-preview-mode-source').getAttribute(
+        'aria-pressed',
+      ),
+    ).toBe('true');
+    // 切回渲染态
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-obsidian-preview-mode-render'));
+    expect(await screen.findByTestId('page-sandbox-detail-obsidian-preview-body')).toBeTruthy();
+  });
+
+  it('复制：渲染态与源码态都复制 markdown 源文；成功零 toast、图标约 1 秒后复原', async () => {
+    mockReaderVault();
+    writeStoredVaultRoot('demo', ROOT);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    renderWorkspace();
+    await openReaderFile('/vault/index.md');
+    await screen.findByTestId('page-sandbox-detail-obsidian-preview-body');
+
+    // 换假计时器只为钉「约 1 秒复原」（不用 waitFor，纯推进时间）
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('page-sandbox-detail-obsidian-preview-copy-button'));
+      });
+      expect(writeText).toHaveBeenCalledTimes(1);
+      // 渲染态复制的是 markdown 源文（不是渲染后的纯文本）
+      expect(writeText.mock.calls[0][0]).toBe(READER_INDEX);
+      expect(
+        screen.getByTestId('page-sandbox-detail-obsidian-preview-copy-button').getAttribute(
+          'aria-label',
+        ),
+      ).toBe('已复制');
+      expect(toasts()).toHaveLength(0);
+
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
+      expect(
+        screen.getByTestId('page-sandbox-detail-obsidian-preview-copy-button').getAttribute(
+          'aria-label',
+        ),
+      ).toBe('复制');
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // 源码态复制的也是原文
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-obsidian-preview-mode-source'));
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-obsidian-preview-copy-button'));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+    expect(writeText.mock.calls[1][0]).toBe(READER_INDEX);
+  });
+
+  it('复制失败：失败才 toast（来源 obsidian）', async () => {
+    mockReaderVault();
+    writeStoredVaultRoot('demo', ROOT);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
+    });
+
+    renderWorkspace();
+    await openReaderFile('/vault/index.md');
+    await screen.findByTestId('page-sandbox-detail-obsidian-preview-body');
+
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-obsidian-preview-copy-button'));
+    await waitFor(() =>
+      expect(
+        toasts().some(
+          (node) =>
+            node.textContent?.includes('复制到系统剪贴板失败') &&
+            node.getAttribute('data-toast-source') === 'obsidian',
+        ),
+      ).toBe(true),
+    );
+  });
+});
+
+describe('wikilink 渲染、tooltip 与跳转（OBS-08 / OBS-09 / OBS-10）', () => {
+  it('样式：强调色 + 虚线下划线；别名当作显示文案', async () => {
+    mockReaderVault();
+    writeStoredVaultRoot('demo', ROOT);
+    renderWorkspace();
+
+    await openReaderFile('/vault/index.md');
+
+    const plain = await wikilinkOf('target');
+    expect(plain.textContent).toBe('target');
+    expect(plain.className).toContain('text-primary');
+    expect(plain.className).toContain('underline');
+    expect(plain.className).toContain('decoration-dashed');
+
+    const aliased = await wikilinkOf('notes/deep');
+    expect(aliased.textContent).toBe('别名');
+
+    // `[[#标题]]` 也是个 wikilink 元素
+    expect((await wikilinkOf('')).textContent).toBe('#小节');
+  });
+
+  it('hover：黑底小 tooltip，内容 = 解析后的目标路径；离开即消失', async () => {
+    mockReaderVault();
+    writeStoredVaultRoot('demo', ROOT);
+    renderWorkspace();
+
+    await openReaderFile('/vault/index.md');
+    const link = await wikilinkOf('target');
+
+    expect(screen.queryByTestId('page-sandbox-detail-obsidian-preview-wikilink-tooltip')).toBeNull();
+    fireEvent.mouseOver(link);
+
+    const tooltip = await screen.findByTestId(
+      'page-sandbox-detail-obsidian-preview-wikilink-tooltip',
+    );
+    expect(tooltip.textContent).toBe('/vault/target.md');
+    expect(tooltip.getAttribute('role')).toBe('tooltip');
+    expect(tooltip.className).toContain('bg-terminal-bg');
+    // 定位走 position: fixed（防裁切），且落在视口内
+    expect(tooltip.style.position).toBe('fixed');
+    expect(Number.parseFloat(tooltip.style.left)).toBeGreaterThanOrEqual(0);
+    expect(Number.parseFloat(tooltip.style.top)).toBeGreaterThanOrEqual(0);
+    expect(link.getAttribute('data-status')).toBe('found');
+    expect(link.getAttribute('data-resolved-path')).toBe('/vault/target.md');
+
+    fireEvent.mouseOut(link);
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId('page-sandbox-detail-obsidian-preview-wikilink-tooltip'),
+      ).toBeNull(),
+    );
+  });
+
+  it('点击存在的目标：沿历史栈推入渲染视图，返回键可退回', async () => {
+    mockReaderVault();
+    writeStoredVaultRoot('demo', ROOT);
+    renderWorkspace();
+
+    await openReaderFile('/vault/index.md');
+    fireEvent.click(await wikilinkOf('target'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('page-sandbox-detail-obsidian-preview-title').textContent).toBe(
+        'target.md',
+      ),
+    );
+    const preview = screen.getByTestId('page-sandbox-detail-obsidian-preview');
+    expect(preview.getAttribute('data-selected-path')).toBe('/vault/target.md');
+    expect(
+      (await screen.findByTestId('page-sandbox-detail-obsidian-preview-content')).textContent,
+    ).toContain('被链接到的目标文件');
+
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-obsidian-preview-back-button'));
+    await waitFor(() =>
+      expect(screen.getByTestId('page-sandbox-detail-obsidian-preview-title').textContent).toBe(
+        'index.md',
+      ),
+    );
+    expect(preview.getAttribute('data-selected-path')).toBe('/vault/index.md');
+    // 栈底：返回钮消失
+    expect(screen.queryByTestId('page-sandbox-detail-obsidian-preview-back-button')).toBeNull();
+  });
+
+  it('斜体（em）里的 wikilink 同样可点，点击照常压栈', async () => {
+    mockReaderVault();
+    // 斜体 / 粗体两种强调包着的同一条 wikilink：都要过 wikilink 渲染。
+    setFile('/vault/index.md', '# 强调\n\n这是 *[[target]]* 与 **[[target]]**。\n');
+    writeStoredVaultRoot('demo', ROOT);
+    renderWorkspace();
+
+    await openReaderFile('/vault/index.md');
+
+    const links = await waitFor(() => {
+      const found = screen
+        .queryAllByTestId('page-sandbox-detail-obsidian-preview-wikilink')
+        .filter((node) => node.getAttribute('data-target') === 'target');
+      expect(found).toHaveLength(2);
+      return found;
+    });
+    const italic = links[0];
+    expect(italic.closest('em')).not.toBeNull();
+    expect(italic.textContent).toBe('target');
+    expect(links[1].closest('strong')).not.toBeNull();
+
+    // 斜体里的那条可点：命中后照常压栈。
+    fireEvent.click(italic);
+    await waitFor(() =>
+      expect(screen.getByTestId('page-sandbox-detail-obsidian-preview-title').textContent).toBe(
+        'target.md',
+      ),
+    );
+    expect(
+      screen.getByTestId('page-sandbox-detail-obsidian-preview').getAttribute('data-selected-path'),
+    ).toBe('/vault/target.md');
+  });
+
+  it('解析还没回来时在树上另点了文件：旧点击作废，不把旧目标压到新栈顶', async () => {
+    mockReaderVault();
+    writeStoredVaultRoot('demo', ROOT);
+    renderWorkspace();
+
+    await openReaderFile('/vault/index.md');
+
+    // 先把 notes 展开（这步列举走真实 mock，不挂住）。
+    const notesDir = await waitFor(() => {
+      const node = treeNode('page-sandbox-detail-obsidian-tree-dir', '/vault/notes');
+      expect(node).toBeTruthy();
+      return node as HTMLElement;
+    });
+    fireEvent.click(notesDir);
+    await waitFor(() =>
+      expect(
+        treeNode('page-sandbox-detail-obsidian-tree-file', '/vault/notes/deep.md'),
+      ).toBeTruthy(),
+    );
+
+    // 让 wikilink 的「① 同目录」列举挂住（真实解析最长可能等 5 秒）。
+    const realListFiles = mocks.listFiles.getMockImplementation();
+    let releaseRoot: ((entries: FileListEntry[]) => void) | undefined;
+    mocks.listFiles.mockImplementation((sandbox: string, path: string) => {
+      if (path === ROOT) {
+        return new Promise<FileListEntry[]>((resolve) => {
+          releaseRoot = resolve;
+        });
+      }
+      return realListFiles?.(sandbox, path) ?? Promise.resolve([]);
+    });
+
+    fireEvent.click(await wikilinkOf('target'));
+    await waitFor(() => expect(typeof releaseRoot).toBe('function'));
+
+    // 解析回来之前，用户在树上点了另一个文件（重置栈）。
+    await openReaderFile('/vault/notes/deep.md');
+    await waitFor(() =>
+      expect(screen.getByTestId('page-sandbox-detail-obsidian-preview-title').textContent).toBe(
+        'deep.md',
+      ),
+    );
+
+    // 迟到的解析结果：旧点击的续体必须整段作废（代次变了）。
+    await act(async () => {
+      releaseRoot?.([
+        entry({ name: 'notes', kind: 'dir' }),
+        entry({ name: 'index.md', size: READER_INDEX.length }),
+        entry({ name: 'target.md', size: 40 }),
+      ]);
+      await Promise.resolve();
+    });
+
+    const preview = screen.getByTestId('page-sandbox-detail-obsidian-preview');
+    expect(preview.getAttribute('data-selected-path')).toBe('/vault/notes/deep.md');
+    expect(screen.getByTestId('page-sandbox-detail-obsidian-preview-title').textContent).toBe(
+      'deep.md',
+    );
+    // 没有额外的压栈（栈只有重置后的这一层）。
+    expect(screen.queryByTestId('page-sandbox-detail-obsidian-preview-back-button')).toBeNull();
+    expect(
+      screen.queryByTestId('page-sandbox-detail-obsidian-preview-wikilink-error'),
+    ).toBeNull();
+  });
+
+  it('点树上另一个文件 = 重置历史栈（返回钮随之消失）', async () => {
+    mockReaderVault();
+    writeStoredVaultRoot('demo', ROOT);
+    renderWorkspace();
+
+    await openReaderFile('/vault/index.md');
+    fireEvent.click(await wikilinkOf('target'));
+    await waitFor(() =>
+      expect(screen.getByTestId('page-sandbox-detail-obsidian-preview-back-button')).toBeTruthy(),
+    );
+
+    await openReaderFile('/vault/index.md');
+    await waitFor(() =>
+      expect(screen.getByTestId('page-sandbox-detail-obsidian-preview-title').textContent).toBe(
+        'index.md',
+      ),
+    );
+    expect(screen.queryByTestId('page-sandbox-detail-obsidian-preview-back-button')).toBeNull();
+  });
+
+  it('点击不存在的目标：正文顶部就地浅红错误条，可关闭、不跳转、不弹 toast', async () => {
+    mockReaderVault();
+    writeStoredVaultRoot('demo', ROOT);
+    renderWorkspace();
+
+    await openReaderFile('/vault/index.md');
+    fireEvent.click(await wikilinkOf('missing'));
+
+    const bar = await screen.findByTestId('page-sandbox-detail-obsidian-preview-wikilink-error');
+    expect(bar.getAttribute('role')).toBe('alert');
+    expect(bar.textContent).toBe('链接目标不存在：missing');
+    expect(bar.className).toContain('bg-destructive-soft');
+    // 不跳转、不弹 toast
+    expect(
+      screen.getByTestId('page-sandbox-detail-obsidian-preview').getAttribute('data-selected-path'),
+    ).toBe('/vault/index.md');
+    expect(toasts()).toHaveLength(0);
+
+    fireEvent.click(
+      screen.getByTestId('page-sandbox-detail-obsidian-preview-wikilink-error-close-button'),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId('page-sandbox-detail-obsidian-preview-wikilink-error'),
+      ).toBeNull(),
+    );
+  });
+
+  it('[[#标题]] 指回当前文件自身：不压栈、不报错', async () => {
+    mockReaderVault();
+    writeStoredVaultRoot('demo', ROOT);
+    renderWorkspace();
+
+    await openReaderFile('/vault/index.md');
+    const selfLink = await wikilinkOf('');
+    fireEvent.click(selfLink);
+
+    await waitFor(() => expect(selfLink.getAttribute('data-status')).toBe('found'));
+    expect(
+      screen.getByTestId('page-sandbox-detail-obsidian-preview').getAttribute('data-selected-path'),
+    ).toBe('/vault/index.md');
+    expect(screen.queryByTestId('page-sandbox-detail-obsidian-preview-back-button')).toBeNull();
+    expect(
+      screen.queryByTestId('page-sandbox-detail-obsidian-preview-wikilink-error'),
+    ).toBeNull();
+  });
+});
+
+describe('大文件与读取错误（OBS-11）', () => {
+  const BIG = 3 * 1024 * 1024;
+
+  it('>2 MB：复用同一套二次确认 + 进度条；取消不发请求、确认后渲染全文', async () => {
+    mockReaderVault({ bigSize: BIG });
+    writeStoredVaultRoot('demo', ROOT);
+    renderWorkspace();
+
+    await openReaderFile('/vault/big.md');
+
+    const dialog = await screen.findByTestId(
+      'page-sandbox-detail-obsidian-preview-confirm-dialog',
+    );
+    expect(dialog.textContent).toContain('超过 2 MB');
+    expect(dialog.textContent).toContain('big.md');
+    expect(mocks.readFile).not.toHaveBeenCalled();
+
+    // 取消：一个请求都不发，右栏仍是空态
+    fireEvent.click(
+      screen.getByTestId('page-sandbox-detail-obsidian-preview-confirm-cancel-button'),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId('page-sandbox-detail-obsidian-preview-confirm-dialog'),
+      ).toBeNull(),
+    );
+    expect(mocks.readFile).not.toHaveBeenCalled();
+    expect(screen.getByTestId('page-sandbox-detail-obsidian-preview-empty')).toBeTruthy();
+
+    // 确认：这时才读，且按列表 size 请求全量
+    await openReaderFile('/vault/big.md');
+    await screen.findByTestId('page-sandbox-detail-obsidian-preview-confirm-dialog');
+    let reportProgress: ((loaded: number) => void) | undefined;
+    let resolveRead: ((value: ReadFileResult) => void) | undefined;
+    mocks.readFile.mockImplementation(
+      (_sandbox: string, _path: string, options?: { onProgress?: (loaded: number) => void }) => {
+        reportProgress = options?.onProgress;
+        return new Promise<ReadFileResult>((resolve) => {
+          resolveRead = resolve;
+        });
+      },
+    );
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-obsidian-preview-confirm-button'));
+    await waitFor(() => expect(mocks.readFile).toHaveBeenCalledTimes(1));
+    expect(mocks.readFile.mock.calls[0][1]).toBe('/vault/big.md');
+    expect(mocks.readFile.mock.calls[0][2]).toMatchObject({ maxBytes: BIG });
+
+    // 进度条：已接收字节 / size
+    expect(
+      screen.getByTestId('page-sandbox-detail-obsidian-preview-progress'),
+    ).toBeTruthy();
+    reportProgress?.(Math.floor(BIG / 2));
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('page-sandbox-detail-obsidian-preview-progress').getAttribute(
+          'aria-valuenow',
+        ),
+      ).toBe('50'),
+    );
+
+    resolveRead?.({
+      text: '# 大文件正文\n\n全文都渲染。\n',
+      binary: false,
+      size: BIG,
+      bytes: BIG,
+      truncated: false,
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('page-sandbox-detail-obsidian-preview-content').textContent,
+      ).toContain('全文都渲染'),
+    );
+    expect(screen.queryByTestId('page-sandbox-detail-obsidian-preview-progress')).toBeNull();
+    const text = document.body.textContent ?? '';
+    expect(text).not.toContain('文件过大');
+    expect(text).not.toContain('仅展示前');
+  });
+
+  it('wikilink 命中大文件：同样先二次确认，确认后压栈（返回键可退回）', async () => {
+    mockReaderVault({ bigSize: BIG, linkBig: true });
+    writeStoredVaultRoot('demo', ROOT);
+    renderWorkspace();
+
+    await openReaderFile('/vault/index.md');
+    fireEvent.click(await wikilinkOf('big'));
+
+    const dialog = await screen.findByTestId(
+      'page-sandbox-detail-obsidian-preview-confirm-dialog',
+    );
+    expect(dialog.textContent).toContain('big.md');
+    expect(mocks.readFile).toHaveBeenCalledTimes(1); // 只有 index.md 那一次
+    expect(
+      screen.getByTestId('page-sandbox-detail-obsidian-preview').getAttribute('data-selected-path'),
+    ).toBe('/vault/index.md');
+
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-obsidian-preview-confirm-button'));
+    await waitFor(() =>
+      expect(screen.getByTestId('page-sandbox-detail-obsidian-preview-title').textContent).toBe(
+        'big.md',
+      ),
+    );
+    expect(mocks.readFile.mock.calls[1][1]).toBe('/vault/big.md');
+    expect(mocks.readFile.mock.calls[1][2]).toMatchObject({ maxBytes: BIG });
+    expect(
+      (await screen.findByTestId('page-sandbox-detail-obsidian-preview-content')).textContent,
+    ).toContain('大文件正文');
+
+    // 压栈进来的：返回键存在，退回 index.md
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-obsidian-preview-back-button'));
+    await waitFor(() =>
+      expect(screen.getByTestId('page-sandbox-detail-obsidian-preview-title').textContent).toBe(
+        'index.md',
+      ),
+    );
+  });
+
+  it('小文件：直接加载，不出现进度条、不弹确认框', async () => {
+    mockReaderVault();
+    writeStoredVaultRoot('demo', ROOT);
+    mocks.readFile.mockImplementation(() => new Promise<ReadFileResult>(() => {}));
+    renderWorkspace();
+
+    await openReaderFile('/vault/index.md');
+    await screen.findByTestId('page-sandbox-detail-obsidian-preview-loading');
+    expect(mocks.readFile).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('page-sandbox-detail-obsidian-preview-progress')).toBeNull();
+    expect(
+      screen.queryByTestId('page-sandbox-detail-obsidian-preview-confirm-dialog'),
+    ).toBeNull();
+  });
+
+  it('非 UTF-8：按「无法展示」的空态处理（与文件窗格预览同款）', async () => {
+    mockReaderVault();
+    writeStoredVaultRoot('demo', ROOT);
+    mocks.readFile.mockRejectedValue(new TextNotPreviewableError());
+    renderWorkspace();
+
+    await openReaderFile('/vault/index.md');
+    const unsupported = await screen.findByTestId(
+      'page-sandbox-detail-obsidian-preview-unsupported',
+    );
+    expect(unsupported.textContent).toContain('无法预览');
+  });
+
+  it('读取失败：就地错误态（role=alert），不弹 toast', async () => {
+    mockReaderVault();
+    writeStoredVaultRoot('demo', ROOT);
+    mocks.readFile.mockRejectedValue(new Error('读取中断，文件不完整'));
+    renderWorkspace();
+
+    await openReaderFile('/vault/index.md');
+    const error = await screen.findByTestId('page-sandbox-detail-obsidian-preview-error');
+    expect(error.getAttribute('role')).toBe('alert');
+    expect(error.textContent).toBe('读取中断，文件不完整');
+    expect(toasts()).toHaveLength(0);
+  });
+});
+
+describe('阅读位持久化（07 可选评估项）', () => {
+  it('Obsidian ↔ 终端 tab 往返（组件重挂载）后仍停在原来那一篇', async () => {
+    mockReaderVault();
+    writeStoredVaultRoot('demo', ROOT);
+
+    const first = renderWorkspace();
+    await openReaderFile('/vault/index.md');
+    await screen.findByTestId('page-sandbox-detail-obsidian-preview-content');
+    expect(readStoredSelection('demo')).toEqual({
+      path: '/vault/index.md',
+      name: 'index.md',
+      size: READER_INDEX.length,
+    });
+
+    // 模拟切到终端 tab：组件卸载（06 的二选一渲染），再切回来重挂载。
+    first.unmount();
+    renderWorkspace();
+
+    expect(
+      (await screen.findByTestId('page-sandbox-detail-obsidian-preview-title')).textContent,
+    ).toBe('index.md');
+    expect(mocks.readFile).toHaveBeenCalledWith('demo', '/vault/index.md', expect.anything());
+  });
+
+  it('大文件不自动恢复阅读位（不绕过「> 2 MB 先二次确认」）', async () => {
+    mockReaderVault({ bigSize: 3 * 1024 * 1024 });
+    writeStoredVaultRoot('demo', ROOT);
+    writeStoredSelection('demo', {
+      path: '/vault/big.md',
+      name: 'big.md',
+      size: 3 * 1024 * 1024,
+    });
+
+    renderWorkspace();
+
+    expect(screen.getByTestId('page-sandbox-detail-obsidian-preview-empty')).toBeTruthy();
+    expect(
+      screen.queryByTestId('page-sandbox-detail-obsidian-preview-confirm-dialog'),
+    ).toBeNull();
+    expect(mocks.readFile).not.toHaveBeenCalled();
+  });
+
+  it('根之外的旧阅读位不恢复（换过根就当没记过）', async () => {
+    mockReaderVault();
+    writeStoredVaultRoot('demo', '/vault/notes');
+    writeStoredSelection('demo', { path: '/vault/index.md', name: 'index.md', size: 10 });
+
+    renderWorkspace();
+
+    expect(screen.getByTestId('page-sandbox-detail-obsidian-preview-empty')).toBeTruthy();
+    expect(mocks.readFile).not.toHaveBeenCalled();
   });
 });
