@@ -6,10 +6,13 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
-from sandbox_platform import SandboxService
+from dataclasses import replace
 
-from ..deps import get_service
+from fastapi import APIRouter, Depends
+from sandbox_platform import CreateRequest, SandboxService
+
+from ..deps import get_image_cache_injection, get_service
+from ..injection import ImageCacheInjection
 from ..schemas import (
     CreateSandboxRequest,
     CreateSandboxResponse,
@@ -23,6 +26,26 @@ from ..schemas import (
 router = APIRouter(prefix="/sandboxes", tags=["沙箱"])
 
 
+def _with_image_cache_injection(
+    request: CreateRequest, injection: ImageCacheInjection | None
+) -> CreateRequest:
+    """把镜像缓存注入两值挂到核心包创建入参的可选字段上。
+
+    模板注入先例的同款递参位置：服务端读自己的状态（地址由配置 / 探测得出、
+    令牌读自己的凭据文件）、以参数递核心包执行，核心包不知业务存在。两值
+    都可随时重推导，故**不进 metadata**——核心包按可选参数平台强制注入，
+    ``metadata.env`` 只装用户声明值。两值皆不可得（``injection`` 为 None）
+    时不递参，创建照常成功（与命令行路径同归缺 env 边角）。
+    """
+    if injection is None:
+        return request
+    return replace(
+        request,
+        image_cache_url=injection.url,
+        image_cache_token=injection.token,
+    )
+
+
 @router.post(
     "",
     response_model=CreateSandboxResponse,
@@ -32,9 +55,16 @@ router = APIRouter(prefix="/sandboxes", tags=["沙箱"])
 def create_sandbox(
     payload: CreateSandboxRequest,
     service: SandboxService = Depends(get_service),
+    injection: ImageCacheInjection | None = Depends(get_image_cache_injection),
 ) -> CreateSandboxResponse:
-    """创建沙箱（固定 7 步，任一步失败自动回滚）。"""
-    result = service.create(payload.to_core_request())
+    """创建沙箱（固定 7 步，任一步失败自动回滚）。
+
+    镜像缓存注入两值（可达地址 + 受限令牌）随创建入参递给核心包：两值皆
+    不可得时不递参、创建照常成功；任一项不可得只跳过那一项。
+    """
+    result = service.create(
+        _with_image_cache_injection(payload.to_core_request(), injection)
+    )
     return CreateSandboxResponse.from_result(result)
 
 
@@ -53,9 +83,22 @@ def get_sandbox(name: str, service: SandboxService = Depends(get_service)) -> Sa
 
 
 @router.post("/{name}/start", response_model=SandboxDetail, summary="启动沙箱")
-def start_sandbox(name: str, service: SandboxService = Depends(get_service)) -> SandboxDetail:
-    """启动沙箱（复用同一用户、同一子 ID 段、同一守护进程）。"""
-    return SandboxDetail.from_metadata(service.start(name))
+def start_sandbox(
+    name: str,
+    service: SandboxService = Depends(get_service),
+    injection: ImageCacheInjection | None = Depends(get_image_cache_injection),
+) -> SandboxDetail:
+    """启动沙箱（复用同一用户、同一子 ID 段、同一守护进程）。
+
+    启动（重启）路径同样递参：两值都可随时重推导，不进 metadata——缺 env
+    的既有沙箱重启一次即补上注入（自愈口径），令牌轮换后重启一次即换新值。
+    """
+    metadata = service.start(
+        name,
+        image_cache_url=injection.url if injection else None,
+        image_cache_token=injection.token if injection else None,
+    )
+    return SandboxDetail.from_metadata(metadata)
 
 
 @router.post("/{name}/stop", response_model=SandboxDetail, summary="停止沙箱")

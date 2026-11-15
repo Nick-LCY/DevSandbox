@@ -18,6 +18,7 @@ from sandbox_platform import (
 from .auth import TicketStore
 from .cache_images import CacheImagesCache
 from .forwards import TunnelRegistry
+from .injection import ImageCacheInjection, resolve_image_cache_injection
 from .templates import TemplateStore
 from .terminal import TerminalSessionManager
 
@@ -72,6 +73,16 @@ def get_terminal_manager(request: Request) -> TerminalSessionManager:
 def get_ticket_store(request: Request) -> TicketStore:
     """取应用级票据存储（整个进程共用一个实例）。"""
     return _ticket_store_of(request.app)
+
+
+def get_image_cache_injection(request: Request) -> ImageCacheInjection | None:
+    """推导镜像缓存清单注入参数（**每请求重推导**，不缓存）。
+
+    两值都可随时重推导：地址由配置 / 探测得出、令牌每请求读凭据文件
+    （重写文件即轮换）——故不进 metadata。两值皆不可得时返回 ``None``
+    （调用方按「不递参」处理）：注入是增益能力，推导失败不阻塞创建。
+    """
+    return resolve_image_cache_injection(get_config(request))
 
 
 def get_cache_images_cache(request: Request) -> CacheImagesCache:

@@ -99,8 +99,14 @@ class FakeSandboxService:
         self._record("get", name)
         return self.metadata
 
-    def start(self, name: str) -> SandboxMetadata:
-        self._record("start", name)
+    def start(
+        self,
+        name: str,
+        *,
+        image_cache_url: str | None = None,
+        image_cache_token: str | None = None,
+    ) -> SandboxMetadata:
+        self._record("start", name, image_cache_url, image_cache_token)
         return self.metadata
 
     def stop(self, name: str, stop_dependencies: bool = True) -> SandboxMetadata:
@@ -126,6 +132,19 @@ class FakeSandboxService:
             failed=("平台元数据 /var/lib/sandbox-platform/sandboxes/demo 删除失败",),
             plan=self.reclaim_plan(name),
         )
+
+
+@pytest.fixture(autouse=True)
+def neutral_injection_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """钉死镜像缓存注入解析的探测路径：本文件的断言与机器环境解耦。
+
+    探测结果（宿主局域网 IP）随机器而变；本文件只关心递参以外的行为，
+    这里把两条探测路径都钜成「无结果」→ 注入两值恒为 None。地址解析的
+    三档优先级与递参行为由 ``test_image_cache_injection.py`` 专项覆盖。
+    """
+    monkeypatch.setattr("sandbox_console.injection._route_source_ipv4", lambda: None)
+    monkeypatch.setattr("sandbox_console.injection._hostname_ipv4", lambda: None)
+    monkeypatch.delenv("SANDBOX_CONSOLE_SANDBOX_URL", raising=False)
 
 
 @pytest.fixture
@@ -653,7 +672,7 @@ def test_start_sandbox(client: TestClient, fake_service: FakeSandboxService) -> 
     response = client.post("/api/sandboxes/demo/start")
     assert response.status_code == 200
     assert response.json()["name"] == "demo"
-    assert ("start", ("demo",)) in fake_service.calls
+    assert ("start", ("demo", None, None)) in fake_service.calls
 
 
 def test_stop_sandbox_stops_dependencies_by_default(

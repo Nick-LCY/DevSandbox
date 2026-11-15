@@ -98,6 +98,15 @@ SANDBOX_LANG_ENV = "LANG"
 SANDBOX_LC_ALL_ENV = "LC_ALL"
 SANDBOX_LOCALE_VALUE = "C.UTF-8"
 
+# 平台强制注入到沙箱容器的镜像缓存清单入口：后端可达地址 + 受限令牌。
+# 服务端（console）在创建 / 启动沙箱时以可选参数递进来（URL 由配置 / 探测
+# 得出、令牌从服务端自己的凭据文件读出），核心包不做任何解析与兜底——
+# 递进来了就注入，没递就不注入。与 ``SANDBOX_NETWORK`` / locale 同款口径：
+# 平台值优先（覆盖用户声明的同名变量）、不进 metadata（``metadata.env``
+# 只装用户声明值）、创建与重启两条路径共用本注入点。
+SANDBOX_IMAGE_CACHE_URL_ENV = "SANDBOX_IMAGE_CACHE_URL"
+SANDBOX_IMAGE_CACHE_TOKEN_ENV = "SANDBOX_IMAGE_CACHE_TOKEN"
+
 RECLAIM_UNTOUCHED_NOTE = "用户挂载的宿主机目录不受影响"
 RECLAIM_INCOMPLETE_NOTE = "依赖容器清单可能不完整（实时探测失败，仅列出元数据中已知的依赖容器）"
 
@@ -125,6 +134,18 @@ class CreateRequest:
     ``image_source`` 取 ``auto``（默认）或 ``host``（强制从宿主注入）。
     ``files`` 是文件注入声明（``宿主路径:容器路径``）：平台把宿主文件复制到
     沙箱用户家目录后以只读方式挂进容器，原件零接触。
+
+    ``image_cache_url`` / ``image_cache_token`` 是服务端递进来的镜像缓存
+    清单注入参数（模板注入先例的同款位置：服务端读自己的状态、以参数递
+    核心包执行，核心包不知道业务存在）：
+
+    - 只由服务端在创建 / 启动沙箱时推导（URL 由服务端配置 / 探测得出、
+      令牌从服务端自己的凭据文件读出），两值都可随时重推导，故
+      **不进 metadata**（与 ``SANDBOX_NETWORK`` / locale 注入同口径）；
+    - 核心包不做任何解析与兜底：递进来（非空）就在
+      :meth:`SandboxService._run_sandbox_container` 里平台强制注入
+      （平台值优先），没递 / 空值就跳过注入——命令行路径不递，沙箱缺这对
+      env 是已知边角（console 对该沙箱执行一次「停止 → 启动」即自愈）。
     """
 
     name: str
@@ -136,6 +157,8 @@ class CreateRequest:
     workdir: str | None = None
     network_name: str | None = None
     image_source: str = IMAGE_SOURCE_AUTO
+    image_cache_url: str | None = None
+    image_cache_token: str | None = None
 
 
 @dataclass(frozen=True)
@@ -781,6 +804,8 @@ class SandboxService:
                 env=dict(request.env),
                 workdir=request.workdir,
                 name=name,
+                image_cache_url=request.image_cache_url,
+                image_cache_token=request.image_cache_token,
             )
             if not run_result.ok:
                 raise LifecycleError(
@@ -840,6 +865,8 @@ class SandboxService:
         env: dict[str, str],
         workdir: str | None,
         name: str,
+        image_cache_url: str | None = None,
+        image_cache_token: str | None = None,
     ) -> CommandResult:
         """启动沙箱容器。
 
@@ -854,9 +881,15 @@ class SandboxService:
         镜像 ENV 是**基础层**，平台注入是**强制层**——docker 的 ``-e`` 覆盖镜像 ENV，
         且 ``LC_ALL`` 优先级高于 ``LANG``，用户声明任一条都会废掉镜像那层修复。
 
+        平台在这里同时**强制**注入镜像缓存清单入口（``SANDBOX_IMAGE_CACHE_URL`` /
+        ``SANDBOX_IMAGE_CACHE_TOKEN``）：值由服务端在创建 / 启动沙箱时递进来，
+        核心包不做解析与兜底——递进来（非空）就注入，没递就跳过（命令行路径
+        不递，沙箱缺这对 env 是已知边角，console 重启一次即自愈）。
+
         四条口径：
         - **平台注入值优先**：用户声明的同名变量被覆盖（平台说的网络才是真在用的那个；
-          locale 同理：平台要的就是 UTF-8，不给用户留废掉它的口子）；
+          locale 同理：平台要的就是 UTF-8，不给用户留废掉它的口子；镜像缓存清单
+          入口同理：沙箱内命令只认平台递进来的地址与令牌）；
         - **不写入 metadata**：``metadata.env`` 只装用户声明的值（平台注入值不是用户声明的）；
         - **不经 API 响应掩码**：不进 ``metadata.env`` ⇒ 不会出现在详情接口的环境变量清单里；
         - **不就地改写调用方的 env**：合并在本方法内的新 dict 上做，调用方传入的 dict 原样返回。
@@ -872,6 +905,12 @@ class SandboxService:
         # locale 强制层：平台值覆盖用户声明的同名变量（镜像 ENV 只是基础层）
         container_env[SANDBOX_LANG_ENV] = SANDBOX_LOCALE_VALUE
         container_env[SANDBOX_LC_ALL_ENV] = SANDBOX_LOCALE_VALUE
+        # 镜像缓存清单入口：值由服务端递进来，没递 / 空值就跳过（不注入空值）——
+        # 与「命令行路径缺这对 env」的已知边角同归一个状态，自愈路径也一致
+        if image_cache_url:
+            container_env[SANDBOX_IMAGE_CACHE_URL_ENV] = image_cache_url
+        if image_cache_token:
+            container_env[SANDBOX_IMAGE_CACHE_TOKEN_ENV] = image_cache_token
         return daemon.run_container(
             name=container_name,
             image=image,
@@ -1030,13 +1069,35 @@ class SandboxService:
         )
 
     # ---------------------------------------------------------------- 启动与关闭
-    def start(self, name: str) -> SandboxMetadata:
-        """启动沙箱（复用同一用户、同一子 ID 段、同一守护进程单元）。"""
+    def start(
+        self,
+        name: str,
+        *,
+        image_cache_url: str | None = None,
+        image_cache_token: str | None = None,
+    ) -> SandboxMetadata:
+        """启动沙箱（复用同一用户、同一子 ID 段、同一守护进程单元）。
+
+        ``image_cache_url`` / ``image_cache_token`` 是服务端在启动路径现推导的
+        镜像缓存清单注入参数（两值都可随时重推导，不进 metadata）：命令行路径
+        不递 → 沙箱缺这对 env（已知边角）；服务端路径每次都递 → 已有沙箱重启
+        一次即补上注入（自愈口径），令牌轮换后重启一次即换新值。
+        """
         name = validate_sandbox_name(name)
         with self._name_lock(name):
-            return self._start_locked(name)
+            return self._start_locked(
+                name,
+                image_cache_url=image_cache_url,
+                image_cache_token=image_cache_token,
+            )
 
-    def _start_locked(self, name: str) -> SandboxMetadata:
+    def _start_locked(
+        self,
+        name: str,
+        *,
+        image_cache_url: str | None = None,
+        image_cache_token: str | None = None,
+    ) -> SandboxMetadata:
         """启动流程本体（调用方必须已持有名字锁）。"""
         metadata = self.get(name)
         user = self._resolve_user(metadata)
@@ -1092,6 +1153,8 @@ class SandboxService:
             env=dict(metadata.env),
             workdir=metadata.workdir or None,
             name=metadata.name,
+            image_cache_url=image_cache_url,
+            image_cache_token=image_cache_token,
         )
         if not run_result.ok:
             raise LifecycleError("启动沙箱", f"启动沙箱容器失败：{run_result.output.strip()}")
