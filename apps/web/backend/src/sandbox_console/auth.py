@@ -384,10 +384,11 @@ def restricted_access_allowed(path: str, method: str) -> bool:
     """受限令牌的限界判定：仅 ``GET /api/proxy/cache/images`` 放行。
 
     按**路由 + 方法**双限界：路径全等比对（不走前缀，``/api/proxy/cache/
-    images/`` 这类变体不匹配）、方法只认 GET（HEAD 也是非 GET，同样 401）。
+    images/`` 这类变体不匹配）、方法**严格全等**只认字面 GET（HEAD、小写
+    get 都不放行——后者路由层本就 405）。
     其余路径与非 GET（含换票据的 POST）一律不放行。
     """
-    return path == CACHE_IMAGES_PATH and method.upper() == CACHE_IMAGES_METHOD
+    return path == CACHE_IMAGES_PATH and method == CACHE_IMAGES_METHOD
 
 
 def extract_bearer(header: str | None) -> str | None:

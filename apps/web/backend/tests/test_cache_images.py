@@ -228,6 +228,7 @@ def test_restricted_token_cannot_open_tunnel_websocket(
     "path,method,expected",
     [
         (CACHE_IMAGES_PATH, CACHE_IMAGES_METHOD, True),
+        (CACHE_IMAGES_PATH, "get", False),
         (CACHE_IMAGES_PATH, "POST", False),
         (CACHE_IMAGES_PATH, "HEAD", False),
         (CACHE_IMAGES_PATH + "/", "GET", False),
@@ -235,7 +236,16 @@ def test_restricted_token_cannot_open_tunnel_websocket(
         ("/api/proxy/status", "GET", False),
         ("/api/auth/ticket", "POST", False),
     ],
-    ids=["get-exact", "post", "head", "trailing-slash", "subpath", "other-path", "ticket"],
+    ids=[
+        "get-exact",
+        "get-lowercase",
+        "post",
+        "head",
+        "trailing-slash",
+        "subpath",
+        "other-path",
+        "ticket",
+    ],
 )
 def test_restricted_access_gate_is_route_and_method_bounded(
     path: str, method: str, expected: bool

@@ -754,12 +754,14 @@ def test_exempt_websocket_scope_reaches_the_route() -> None:
 # 令牌**取值**的名字：这些变量的值就是令牌本身（或它的候选值）。
 # 对它们做 ``==`` / ``!=`` / ``in`` 比较，就是绕开常量时间比定的破口。
 TOKEN_VALUE_NAMES = frozenset(
-    {"token", "expected", "candidate", "credentials", "existing", "injected", "source"}
+    {"token", "expected", "candidate", "credentials", "existing", "injected", "source",
+     "restricted"}  # restricted：cache-images 受限令牌（auth.py 分类时持有其取值）
 )
 # 跨文件扫描时收紧：``injected`` / ``source`` 在别的模块里指别的东西
 # （模板注入列表等），只在 auth.py 里按「令牌取值」算。
 TOKEN_VALUE_NAMES_CROSS_MODULE = frozenset(
-    {"token", "expected", "candidate", "credentials"}
+    {"token", "expected", "candidate", "credentials",
+     "restricted"}  # restricted：cache-images 受限令牌
 )
 
 
