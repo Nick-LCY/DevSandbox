@@ -31,7 +31,7 @@
  *
  * 镜像：显式 pin `sandbox-platform/base:0.4.0`（本轮镜像，`cached-images`
  * 随它发布；既有 spec 各钉各自轮次的版本、不回改，14/15 钉 0.3.1 同款惯例）。
- * 清理：spec 创建的沙箱用例后必删（`acc-` 前缀，收尾清理也扫这个前缀）。
+ * 清理：spec 创建的沙箱用例后必删（`acc-` 前缀，按名清理 + 收尾人工前缀复核）。
  * 空态与失败态的字段细节由前端单测覆盖（`SettingsDialog.test.tsx`），这里
  * 只冒烟真机数据态——真缓存在本机非空。
  */
@@ -84,6 +84,8 @@ const FORMAT_422_DETAIL = 'format 取值非法（只支持 json 或 text）';
 
 /** spec 内起的 TCP 转发器（让注入地址在绑回环的验收形态下可达），用例后关掉。 */
 let forwarder: net.Server | null = null;
+/** 转发器的存活连接名册（client + upstream 两侧）：afterAll 闭环清理用。 */
+const forwarderSockets = new Set<net.Socket>();
 
 /**
  * 起一条 TCP 转发：绑 `listenHost:listenPort`，逐字节透传给回环上的真后端。
@@ -104,6 +106,12 @@ function startForwarder(listenHost: string, listenPort: number, backendPort: num
   }
   const server = net.createServer((client) => {
     const upstream = net.connect(backendPort, '127.0.0.1');
+    // 登记存活连接（两侧都记）：close() 只停收新连接，存量连接的闭环清理
+    // 靠这份名册（net.Server 没有 http.Server 的 closeAllConnections）。
+    forwarderSockets.add(client);
+    forwarderSockets.add(upstream);
+    client.once('close', () => forwarderSockets.delete(client));
+    upstream.once('close', () => forwarderSockets.delete(upstream));
     client.pipe(upstream);
     upstream.pipe(client);
     const teardown = (): void => {
@@ -116,7 +124,14 @@ function startForwarder(listenHost: string, listenPort: number, backendPort: num
   forwarder = server;
   return new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(listenPort, listenHost, () => resolve());
+    server.listen(listenPort, listenHost, () => {
+      // listen 成功后补常驻 error 监听：转发器存活期内 server 层再出错时记
+      // 日志降级，而不是变成 uncaught exception 击穿整个 worker 进程。
+      server.on('error', (err: Error) =>
+        console.warn(`[16-cache-images] 转发器 error（降级不抛）: ${err.message}`),
+      );
+      resolve();
+    });
   });
 }
 
@@ -151,8 +166,22 @@ test.describe('镜像缓存清单（端点 / 注入 / cached-images）', () => {
 
   test.afterAll(async () => {
     forwarder?.close();
+    // close() 只停收新连接、不等存量连接断开；net.Server 没有 http.Server 的
+    // closeAllConnections()（Node 22 运行时与 @types 均无，可选链只会静默空转），
+    // 转发器自己登记了存活连接，这里逐个销毁完成闭环。
+    for (const socket of forwarderSockets) {
+      socket.destroy();
+    }
+    forwarderSockets.clear();
     forwarder = null;
-    await deleteSandbox(SANDBOX).catch(() => undefined);
+    await deleteSandbox(SANDBOX).catch((error: unknown) => {
+      // 清理失败不抛（不该炸整个报告），但必须可见：留痕进报告注记。
+      // afterAll 钩子跑在末条用例的 After Hooks 内，注记会落在报告里。
+      test.info().annotations.push({
+        type: '清理失败',
+        description: `沙箱 ${SANDBOX} 收尾删除失败：${error instanceof Error ? error.message : String(error)}`,
+      });
+    });
   });
 
   // 终端会话是宿主侧持久资源：清场让「读注入 env」的行定位不受残留会话干扰。
@@ -223,6 +252,10 @@ test.describe('镜像缓存清单（端点 / 注入 / cached-images）', () => {
     expect(outputErr, '正常态 stderr 应为空（没有降级提示）').toBe('');
     // 主断言：逐字一致（输出 = 端点正文 + 空一行 + 引导语）。
     // 跨过 60 秒 TTL 时只有「生成时间」行会更新：归一化后比对条目区 + 尾注 + 引导语。
+    // 假设：同一 60s 窗口内仅生成时间行会漂移，条目集变化属并发拉镜像的已知边界。
+    // 二选一：未跨 TTL → 逐字节严格比对；跨过 TTL → 归一化后比对条目区。
+    // 前缀断言只属于「未跨 TTL」这支——跨过 TTL 时 expected.body 仍带旧生成
+    // 时间行，归一化分支通过后再断前缀必然失配（不能作无条件回退）。
     const exactBody = `${expected.body}\n${GUIDE_LINE}\n`;
     if (output !== exactBody) {
       test.info().annotations.push({
@@ -232,8 +265,9 @@ test.describe('镜像缓存清单（端点 / 注入 / cached-images）', () => {
       expect(stripGeneratedLine(output), '归一化生成时间行后应与端点 text 条目区逐字一致').toBe(
         `${stripGeneratedLine(expected.body)}\n${GUIDE_LINE}\n`,
       );
+    } else {
+      expect(output.startsWith(expected.body), '输出应以端点 text 正文开头').toBe(true);
     }
-    expect(output.startsWith(expected.body), '输出应以端点 text 正文开头').toBe(true);
     expect(output, '输出应以命令自带的引导语收尾').toContain(GUIDE_LINE);
 
     // ── ⑦ 可见旁证：网页终端里直接跑（不重定向），表头在屏幕上
@@ -268,9 +302,9 @@ test.describe('镜像缓存清单（端点 / 注入 / cached-images）', () => {
     expect(first.digest).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(Number.isFinite(first.total_size_bytes)).toBe(true);
     expect(first.cached_at).not.toBe('');
-    expect(payload.total_files).toBeGreaterThanOrEqual(0);
-    expect(payload.blob_files).toBeGreaterThanOrEqual(0);
-    expect(payload.skipped_files).toBeGreaterThanOrEqual(0);
+    expect(Number.isFinite(payload.total_files)).toBe(true);
+    expect(Number.isFinite(payload.blob_files)).toBe(true);
+    expect(Number.isFinite(payload.skipped_files)).toBe(true);
 
     // ── 缺省（不带 query）与 json 同格式
     const defaulted = await fetchCacheImages('');
