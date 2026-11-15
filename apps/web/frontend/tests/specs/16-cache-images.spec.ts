@@ -1,0 +1,345 @@
+/**
+ * 镜像缓存清单（端点 + 注入 + cached-images 命令）真机验收。
+ *
+ * 需求：`docs/prds/registry-cache-manifest.md`「验收标准」B（端点与鉴权矩阵
+ * PRD 8~11）、C（注入链路的端到端 PRD 21）、E（console 视图 PRD 27/28）；
+ * 任务：`docs/tasks/registry-cache-manifest/06-acceptance-and-docs.md`。
+ * 01~05 已分别钉住扫描器、端点单测、注入管线与镜像内命令——本 spec 在
+ * **真浏览器 + 真沙箱 + 真缓存**上钉住它们的合流：
+ *
+ * 一、**端到端（PRD 21）**：console 抽屉创建沙箱（`base:0.4.0`，容器自带
+ *    `cached-images` 与平台注入的 `SANDBOX_IMAGE_CACHE_URL` / `…_TOKEN`
+ *    两个 env）→ 网页终端里读出注入 URL（宿主非回环 IPv4 + 实际端口的
+ *    探测兜底形态，PRD 18）→ **spec 侧起一条 TCP 转发**（同一端口绑到注入
+ *    地址、逐字节透传给回环上的真后端——验收后端按既有 setup 绑 `127.0.0.1`，
+ *    沙箱不可直达；转发只补网络可达性，不改被测服务的绑定与代码，端点数据
+ *    仍出自同一个服务进程。生产部署绑 `0.0.0.0` 时不需要它）→ 容器内跑
+ *    `cached-images`（stdout/stderr 重定向进 `/workspace`，经文件通道取回
+ *    全量字节——真实缓存 29 条目的清单远超终端视口，屏幕只作表头可见旁证）
+ *    → 与端点 `?format=text` 比对：同一服务、同一份 TTL 缓存，内容逐字一致
+ *    （跨过 60 秒 TTL 时归一化「生成时间」行后比对条目区），仅多一行命令
+ *    自带的引导语，退出码 0；
+ * 二、**端点两格式（PRD 9/10）**：`?format=json`（缺省同）200 +
+ *    `application/json`，`generated_at` + 条目五字段 + 三计数齐全；
+ *    `?format=text` 200 + `text/plain`，表头 / 条目 / 尾注两则；
+ * 三、**端点负例（PRD 8/11）**：无凭据 401、错误令牌 401（同一句固定文案
+ *    「访问令牌无效或缺失」原文断言、两种响应逐字节一致）；非法 format 422
+ *    （固定文案原文断言）；
+ * 四、**console 视图冒烟（PRD 27/28）**：设置抽屉「缓存镜像清单」区数据态
+ *    （仓库 / 标签 / 摘要 / 人读大小 / 缓存时间 / 生成时间），手动刷新后
+ *    数据仍在（60 秒 TTL 内刷新拿同一份缓存，属预期）。
+ *
+ * 镜像：显式 pin `sandbox-platform/base:0.4.0`（本轮镜像，`cached-images`
+ * 随它发布；既有 spec 各钉各自轮次的版本、不回改，14/15 钉 0.3.1 同款惯例）。
+ * 清理：spec 创建的沙箱用例后必删（`acc-` 前缀，收尾清理也扫这个前缀）。
+ * 空态与失败态的字段细节由前端单测覆盖（`SettingsDialog.test.tsx`），这里
+ * 只冒烟真机数据态——真缓存在本机非空。
+ */
+
+import * as net from 'node:net';
+
+import { expect, test } from '@playwright/test';
+
+import {
+  backendBaseUrl,
+  clearTerminalSessions,
+  deleteSandbox,
+  downloadSandboxFile,
+} from '../helpers/api';
+import { AUTH_FAILED_DETAIL, authHeaders, bearerHeaders } from '../helpers/auth';
+import {
+  fillCreateForm,
+  gotoDetail,
+  openCreateDialog,
+  openSettingsDrawer,
+  selectCreatedSandbox,
+} from '../helpers/console';
+import { readFixtures } from '../helpers/sandbox';
+import {
+  expectTerminalConnected,
+  expectTerminalRow,
+  openTerminal,
+  terminalRows,
+  typeInTerminal,
+} from '../helpers/terminal';
+
+/** 本轮 base image（0.4.0：`cached-images` 命令随它发布）。 */
+const IMAGE = 'sandbox-platform/base:0.4.0';
+/** 主链路沙箱（console 抽屉创建，用例后必删）。 */
+const SANDBOX = 'acc-cache-images';
+/** 容器内输出文件（stdout / stderr 分开，文件通道取回全量字节）。 */
+const OUTPUT = '/workspace/acc-cached-images.txt';
+const OUTPUT_ERR = '/workspace/acc-cached-images.err';
+
+/** 服务端 text 渲染的表头首行（契约副本，故意各留一份：改了要红）。 */
+const TEXT_HEADER = '镜像缓存清单（仅收录已完整缓存的镜像）';
+/** 尾注两则的识别前缀（同上，契约副本）。 */
+const TEXT_NOTE_TOTAL = '说明：total_size_bytes';
+const TEXT_NOTE_DUP = '注记：同一镜像可能出现';
+/** `cached-images` 正常态尾部追加的引导语（`base-image/cached-images` 契约副本）。 */
+const GUIDE_LINE =
+  '提示：拉依赖镜像前先查缓存镜像清单，可接受的版本集合中优先选已缓存版本（未命中再回退正常拉取）。';
+/** format 非法值的 422 固定文案（`routes/proxy.py` 的 `CACHE_FORMAT_INVALID_DETAIL` 契约副本）。 */
+const FORMAT_422_DETAIL = 'format 取值非法（只支持 json 或 text）';
+
+/** spec 内起的 TCP 转发器（让注入地址在绑回环的验收形态下可达），用例后关掉。 */
+let forwarder: net.Server | null = null;
+
+/**
+ * 起一条 TCP 转发：绑 `listenHost:listenPort`，逐字节透传给回环上的真后端。
+ *
+ * 为什么要在 spec 里做这一层：验收后端按既有 setup 绑 `127.0.0.1`（`helpers/
+ * server.ts` 的惯例，不改），而注入给沙箱的可达地址是**宿主非回环 IPv4 +
+ * 实际端口**（`injection.py` 的探测兜底）——沙箱去连那个地址会撞上「没绑」。
+ * 部署绑回环时沙箱侧失效是**已接受的部署前提**（PRD 30）；这条转发只在为
+ * 让端到端可验：它不改被测服务的绑定与代码，端点数据仍出自同一个服务进程
+ * （同一份 60 秒 TTL 缓存），「输出与端点 text 一致」的同源断言不受影响。
+ */
+function startForwarder(listenHost: string, listenPort: number, backendPort: number): Promise<void> {
+  if (listenHost === '127.0.0.1' || listenHost === 'localhost' || listenHost === '::1') {
+    throw new Error(
+      `注入地址 ${listenHost} 是回环地址（部署绑回环形态，沙箱侧本就失效，PRD 30）：
+       本 spec 的端到端需要宿主非回环 IPv4 的部署形态（生产绑 0.0.0.0 的形态）`,
+    );
+  }
+  const server = net.createServer((client) => {
+    const upstream = net.connect(backendPort, '127.0.0.1');
+    client.pipe(upstream);
+    upstream.pipe(client);
+    const teardown = (): void => {
+      upstream.destroy();
+      client.destroy();
+    };
+    client.on('error', teardown);
+    upstream.on('error', teardown);
+  });
+  forwarder = server;
+  return new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(listenPort, listenHost, () => resolve());
+  });
+}
+
+/** 直取缓存清单端点（同 `helpers/api.request` 口径：带认证头、返回原始响应）。 */
+async function fetchCacheImages(
+  query: string,
+  headers: Record<string, string> = authHeaders(),
+): Promise<{ status: number; body: string; contentType: string; wwwAuthenticate: string | null }> {
+  const response = await fetch(`${backendBaseUrl()}/api/proxy/cache/images${query}`, { headers });
+  return {
+    status: response.status,
+    body: await response.text(),
+    contentType: response.headers.get('content-type') ?? '',
+    wwwAuthenticate: response.headers.get('www-authenticate'),
+  };
+}
+
+/** 归一化「生成时间」行：跨过 60 秒 TTL 时两份文本只有这一行会不同。 */
+function stripGeneratedLine(text: string): string {
+  return text
+    .split('\n')
+    .filter((line) => !line.startsWith('生成时间：'))
+    .join('\n');
+}
+
+test.describe('镜像缓存清单（端点 / 注入 / cached-images）', () => {
+  test.beforeAll(async () => {
+    readFixtures();
+    // 「先删再建」：同名残留会让 console 创建直接失败。
+    await deleteSandbox(SANDBOX).catch(() => undefined);
+  });
+
+  test.afterAll(async () => {
+    forwarder?.close();
+    forwarder = null;
+    await deleteSandbox(SANDBOX).catch(() => undefined);
+  });
+
+  // 终端会话是宿主侧持久资源：清场让「读注入 env」的行定位不受残留会话干扰。
+  test.beforeEach(async () => {
+    await clearTerminalSessions(SANDBOX);
+  });
+
+  test('端到端（PRD 21）：console 创建的沙箱内 cached-images 输出与端点 text 同源一致，退出码 0', async ({
+    page,
+  }) => {
+    // ── ① console 抽屉创建沙箱（镜像选择器里选 base:0.4.0）
+    await openCreateDialog(page);
+    await fillCreateForm(page, {
+      name: SANDBOX,
+      image: IMAGE,
+      command: 'sleep infinity',
+    });
+    await selectCreatedSandbox(page, SANDBOX);
+
+    // ── ② 注入在场：网页终端里读出平台注入的两个 env（URL 全文 + 令牌前缀）
+    await gotoDetail(page, SANDBOX);
+    const sessionId = await openTerminal(page);
+    await expectTerminalConnected(page);
+    await typeInTerminal(page, sessionId, `printf 'ACC_URL=%s\\n' "$SANDBOX_IMAGE_CACHE_URL"`);
+    // 匹配锚定完整 URL：命令回显行里是 `ACC_URL=%s`，不会撞上。
+    let injectedUrl = '';
+    await expect
+      .poll(
+        async () => {
+          const row = (await terminalRows(page, sessionId)).find((line) =>
+            /^ACC_URL=http:\/\//.test(line.trim()),
+          );
+          injectedUrl = row?.trim().slice('ACC_URL='.length) ?? '';
+          return injectedUrl;
+        },
+        { timeout: 30_000, message: '终端里没读到注入的 SANDBOX_IMAGE_CACHE_URL' },
+      )
+      .toMatch(/^http:\/\/\d+\.\d+\.\d+\.\d+:\d+$/);
+    await typeInTerminal(
+      page,
+      sessionId,
+      `printf 'ACC_TOKEN_PREFIX=%s\\n' "\${SANDBOX_IMAGE_CACHE_TOKEN:0:5}"`,
+    );
+    // 受限令牌前缀 `sbxr_`（auth.py 的 CACHE_TOKEN_PREFIX 契约）——端到端再钉一次。
+    await expectTerminalRow(page, sessionId, 'ACC_TOKEN_PREFIX=sbxr_');
+
+    // ── ③ 转发器：让注入地址可达（绑同端口，透传回环上的真后端）
+    const injected = new URL(injectedUrl);
+    const { port: backendPort } = readFixtures();
+    await startForwarder(injected.hostname, Number(injected.port), backendPort);
+
+    // ── ④ 同刻端点 text（先取端点文本，紧跟着跑命令：同一 TTL 窗口内）
+    const expected = await fetchCacheImages('?format=text');
+    expect(expected.status, '端点 text 应 200').toBe(200);
+
+    // ── ⑤ 容器内跑 cached-images：stdout/stderr 落文件（29 条目清单远超终端视口），
+    //    退出码回显进终端
+    await typeInTerminal(
+      page,
+      sessionId,
+      `cached-images > ${OUTPUT} 2> ${OUTPUT_ERR}; printf 'ACC_RC=%s\\n' "$?"`,
+    );
+    await expectTerminalRow(page, sessionId, 'ACC_RC=0');
+
+    // ── ⑥ 文件通道取回全量字节，与端点 text 比对（同数据源）
+    const output = (await downloadSandboxFile(SANDBOX, OUTPUT)).bytes.toString('utf-8');
+    const outputErr = (await downloadSandboxFile(SANDBOX, OUTPUT_ERR)).bytes.toString('utf-8');
+    expect(outputErr, '正常态 stderr 应为空（没有降级提示）').toBe('');
+    // 主断言：逐字一致（输出 = 端点正文 + 空一行 + 引导语）。
+    // 跨过 60 秒 TTL 时只有「生成时间」行会更新：归一化后比对条目区 + 尾注 + 引导语。
+    const exactBody = `${expected.body}\n${GUIDE_LINE}\n`;
+    if (output !== exactBody) {
+      test.info().annotations.push({
+        type: '口径',
+        description: '两次取跨过了 60 秒 TTL（生成时间行更新）：按归一化口径比对条目区',
+      });
+      expect(stripGeneratedLine(output), '归一化生成时间行后应与端点 text 条目区逐字一致').toBe(
+        `${stripGeneratedLine(expected.body)}\n${GUIDE_LINE}\n`,
+      );
+    }
+    expect(output.startsWith(expected.body), '输出应以端点 text 正文开头').toBe(true);
+    expect(output, '输出应以命令自带的引导语收尾').toContain(GUIDE_LINE);
+
+    // ── ⑦ 可见旁证：网页终端里直接跑（不重定向），表头在屏幕上
+    await typeInTerminal(page, sessionId, 'cached-images | head -n 2');
+    await expectTerminalRow(page, sessionId, TEXT_HEADER);
+  });
+
+  test('端点两格式：json（缺省同）字段齐全、text 预渲染表头尾注（PRD 9/10）', async () => {
+    // ── ?format=json：200 + application/json + generated_at + 条目五字段 + 三计数
+    const json = await fetchCacheImages('?format=json');
+    expect(json.status).toBe(200);
+    expect(json.contentType).toContain('application/json');
+    const payload = JSON.parse(json.body) as {
+      generated_at: string;
+      images: {
+        repo: string;
+        tags: string[];
+        digest: string;
+        total_size_bytes: number;
+        cached_at: string;
+      }[];
+      total_files: number;
+      blob_files: number;
+      skipped_files: number;
+    };
+    expect(payload.generated_at, '生成时间戳应非空').not.toBe('');
+    expect(Array.isArray(payload.images)).toBe(true);
+    expect(payload.images.length, '本机真缓存应有条目（空缓存部署由单测钉空态）').toBeGreaterThan(0);
+    const first = payload.images[0];
+    expect(first.repo).not.toBe('');
+    expect(Array.isArray(first.tags)).toBe(true);
+    expect(first.digest).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(Number.isFinite(first.total_size_bytes)).toBe(true);
+    expect(first.cached_at).not.toBe('');
+    expect(payload.total_files).toBeGreaterThanOrEqual(0);
+    expect(payload.blob_files).toBeGreaterThanOrEqual(0);
+    expect(payload.skipped_files).toBeGreaterThanOrEqual(0);
+
+    // ── 缺省（不带 query）与 json 同格式
+    const defaulted = await fetchCacheImages('');
+    expect(defaulted.status).toBe(200);
+    expect(defaulted.contentType).toContain('application/json');
+
+    // ── ?format=text：200 + text/plain + 表头 + 生成时间 + 尾注两则
+    const text = await fetchCacheImages('?format=text');
+    expect(text.status).toBe(200);
+    expect(text.contentType).toContain('text/plain');
+    expect(text.body.startsWith(TEXT_HEADER), 'text 应以表头首行开头').toBe(true);
+    expect(text.body).toContain('生成时间：');
+    expect(text.body).toContain(TEXT_NOTE_TOTAL);
+    expect(text.body).toContain(TEXT_NOTE_DUP);
+    // json 与 text 共享同一份扫描结果：同一生成时间戳（同一 TTL 窗口内两次取）。
+    expect(text.body).toContain(`生成时间：${payload.generated_at}`);
+  });
+
+  test('端点负例：无凭据 401 / 错误令牌 401（同一句固定文案原文）/ 非法 format 422（PRD 8/11）', async () => {
+    // ── 无凭据 401：固定文案 + WWW-Authenticate 挑战头
+    const anonymous = await fetchCacheImages('?format=text', {});
+    expect(anonymous.status).toBe(401);
+    expect(anonymous.wwwAuthenticate).toBe('Bearer');
+    expect(anonymous.body, '无凭据 401 的 detail 原文').toContain(AUTH_FAILED_DETAIL);
+
+    // ── 错误令牌 401：与无凭据**逐字节同一份响应**（缺失与错误不区分）
+    const wrong = await fetchCacheImages('?format=text', bearerHeaders('sbx_not_the_right_token'));
+    expect(wrong.status).toBe(401);
+    expect(wrong.body).toBe(anonymous.body);
+    expect(wrong.wwwAuthenticate).toBe('Bearer');
+
+    // ── 非法 format 422：固定文案原文（合法令牌、只有 format 不对）
+    const invalid = await fetchCacheImages('?format=xml');
+    expect(invalid.status).toBe(422);
+    expect(invalid.body, '非法 format 的 422 detail 原文').toContain(FORMAT_422_DETAIL);
+  });
+
+  test('console 视图冒烟：缓存镜像清单区数据态字段渲染 + 手动刷新（PRD 27/28）', async ({ page }) => {
+    await openSettingsDrawer(page);
+
+    // 打开抽屉即加载一次：等加载结束（刷新按钮回到可用态）再看数据。
+    const refresh = page.getByTestId('page-settings-cache-images-refresh-button');
+    await expect(refresh, '缓存清单加载应结束（刷新按钮回到可用态）').toBeEnabled({
+      timeout: 30_000,
+    });
+
+    // 数据态（本机真缓存非空）：条目在场，字段齐全。
+    const items = page.getByTestId('page-settings-cache-image-item');
+    await expect(items, '本机真缓存应有条目（空态由前端单测钉）').not.toHaveCount(0);
+    const first = items.first();
+    const repo = ((await first.getByTestId('page-settings-cache-image-repo').textContent()) ?? '').trim();
+    expect(repo, '仓库字段应非空').not.toBe('');
+    await expect(first.getByTestId('page-settings-cache-image-size')).toHaveText(
+      /^\d+(\.\d+)? (B|KiB|MiB|GiB|TiB)$/,
+    );
+    const digest = ((await first.getByTestId('page-settings-cache-image-digest').textContent()) ?? '').trim();
+    expect(digest, '摘要字段应是 sha256 摘要（截断展示）').toMatch(/^sha256:[0-9a-f]+…?$/);
+    await expect(first.getByTestId('page-settings-cache-image-cached-at')).not.toHaveText('');
+    // 生成时间戳随数据一起展示。
+    await expect(page.getByTestId('page-settings-cache-images-generated-at')).toContainText(
+      '清单生成时间：',
+    );
+
+    // 手动刷新：仍在的数据态（60 秒 TTL 内刷新拿同一份缓存，属预期）。
+    await refresh.click();
+    await expect(refresh, '刷新应完成（按钮回到可用态）').toBeEnabled({ timeout: 30_000 });
+    await expect(items).not.toHaveCount(0);
+    await expect(page.getByTestId('page-settings-cache-images-generated-at')).toContainText(
+      '清单生成时间：',
+    );
+  });
+});
