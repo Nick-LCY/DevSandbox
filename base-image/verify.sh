@@ -445,7 +445,7 @@ fi
 #        追加一处，残留即红）；stdout 与端点 tags=only 正文逐字一致由真机
 #        验证钉（e2e spec 16），这里钉静态退役。
 #     ② 帮助：引导约定句仍在 --help 文本里（引导约定的唯一承载处）。
-no_guide_and_help_keeps="$(in_image "h=\$(cached-images --help); if grep -Fq '提示：拉依赖镜像前先查' /usr/local/bin/cached-images; then :; elif printf '%s' "\$h" | grep -Fq '引导约定：拉依赖镜像前先查缓存镜像清单'; then echo guide-only-in-help; fi")"
+no_guide_and_help_keeps="$(in_image "h=\$(cached-images --help); if grep -Fq '提示：拉依赖镜像前先查' /usr/local/bin/cached-images; then :; elif printf '%s' \"\$h\" | grep -Fq '引导约定：拉依赖镜像前先查缓存镜像清单'; then echo guide-only-in-help; fi")"
 if [ "$no_guide_and_help_keeps" = "guide-only-in-help" ]; then
   check "正常态不追加提示行（脚本无 GUIDE 追加，引导约定仅帮助文本承载）" 0 "GUIDE 追加 0 命中，--help 保留引导约定句"
 else

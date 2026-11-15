@@ -84,6 +84,8 @@ const TEXT_NOTE_TOTAL = '说明：total_size_bytes';
 const TEXT_NOTE_DUP = '注记：同一镜像可能出现';
 /** tag-only 表格的列头行关键词（0.4.1 轮新增视图，契约副本）。 */
 const TABLE_COLUMN_HEADER = 'IMAGE';
+/** tag-only 表格首条数据行的 repo:tag 钉（真缓存按 repo 排序后的首行，契约副本）。 */
+const TABLE_FIRST_DATA_ROW = 'astral-sh/uv:0.13.7';
 /** tag-only 表格的轻表头关键词（0.4.2 起退役——否定钉用）。 */
 const TABLE_LIGHT_HEADER_RETIRED = '已缓存镜像';
 /** tag-only 表格尾注整行（0.4.2 起退役——否定钉用）。 */
@@ -204,7 +206,7 @@ test.describe('镜像缓存清单（端点 / 注入 / cached-images）', () => {
   test('端到端（PRD 21）：console 创建的沙箱内 cached-images 输出与端点 text 同源一致，退出码 0', async ({
     page,
   }) => {
-    // ── ① console 抽屉创建沙箱（镜像选择器里选 base:0.4.1）
+    // ── ① console 抽屉创建沙箱（镜像选择器里选 base:0.4.2）
     await openCreateDialog(page);
     await fillCreateForm(page, {
       name: SANDBOX,
@@ -280,6 +282,8 @@ test.describe('镜像缓存清单（端点 / 注入 / cached-images）', () => {
     //    （数据行的 ID/时间是动态值，整行相等不可用；用整屏包含钉关键词）
     await typeInTerminal(page, sessionId, 'cached-images | head -n 2');
     await expectTerminalText(page, sessionId, TABLE_COLUMN_HEADER);
+    // head -n 2 的第二行即首条数据行（真缓存按 repo 排序，astral-sh/uv 首行）。
+    await expectTerminalText(page, sessionId, TABLE_FIRST_DATA_ROW);
   });
 
   test('端点两格式：json（缺省同）字段齐全、text 预渲染表头尾注（PRD 9/10）', async () => {
