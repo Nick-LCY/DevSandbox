@@ -276,7 +276,7 @@ out="$(in_image 'command -v cached-images')"
 if [ "$out" = "/usr/local/bin/cached-images" ]; then
   check "cached-images 在 PATH（/usr/local/bin）" 0 "$out"
 else
-  check "cached-images 在 PATH（/usr/local/bin）" 1 "command -v 输出：${out:-<无>}"  
+  check "cached-images 在 PATH（/usr/local/bin）" 1 "command -v 输出：${out:-<无>}"
 fi
 
 # 11.2 可执行位
@@ -304,20 +304,26 @@ else
   check "cached-images 语法合法（bash -n）" 1 "bash -n 失败：$out"
 fi
 
-# 11.5 关键 curl 形态静态钉死：显式 --noproxy（PRD 22 硬约束）
-out="$(in_image "grep -F -- '--noproxy' /usr/local/bin/cached-images")"
-if echo "$out" | grep -q -- "--noproxy '\*'"; then
-  check "cached-images 显式 --noproxy '*'（绕过 HTTP(S)_PROXY）" 0 "脚本内命中"
+# 11.5 / 11.6 的公共锚：curl 调用块（^curl 行 + 其后 3 行续行）。
+#     此前两者都是全文件 grep——cached-images 头注释与帮助文本里就有同款字面量
+#     （--noproxy '*'、--connect-timeout 5 --max-time 10），只删 curl 行实参判定
+#     依然绿，回归钉死失效。锚定 ^curl 行后命中范围只剩真调用块：删实参必红，
+#     注释在不在都不影响判定。
+curl_block="$(in_image "grep -A3 '^curl ' /usr/local/bin/cached-images || true")"
+
+# 11.5 关键 curl 形态静态钉死：显式 --noproxy（PRD 22 硬约束，curl 调用块内命中）
+if echo "$curl_block" | grep -qF -- "--noproxy '*'"; then
+  check "cached-images 显式 --noproxy '*'（绕过 HTTP(S)_PROXY）" 0 "curl 调用块内命中"
 else
-  check "cached-images 显式 --noproxy '*'（绕过 HTTP(S)_PROXY）" 1 "未命中"
+  check "cached-images 显式 --noproxy '*'（绕过 HTTP(S)_PROXY）" 1 "curl 调用块内未命中"
 fi
 
-# 11.6 超时封顶静态钉死：连接 5s / 总 10s（同一 curl 调用上相邻两个参数）
-out="$(in_image "grep -Fq -- '--connect-timeout 5' /usr/local/bin/cached-images && grep -Fq -- '--max-time 10' /usr/local/bin/cached-images && echo cap-ok")"
-if [ "$out" = "cap-ok" ]; then
-  check "cached-images 超时封顶（连接 5s / 总 10s）" 0 "--connect-timeout 5 + --max-time 10"
+# 11.6 超时封顶静态钉死：连接 5s / 总 10s——真·相邻断言：两个封顶参数在 curl 调用
+#     块内同一行连写、顺序固定；不再是「各 grep 一次」的全文件假相邻。
+if echo "$curl_block" | grep -qF -- '--connect-timeout 5 --max-time 10'; then
+  check "cached-images 超时封顶（连接 5s / 总 10s）" 0 "curl 调用块内相邻连写命中"
 else
-  check "cached-images 超时封顶（连接 5s / 总 10s）" 1 "未同时命中两个封顶参数"
+  check "cached-images 超时封顶（连接 5s / 总 10s）" 1 "curl 调用块内未命中相邻连写的两个封顶参数"
 fi
 
 # 11.7 端点与凭据形态静态钉死：format=text + Bearer 受限令牌头
