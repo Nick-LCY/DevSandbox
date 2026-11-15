@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 #
 # 基础镜像静态判定：镜像内业务运行时缺席 + 通用工具层在场 + 镜像结构约定 + 入口行为 + 无离线包痕迹
+# + cached-images 命令硬约束（0.4.0：PATH / 纯 bash / --noproxy / 封顶 / 缺凭据态 / 帮助退出码 / 拒连态）
 # 依赖命令：bash + docker（宿主守护进程）。
 #
 # 用法：
-#   ./verify.sh                      # 默认校验 sandbox-platform/base:0.3.1
+#   ./verify.sh                      # 默认校验 sandbox-platform/base:0.4.0
 #   BASE_IMAGE=sandbox-platform/base:0.1.0 ./verify.sh
 
 set -uo pipefail
 
-BASE_IMAGE="${BASE_IMAGE:-sandbox-platform/base:0.3.1}"
+BASE_IMAGE="${BASE_IMAGE:-sandbox-platform/base:0.4.0}"
 
 CHECK_TOTAL=0
 CHECK_FAILED=0
@@ -264,6 +265,131 @@ for key in LANG LC_ALL; do
     check "ENV ${key}=C.UTF-8" 1 "${out:-未设置}"
   fi
 done
+
+# ---------------------------------------------------------------- 11. cached-images 命令（0.4.0 新增）
+# 硬约束三判（PRD 22）：在 PATH、纯 bash 零 jq 零 JSON 解析、显式 --noproxy + 超时封顶；
+# 三态中的缺凭据态与帮助文本可离线判（不需活后端）；不可达态的「拒连」形态同样零依赖
+# （指向本机必死端口）——「活后端」的不可达/正常态属真机验证，不塞本脚本。
+
+# 11.1 命令在 PATH
+out="$(in_image 'command -v cached-images')"
+if [ "$out" = "/usr/local/bin/cached-images" ]; then
+  check "cached-images 在 PATH（/usr/local/bin）" 0 "$out"
+else
+  check "cached-images 在 PATH（/usr/local/bin）" 1 "command -v 输出：${out:-<无>}"  
+fi
+
+# 11.2 可执行位
+out="$(in_image 'test -x /usr/local/bin/cached-images && echo exec-ok')"
+if [ "$out" = "exec-ok" ]; then
+  check "cached-images 可执行位 0755" 0 "可执行"
+else
+  check "cached-images 可执行位 0755" 1 "不可执行"
+fi
+
+# 11.3 纯 bash 硬约束：零 jq / 零 python / 零 node 等解释器调用（静态 grep）
+#     模式限定「行首或管道/分号后紧跟命令名」：头注释里的「零 jq」等说明文字不误伤。
+out="$(in_image "grep -cE '(^|[|;&]) *(jq|python3?|node|perl|ruby)( |$)' /usr/local/bin/cached-images || true")"
+if [ "$out" = "0" ]; then
+  check "cached-images 纯 bash（零 jq / 零脚本解释器调用）" 0 "静态 grep 0 命中"
+else
+  check "cached-images 纯 bash（零 jq / 零脚本解释器调用）" 1 "命中 $out 处"
+fi
+
+# 11.4 语法合法（bash -n）
+out="$(in_image 'bash -n /usr/local/bin/cached-images && echo syntax-ok')"
+if [ "$out" = "syntax-ok" ]; then
+  check "cached-images 语法合法（bash -n）" 0 "通过"
+else
+  check "cached-images 语法合法（bash -n）" 1 "bash -n 失败：$out"
+fi
+
+# 11.5 关键 curl 形态静态钉死：显式 --noproxy（PRD 22 硬约束）
+out="$(in_image "grep -F -- '--noproxy' /usr/local/bin/cached-images")"
+if echo "$out" | grep -q -- "--noproxy '\*'"; then
+  check "cached-images 显式 --noproxy '*'（绕过 HTTP(S)_PROXY）" 0 "脚本内命中"
+else
+  check "cached-images 显式 --noproxy '*'（绕过 HTTP(S)_PROXY）" 1 "未命中"
+fi
+
+# 11.6 超时封顶静态钉死：连接 5s / 总 10s（同一 curl 调用上相邻两个参数）
+out="$(in_image "grep -Fq -- '--connect-timeout 5' /usr/local/bin/cached-images && grep -Fq -- '--max-time 10' /usr/local/bin/cached-images && echo cap-ok")"
+if [ "$out" = "cap-ok" ]; then
+  check "cached-images 超时封顶（连接 5s / 总 10s）" 0 "--connect-timeout 5 + --max-time 10"
+else
+  check "cached-images 超时封顶（连接 5s / 总 10s）" 1 "未同时命中两个封顶参数"
+fi
+
+# 11.7 端点与凭据形态静态钉死：format=text + Bearer 受限令牌头
+out="$(in_image "grep -Fq -- 'format=text' /usr/local/bin/cached-images && grep -Fq -- 'Authorization: Bearer' /usr/local/bin/cached-images && echo form-ok")"
+if [ "$out" = "form-ok" ]; then
+  check "cached-images 端点 ?format=text + Bearer 受限令牌头" 0 "脚本内命中"
+else
+  check "cached-images 端点 ?format=text + Bearer 受限令牌头" 1 "未同时命中端点与凭据形态"
+fi
+
+# 11.8 三态·缺凭据：两 env 全缺 → 固定退出码 2 + 一行中文提示 + 回退引导（真跑，零依赖）
+#     容器 env 天然不含这两个变量（镜像不预置；docker run 也不透传宿主 env）。
+run_cached_images() {
+  # run_cached_images <docker -e 参数…> -- <容器内前置命令（可为空）>
+  # 输出「<容器内输出>|rc=<退出码>」；前置命令用于注入部分 env（空串按缺失也走 -e）。
+  local envs=() pre=""
+  while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do envs+=("-e" "$1"); shift; done
+  [ "${1:-}" = "--" ] && shift
+  [ "$#" -gt 0 ] && pre="$1"
+  docker run --rm --entrypoint /bin/bash "${envs[@]}" "$BASE_IMAGE" -c "$pre"'cached-images; printf "rc=%s" "$?"' 2>&1 | tr '\n' '|'
+}
+
+out="$(run_cached_images -- "")"
+if echo "$out" | grep -q 'rc=2$' && echo "$out" | grep -q '凭据' && echo "$out" | grep -q '回退正常拉取'; then
+  check "缺凭据态：两 env 全缺 → 退出码 2 + 中文提示 + 回退引导" 0 "$(echo "$out" | sed 's/|/ /g')"
+else
+  check "缺凭据态：两 env 全缺 → 退出码 2 + 中文提示 + 回退引导" 1 "输出：$(echo "$out" | sed 's/|/ /g')"
+fi
+
+# 11.9 缺凭据态·缺一：仅 URL 在场（token 缺失）→ 仍退出码 2（任一缺失即缺凭据）
+out="$(run_cached_images "SANDBOX_IMAGE_CACHE_URL=http://127.0.0.1:9" -- "")"
+if echo "$out" | grep -q 'rc=2$' && echo "$out" | grep -q '凭据'; then
+  check "缺凭据态：仅 URL 在场（token 缺失）→ 退出码 2" 0 "任一缺失即缺凭据"
+else
+  check "缺凭据态：仅 URL 在场（token 缺失）→ 退出码 2" 1 "输出：$(echo "$out" | sed 's/|/ /g')"
+fi
+
+# 11.10 缺凭据态·空串按缺失：token 为空串 → 退出码 2（与「未设置」同口径）
+out="$(run_cached_images "SANDBOX_IMAGE_CACHE_URL=http://127.0.0.1:9" "SANDBOX_IMAGE_CACHE_TOKEN=" -- "")"
+if echo "$out" | grep -q 'rc=2$' && echo "$out" | grep -q '凭据'; then
+  check "缺凭据态：token 空串 → 退出码 2（空串按缺失）" 0 "空串与未设置同口径"
+else
+  check "缺凭据态：token 空串 → 退出码 2（空串按缺失）" 1 "输出：$(echo "$out" | sed 's/|/ /g')"
+fi
+
+# 11.11 帮助文本含两个失败态退出码（PRD 24 判据：写进帮助文本）
+out="$(in_image 'cached-images --help')"
+if echo "$out" | grep -q '退出码' \
+  && echo "$out" | grep -Eq '^  2 ' \
+  && echo "$out" | grep -Eq '^  3 '; then
+  check "帮助文本含三态退出码（0 正常 / 2 缺凭据 / 3 不可达）" 0 "--help 命中「退出码」与 2、3 两行"
+else
+  check "帮助文本含三态退出码（0 正常 / 2 缺凭据 / 3 不可达）" 1 "--help 未命中退出码表"
+fi
+
+# 11.12 引导约定写进帮助文本（模板无指令字段，约定由本命令承载）
+if echo "$out" | grep -q '优先选已缓存'; then
+  check "引导约定写进帮助文本（先查清单、优先已缓存）" 0 "--help 命中引导语"
+else
+  check "引导约定写进帮助文本（先查清单、优先已缓存）" 1 "--help 未命中引导语"
+fi
+
+# 11.13 三态·不可达（拒连形态，零依赖）：URL 指向本机必死端口 → 退出码 3 + 中文提示，
+#     且耗时在 curl 封顶（10s）内。容器内 127.0.0.1:9 无监听 → 立即拒连。
+t_start=$SECONDS
+out="$(run_cached_images "SANDBOX_IMAGE_CACHE_URL=http://127.0.0.1:9" "SANDBOX_IMAGE_CACHE_TOKEN=sbxr_verify_probe" -- "")"
+elapsed=$((SECONDS - t_start))
+if echo "$out" | grep -q 'rc=3$' && echo "$out" | grep -q '不可达' && [ "$elapsed" -lt 10 ]; then
+  check "不可达态（拒连）：死端口 → 退出码 3 + 中文提示 + 耗时封顶内" 0 "耗时 ${elapsed}s（<10s 封顶）"
+else
+  check "不可达态（拒连）：死端口 → 退出码 3 + 中文提示 + 耗时封顶内" 1 "耗时 ${elapsed}s，输出：$(echo "$out" | sed 's/|/ /g')"
+fi
 
 # ---------------------------------------------------------------- 汇总
 echo

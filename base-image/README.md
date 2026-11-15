@@ -1,11 +1,12 @@
 # 平台基础镜像 `sandbox-platform/base`
 
-所有沙箱镜像的唯一底座。只含四样东西：**bash、docker 客户端、通用工具层（9 个包）、纯 bash 入口脚本**，外加一个容器层临时目录 `/workspace`。
+所有沙箱镜像的唯一底座。只含五样东西：**bash、docker 客户端、通用工具层（9 个包）、纯 bash 入口脚本、`cached-images` 缓存清单命令**，外加一个容器层临时目录 `/workspace`。
 
 不含任何业务运行时（无 node / pnpm / python3 / psql / mc），也不内置任何 volume 挂载点。
 
 > **目录位置**：本目录 2026-11-01 由 `platform/base-image/` 上移到仓库根 `base-image/`；镜像名 `sandbox-platform/base:<版本>` 与构建口径均未变。
 
+> **0.4.0 起新增 `cached-images` 命令**：查询统一镜像代理「已完整缓存」清单的纯 bash 命令（`/usr/local/bin/cached-images`），见[下文专章](#cached-images-缓存清单命令040-新增)。
 > **0.3.1 起新增两样东西。** ① `/etc/bash.bashrc` **末尾追加** OSC 1337 pwd 上报注入段（交互式非登录 shell `bash -i` 生效，`sh` / `dash` 自然降级）；② Dockerfile 新增两条 `ENV`：`LANG=C.UTF-8` 与 `LC_ALL=C.UTF-8`（容器内 locale 原本处于未定义态）。
 > **0.3.0 起新增通用工具层。** 9 个通用工具包（git / openssh-client / vim / curl / ca-certificates / unzip / xz-utils / procps / less）随镜像预装，构建期联网 apt 拉取。
 > **0.2.0 起不再内置依赖镜像离线包。** 依赖镜像（Postgres / MinIO / Logto 等）与一切外部镜像
@@ -19,10 +20,49 @@
 | `/usr/local/bin/docker` | docker 客户端 | 静态编译的 Go 二进制，版本必须与宿主守护进程一致 |
 | `/usr/bin/git`、`/usr/bin/ssh`、`/usr/bin/vim`、`/usr/bin/curl`、`/usr/bin/unzip`、`/usr/bin/xz`、`/usr/bin/ps`、`/usr/bin/less` | 通用工具层 | apt 装的 9 个通用工具包；`ca-certificates` 不提供命令，只提供 `/etc/ssl/certs/ca-certificates.crt` |
 | `/entrypoint.sh` | 入口脚本 | 纯 bash，只依赖 bash 与 docker |
+| `/usr/local/bin/cached-images` | 缓存清单命令（0.4.0 新增） | 纯 bash + curl，零 jq、零 JSON 解析；三态退出码 0 / 2 / 3 |
 | `/etc/bash.bashrc` | 平台注入的 OSC 1337 pwd 上报段 | **追加**在文件末尾（原内容保留）；`bash -i` 起会话时把当前目录以 `ESC ] 1337 ; CurrentDir=<path> BEL` 上报 |
 | `/workspace` | 便捷空目录 | 容器层目录（非 volume），随容器删除而消失 |
 
 镜像内**没有** `/opt/deps/` 目录、**没有** `load-deps.sh` / `fetch-deps.sh`、**没有任何 `.tar` 归档**。
+
+## cached-images 缓存清单命令（0.4.0 新增）
+
+`/usr/local/bin/cached-images`（在 PATH 内）：查询统一镜像代理「已完整缓存」的镜像清单，让 agent 在拉依赖镜像前先查清单、**可接受的版本集合中优先选已缓存版本**（未命中再回退正常拉取），提高缓存命中率。
+
+### 用法
+
+```bash
+cached-images          # 查询清单（无参数即查询）
+cached-images --help   # 帮助（含三态退出码表）
+```
+
+命令把服务端预渲染文本（`?format=text`）**原样输出**：零解析、**不依赖 jq、不碰 JSON**（基础镜像只有 curl）。正常态输出 = 清单正文（仓库 / 标签 / 摘要 / 链大小 / 缓存时间；缓存为空时是空态文案，不是错误）+ 尾部一行引导语。
+
+### 三态与退出码
+
+| 态 | 触发条件 | 行为 | 退出码 |
+|----|----------|------|--------|
+| ① 正常 | 两个 env 在场且端点可达 | 清单文本原样输出 + 尾部引导语 | `0` |
+| ② 缺凭据 / 缺 URL | `SANDBOX_IMAGE_CACHE_URL` / `SANDBOX_IMAGE_CACHE_TOKEN` 任一未设置**或为空串** | 一行中文提示（stderr），引导回退正常拉取 | `2` |
+| ③ 不可达 / 超时 / HTTP 错误 | 端点连不上、超时或拒绝请求（含令牌失效 401 的降级态） | 一行中文提示（stderr），引导回退正常拉取 | `3` |
+
+两个失败态退出码**不同**且写进 `--help`。**任何失败态都不阻塞**：提示语引导 agent 回退正常拉取，后续 `docker pull` 照常进行。
+
+### 实现口径（硬约束）
+
+- **纯 bash + coreutils + curl**：脚本零 jq、零脚本解释器调用、零 JSON 解析构造（`verify.sh` 有静态判定）；
+- **显式 `--noproxy '*'`**：沙箱 env 里有 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`（统一镜像代理的拉取变量），**平台后端调用不走镜像代理**，必须显式绕开——不写这个参数，命令在沙箱内会撞死代理上超时；
+- **超时封顶**：`--connect-timeout 5 --max-time 10`，任何网络形态下不挂 shell（实测：拒连即刻返回、监听不回包 10 秒封顶）；
+- **凭据形态**：`Authorization: Bearer <受限令牌>`——受限令牌（`sbxr_` 前缀）仅对这一条只读读径有效，由服务端生成与轮换、平台全权管理。
+
+### env 注入与已知边角
+
+两个 env（`SANDBOX_IMAGE_CACHE_URL` = 后端可达地址、`SANDBOX_IMAGE_CACHE_TOKEN` = 受限令牌）由服务端在**创建 / 启动沙箱**时平台强制注入（CLI 创建路径不传参 → 沙箱缺这对 env，属已知边角：console 里对该沙箱执行一次「停止 → 启动」即自愈）。**令牌轮换**（服务端重写凭据文件）后，已注入沙箱内的旧令牌立即 401 → 命令走 ③ 降级态；console 对沙箱重启一次即重新注入新值。
+
+### 存量沙箱口径（PRD 26）
+
+**升级前创建的沙箱不带本命令**（基础镜像随沙箱创建时固化），**重建至 `base:0.4.0` 后在场**。现有沙箱的重建**由用户执行**（平台不代劳），已登记为镜像缓存清单轮的验收前置（06 轮端到端 PRD 21 / 26 / 30 硬前置）：存量沙箱内执行 `cached-images` 得到「命令不存在」，属预期行为，不是缺陷。
 
 ## OSC 1337 pwd 上报注入（0.3.1 新增）
 
@@ -74,7 +114,7 @@ ENV LC_ALL=C.UTF-8
 # 在仓库根目录执行；构建期需要外网（apt 拉取通用工具包）
 docker build \
   --build-arg DOCKER_CLI_VERSION=29.6.2 \
-  -t sandbox-platform/base:0.3.1 \
+  -t sandbox-platform/base:0.4.0 \
   base-image
 ```
 
@@ -92,17 +132,18 @@ docker build \
 |------|--------|------|
 | `DOCKER_CLI_VERSION` | `29.6.2` | docker 客户端版本，**必须与宿主守护进程版本一致**（client/server 版本一致性是验收判据） |
 | `BASE_IMAGE` | `debian:bookworm-slim` | 底座发行版 |
-| `BASE_VERSION` | `0.3.1` | 只写入 OCI label |
+| `BASE_VERSION` | `0.4.0` | 只写入 OCI label |
 
 宿主守护进程升级后，必须用新版本号重建基础镜像，否则容器内 `docker version` 的客户端与服务端版本会不一致。
 
 ## 镜像标签规则
 
-- 命名：`sandbox-platform/base:<平台语义化版本>`，例如 `sandbox-platform/base:0.3.1`。
+- 命名：`sandbox-platform/base:<平台语义化版本>`，例如 `sandbox-platform/base:0.4.0`。
 - 版本号语义：`<主>.<次>.<修订>`，主次跟随平台自身版本，修订号在**依赖离线包更新**或**入口脚本行为变更**时递增。
 - 0.2.0 的修订原因：废弃离线包机制（ADR 0008），镜像内不再携带依赖镜像 tar。
 - 0.3.0 的修订原因：新增通用工具层（9 个包），构建口径从零网络改为联网 apt 拉包。
 - 0.3.1 的修订原因：新增 OSC 1337 pwd 上报注入段（`/etc/bash.bashrc`）与两条 UTF-8 locale `ENV`。
+- 0.4.0 的修订原因（minor bump）：新增 `cached-images` 缓存清单命令（`/usr/local/bin/cached-images`，镜像缓存清单轮任务 04）。
 - docker 客户端版本**不写进 tag**，它是构建参数；版本不匹配时重建同名 tag 即可。
 
 ## 挂载点约定
@@ -120,7 +161,7 @@ docker build \
 # 套接字属主是守护进程用户、权限 0660，容器内需以 root 运行才能访问
 docker run -it --rm \
   -v /run/user/<uid>/docker.sock:/var/run/docker.sock \
-  sandbox-platform/base:0.3.1
+  sandbox-platform/base:0.4.0
 ```
 
 ## 入口行为
@@ -148,7 +189,7 @@ docker run -it --rm \
 基础镜像就是普通底座，用户镜像直接 `FROM` 它：
 
 ```dockerfile
-FROM sandbox-platform/base:0.3.1
+FROM sandbox-platform/base:0.4.0
 
 # 用户自己的层：代码、配置、其它工具
 COPY ./app /opt/app
@@ -171,16 +212,16 @@ docker build -t my-sandbox:0.1.0 -f ./Dockerfile .
 
 | 脚本 | 作用 | 依赖 |
 |------|------|------|
-| `verify.sh` | 镜像级判定：业务运行时缺席、**通用工具层在场**、无 volume 挂载点、`/workspace` 语义、入口脚本静态检查与入口行为、**镜像内无离线包痕迹**、**OSC 1337 注入段逐字节比对 + `bash -i` 功能判定 + `sh -i` 降级判定**、**两条 locale ENV**（共 48 项） | 宿主 docker 守护进程 |
+| `verify.sh` | 镜像级判定：业务运行时缺席、**通用工具层在场**、无 volume 挂载点、`/workspace` 语义、入口脚本静态检查与入口行为、镜像内无离线包痕迹、**OSC 1337 注入段逐字节比对 + `bash -i` 功能判定 + `sh -i` 降级判定**、两条 locale ENV、**`cached-images` 命令硬约束（PATH / 纯 bash 零 jq / `--noproxy` / 5s+10s 封顶 / 缺凭据态退出码 / 帮助文本退出码表 / 拒连态，共 13 项）**（共 61 项） | 宿主 docker 守护进程 |
 | `verify-rootless.sh` | 免 root 守护进程联调：入口脚本行为、客户端与服务端版本一致性、镜像内无离线包目录 | 复用同目录 `rootless/` 的 00/01/04 脚本 |
 
 ```bash
 cd base-image
-./verify.sh                                   # 镜像级判定（默认 sandbox-platform/base:0.3.1）
-BASE_IMAGE=sandbox-platform/base:0.3.1 ./verify-rootless.sh   # 免 root 联调（测完自动回收）
+./verify.sh                                   # 镜像级判定（默认 sandbox-platform/base:0.4.0）
+BASE_IMAGE=sandbox-platform/base:0.4.0 ./verify-rootless.sh   # 免 root 联调（测完自动回收）
 ```
 
-实测数据见 [RESULTS.md](RESULTS.md)。
+正常态 / 不可达态的「活后端」形态属真机验证（需服务端端点与受限令牌在场），不塞 `verify.sh`；`verify.sh` 里的不可达判定用零依赖的「拒连」形态（URL 指向本机必死端口）。实测数据见 [RESULTS.md](RESULTS.md)。
 
 ## 目录内容
 
@@ -188,6 +229,7 @@ BASE_IMAGE=sandbox-platform/base:0.3.1 ./verify-rootless.sh   # 免 root 联调�
 |------|------|
 | `Dockerfile` | 多阶段构建定义 |
 | `entrypoint.sh` | 容器入口（纯 bash） |
+| `cached-images` | 缓存清单命令源文件（0.4.0 新增，COPY 进镜像 `/usr/local/bin/`） |
 | `verify.sh` | 镜像级判定脚本 |
 | `verify-rootless.sh` | 免 root 守护进程联调脚本 |
 | `rootless/` | 免 root 守护进程引导脚本（`common.sh` / `00-create-user.sh` / `01-start-dockerd.sh` / `04-cleanup.sh`）；原在重组前的 `platform/probe/rootless/`（该路径已随目录重组消失），2026-11-01 随探针目录退役一并迁入本目录 |

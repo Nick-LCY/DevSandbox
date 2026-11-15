@@ -18,7 +18,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROBE_DIR="$SCRIPT_DIR/rootless"
 
-BASE_IMAGE="${BASE_IMAGE:-sandbox-platform/base:0.3.1}"
+BASE_IMAGE="${BASE_IMAGE:-sandbox-platform/base:0.4.0}"
 CONTAINER_NAME="${CONTAINER_NAME:-base-image-test}"
 KEEP=0
 [ "${1:-}" = "--keep" ] && KEEP=1

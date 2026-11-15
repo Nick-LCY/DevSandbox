@@ -1,6 +1,40 @@
 # 平台基础镜像 · 实测记录
 
-## 0.3.1（当前版本）—— OSC 1337 pwd 上报注入 + UTF-8 locale
+## 0.4.0（当前版本）—— cached-images 缓存清单命令
+
+- 执行日期：2026-11-15
+- 宿主：Ubuntu 26.04 LTS / Docker 客户端 + 服务端 **29.6.2**（宿主 root 守护进程）
+- 镜像：`sandbox-platform/base:0.4.0`，image id `sha256:5e30e1976943b107a2ecc50e827d868b147e5a2769306b00f10f43083ee028da`
+- 上游：镜像缓存清单轮任务 04（[[tasks/registry-cache-manifest/04-base-image-cached-images.md|任务书]]）；端点与受限令牌由任务 02/03 交付
+
+> **0.4.0 的变更原因**：新增 `cached-images`（`/usr/local/bin/`）：curl 拉服务端预渲染文本（`?format=text`）直接输出，零 jq、零 JSON 解析；显式 `--noproxy '*'`（沙箱 env 有代理变量，平台后端不走镜像代理）；连接 5s / 总 10s 封顶；三态退出码 0 / 2 / 3（两个失败态不同、写进 `--help`），任何失败态不阻塞、引导回退正常拉取。
+
+### 一、构建与判定
+
+| 项 | 实测 |
+|----|------|
+| 构建命令 | `docker build --build-arg DOCKER_CLI_VERSION=29.6.2 -t sandbox-platform/base:0.4.0 base-image` |
+| 构建耗时（墙钟） | **1.8 秒**（增量：底座 / docker 客户端 / apt 层与 0.3.1 共用缓存，仅新增 COPY 层） |
+| verify.sh | **61 项全过**（48 + 新增 13 项 cached-images 判定） |
+| 体积 | 384 MB（与 0.3.1 同级；新增命令脚本约 4.8 kB） |
+
+### 二、三态真机验证（源码起临时后端，生产零接触，验证后已清理）
+
+临时实例：`SANDBOX_PLATFORM_HOME=/tmp/sbx-04-test-home SANDBOX_CONSOLE_HOST=172.17.0.1 SANDBOX_CONSOLE_PORT=28799 uv run --project apps/web/backend python -m sandbox_console`——测试数据根（无缓存目录 → 端点回 0 条空清单 + 空态文案）、绑 docker0 网桥 IP（不对 LAN 暴露）、受限令牌取自测试凭据文件 `cache-images-token.json`（`sbxr_` 前缀）。耗时含容器创建启动。
+
+| 态 | 命令要点 | 输出 / 退出码 / 耗时 |
+|----|----------|----------------------|
+| ① 正常 | 容器起于 `base:0.4.0`，注入两 env；**额外注入死代理变量**（`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 指向 `dead.proxy.local:9`、`NO_PROXY=`）→ 仍成功，实证 `--noproxy '*'` 生效 | 清单原文（0 条 + 空态文案）+ 尾部引导语一行；**rc=0**；**480ms** |
+| ② 缺凭据 | 两 env 全缺（镜像不预置，`docker run` 不透传宿主 env） | 一行中文提示（含「回退正常拉取」引导）；**rc=2**；**452ms** |
+| ② 补充 | 仅 URL 在场缺 token / token 为空串 | 均一行中文提示；**rc=2**（任一缺失即缺凭据，空串同口径） |
+| ③ 拒连 | URL 指向 `http://172.17.0.1:28798`（无监听） | 中文提示（curl rc=7）；**rc=3**；**842ms** |
+| ③ 超时封顶 | URL 指向监听但不回包的假端点（`28797`） | 中文提示（curl rc=28）；**rc=3**；**10470ms ≈ max-time 10s 封顶**（含 ~0.5s 容器启动） |
+| ③ HTTP 错误（降级态） | URL 正常、令牌错误（`sbxr_wrong_token_value` → 401） | 中文提示（`--fail` → curl rc=22）；**rc=3**；**406ms**——对应令牌轮换后旧令牌失效的降级口径 |
+| 帮助 | `cached-images --help` | 用法 + 三态退出码表（0 / 2 / 3）+ 引导约定；rc=0 |
+
+清理：临时后端（uv / python 子进程）、假端点 socket、测试数据根与日志全部删除，无残留监听与容器（`--rm` 自动回收）。
+
+## 0.3.1 —— OSC 1337 pwd 上报注入 + UTF-8 locale
 
 - 执行日期：2026-11-13
 - 宿主：Ubuntu 26.04 LTS / 内核 7.0.0-38-generic / cgroup v2

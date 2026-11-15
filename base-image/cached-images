@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+#
+# cached-images —— 查询平台统一镜像代理「已完整缓存」的镜像清单（0.4.0 新增）
+#
+# 用途：agent 拉依赖镜像前先查清单，在可接受的版本集合中优先选已缓存版本，
+# 提高统一镜像代理的缓存命中率（未命中再回退正常拉取）。
+#
+# 硬约束（实现口径，改动前先读）：
+#   1) 纯 bash + coreutils + curl：零 jq、零 JSON 解析——服务端提供预渲染
+#      文本格式（?format=text），本命令把响应体原样输出，一个字节都不解析；
+#   2) 显式 --noproxy '*'：沙箱 env 里有 HTTP(S)_PROXY / ALL_PROXY（统一镜像
+#      代理的拉取变量），平台后端调用不走镜像代理，必须显式绕开；
+#   3) 超时封顶：--connect-timeout 5 --max-time 10，任何网络形态下不挂 shell；
+#   4) 任何失败态都不阻塞：只打一行中文提示并引导回退，绝不妨碍后续 docker pull。
+#
+# 三态与退出码（两个失败态退出码不同，均写进 --help）：
+#   ① 正常：输出清单文本 + 引导语，退出 0；
+#   ② 缺凭据 / 缺 URL：SANDBOX_IMAGE_CACHE_URL / SANDBOX_IMAGE_CACHE_TOKEN
+#      任一未设置或为空串 → 一行中文提示，退出 2；
+#   ③ 不可达 / 超时 / HTTP 错误（含令牌轮换后旧令牌 401 的降级态）
+#      → 一行中文提示，退出 3。
+#
+# env 来源：服务端创建 / 启动沙箱时平台强制注入（CLI 直接创建的沙箱缺这对
+# env 属已知边角，console 对该沙箱「停止 → 启动」一次即自愈）。
+
+set -u
+
+EXIT_OK=0
+EXIT_MISSING_ENV=2
+EXIT_UNREACHABLE=3
+
+usage() {
+  cat <<'EOF'
+cached-images —— 查询平台统一镜像代理「已完整缓存」的镜像清单
+
+用法：
+  cached-images          查询清单（无参数即查询）
+  cached-images --help   显示本帮助
+
+行为：
+  curl 拉取 $SANDBOX_IMAGE_CACHE_URL/api/proxy/cache/images?format=text，
+  清单文本原样输出（零解析、不依赖 jq）；显式 --noproxy '*' 绕过
+  HTTP(S)_PROXY / ALL_PROXY 等代理变量（平台后端调用不走镜像代理）；
+  连接 5 秒 / 总 10 秒封顶，不挂 shell。
+
+三态与退出码：
+  0   正常 —— 清单文本已输出（缓存为空时是空态文案，不是错误）
+  2   缺凭据 / 缺 URL / 参数用法错误 —— SANDBOX_IMAGE_CACHE_URL 或
+      SANDBOX_IMAGE_CACHE_TOKEN 未设置或为空串（本地侧问题）
+  3   不可达 / 超时 / HTTP 错误 —— 端点连不上、超时或拒绝请求，
+      含令牌失效（远端侧问题）
+
+任何失败态都不阻塞：请回退正常拉取（docker pull 照常进行）。
+引导约定：拉依赖镜像前先查缓存镜像清单，可接受的版本集合中优先选已缓存版本。
+EOF
+}
+
+# ---------------------------------------------------------------- 参数：--help / 未知参数
+if [ "$#" -gt 0 ]; then
+  case "$1" in
+    -h|--help|help)
+      usage
+      exit "$EXIT_OK"
+      ;;
+    *)
+      printf 'cached-images：无法识别的参数「%s」——无参数即查询，--help 查看用法与退出码\n' "$1" >&2
+      exit "$EXIT_MISSING_ENV"
+      ;;
+  esac
+fi
+
+# ---------------------------------------------------------------- ② 缺凭据 / 缺 URL（空串按缺失）
+cache_url="${SANDBOX_IMAGE_CACHE_URL:-}"
+cache_token="${SANDBOX_IMAGE_CACHE_TOKEN:-}"
+if [ -z "$cache_url" ] || [ -z "$cache_token" ]; then
+  printf 'cached-images：缺镜像缓存清单凭据（SANDBOX_IMAGE_CACHE_URL / SANDBOX_IMAGE_CACHE_TOKEN 未设置或为空），跳过查询——不阻塞，请回退正常拉取所需镜像（退出码 2，--help 见用法）\n' >&2
+  exit "$EXIT_MISSING_ENV"
+fi
+
+# ---------------------------------------------------------------- 查询：curl 直接输出，零解析
+# 尾部斜杠归一：env 是「后端可达地址」（如 http://172.17.0.1:28642），
+# 带不带尾斜杠都拼出同一个端点。
+endpoint="${cache_url%/}/api/proxy/cache/images?format=text"
+curl --silent --fail --noproxy '*' \
+  --connect-timeout 5 --max-time 10 \
+  --header "Authorization: Bearer ${cache_token}" \
+  "$endpoint"
+curl_rc=$?
+
+if [ "$curl_rc" -ne 0 ]; then
+  printf 'cached-images：镜像缓存清单端点不可达、超时或返回错误（%s，curl 退出码 %s），跳过查询——不阻塞，请回退正常拉取所需镜像（退出码 3）\n' "$endpoint" "$curl_rc" >&2
+  exit "$EXIT_UNREACHABLE"
+fi
+
+# ---------------------------------------------------------------- 引导约定（正常态清单尾部）
+# 模板无指令字段，这条平台约定由本命令承载：清单后追加一行引导。
+printf '\n提示：拉依赖镜像前先查缓存镜像清单，可接受的版本集合中优先选已缓存版本（未命中再回退正常拉取）。\n'
+exit "$EXIT_OK"
