@@ -557,8 +557,12 @@ def test_filter_tag_only_keeps_tagged_entries_and_scan_counts(
         )
     assert response.status_code == 200
     if "format=text" in format_param:
-        # text + tags=only 渲染表格，逐行见下一节单测；这里只钉过滤语义。
+        # text + tags=only 渲染表格，逐行见下一节单测；这里钉过滤语义与
+        # 0.4.2 输出清理的端点级否定钉（无轻表头行、无尾注行）。
         assert "仓库：" not in response.text
+        assert "清单生成时间" not in response.text
+        assert "SIZE 为拉取该条所需链字节" not in response.text
+        assert response.text.splitlines()[0].startswith("IMAGE")
         return
     payload = response.json()
     assert len(payload["images"]) == 1
@@ -719,21 +723,25 @@ def test_render_tag_only_table_expands_tags_and_repeats_columns() -> None:
 def test_render_tag_only_table_row_order_is_repo_then_tag() -> None:
     """行按 repo、tag 排序（构造序故意乱序）保证稳定输出。"""
     text = render_cache_images_tag_only_table(filter_tag_only(make_tagged_result()))
-    rows = [line.split()[0] for line in text.splitlines()[2:-1]]
+    rows = [line.split()[0] for line in text.splitlines()[1:]]  # 首行是列头
     assert rows == sorted(rows)
     assert rows == ["astral-sh/uv:0.13.7", "library/python:3.11-slim", "library/python:3.12-slim"]
 
 
-def test_render_tag_only_table_light_header_and_footer_note() -> None:
-    """轻表头一行（条目/行数 + 清单生成时间）+ 表尾一行 SIZE 防误读尾注。"""
+def test_render_tag_only_table_has_no_light_header_or_footer_note() -> None:
+    """仅表体（0.4.2 输出清理）：无轻表头行、无 SIZE 防误读尾注行。
+
+    输出 = 列头行 + 数据行：首行是列头、末行是数据行；轻表头（条目/行数
+    计数 + 清单生成时间）与尾注整行 0 命中（生成时间在 json ``generated_at``
+    与缺省 text 仍有承载，防误读口径承载在 API 文档第 17 章）。
+    """
     text = render_cache_images_tag_only_table(filter_tag_only(make_tagged_result()))
     lines = text.splitlines()
-    assert lines[0] == (
-        "已缓存镜像 2 条（表格 3 行）｜ 清单生成时间：2026-11-15T13:20:22Z"
-    )
-    assert lines[-1] == (
-        "SIZE 为拉取该条所需链字节，条目间共享 blob，不可求和当缓存占用"
-    )
+    assert not any(line.startswith("已缓存镜像") for line in lines)
+    assert "清单生成时间" not in text
+    assert "SIZE 为拉取该条所需链字节" not in text
+    assert lines[0].startswith("IMAGE")  # 首行 = 列头行
+    assert lines[-1].startswith("library/python:")  # 末行 = 数据行
     # 默认 text 的「两行现象」注在 tag-only 视图不适用，不再渲染。
     assert "后者标签列表为空" not in text
 
@@ -742,12 +750,12 @@ def test_render_tag_only_table_column_alignment_is_ljust_two_spaces() -> None:
     """列宽按批内最长值（含列表头）ljust 对齐，列间两空格，行尾不留空白。"""
     text = render_cache_images_tag_only_table(filter_tag_only(make_tagged_result()))
     lines = text.splitlines()
-    header = lines[1]
+    header = lines[0]  # 仅表体：首行即列头行（无轻表头）
     assert header.split() == ["IMAGE", "ID", "SIZE", "CACHED", "TIME"]
     # 列分隔是两空格、列内 ljust 填充；数据行与表头行都行尾无空白。
     assert header == header.rstrip()
     assert "  IMAGE" not in header  # 首列顶格
-    for line in lines[2:]:
+    for line in lines[1:]:
         assert line == line.rstrip()
     # IMAGE 列宽 = 最长镜像名（含表头 5）：短值右侧填充到同宽再接两空格。
     image_col_width = max(
@@ -761,11 +769,14 @@ def test_render_tag_only_table_column_alignment_is_ljust_two_spaces() -> None:
 
 
 def test_render_tag_only_table_rebuild_byte_exact() -> None:
-    """逐字节重建比对：各列 ljust 到批内最宽（含列表头）+ 两空格相连。"""
+    """逐字节重建比对：整份输出 = 列头行 + 数据行（仅表体），各列 ljust 到
+
+    批内最宽（含列表头）+ 两空格相连，行尾不留空白。
+    """
     filtered = filter_tag_only(make_tagged_result())
     text = render_cache_images_tag_only_table(filtered)
     lines = text.splitlines()
-    body = lines[1:-1]  # 去轻表头与尾注：列头行 + 数据行
+    # 仅表体：重建目标就是整份输出（列头行 + 数据行，无轻表头与尾注）。
     rendered = sorted(
         (
             f"{image.repo}:{tag}",
@@ -792,7 +803,7 @@ def test_render_tag_only_table_rebuild_byte_exact() -> None:
         ).rstrip()
         for row in rendered
     ]
-    assert body == expected_lines
+    assert lines == expected_lines
 
 
 def test_render_tag_only_table_id_is_first_12_hex_chars() -> None:
@@ -803,18 +814,22 @@ def test_render_tag_only_table_id_is_first_12_hex_chars() -> None:
     assert "sha256:" not in text
 
 
-def test_render_tag_only_table_empty_state_is_explicit() -> None:
-    """全无标签 → 空表：轻表头计数归零 + 明确空态文案 + 尾注仍在。"""
+def test_render_tag_only_table_empty_list_renders_only_column_header() -> None:
+    """空清单 → 仅列头行（docker images 同款语义：空输出仍带列头）。
+
+    bash 侧不会拿到空串；「明确空态文案」由缺省 text 承载，tag-only 视图
+    保持纯表格形态（无计数行、无空态括号文案、无尾注）。
+    """
     result = make_result(
         generated_at="2026-11-15T13:20:22Z",
         images=(make_image(repo="library/nginx", tags=(), digest=DIGEST_B),),
     )
     text = render_cache_images_tag_only_table(filter_tag_only(result))
-    lines = text.splitlines()
-    assert lines[0] == "已缓存镜像 0 条（表格 0 行）｜ 清单生成时间：2026-11-15T13:20:22Z"
-    assert lines[1] == "（当前没有带标签的已缓存镜像）"
-    assert lines[-1].startswith("SIZE 为拉取该条所需链字节")
-    assert "IMAGE" not in text  # 空表不渲染列头
+    assert text == "IMAGE  ID  SIZE  CACHED TIME\n"  # 整份输出 = 列头行
+    assert "已缓存镜像" not in text
+    assert "清单生成时间" not in text
+    assert "（当前没有带标签的已缓存镜像）" not in text
+    assert "SIZE 为拉取该条所需链字节" not in text
 
 
 def test_render_tag_only_table_size_and_time_formats() -> None:
@@ -823,7 +838,7 @@ def test_render_tag_only_table_size_and_time_formats() -> None:
     assert "19.3MB" in text
     assert "45.6MB" in text
     assert "2026-11-06 15:35:14" in text
-    assert "2026-11-06T15:35:14Z" not in text.splitlines()[2]  # 数据行无 ISO 原文
+    assert "2026-11-06T15:35:14Z" not in text.splitlines()[1]  # 首条数据行无 ISO 原文
 
 
 # ---------------------------------------------------------------- 默认视图零改动回归（tags 缺席）

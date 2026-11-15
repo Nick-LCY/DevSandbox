@@ -11,14 +11,14 @@
 # 构建：
 #   docker build \
 #     --build-arg DOCKER_CLI_VERSION=29.6.2 \
-#     -t sandbox-platform/base:0.4.1 base-image
+#     -t sandbox-platform/base:0.4.2 base-image
 
 # 客户端版本：与宿主 dockerd 版本保持一致（client/server 版本一致性是验收判据）
 ARG DOCKER_CLI_VERSION=29.6.2
 # 底座：体积优先的精简发行版
 ARG BASE_IMAGE=debian:bookworm-slim
 # 镜像版本号，仅用于 OCI label
-ARG BASE_VERSION=0.4.1
+ARG BASE_VERSION=0.4.2
 
 # ---------------------------------------------------------------- 阶段 1：抠 docker 客户端
 # 官方 docker 客户端镜像里的 /usr/local/bin/docker 是静态编译的 Go 二进制，可直接跨发行版使用
@@ -56,10 +56,11 @@ COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
 # 入口脚本（纯 bash）
 COPY entrypoint.sh /entrypoint.sh
 
-# cached-images（0.4.0 新增；0.4.1 起请求表格视图）：查询统一镜像代理「已缓存」
-# 清单的纯 bash 命令。放 /usr/local/bin（在 PATH 内）：curl 拉服务端预渲染文本
-# （?format=text&tags=only，docker images 风格表格）直接输出，零 jq、零 JSON 解析；
-# 对后端调用显式 --noproxy（沙箱 env 有代理变量，平台后端不走镜像代理）；
+# cached-images（0.4.0 新增；0.4.1 起请求表格视图；0.4.2 起输出仅表体）：
+# 查询统一镜像代理「已缓存」清单的纯 bash 命令。放 /usr/local/bin（在 PATH 内）：
+# curl 拉服务端预渲染文本（?format=text&tags=only，docker images 风格表格，
+# 0.4.2 起仅列头 + 数据行）直接输出，零 jq、零 JSON 解析；正常态不追加任何
+# 说明行；对后端调用显式 --noproxy（沙箱 env 有代理变量，平台后端不走镜像代理）；
 # 连接 5s / 总 10s 封顶；三态退出码 0 / 2 / 3，失败态不阻塞（详见脚本头注释与 README）。
 COPY cached-images /usr/local/bin/cached-images
 

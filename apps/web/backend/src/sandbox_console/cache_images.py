@@ -11,9 +11,12 @@
 - **text 预渲染**：沙箱内 ``cached-images`` 是纯 bash + curl，**没有 jq**，
   禁止让 bash 解析 JSON——服务端义务是提供直接可读的文本（表头 + 逐行条目
   + 生成时间 + 防误读说明）。
-- **tags=only 视图（0.4.1 轮新增）**：``?tags=only`` 只保留标签列表非空的
-  条目（json 与 text 同参数同语义）；text 在该视图渲染成 docker images
-  风格表格（IMAGE / ID / SIZE / CACHED TIME，服务端预渲染，bash 零解析）。
+- **tags=only 视图（0.4.1 轮新增；0.4.2 输出清理）**：``?tags=only`` 只保留
+  标签列表非空的条目（json 与 text 同参数同语义）；text 在该视图渲染成
+  docker images 风格表格（IMAGE / ID / SIZE / CACHED TIME，服务端预渲染，
+  bash 零解析）——0.4.2 起输出**仅表体**（列头行 + 数据行）：轻表头行与
+  SIZE 防误读尾注行去除（生成时间在 json ``generated_at`` 与缺省 text
+  仍有承载；防误读口径承载在 API 文档第 17 章）。
 
 服务端**不另设扫描超时**：30 秒封顶由核心包保证（``SCAN_COMMAND_TIMEOUT``，
 对齐 ``cache_size_bytes`` 同款纪律），这里不放大也不重复实现。
@@ -148,20 +151,24 @@ def format_cached_time(cached_at: str) -> str:
 def render_cache_images_tag_only_table(result: CacheScanResult) -> str:
     """tags=only 视图的 text 渲染：docker images 风格表格（服务端预渲染）。
 
-    布局（用户拍板口径）：
+    布局（0.4.2 输出清理后的用户拍板口径）——**仅表体**：
 
-    - 轻表头一行：条目数 / 表格行数 + 「清单生成时间：…」（PRD「text 含生成
-      时间」在 tag-only 视图的承载形态）；
+    - 输出 = 列头行 + 数据行：0.4.1 的轻表头行（条目数/表格行数 + 「清单
+      生成时间：…」）与表尾 SIZE 防误读尾注行**去除**。生成时间戳的承载
+      去向：json ``generated_at``、缺省 text（仍含生成时间）与本节 API
+      文档；SIZE 防误读口径承载在 API 文档第 17 章，不再由该视图逐次重复；
     - 列：IMAGE（``{repo}:{tag}``，同一条目多标签展开为多行，ID/SIZE/TIME
       重复）、ID（digest 去 ``sha256:`` 前缀后的前 12 位）、SIZE（十进制人
       读）、CACHED TIME（``YYYY-MM-DD HH:mm:ss``，UTC）；
     - 列宽按批内最长值对齐（含列表头；ljust + 两空格分隔，行尾不留空白），
       行按 repo、tag 排序保证稳定输出；
-    - 表格后一行尾注：SIZE 语义防误读。默认 text 的两则尾注里的「两行现象」
-      注在 tag-only 视图**不适用**（无标签行已被滤除），不再渲染。
+    - 空清单 → 仅列头行（docker images 同款语义：空输出仍带列头，bash 侧
+      不会拿到空串；「明确空态文案」由缺省 text 承载，tag-only 视图保持
+      纯表格形态）。
 
-    空态给明确文案（默认 text 同款纪律：绝不让 bash 把「没有输出」误读成
-    「没有缓存」）。纯函数零 IO：输入一份扫描结果，输出一份文本。
+    默认 text 的两则尾注在 tag-only 视图不渲染（「两行现象」注不适用——
+    无标签行已被滤除；SIZE 注见 API 文档）。纯函数零 IO：输入一份扫描
+    结果，输出一份文本。
     """
     expanded = [
         (image.repo, tag, image) for image in result.images for tag in image.tags
@@ -181,25 +188,19 @@ def render_cache_images_tag_only_table(result: CacheScanResult) -> str:
         max([len(title), *[len(row[column]) for row in rows]])
         for column, title in enumerate(header)
     ]
+    # 仅表体：列头行 + 数据行（空清单 → 仅列头行，docker images 同款语义）。
+    # 不再渲染轻表头行与 SIZE 尾注行（0.4.2 输出清理，口径见 docstring）。
     lines = [
-        f"已缓存镜像 {len(result.images)} 条（表格 {len(rows)} 行）"
-        f"｜ 清单生成时间：{result.generated_at}",
+        "  ".join(
+            title.ljust(width) for title, width in zip(header, widths, strict=True)
+        ).rstrip(),
     ]
-    if not rows:
-        lines.append("（当前没有带标签的已缓存镜像）")
-    else:
-        lines.append(
-            "  ".join(
-                title.ljust(width) for title, width in zip(header, widths, strict=True)
-            ).rstrip()
-        )
-        lines.extend(
-            "  ".join(
-                cell.ljust(width) for cell, width in zip(row, widths, strict=True)
-            ).rstrip()
-            for row in rows
-        )
-    lines.append("SIZE 为拉取该条所需链字节，条目间共享 blob，不可求和当缓存占用")
+    lines.extend(
+        "  ".join(
+            cell.ljust(width) for cell, width in zip(row, widths, strict=True)
+        ).rstrip()
+        for row in rows
+    )
     return "\n".join(lines) + "\n"
 
 

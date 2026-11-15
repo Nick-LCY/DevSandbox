@@ -2,16 +2,17 @@
 #
 # 基础镜像静态判定：镜像内业务运行时缺席 + 通用工具层在场 + 镜像结构约定 + 入口行为 + 无离线包痕迹
 # + cached-images 命令硬约束（0.4.0：PATH / 纯 bash / --noproxy / 封顶 / 缺凭据态 / 帮助退出码 / 拒连态；
-#   0.4.1：端点请求含 tags=only 表格视图 + 新帮助文本逐字关键行）
+#   0.4.1：端点请求含 tags=only 表格视图 + 新帮助文本逐字关键行；
+#   0.4.2：正常态无追加提示行的否定钉 + 帮助文本引导约定句保留）
 # 依赖命令：bash + docker（宿主守护进程）。
 #
 # 用法：
-#   ./verify.sh                      # 默认校验 sandbox-platform/base:0.4.1
+#   ./verify.sh                      # 默认校验 sandbox-platform/base:0.4.2
 #   BASE_IMAGE=sandbox-platform/base:0.1.0 ./verify.sh
 
 set -uo pipefail
 
-BASE_IMAGE="${BASE_IMAGE:-sandbox-platform/base:0.4.1}"
+BASE_IMAGE="${BASE_IMAGE:-sandbox-platform/base:0.4.2}"
 
 CHECK_TOTAL=0
 CHECK_FAILED=0
@@ -267,7 +268,7 @@ for key in LANG LC_ALL; do
   fi
 done
 
-# ---------------------------------------------------------------- 11. cached-images 命令（0.4.0 新增；0.4.1 表格视图与新帮助）
+# ---------------------------------------------------------------- 11. cached-images 命令（0.4.0 新增；0.4.1 表格视图与新帮助；0.4.2 正常态零追加）
 # 硬约束三判（PRD 22）：在 PATH、纯 bash 零 jq 零 JSON 解析、显式 --noproxy + 超时封顶；
 # 三态中的缺凭据态与帮助文本可离线判（不需活后端）；不可达态的「拒连」形态同样零依赖
 # （指向本机必死端口）——「活后端」的不可达/正常态属真机验证，不塞本脚本。
@@ -436,6 +437,19 @@ if [ "$out" = "table-form-ok" ]; then
   check "表格消费形态（请求 tags=only 表格视图，本命令零解析零渲染）" 0 "脚本内命中 tags=only"
 else
   check "表格消费形态（请求 tags=only 表格视图，本命令零解析零渲染）" 1 "脚本内未命中 tags=only"
+fi
+
+# 11.17 正常态不追加提示行（0.4.2 输出清理的否定钉，双半断言）：
+#     ① 静态：GUIDE 追加已退役——「提示：拉依赖镜像前先查…」这行引导语
+#        （连同其 printf）在脚本全文 0 命中（0.4.1 时它只存在于尾部 printf
+#        追加一处，残留即红）；stdout 与端点 tags=only 正文逐字一致由真机
+#        验证钉（e2e spec 16），这里钉静态退役。
+#     ② 帮助：引导约定句仍在 --help 文本里（引导约定的唯一承载处）。
+no_guide_and_help_keeps="$(in_image "h=\$(cached-images --help); if grep -Fq '提示：拉依赖镜像前先查' /usr/local/bin/cached-images; then :; elif printf '%s' "\$h" | grep -Fq '引导约定：拉依赖镜像前先查缓存镜像清单'; then echo guide-only-in-help; fi")"
+if [ "$no_guide_and_help_keeps" = "guide-only-in-help" ]; then
+  check "正常态不追加提示行（脚本无 GUIDE 追加，引导约定仅帮助文本承载）" 0 "GUIDE 追加 0 命中，--help 保留引导约定句"
+else
+  check "正常态不追加提示行（脚本无 GUIDE 追加，引导约定仅帮助文本承载）" 1 "脚本内仍有 GUIDE 追加，或 --help 未命中引导约定句"
 fi
 
 # ---------------------------------------------------------------- 汇总
