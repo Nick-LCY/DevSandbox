@@ -1,6 +1,52 @@
 # 平台基础镜像 · 实测记录
 
-## 0.4.0（当前版本）—— cached-images 缓存清单命令
+## 0.4.1（当前版本）—— cached-images 表格视图（tags=only）
+
+- 执行日期：2026-11-15
+- 宿主：Ubuntu 26.04 LTS / Docker 客户端 + 服务端 **29.6.2**（宿主 root 守护进程）
+- 镜像：`sandbox-platform/base:0.4.1`，image id `sha256:33eb5293599a25a0f75703e67da1dde18eef3f548416fb23353a9e7d479e5b13`
+- 上游：镜像缓存清单轮后的小增强（用户拍板）：服务端 `?tags=only` 过滤与 docker images 风格表格（apps/web/backend），本镜像的 `cached-images` 消费该视图
+
+> **0.4.1 的变更原因（patch bump）**：`cached-images` 命令行为变更——请求 URL 改为
+> `?format=text&tags=only`（tag-only 视图的 docker images 风格表格，服务端预渲染，
+> 仍然零解析零 jq）；`--help` 逐字替换为新文本（三态与退出码语义 0 / 2 / 3 不变，
+> 失败态提示语引导回退不变，正常态尾部引导语不变）。其余镜像内容零变化。
+
+### 一、构建与判定
+
+| 项 | 实测 |
+|----|------|
+| 构建命令 | `docker build --build-arg DOCKER_CLI_VERSION=29.6.2 -t sandbox-platform/base:0.4.1 base-image` |
+| 构建耗时（墙钟） | **0.4 秒**（增量：全部层与 0.4.0 共用缓存，仅 cached-images COPY 层与 LABEL 重落） |
+| verify.sh | **64 项全过**（61 + 新增 3 项：新帮助文本逐字关键行 / 旧帮助文本退役否定钉 / tags=only 表格消费形态；11.7 更新为 `?format=text&tags=only` + Bearer） |
+| 体积 | `docker image inspect .Size` **98,501,768 B ≈ 98.5 MB**（0.4.0 同口径 98,501,992 B，-224 B：命令脚本与注释字数变化）；`docker images` 口径 384 MB 同级 |
+
+### 二、三态真机验证（源码起临时后端，生产零接触，验证后已清理）
+
+临时实例：`SANDBOX_PLATFORM_HOME=/tmp/sbx-041-test-home SANDBOX_CONSOLE_HOST=172.17.0.1 SANDBOX_CONSOLE_PORT=28799 uv run --no-sync --project apps/web/backend python -m sandbox_console`——测试数据根下 **registry-proxy 以符号链接指向真实缓存子树**（扫描器只读穿透符号链接，生产数据根零写入），本机真缓存 29 条目中带标签 3 条（`astral-sh/uv:0.13.7`、`library/python:3.11-slim`、`library/python:3.12-slim`）；绑 docker0 网桥 IP（不对 LAN 暴露）；受限令牌取自测试凭据文件（`sbxr_` 前缀）。耗时含容器创建启动。
+
+| 态 | 命令要点 | 输出 / 退出码 / 耗时 |
+|----|----------|----------------------|
+| ① 正常（表格视图） | 容器起于 `base:0.4.1`，注入两 env；**额外注入死代理变量**（`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 指向 `dead.proxy.local:9`、`NO_PROXY=`）→ 仍成功，实证 `--noproxy '*'` 生效 | docker images 风格表格 3 行 + 轻表头 + SIZE 尾注 + 尾部引导语一行；**rc=0**；**1190ms**；输出与端点 `?format=text&tags=only` 正文逐字一致（仅多空一行 + 引导语） |
+| ② 缺凭据 | 两 env 全缺（镜像不预置，`docker run` 不透传宿主 env） | 一行中文提示（含「回退正常拉取」引导）；**rc=2**；**302ms** |
+| ③ 拒连 | URL 指向 `http://172.17.0.1:28798`（无监听） | 中文提示（curl rc=7）；**rc=3**；**285ms** |
+| ③ HTTP 错误（降级态） | URL 正常、令牌错误（`sbxr_wrong_token_value` → 401） | 中文提示（`--fail` → curl rc=22）；**rc=3**；**302ms**——对应令牌轮换后旧令牌失效的降级口径 |
+| 帮助 | `cached-images --help` | 新文本与用户拍板定稿**逐字节一致**（`diff` 全等比对通过）；rc=0 |
+
+正常态表格原文（3 行真数据）：
+
+```text
+已缓存镜像 3 条（表格 3 行）｜ 清单生成时间：2026-11-15T13:31:01Z
+IMAGE                     ID            SIZE    CACHED TIME
+astral-sh/uv:0.13.7       96f40d3904aa  19.3MB  2026-11-06 15:35:14
+library/python:3.11-slim  65bd3d9f1d7f  45.6MB  2026-11-06 15:34:48
+library/python:3.12-slim  5e2bdb1b0d54  43.3MB  2026-11-12 14:33:22
+SIZE 为拉取该条所需链字节，条目间共享 blob，不可求和当缓存占用
+```
+
+清理：临时后端（uv / python 子进程与监听）、测试数据根与日志全部删除，无残留监听与容器（`--rm` 自动回收）。
+
+## 0.4.0 —— cached-images 缓存清单命令
 
 - 执行日期：2026-11-15
 - 宿主：Ubuntu 26.04 LTS / Docker 客户端 + 服务端 **29.6.2**（宿主 root 守护进程）

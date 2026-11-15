@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 #
 # 基础镜像静态判定：镜像内业务运行时缺席 + 通用工具层在场 + 镜像结构约定 + 入口行为 + 无离线包痕迹
-# + cached-images 命令硬约束（0.4.0：PATH / 纯 bash / --noproxy / 封顶 / 缺凭据态 / 帮助退出码 / 拒连态）
+# + cached-images 命令硬约束（0.4.0：PATH / 纯 bash / --noproxy / 封顶 / 缺凭据态 / 帮助退出码 / 拒连态；
+#   0.4.1：端点请求含 tags=only 表格视图 + 新帮助文本逐字关键行）
 # 依赖命令：bash + docker（宿主守护进程）。
 #
 # 用法：
-#   ./verify.sh                      # 默认校验 sandbox-platform/base:0.4.0
+#   ./verify.sh                      # 默认校验 sandbox-platform/base:0.4.1
 #   BASE_IMAGE=sandbox-platform/base:0.1.0 ./verify.sh
 
 set -uo pipefail
 
-BASE_IMAGE="${BASE_IMAGE:-sandbox-platform/base:0.4.0}"
+BASE_IMAGE="${BASE_IMAGE:-sandbox-platform/base:0.4.1}"
 
 CHECK_TOTAL=0
 CHECK_FAILED=0
@@ -266,7 +267,7 @@ for key in LANG LC_ALL; do
   fi
 done
 
-# ---------------------------------------------------------------- 11. cached-images 命令（0.4.0 新增）
+# ---------------------------------------------------------------- 11. cached-images 命令（0.4.0 新增；0.4.1 表格视图与新帮助）
 # 硬约束三判（PRD 22）：在 PATH、纯 bash 零 jq 零 JSON 解析、显式 --noproxy + 超时封顶；
 # 三态中的缺凭据态与帮助文本可离线判（不需活后端）；不可达态的「拒连」形态同样零依赖
 # （指向本机必死端口）——「活后端」的不可达/正常态属真机验证，不塞本脚本。
@@ -326,12 +327,12 @@ else
   check "cached-images 超时封顶（连接 5s / 总 10s）" 1 "curl 调用块内未命中相邻连写的两个封顶参数"
 fi
 
-# 11.7 端点与凭据形态静态钉死：format=text + Bearer 受限令牌头
-out="$(in_image "grep -Fq -- 'format=text' /usr/local/bin/cached-images && grep -Fq -- 'Authorization: Bearer' /usr/local/bin/cached-images && echo form-ok")"
+# 11.7 端点与凭据形态静态钉死（0.4.1 起含 tags=only）：format=text&tags=only 表格视图 + Bearer 受限令牌头
+out="$(in_image "grep -Fq -- 'format=text&tags=only' /usr/local/bin/cached-images && grep -Fq -- 'Authorization: Bearer' /usr/local/bin/cached-images && echo form-ok")"
 if [ "$out" = "form-ok" ]; then
-  check "cached-images 端点 ?format=text + Bearer 受限令牌头" 0 "脚本内命中"
+  check "cached-images 端点 ?format=text&tags=only（表格视图）+ Bearer 受限令牌头" 0 "脚本内命中"
 else
-  check "cached-images 端点 ?format=text + Bearer 受限令牌头" 1 "未同时命中端点与凭据形态"
+  check "cached-images 端点 ?format=text&tags=only（表格视图）+ Bearer 受限令牌头" 1 "未同时命中端点（含 tags=only）与凭据形态"
 fi
 
 # 11.8 三态·缺凭据：两 env 全缺 → 固定退出码 2 + 一行中文提示 + 回退引导（真跑，零依赖）
@@ -395,6 +396,46 @@ if echo "$out" | grep -q 'rc=3$' && echo "$out" | grep -q '不可达' && [ "$ela
   check "不可达态（拒连）：死端口 → 退出码 3 + 中文提示 + 耗时封顶内" 0 "耗时 ${elapsed}s（<10s 封顶）"
 else
   check "不可达态（拒连）：死端口 → 退出码 3 + 中文提示 + 耗时封顶内" 1 "耗时 ${elapsed}s，输出：$(echo "$out" | sed 's/|/ /g')"
+fi
+
+# 11.14 帮助文本新文本逐字关键行（0.4.1 逐字替换后的钉子）：标题（「已缓存」）+
+#     用法两行 + 三态表头 + 回退句，五处关键行逐行 grep -Fx（定长整行匹配，
+#     与 10.1 的 OSC 行同款判据），单次容器内循环完成。
+help_pinned_ok="$(printf '%s\n' \
+  'cached-images —— 查询平台统一镜像代理「已缓存」的镜像清单' \
+  '  cached-images          查询清单' \
+  '  cached-images --help   显示本帮助' \
+  '三态与退出码：' \
+  '缓存查询失败不阻塞镜像拉取，可回退正常拉取（docker pull）。' \
+  | docker run --rm --entrypoint /bin/bash -i "$BASE_IMAGE" -c '
+      ok=1
+      while IFS= read -r line; do
+        cached-images --help | grep -Fxq "$line" || ok=0
+      done
+      [ "$ok" -eq 1 ] && echo all-lines-hit
+    ' 2>&1)"
+if [ "$help_pinned_ok" = "all-lines-hit" ]; then
+  check "帮助文本新文本逐字关键行（标题/用法/三态表头/回退句）" 0 "五处关键行整行命中"
+else
+  check "帮助文本新文本逐字关键行（标题/用法/三态表头/回退句）" 1 "--help 未整行命中关键行"
+fi
+
+# 11.15 旧帮助文本退役（0.4.1 逐字替换的否定钉子）：旧标题「已完整缓存」的
+#     镜像清单与旧「行为：」段在 --help 输出里 0 命中——残留即红。
+out="$(in_image 'h=$(cached-images --help); if printf "%s" "$h" | grep -Fq "已完整缓存」的镜像清单" || printf "%s" "$h" | grep -Fq "行为："; then :; else echo old-gone; fi')"
+if [ "$out" = "old-gone" ]; then
+  check "旧帮助文本已退役（旧标题「已完整缓存」/「行为：」段不再出现）" 0 "旧文案 0 命中"
+else
+  check "旧帮助文本已退役（旧标题「已完整缓存」/「行为：」段不再出现）" 1 "旧文案仍在 --help 里"
+fi
+
+# 11.16 表格消费形态静态钉死（0.4.1）：命令自身零渲染逻辑——表格由服务端
+#     预渲染、本命令只透传；静态钉「请求的端点带 tags=only」。
+out="$(in_image "grep -Fq -- 'tags=only' /usr/local/bin/cached-images && echo table-form-ok")"
+if [ "$out" = "table-form-ok" ]; then
+  check "表格消费形态（请求 tags=only 表格视图，本命令零解析零渲染）" 0 "脚本内命中 tags=only"
+else
+  check "表格消费形态（请求 tags=only 表格视图，本命令零解析零渲染）" 1 "脚本内未命中 tags=only"
 fi
 
 # ---------------------------------------------------------------- 汇总
