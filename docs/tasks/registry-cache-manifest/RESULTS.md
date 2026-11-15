@@ -11,9 +11,11 @@
 | 03 注入管线 | 服务端创建/启动递参 + 核心包 `_run_sandbox_container` 平台强制注入两 env（平台值优先、不进 metadata）+ 可达地址配置优先与探测兜底 + 真机六项 | `3197e1a` 主实现 + `5b337f1` 审查收尾 | 2026-11-15 |
 | 04 基础镜像 `base:0.4.0` | `cached-images` 纯 bash 三态命令（`--noproxy`、5s/10s 封顶、双退出码）+ Dockerfile/README bump + verify.sh 61 项 + 真机三态实测 | `912989c` 主实现 + `7ec26ed` 审查收尾 | 2026-11-15 |
 | 05 console 缓存镜像清单视图 | 设置抽屉视图（人读大小、空态/失败态、手动刷新零轮询双保险）+ 10 例单测（含「刷新失败保留旧清单」回归钉） | `4ad452b` 主实现 + `a33c33f` 审查收尾 | 2026-11-15 |
-| 06 验收与文档收口 | e2e `16-cache-images.spec.ts` 4 条（真浏览器+真沙箱+真缓存）+ 门禁全量 + PRD 32 条逐条核销 + API.md 第 17 章 / README / base-image 口径 / 词汇表 / 看板两清单 + 本留档 | 三个提交：`test(registry-cache-manifest)` 验收 spec → `docs(registry-cache-manifest)` 文档落位 → `docs(registry-cache-manifest)` 全轮收口（见 git log 最新三个提交） | 2026-11-15 |
+| 06 验收与文档收口 | e2e `16-cache-images.spec.ts` 4 条（真浏览器+真沙箱+真缓存）+ 门禁全量 + PRD 32 条逐条核销 + API.md 第 17 章 / README / base-image 口径 / 词汇表 / 看板两清单 + 本留档 | 三个提交（`9ec6fbc` / `f93310f` / `9572d5c`）：`test(registry-cache-manifest)` 验收 spec → `docs(registry-cache-manifest)` 文档落位 → `docs(registry-cache-manifest)` 全轮收口；收口后审查复核两提交：`e04391b` 审查收尾 + `65f8d72` 复核勘误（见下「审查复核收尾」） | 2026-11-15 |
 
 依赖顺序 `01 → 02 → {03, 04, 05} → 06` 全部按计划走完；机制不设打样轮（前向 md5 验证与反向 `KEY:` 头枚举由立项前侦察双向实证），01 直接实装、真缓存实测即验收——该决策被 01 的实测结果（含抓出一个真实缺陷）证实是合理的。
+
+**审查复核收尾（06 收口后两提交，2026-11-15）**：`e04391b` 审查收尾——跨 TTL 归一化回退死路径修复（前缀断言移入 else 分支）+ 转发器 error 监听与连接清理闭环（`forwarderSockets` 名册逐 socket 清理替代 `closeAllConnections`——该 API 是 `http.Server` 独有、`net.Server` 无）+ 清理失败经 `test.info().annotations` 留痕 + 三处计数补 `Number.isFinite` 判定；新 spec 两轮单跑 **4 / 4 全绿**，并意外获得一次全量 e2e 回归 **71 / 71**（12.5 分钟），收口数字不变。`65f8d72` 复核勘误——spec 头注释清理口径改回自动化兜底事实（`acc-` 前缀清扫由 `cleanupLeftoverSandboxes` 在 global-setup / global-teardown 自动执行）。复核结论：**通过**（Critical 已修复、Warning 2 替代实现经核实正确无泄漏、唯一注释勘误已修）。
 
 ## 二、门禁数字汇总（06 收口实测）
 

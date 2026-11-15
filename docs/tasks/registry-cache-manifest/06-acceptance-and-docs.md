@@ -89,4 +89,9 @@ status: done
 - **26** checkbox 本体是「口径写进文档」：04 已落 `base-image/README.md` 与 `API.md` 17.4，此处复核勾；存量重建登记为运维留白；
 - **30** 按「03 真机记录（探测兜底档实测可达）+ e2e 推演（回环自保护断言 + 视图冒烟）+ `API.md` 17.4 口径写明」三档核销。
 
+### 收尾复核（2026-11-15）
+
+- 收口后审查复核两提交落链：`e04391b` 审查收尾——跨 TTL 归一化回退死路径修复（前缀断言入 else 分支）+ 转发器 error 监听与连接清理闭环（`forwarderSockets` 名册替代 `closeAllConnections`——该 API 是 `http.Server` 独有、`net.Server` 无）+ 清理失败 `test.info().annotations` 留痕 + 三计数 `Number.isFinite`；新 spec 两轮单跑 **4 / 4 全绿**，复归全量 e2e **71 / 71**（12.5 分钟）；`65f8d72` 复核勘误——spec 头注释清理口径改回自动化兜底事实（`acc-` 前缀清扫由 `cleanupLeftoverSandboxes` 在 global-setup / global-teardown 自动执行）。
+- 复核结论：**通过**——Critical 已修复、Warning 2 替代实现经核实正确无泄漏、唯一注释勘误已修；收口数字不变。
+
 全轮数字与证据指针见 [[tasks/registry-cache-manifest/RESULTS.md|RESULTS]]。
