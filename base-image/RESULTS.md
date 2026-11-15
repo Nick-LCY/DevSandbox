@@ -1,6 +1,45 @@
 # 平台基础镜像 · 实测记录
 
-## 0.4.1（当前版本）—— cached-images 表格视图（tags=only）
+## 0.4.2（当前版本）—— cached-images 纯表体输出（输出清理）
+
+- 执行日期：2026-11-15
+- 宿主：Ubuntu 26.04 LTS / Docker 客户端 + 服务端 **29.6.2**（宿主 root 守护进程）
+- 镜像：`sandbox-platform/base:0.4.2`，image id `sha256:2ba55a32e5b70096528e7816a3cc4a8d5c8acacd4d88940322fd609b0edfdabd`
+- 上游：镜像缓存清单轮的输出清理（用户拍板）：服务端 `tags=only` 渲染与本镜像 `cached-images` 正常态都只保留表格本体
+- 提交：c49fcae（服务端 + 脚本 + bump + verify + 单测）、bcc2b9f（e2e + API.md + README）、f9b526f（审查收尾：spec 注释对齐 0.4.2 + 数据行断言补钉 + verify 11.17 引号卫生）
+
+> **0.4.2 的变更原因（patch bump）**：`cached-images` 正常态输出清理——stdout 只保留
+> 表格本体（列头 + 数据行）：服务端 `tags=only` 表格去轻表头行（已缓存镜像 N 条｜
+> 清单生成时间）与表尾 SIZE 防误读尾注，脚本正常态去尾部「提示：…」追加
+> （引导约定仅由 `--help` 文本承载，帮助文本逐字不变）；空清单仅列头行
+> （docker images 同款语义）。退出码 0 / 2 / 3、`--noproxy '*'`、5s / 10s 封顶、
+> 失败态提示语与缺省 `?format=text`（PRD 验收 10 载体）全部零改动。
+
+### 一、构建与判定
+
+| 项 | 实测 |
+|----|------|
+| 构建命令 | `docker build --build-arg DOCKER_CLI_VERSION=29.6.2 -t sandbox-platform/base:0.4.2 base-image` |
+| verify.sh | **65 项全过**（64 + 新增 1 项：11.17 正常态零追加否定钉——静态断言脚本全文无「提示：拉依赖镜像前先查」GUIDE 追加 + `--help` 保留引导约定句） |
+| 体积 | `docker image inspect .Size` **98,501,993 B ≈ 98.5 MB**（0.4.1 同口径 98,501,768 B，+225 B）；`docker images` 口径 384 MB 同级 |
+| 镜像内一致性 | 镜像内 `/usr/local/bin/cached-images` sha256（`5fd4fe116740…`）与仓库 `base-image/cached-images` 逐字节一致；OCI label `org.opencontainers.image.version=0.4.2` |
+| 全轮门禁 | 后端 pytest **436 全绿**；verify.sh **65 项全过**（11.17 否定钉：正常态零追加）；e2e **71 / 71**（12.3 分钟）；vitest **953** |
+
+### 二、三态真机验证（源码起临时后端，生产零接触，验证后已清理）
+
+临时实例同 0.4.1 口径：源码起临时后端（本轮 :18999）+ 测试数据根只读穿透真缓存（生产数据根零写入）；受限令牌 `sbxr_` 前缀；验证后测试资产全清，无残留监听与容器（`--rm` 自动回收）。
+
+| 态 | 命令要点 | 输出 / 退出码 |
+|----|----------|----------------|
+| ① 正常（纯表体） | 容器起于 `base:0.4.2`，注入两 env | **纯表格本体（264 字节，仅列头 + 数据行，无轻表头 / SIZE 尾注 / 追加提示行）**；与端点 `?format=text&tags=only` 正文 **cmp 零差异**；**stderr 0 字节**；**rc=0** |
+| ② 缺凭据 | 两 env 全缺（镜像不预置，`docker run` 不透传宿主 env） | 一行中文提示（含「回退正常拉取」引导）；**rc=2**（不变） |
+| ③ 拒连 | URL 指向无监听端口 | 中文提示；**rc=3**（不变） |
+| 跨 TTL | 首次拉取后隔 **65 秒**（> 60s TTL）再拉 | 表体**逐字一致**——0.4.2 起 tags=only 正文无任何动态行（生成时间已迁出表格），e2e 跨 TTL 归一化逻辑据此删除 |
+| 帮助 | `cached-images --help` | 与定稿**逐字节一致**（**642 字节**）；rc=0 |
+
+正常态输出样例与空清单（仅列头行）形态见 `base-image/README.md` 0.4.2 专章；生成时间与 SIZE 防误读口径的去向见 `apps/web/backend/API.md` 第 17 章。
+
+## 0.4.1 —— cached-images 表格视图（tags=only）
 
 - 执行日期：2026-11-15
 - 宿主：Ubuntu 26.04 LTS / Docker 客户端 + 服务端 **29.6.2**（宿主 root 守护进程）
