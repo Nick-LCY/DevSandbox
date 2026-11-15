@@ -158,7 +158,9 @@ class CreateRequest:
     network_name: str | None = None
     image_source: str = IMAGE_SOURCE_AUTO
     image_cache_url: str | None = None
-    image_cache_token: str | None = None
+    # repr=False：令牌本体不进 repr（对齐服务端 ImageCacheInjection.token 的
+    # 同款纪律，防异常回溯 / 调试日志泄露）；eq / replace 语义不受影响。
+    image_cache_token: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)

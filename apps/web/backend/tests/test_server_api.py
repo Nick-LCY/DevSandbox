@@ -139,7 +139,7 @@ def neutral_injection_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """钉死镜像缓存注入解析的探测路径：本文件的断言与机器环境解耦。
 
     探测结果（宿主局域网 IP）随机器而变；本文件只关心递参以外的行为，
-    这里把两条探测路径都钜成「无结果」→ 注入两值恒为 None。地址解析的
+    这里把两条探测路径都钉成「无结果」→ 注入两值恒为 None。地址解析的
     三档优先级与递参行为由 ``test_image_cache_injection.py`` 专项覆盖。
     """
     monkeypatch.setattr("sandbox_console.injection._route_source_ipv4", lambda: None)

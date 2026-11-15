@@ -160,7 +160,7 @@ def _hostname_ipv4() -> str | None:
 
 
 def _usable_ipv4(ip: str) -> bool:
-    """非回环、非未指定的 IPv4 才可用作可达地址。"""
+    """非回环、非未指定、非链路本地（169.254.0.0/16）的 IPv4 才可用作可达地址。"""
     try:
         address = ipaddress.ip_address(ip)
     except ValueError:
@@ -169,4 +169,5 @@ def _usable_ipv4(ip: str) -> bool:
         address.version == 4
         and not address.is_loopback
         and not address.is_unspecified
+        and not address.is_link_local
     )

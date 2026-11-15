@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 from pathlib import Path
 
 import pytest
@@ -429,11 +430,12 @@ def test_probe_sandbox_url_none_when_no_ip_and_bad_port_env(
 
 
 def test_probe_host_lan_ipv4_filters_unusable(monkeypatch: pytest.MonkeyPatch) -> None:
-    """探测链只认非回环 IPv4：回环 / 未指定 / 非法值一律跳过。"""
+    """探测链只认非回环、非链路本地的 IPv4：回环 / 未指定 / 链路本地 / 非法值一律跳过。"""
     assert _usable_ipv4("192.168.7.10") is True
     assert _usable_ipv4("127.0.1.1") is False
     assert _usable_ipv4("127.0.0.1") is False
     assert _usable_ipv4("0.0.0.0") is False
+    assert _usable_ipv4("169.254.10.5") is False  # link-local
     assert _usable_ipv4("::1") is False
     assert _usable_ipv4("not-an-ip") is False
     # 两步都只回回环地址 → 探测结果为 None
@@ -444,6 +446,16 @@ def test_probe_host_lan_ipv4_filters_unusable(monkeypatch: pytest.MonkeyPatch) -
         "sandbox_console.injection._hostname_ipv4", lambda: None
     )
     assert probe_host_lan_ipv4() is None
+
+
+def test_probe_host_lan_ipv4_shape_is_none_or_valid_ipv4() -> None:
+    """真探测（不 stub socket）⇒ 返回值形状恒定：None 或合法 IPv4 字符串。
+
+    只锁形状契约、不断具体值：宿主局域网地址随机器 / 网络环境漂移，
+    断具体值会让 CI 随机炸。
+    """
+    result = probe_host_lan_ipv4()
+    assert result is None or ipaddress.ip_address(result).version == 4
 
 
 def test_injection_repr_hides_token(platform_home: Path, config) -> None:
