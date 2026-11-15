@@ -12,7 +12,7 @@
 - [[tasks/registry-cache-manifest/02-server-endpoint-and-token.md]] — 服务端端点与受限令牌（`GET /api/proxy/cache/images`：json|text、422、503、60s TTL、30s 超时 + `cache-images-token.json` 凭据文件 + `BearerAuthMiddleware` 双凭据限界 + 单测，PRD 验收 8~15）——**done（2026-11-15 收口，提交 `ab95fa1` 主实现 + `dea6828` 审查收尾）**：门禁 pytest 全量 381 passed / 0 failed、ruff rc=0；交付与审查记录见任务文件进展节
 - [[tasks/registry-cache-manifest/03-injection-pipeline.md]] — 注入管线（服务端创建/启动递参 + 核心包 `_run_sandbox_container` 平台强制注入两 env：平台值优先、不进 metadata + 可达地址配置项与宿主 IP 探测兜底 + 单测，PRD 验收 16~20）——**done（2026-11-15 收口，提交 `3197e1a` 主实现 + `5b337f1` 审查收尾）**：真机验证六项全过（临时实例、生产零接触）+ 门禁服务端 398 passed / 核心包 500 passed（3 例既有环境故障）；交付与审查记录见任务文件进展节
 - [[tasks/registry-cache-manifest/04-base-image-cached-images.md]] — 基础镜像 `base:0.4.0` 与 `cached-images` 命令（纯 bash 三态 + `--noproxy` + Dockerfile/README bump + 构建推送，PRD 验收 22~26；现有沙箱重建由用户完成，登记为验收前置）——**done（2026-11-15 收口，提交 `912989c` 主实现 + `7ec26ed` 审查收尾）**：镜像 `base:0.4.0` 已构建（384MB，verify.sh 61 项全过）+ `cached-images` 真机三态全过；现有沙箱重建仍待用户执行（06 端到端硬前置）；交付与审查记录见任务文件进展节
-- [[tasks/registry-cache-manifest/05-console-cache-images-view.md]] — console 缓存镜像清单视图（设置抽屉代理状态区旁 + 空态/失败态 + 手动刷新、不加轮询，PRD 验收 27~28）
+- [[tasks/registry-cache-manifest/05-console-cache-images-view.md]] — console 缓存镜像清单视图（设置抽屉代理状态区旁 + 空态/失败态 + 手动刷新、不加轮询，PRD 验收 27~28）——**done（2026-11-15 收口，提交 `4ad452b` 主实现 + `a33c33f` 审查收尾）**：抽屉视图三态齐备（含刷新失败保留旧清单）+ 零轮询双保险（整文件静态断言 + 假时钟），门禁 vitest 953 passed / 0 failed（基线 943 → +10）、typecheck 双零错、build 成功，真机点验随 06 端到端；交付与审查记录见任务文件进展节
 - [[tasks/registry-cache-manifest/06-acceptance-and-docs.md]] — 验收与文档收口（e2e 用例含端到端 21 + 门禁全量 + PRD 32 条逐条核销 + API.md/README/词汇表/看板/两份清单同步 + RESULTS.md 留档，PRD 验收 21、29~32）
 
 ## 依赖顺序
