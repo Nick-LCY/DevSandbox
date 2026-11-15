@@ -30,6 +30,7 @@ from .auth import (
     WEBSOCKET_EXEMPT_PATHS,
     BearerAuthMiddleware,
     TicketStore,
+    ensure_cache_token,
     resolve_token,
     token_file_path,
 )
@@ -88,6 +89,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.console_token_source = source
     # 日志只说来源与路径，不打令牌本体
     logger.info("控制台访问令牌已就绪：%s", source.describe())
+
+    # 受限令牌（镜像缓存清单只读读径）：缺失则生成落盘；损坏 / 写入失败只打
+    # WARNING，**不阻断服务启动**（受限读径随后一律 401）——与主令牌
+    # 「缺了起不来」刻意不同：主令牌是唯一准入边界，受限令牌只是增益能力。
+    try:
+        ensure_cache_token(config)
+    except Exception as exc:  # 兜底放宽到 Exception：增益能力的任何意外都不拖死服务
+        logger.warning("受限令牌准备失败（不阻断服务启动，受限读径将 401）：%s", exc)
 
     prepare_sessions_dir(config)
 

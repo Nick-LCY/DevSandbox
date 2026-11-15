@@ -21,6 +21,15 @@
 服务**不会在没有令牌的状态下对外提供接口**：令牌解析失败就让服务起不来。
 **请求期不兜底生成令牌**：令牌只在启动路径（生命周期钩子）解析一次；请求期只读，
 取不到就按认证失败（401）处理，绝不在请求路径上悄悄生成并落盘。
+- **受限令牌**（2026-11-15 缓存清单轮新增）：第二把只读钥匙，平台全权管理，
+  仅供沙箱内 ``cached-images`` 命令访问镜像缓存清单这一条读径。落在平台数据根
+  （``cache-images-token.json``，权限 0600，``sbxr_`` 前缀，仿主令牌文件先例），
+  启动幂等——已存在不覆盖；**缺失 / 损坏不阻断服务启动**（打 WARNING、受限读径
+  401）——与主令牌「缺了起不来」刻意不同：主令牌是唯一准入边界，受限令牌只是
+  增益能力。请求期**每请求重读凭据文件**（小文件、本地盘，成本可忽略）：重写
+  文件即完成轮换，旧令牌立即 401、新令牌生效，无需重启。受限令牌按**路由 +
+  方法**双限界放行（仅 ``GET /api/proxy/cache/images``），其余路径与非 GET
+  一律 401（含换票据——票据是全权能力）。
 """
 
 from __future__ import annotations
@@ -56,6 +65,16 @@ TOKEN_SECRET_BYTES = 32
 TOKEN_FILE_MODE = 0o600
 # 注入令牌的最小长度：太短的令牌熵不足，容易被猜中（只告警，不拒绝启动）
 TOKEN_MIN_LENGTH = 16
+
+# ---------------------------------------------------------------- 受限令牌（镜像缓存清单只读读径）
+# 受限令牌文件名（钉名，同样落在平台数据根下）。**绝不**放进
+# ``<数据根>/registry-proxy/`` 子树——那是 root 属主排除区，服务用户写不进。
+CACHE_TOKEN_FILENAME = "cache-images-token.json"
+# 受限令牌前缀：``sbxr_``（restricted），与 ``sbx_``（主令牌）/ ``sbxt_``（票据）同族
+CACHE_TOKEN_PREFIX = "sbxr_"
+# 受限令牌唯一放行的读径与方法（路由 + 方法双限界；其余路径与非 GET 一律 401）
+CACHE_IMAGES_PATH = "/api/proxy/cache/images"
+CACHE_IMAGES_METHOD = "GET"
 
 # ---------------------------------------------------------------- 票据
 # 票据有效期（秒）：一次性、过期即废
@@ -297,6 +316,80 @@ def token_matches(candidate: str, expected: str) -> bool:
     )
 
 
+# ---------------------------------------------------------------- 受限令牌：生成与凭据文件
+def generate_cache_token() -> str:
+    """生成一个受限令牌（``sbxr_`` 前缀，与主令牌同长度同熵）。"""
+    return f"{CACHE_TOKEN_PREFIX}{secrets.token_urlsafe(TOKEN_SECRET_BYTES)}"
+
+
+def cache_token_file_path(config: PlatformConfig) -> Path:
+    """受限令牌文件路径：``<平台数据根>/cache-images-token.json``。
+
+    刻意不在 ``registry-proxy/`` 子树下：那是 root 属主排除区，服务用户写不进。
+    """
+    return config.home / CACHE_TOKEN_FILENAME
+
+
+def ensure_cache_token(config: PlatformConfig) -> str | None:
+    """启动路径确保受限令牌凭据文件就绪（幂等），返回当前受限令牌或空值。
+
+    与主令牌 :func:`resolve_token` 的口径刻意不同（主令牌是唯一准入边界，
+    缺了起不来；受限令牌只是增益能力，缺了不能拖死服务）：
+
+    1. 文件不存在 → 生成一个（``sbxr_`` 前缀、随机值）并原子落盘（0600）；
+    2. 文件存在且可读 → 沿用（**不覆盖**——启动幂等）；
+    3. 文件存在但损坏 / 不可读 → 打 WARNING、**保留原文件不重写**（重写等于
+       静默轮换凭据，与「已存在不覆盖」冲突），返回空值（受限读径随后 401）；
+    4. 落盘失败（数据根不可写等）→ 同样只打 WARNING，返回空值，不抛出。
+
+    函数自身不抛异常（除真正意外的非 OSError 外），调用方不需要兜底也能
+    满足「不阻断启动」。
+    """
+    path = cache_token_file_path(config)
+    if path.exists():
+        token = read_token_file(path)
+        if token:
+            logger.debug("受限令牌沿用既有凭据文件：%s", path)
+            return token
+        logger.warning(
+            "受限令牌文件损坏或不可读，已保留原文件不覆盖；受限读径将一律 401"
+            "（修复或删除该文件后重启 / 重写即可恢复）：%s",
+            path,
+        )
+        return None
+    token = generate_cache_token()
+    try:
+        write_token_file(path, token)
+    except OSError as exc:
+        logger.warning(
+            "受限令牌文件写入失败，受限读径将一律 401（不阻断服务启动）：%s（%s）",
+            path,
+            exc,
+        )
+        return None
+    # 日志只说路径，不打令牌本体
+    logger.info("受限令牌已生成（仅对镜像缓存清单只读端点有效）：%s", path)
+    return token
+
+
+def current_cache_token(app) -> str | None:
+    """取当前生效的受限令牌（**每请求重读凭据文件**，只读不生成）。"""
+    config = getattr(app.state, "platform_config", None) if app is not None else None
+    if config is None:
+        return None
+    return read_token_file(cache_token_file_path(config))
+
+
+def restricted_access_allowed(path: str, method: str) -> bool:
+    """受限令牌的限界判定：仅 ``GET /api/proxy/cache/images`` 放行。
+
+    按**路由 + 方法**双限界：路径全等比对（不走前缀，``/api/proxy/cache/
+    images/`` 这类变体不匹配）、方法只认 GET（HEAD 也是非 GET，同样 401）。
+    其余路径与非 GET（含换票据的 POST）一律不放行。
+    """
+    return path == CACHE_IMAGES_PATH and method.upper() == CACHE_IMAGES_METHOD
+
+
 def extract_bearer(header: str | None) -> str | None:
     """从 ``Authorization`` 头里取 Bearer 令牌。
 
@@ -313,17 +406,35 @@ def extract_bearer(header: str | None) -> str | None:
     return token
 
 
-def bearer_authorized(headers: Headers, app) -> bool:
-    """校验 ``Authorization: Bearer`` 令牌（HTTP 与 WebSocket 共用一条判定）。
+def classify_bearer(headers: Headers, app) -> str:
+    """校验 ``Authorization: Bearer`` 并分类凭据（HTTP 与 WS 共用一条判定）。
 
-    缺失与错误**不区分**：一律按「未通过」处理（调用方据此回 401 或拒握手）。
-    比对走 :func:`token_matches`（常量时间）。
+    返回 ``"full"``（完整令牌命中）、``"restricted"``（受限令牌命中）或
+    ``"none"``（缺失 / 都对不上）。**两种凭据都走常量时间比对**
+    (:func:`token_matches`)；完整令牌先判（内存值，零盘 IO），对不上才读
+    受限凭据文件。缺失与错误**不区分**：一律归 ``"none"``（调用方据此回
+    401 或拒握手）。
     """
     candidate = extract_bearer(headers.get("authorization"))
+    if not candidate:
+        return "none"
     expected = console_token(app)
-    if not candidate or not expected:
-        return False
-    return token_matches(candidate, expected)
+    if expected and token_matches(candidate, expected):
+        return "full"
+    restricted = current_cache_token(app)
+    if restricted and token_matches(candidate, restricted):
+        return "restricted"
+    return "none"
+
+
+def bearer_authorized(headers: Headers, app) -> bool:
+    """校验 ``Authorization: Bearer`` **完整令牌**（HTTP 与 WebSocket 共用）。
+
+    **受限令牌不算数**：隧道 WS 路由的路内二次校验也走这里，受限令牌
+    打不开隧道。缺失与错误**不区分**：一律按「未通过」处理（调用方据此
+    回 401 或拒握手）。比对走 :func:`token_matches`（常量时间）。
+    """
+    return classify_bearer(headers, app) == "full"
 
 
 def console_token(app) -> str | None:
@@ -440,10 +551,14 @@ class BearerAuthMiddleware:
       ``/openapi.json``）不拦——本服务不再托管静态资源。
     - ``/api/health`` **不豁免**：401 也是健康口径的一部分，前端靠它区分
       「后端不可达」与「令牌无效」。
+    - **双凭据**（2026-11-15 缓存清单轮）：完整令牌全量照旧；**受限令牌**
+      仅对 ``GET /api/proxy/cache/images`` 这一条只读读径放行（按**路由 +
+      方法**双限界），其余路径与任何非 GET 方法一律 401（含换票据——票据
+      是全权能力）。受限凭据文件每请求重读：重写文件即完成轮换，无需重启。
     - **WebSocket scope 默认拒绝**（fail-closed）：``websocket_exempt_paths``
       里的 WS 路由（终端 WS，票据闸在路由里）放行到路由层；
       ``websocket_bearer_paths`` 里的 WS 路由（隧道 WS）由**中间件校验
-      Bearer**，通过才放行；**两份清单都没登记的 WS 路由一律拒握手**
+      Bearer**（仅完整令牌），通过才放行；**两份清单都没登记的 WS 路由一律拒握手**
       （将来新增 WS 路由而忘了登记鉴权时，默认被拒，不是裸奔）。
     - 缺失与错误不区分：同一句文案、同一状态码；不回显令牌，也不把令牌写进日志。
     """
@@ -473,15 +588,19 @@ class BearerAuthMiddleware:
             await self.app(scope, receive, send)
             return
         headers = Headers(scope=scope)
-        if not bearer_authorized(headers, scope.get("app")):
-            response = JSONResponse(
-                status_code=401,
-                content={"detail": AUTH_FAILED_DETAIL},
-                headers=AUTH_CHALLENGE_HEADERS,
-            )
-            await response(scope, receive, send)
+        verdict = classify_bearer(headers, scope.get("app"))
+        if verdict == "full" or (
+            verdict == "restricted"
+            and restricted_access_allowed(route_path(scope), scope.get("method", "GET"))
+        ):
+            await self.app(scope, receive, send)
             return
-        await self.app(scope, receive, send)
+        response = JSONResponse(
+            status_code=401,
+            content={"detail": AUTH_FAILED_DETAIL},
+            headers=AUTH_CHALLENGE_HEADERS,
+        )
+        await response(scope, receive, send)
 
     async def _handle_websocket(self, scope: Scope, receive: Receive, send: Send) -> None:
         """WebSocket scope 的准入：按登记的鉴权方式放行，其余一律拒握手。

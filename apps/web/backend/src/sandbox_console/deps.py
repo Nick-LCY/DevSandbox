@@ -11,10 +11,12 @@ from sandbox_platform import (
     FileTransferManager,
     PlatformConfig,
     PortForwardManager,
+    RegistryCacheScanner,
     SandboxService,
 )
 
 from .auth import TicketStore
+from .cache_images import CacheImagesCache
 from .forwards import TunnelRegistry
 from .templates import TemplateStore
 from .terminal import TerminalSessionManager
@@ -70,6 +72,21 @@ def get_terminal_manager(request: Request) -> TerminalSessionManager:
 def get_ticket_store(request: Request) -> TicketStore:
     """取应用级票据存储（整个进程共用一个实例）。"""
     return _ticket_store_of(request.app)
+
+
+def get_cache_images_cache(request: Request) -> CacheImagesCache:
+    """取应用级缓存清单 TTL 缓存（整个进程共用一个实例）。
+
+    **不另建多份**：json 与 text 两种格式共享同一份扫描结果靠的就是这个
+    单例。扫描器工厂绑定应用配置、按需实例化（扫描按需执行）；测试用
+    ``dependency_overrides`` 替换（伪扫描器 / 可注入时钟）。
+    """
+    cache = getattr(request.app.state, "cache_images_cache", None)
+    if cache is None:
+        config = get_config(request)
+        cache = CacheImagesCache(lambda: RegistryCacheScanner(config=config))
+        request.app.state.cache_images_cache = cache
+    return cache
 
 
 def get_ticket_store_ws(websocket: WebSocket) -> TicketStore:
