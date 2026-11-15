@@ -579,10 +579,27 @@ def test_filter_tag_only_all_tagless_yields_empty_view() -> None:
     assert filtered.total_files == result.total_files
 
 
-def test_tagless_entries_stay_in_default_view() -> None:
-    """不带 tags 参数：无标签条目照旧在场（默认视图零变化的钉子）。"""
+def test_tagless_entries_stay_in_default_view(
+    platform_home: Path, restricted_token: str
+) -> None:
+    """无标签条目：默认视图照旧在场、tags=only 被滤除（端点级双向钉子）。
+
+    同一扫描结果两次请求共享缓存：默认视图里无标签行原样在场（1 条），
+    ``tags=only`` 视图里被滤空（json ``images == []``）——过滤只发生在
+    tags=only 视图，不触碰默认视图与扫描结果本身。
+    """
     result = make_result(images=(make_image(repo="library/nginx", tags=()),))
-    assert len(result.images) == 1
+    cache = restricted_cache(scanner=FakeScanner(results=[result]))
+    headers = auth_headers(RESTRICTED_TOKEN)
+    with build_client(platform_home, cache=cache) as client:
+        default_view = client.get(CACHE_IMAGES_PATH, headers=headers)
+        only_view = client.get(CACHE_IMAGES_PATH + "?tags=only", headers=headers)
+    assert default_view.status_code == 200
+    assert only_view.status_code == 200
+    assert [image["repo"] for image in default_view.json()["images"]] == [
+        "library/nginx"
+    ]
+    assert only_view.json()["images"] == []
 
 
 # ---------------------------------------------------------------- tags=only：422（仿 format 路径）
@@ -620,6 +637,10 @@ def test_invalid_format_beats_invalid_tags_422_message(
         (1001, "1kB"),
         (5800, "5.8kB"),
         (999_949, "999.9kB"),
+        # 满 千进位边界：999_950 起四舍五入满 1000 即滚动升单元（999.999kB
+        # 渲染 1MB，与 docker 习惯一致），999_949 舍入仍是 999.9kB。
+        (999_950, "1MB"),
+        (999_999, "1MB"),
         (63943288, "63.9MB"),
         (45628174, "45.6MB"),
         (116101621, "116.1MB"),

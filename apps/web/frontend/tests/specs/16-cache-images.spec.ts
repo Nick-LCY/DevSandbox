@@ -204,7 +204,7 @@ test.describe('镜像缓存清单（端点 / 注入 / cached-images）', () => {
   test('端到端（PRD 21）：console 创建的沙箱内 cached-images 输出与端点 text 同源一致，退出码 0', async ({
     page,
   }) => {
-    // ── ① console 抽屉创建沙箱（镜像选择器里选 base:0.4.0）
+    // ── ① console 抽屉创建沙箱（镜像选择器里选 base:0.4.1）
     await openCreateDialog(page);
     await fillCreateForm(page, {
       name: SANDBOX,

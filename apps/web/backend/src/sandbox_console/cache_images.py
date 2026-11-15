@@ -106,12 +106,17 @@ def format_size_decimal(size_bytes: int) -> str:
     与 console 前端的 ``formatBytes``（KiB / MiB，二进制 1024 进制）**刻意
     并存两套**：表格仿 docker images 的观感，docker 用十进制；console 视图
     维持二进制不动，互不影响。1 位小数、整数不带小数点（``1kB`` 不是
-    ``1.0kB``）。
+    ``1.0kB``）；本单元内四舍五入满 1000 即升单元（999_950~999_999B 渲染
+    ``1kB``、999_950kB~999_999kB 渲染 ``1MB``……与 docker 习惯一致，不会
+    出现 ``1000kB`` 这种行）。
     """
     size = float(size_bytes)
     unit_index = len(_SIZE_UNITS_DECIMAL) - 1
+    # 999.95 = 1 位小数下四舍五入满 1000 的门槛：本单元内值 ≥ 999.95 时按
+    # docker 习惯进位升单元（999_999B → ``1MB`` 而非 ``1000kB``）；
+    # 999_949B 舍入仍是 ``999.9kB``。TB 作兜底封顶位，到此不再进位。
     for index, unit_name in enumerate(_SIZE_UNITS_DECIMAL):
-        if size < 1000.0:
+        if size < 999.95:
             unit_index = index
             break
         size /= 1000.0
