@@ -41,6 +41,10 @@ from sandbox_console.auth import (
 from sandbox_console.cache_images import (
     CACHE_IMAGES_TTL_SECONDS,
     CacheImagesCache,
+    filter_tag_only,
+    format_cached_time,
+    format_size_decimal,
+    render_cache_images_tag_only_table,
     render_cache_images_text,
 )
 from sandbox_console.deps import get_cache_images_cache
@@ -531,3 +535,287 @@ def test_render_text_empty_list_is_explicit_not_misleading() -> None:
     assert "没有已完整缓存的镜像" in text
     assert "生成时间：" in text
     assert "不可把各条链大小求和" in text
+
+
+# ---------------------------------------------------------------- tags=only：装配层过滤
+@pytest.mark.parametrize("format_param", ["", "&format=json", "&format=text"], ids=["default-json", "explicit-json", "explicit-text"])
+def test_filter_tag_only_keeps_tagged_entries_and_scan_counts(
+    platform_home: Path, restricted_token: str, format_param: str
+) -> None:
+    """tags=only 只留标签非空的条目；扫描三计数与生成时间戳原样保留。"""
+    result = make_result(
+        images=(
+            make_image(repo="library/python", tags=("3.11-slim", "3.12-slim"), digest=DIGEST_A),
+            make_image(repo="library/nginx", tags=(), digest=DIGEST_B),
+        )
+    )
+    cache = restricted_cache(scanner=FakeScanner(results=[result]))
+    headers = auth_headers(RESTRICTED_TOKEN)
+    with build_client(platform_home, cache=cache) as client:
+        response = client.get(
+            CACHE_IMAGES_PATH + f"?tags=only{format_param}", headers=headers
+        )
+    assert response.status_code == 200
+    if "format=text" in format_param:
+        # text + tags=only 渲染表格，逐行见下一节单测；这里只钉过滤语义。
+        assert "仓库：" not in response.text
+        return
+    payload = response.json()
+    assert len(payload["images"]) == 1
+    assert payload["images"][0]["repo"] == "library/python"
+    assert payload["images"][0]["tags"] == ["3.11-slim", "3.12-slim"]
+    assert payload["generated_at"] == "2026-11-15T00:00:00+00:00"
+    assert payload["total_files"] == 7
+    assert payload["blob_files"] == 5
+    assert payload["skipped_files"] == 1
+
+
+def test_filter_tag_only_all_tagless_yields_empty_view() -> None:
+    """全无标签：过滤后视图为空（纯函数级，json 侧空数组、不报错）。"""
+    result = make_result(images=(make_image(repo="library/nginx", tags=()),))
+    filtered = filter_tag_only(result)
+    assert filtered.images == ()
+    assert filtered.generated_at == result.generated_at
+    assert filtered.total_files == result.total_files
+
+
+def test_tagless_entries_stay_in_default_view() -> None:
+    """不带 tags 参数：无标签条目照旧在场（默认视图零变化的钉子）。"""
+    result = make_result(images=(make_image(repo="library/nginx", tags=()),))
+    assert len(result.images) == 1
+
+
+# ---------------------------------------------------------------- tags=only：422（仿 format 路径）
+@pytest.mark.parametrize("value", ["all", "", "ONLY", "only "], ids=["wordy", "empty", "uppercase", "trailing-space"])
+def test_tags_invalid_value_returns_422_with_fixed_message(
+    platform_home: Path, restricted_token: str, value: str
+) -> None:
+    """tags 非法值（非 only）→ 422 + 固定文案，仿 format 的手动判定路径。"""
+    cache = restricted_cache()
+    with build_client(platform_home, cache=cache) as client:
+        response = client.get(CACHE_IMAGES_PATH + f"?tags={value}")
+    assert response.status_code == 422
+    assert response.json() == {"detail": "tags 取值非法（只支持 only）"}
+
+
+def test_invalid_format_beats_invalid_tags_422_message(
+    platform_home: Path, restricted_token: str
+) -> None:
+    """两个参数都非法时先判 format（参数顺序固定，文案可预期）。"""
+    cache = restricted_cache()
+    with build_client(platform_home, cache=cache) as client:
+        response = client.get(CACHE_IMAGES_PATH + "?format=xml&tags=all")
+    assert response.status_code == 422
+    assert "format" in response.json()["detail"]
+
+
+# ---------------------------------------------------------------- 十进制人读 SIZE（仿 docker，console 二进制不动）
+@pytest.mark.parametrize(
+    "size,expected",
+    [
+        (0, "0B"),
+        (933, "933B"),
+        (999, "999B"),
+        (1000, "1kB"),
+        (1001, "1kB"),
+        (5800, "5.8kB"),
+        (999_949, "999.9kB"),
+        (63943288, "63.9MB"),
+        (45628174, "45.6MB"),
+        (116101621, "116.1MB"),
+        (1161016210, "1.2GB"),
+        (2_227_229_000_000, "2.2TB"),
+    ],
+)
+def test_format_size_decimal_is_1000_based(
+    size: int, expected: str
+) -> None:
+    """十进制 1000 进制仿 docker：1 位小数、整数不带小数点（B/kB/MB/GB/TB）。"""
+    assert format_size_decimal(size) == expected
+
+
+# ---------------------------------------------------------------- CACHED TIME：UTC 口径渲染
+@pytest.mark.parametrize(
+    "cached_at,expected",
+    [
+        ("2026-11-06T15:35:14Z", "2026-11-06 15:35:14"),
+        ("2026-11-06T15:35:14+00:00", "2026-11-06 15:35:14"),
+        ("2026-11-06T23:35:14+09:00", "2026-11-06 14:35:14"),
+        ("2026-11-06T15:35:14", "2026-11-06 15:35:14"),
+    ],
+    ids=["z-suffix", "utc-offset", "non-utc-normalized", "naive-as-is"],
+)
+def test_format_cached_time_renders_utc_wall_clock(
+    cached_at: str, expected: str
+) -> None:
+    """cached_at → YYYY-MM-DD HH:mm:ss（UTC 墙钟，不落本地时区）。"""
+    assert format_cached_time(cached_at) == expected
+
+
+def test_format_cached_time_garbage_passthrough() -> None:
+    """脏数据原样返回（解析失败不炸渲染）。"""
+    assert format_cached_time("not-a-timestamp") == "not-a-timestamp"
+
+
+# ---------------------------------------------------------------- tags=only 表格渲染（纯函数）
+def make_tagged_result() -> CacheScanResult:
+    """构造一份带标签/无标签混合的扫描结果（表格渲染共用）。"""
+    return make_result(
+        generated_at="2026-11-15T13:20:22Z",
+        images=(
+            make_image(
+                repo="library/python",
+                tags=("3.12-slim", "3.11-slim"),
+                digest=DIGEST_A,
+                size=45_628_174,
+                cached_at="2026-11-06T15:34:48Z",
+            ),
+            make_image(
+                repo="astral-sh/uv",
+                tags=("0.13.7",),
+                digest="sha256:" + "9" * 64,
+                size=19_347_931,
+                cached_at="2026-11-06T15:35:14Z",
+            ),
+            make_image(repo="library/nginx", tags=(), digest=DIGEST_B),
+        ),
+    )
+
+
+def test_render_tag_only_table_expands_tags_and_repeats_columns() -> None:
+    """多标签展开为多行，ID/SIZE/TIME 逐行重复；无标签条目不进表格。"""
+    text = render_cache_images_tag_only_table(filter_tag_only(make_tagged_result()))
+    lines = text.splitlines()
+    # python 3.11-slim / 3.12-slim 两行，ID/SIZE/TIME 与同一份展开
+    python_rows = [line for line in lines if line.startswith("library/python:")]
+    assert len(python_rows) == 2
+    assert all(
+        row.split()[1] == "aaaaaaaaaaaa" and row.split()[2] == "45.6MB" for row in python_rows
+    )
+    assert not any(line.startswith("library/nginx") for line in lines)
+
+
+def test_render_tag_only_table_row_order_is_repo_then_tag() -> None:
+    """行按 repo、tag 排序（构造序故意乱序）保证稳定输出。"""
+    text = render_cache_images_tag_only_table(filter_tag_only(make_tagged_result()))
+    rows = [line.split()[0] for line in text.splitlines()[2:-1]]
+    assert rows == sorted(rows)
+    assert rows == ["astral-sh/uv:0.13.7", "library/python:3.11-slim", "library/python:3.12-slim"]
+
+
+def test_render_tag_only_table_light_header_and_footer_note() -> None:
+    """轻表头一行（条目/行数 + 清单生成时间）+ 表尾一行 SIZE 防误读尾注。"""
+    text = render_cache_images_tag_only_table(filter_tag_only(make_tagged_result()))
+    lines = text.splitlines()
+    assert lines[0] == (
+        "已缓存镜像 2 条（表格 3 行）｜ 清单生成时间：2026-11-15T13:20:22Z"
+    )
+    assert lines[-1] == (
+        "SIZE 为拉取该条所需链字节，条目间共享 blob，不可求和当缓存占用"
+    )
+    # 默认 text 的「两行现象」注在 tag-only 视图不适用，不再渲染。
+    assert "后者标签列表为空" not in text
+
+
+def test_render_tag_only_table_column_alignment_is_ljust_two_spaces() -> None:
+    """列宽按批内最长值（含列表头）ljust 对齐，列间两空格，行尾不留空白。"""
+    text = render_cache_images_tag_only_table(filter_tag_only(make_tagged_result()))
+    lines = text.splitlines()
+    header = lines[1]
+    assert header.split() == ["IMAGE", "ID", "SIZE", "CACHED", "TIME"]
+    # 列分隔是两空格、列内 ljust 填充；数据行与表头行都行尾无空白。
+    assert header == header.rstrip()
+    assert "  IMAGE" not in header  # 首列顶格
+    for line in lines[2:]:
+        assert line == line.rstrip()
+    # IMAGE 列宽 = 最长镜像名（含表头 5）：短值右侧填充到同宽再接两空格。
+    image_col_width = max(
+        len("IMAGE"),
+        len("astral-sh/uv:0.13.7"),
+        len("library/python:3.11-slim"),
+        len("library/python:3.12-slim"),
+    )
+    first_data = lines[2]
+    assert first_data[image_col_width : image_col_width + 2] == "  "
+
+
+def test_render_tag_only_table_rebuild_byte_exact() -> None:
+    """逐字节重建比对：各列 ljust 到批内最宽（含列表头）+ 两空格相连。"""
+    filtered = filter_tag_only(make_tagged_result())
+    text = render_cache_images_tag_only_table(filtered)
+    lines = text.splitlines()
+    body = lines[1:-1]  # 去轻表头与尾注：列头行 + 数据行
+    rendered = sorted(
+        (
+            f"{image.repo}:{tag}",
+            image.digest.removeprefix("sha256:")[:12],
+            format_size_decimal(image.total_size_bytes),
+            format_cached_time(image.cached_at),
+        )
+        for image in filtered.images
+        for tag in image.tags
+    )
+    columns = list(zip(*rendered, strict=True))
+    titles = ("IMAGE", "ID", "SIZE", "CACHED TIME")
+    widths = [
+        max(len(title), max(len(cell) for cell in column))
+        for title, column in zip(titles, columns, strict=True)
+    ]
+    expected_lines = [
+        "  ".join(
+            title.ljust(width) for title, width in zip(titles, widths, strict=True)
+        ).rstrip()
+    ] + [
+        "  ".join(
+            cell.ljust(width) for cell, width in zip(row, widths, strict=True)
+        ).rstrip()
+        for row in rendered
+    ]
+    assert body == expected_lines
+
+
+def test_render_tag_only_table_id_is_first_12_hex_chars() -> None:
+    """ID = digest 去 sha256: 前缀后的前 12 位十六进制。"""
+    text = render_cache_images_tag_only_table(filter_tag_only(make_tagged_result()))
+    assert "aaaaaaaaaaaa" in text  # DIGEST_A 前 12 位
+    assert "999999999999" in text  # 9*64 前 12 位
+    assert "sha256:" not in text
+
+
+def test_render_tag_only_table_empty_state_is_explicit() -> None:
+    """全无标签 → 空表：轻表头计数归零 + 明确空态文案 + 尾注仍在。"""
+    result = make_result(
+        generated_at="2026-11-15T13:20:22Z",
+        images=(make_image(repo="library/nginx", tags=(), digest=DIGEST_B),),
+    )
+    text = render_cache_images_tag_only_table(filter_tag_only(result))
+    lines = text.splitlines()
+    assert lines[0] == "已缓存镜像 0 条（表格 0 行）｜ 清单生成时间：2026-11-15T13:20:22Z"
+    assert lines[1] == "（当前没有带标签的已缓存镜像）"
+    assert lines[-1].startswith("SIZE 为拉取该条所需链字节")
+    assert "IMAGE" not in text  # 空表不渲染列头
+
+
+def test_render_tag_only_table_size_and_time_formats() -> None:
+    """SIZE 十进制人读、CACHED TIME 去 T/Z 改空格分隔（表格观感口径）。"""
+    text = render_cache_images_tag_only_table(filter_tag_only(make_tagged_result()))
+    assert "19.3MB" in text
+    assert "45.6MB" in text
+    assert "2026-11-06 15:35:14" in text
+    assert "2026-11-06T15:35:14Z" not in text.splitlines()[2]  # 数据行无 ISO 原文
+
+
+# ---------------------------------------------------------------- 默认视图零改动回归（tags 缺席）
+def test_default_text_render_unchanged_without_table_markers() -> None:
+    """不带 tags 参数：默认 text 仍是原逐行条目布局，表格标记不泄漏。"""
+    result = make_tagged_result()
+    text = render_cache_images_text(result)
+    assert "仓库：astral-sh/uv" in text
+    assert "标签：3.12-slim、3.11-slim" in text  # 默认 text 保留构造序（不排序）
+    assert "链大小：45628174 字节" in text
+    assert "IMAGE" not in text
+    assert "CACHED TIME" not in text
+    assert "清单生成时间" not in text
+    # 两则尾注维持不变
+    assert "不可把各条链大小求和" in text
+    assert "后者标签列表为空" in text

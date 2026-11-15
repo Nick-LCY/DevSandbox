@@ -15,7 +15,12 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sandbox_platform import CacheScanError, SandboxService
 
-from ..cache_images import CacheImagesCache, render_cache_images_text
+from ..cache_images import (
+    CacheImagesCache,
+    filter_tag_only,
+    render_cache_images_tag_only_table,
+    render_cache_images_text,
+)
 from ..deps import get_cache_images_cache, get_service
 from ..errors import STATUS_SERVICE_UNAVAILABLE, STATUS_UNPROCESSABLE
 from ..schemas import ProxyRestartModel, ProxyStatusModel
@@ -28,6 +33,8 @@ router = APIRouter(prefix="/proxy", tags=["镜像代理"])
 CACHE_SCAN_FAILED_DETAIL = "镜像缓存清单不可用（缓存扫描失败或超时），请稍后重试"
 # 422 固定文案：format 非法值
 CACHE_FORMAT_INVALID_DETAIL = "format 取值非法（只支持 json 或 text）"
+# 422 固定文案：tags 非法值（仿 format 的手动判定路径）
+CACHE_TAGS_INVALID_DETAIL = "tags 取值非法（只支持 only）"
 
 
 @router.get("/status", response_model=ProxyStatusModel, summary="镜像代理状态")
@@ -58,26 +65,35 @@ def restart_proxy(
 @router.get("/cache/images", summary="镜像缓存清单")
 def cache_images(
     format: str = "json",
+    tags: str | None = None,
     cache: CacheImagesCache = Depends(get_cache_images_cache),
 ) -> Response:
-    """已完整缓存的镜像清单（``?format=json|text``，缺省 json）。
+    """已完整缓存的镜像清单（``?format=json|text``，缺省 json；``?tags=only`` 选填）。
 
     - **json**：生成时间戳 + 清单数组（仓库 / 标签列表 / 摘要 / 总大小 /
       缓存时间），``Content-Type: application/json``；
     - **text**：预渲染文本（``text/plain``）——表头 + 逐行条目 + 生成时间，
       bash（``cached-images``）直接输出可读；
+    - **tags=only**：只保留标签列表非空的条目（json 与 text 同参数同语义）；
+      text 在该视图渲染成 docker images 风格表格（IMAGE / ID / SIZE /
+      CACHED TIME，服务端预渲染）；不带该参数行为完全不变；
     - 两种格式共享同一份扫描结果（同一生成时间戳），TTL 内存缓存钉 60 秒；
-    - ``format`` 非法值 → 422；特权读失败或超时 → **503 + 固定文案**，
+    - ``format`` / ``tags`` 非法值 → 422；特权读失败或超时 → **503 + 固定文案**，
       **绝不静默回空清单**（空清单会误导「没有缓存」）。
 
     鉴权：完整令牌照旧；受限令牌仅本端点 GET 放行（中间件双凭据限界）。
     """
-    # format 非法值必须 422：不能用 Literal / pattern 让框架校验——请求体
-    # 校验处理器把缺字段以外的校验失败统一映射成 400，这里手动判定钉 422。
+    # format / tags 非法值必须 422：不能用 Literal / pattern 让框架校验——
+    # 请求体校验处理器把缺字段以外的校验失败统一映射成 400，这里手动判定钉 422。
     if format not in ("json", "text"):
         raise HTTPException(
             status_code=STATUS_UNPROCESSABLE,
             detail=CACHE_FORMAT_INVALID_DETAIL,
+        )
+    if tags is not None and tags != "only":
+        raise HTTPException(
+            status_code=STATUS_UNPROCESSABLE,
+            detail=CACHE_TAGS_INVALID_DETAIL,
         )
     try:
         result = cache.get()
@@ -88,6 +104,16 @@ def cache_images(
             status_code=STATUS_SERVICE_UNAVAILABLE,
             detail=CACHE_SCAN_FAILED_DETAIL,
         ) from exc
+    if tags == "only":
+        # 装配层过滤：只留标签非空的条目（三计数与生成时间戳原样保留）。
+        result = filter_tag_only(result)
     if format == "text":
-        return Response(content=render_cache_images_text(result), media_type="text/plain")
+        if tags == "only":
+            return Response(
+                content=render_cache_images_tag_only_table(result),
+                media_type="text/plain",
+            )
+        return Response(
+            content=render_cache_images_text(result), media_type="text/plain"
+        )
     return result.to_payload()
