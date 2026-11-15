@@ -118,6 +118,40 @@ export interface ProxyStatus {
   proxy_url: string;
 }
 
+/**
+ * 一条已完整缓存的镜像（镜像缓存清单数组的一项）。
+ *
+ * 口径（PRD「保守」定义）：manifest 条目在缓存 + 该 manifest 声明的全部 blob
+ * （config + layers）在缓存才算已完整缓存。字段与核心包 `CacheScanResult`
+ * `to_payload()` 逐字段对应（蛇形命名，前端不做转换）。
+ */
+export interface CachedImage {
+  /** 仓库名（如 `library/nginx`）。 */
+  repo: string;
+  /** 指向同一 digest 的标签列表（digest 直拉时为空数组）。 */
+  tags: string[];
+  /** 顶层摘要（多架构即 index 摘要、单架构即 manifest 摘要）。 */
+  digest: string;
+  /** 完整缓存链各文件的实际字节数之和（manifest + config + layers）。 */
+  total_size_bytes: number;
+  /** 缓存时间（参与条目的 manifest 缓存文件里最新的 mtime，ISO 8601 UTC）。 */
+  cached_at: string;
+}
+
+/** 镜像缓存清单（`GET /api/proxy/cache/images?format=json`）。 */
+export interface CacheImagesResponse {
+  /** 扫描结果的生成时间戳（ISO 8601 UTC；TTL 内重复请求不变）。 */
+  generated_at: string;
+  /** 已完整缓存的镜像清单。 */
+  images: CachedImage[];
+  /** 枚举到的合法缓存文件数。 */
+  total_files: number;
+  /** 其中识别为 blob 的条目数。 */
+  blob_files: number;
+  /** 脏条目数（跳过只影响条目数、不报错）。 */
+  skipped_files: number;
+}
+
 /** 重启代理的结果：状态字段 + CA 相关结论。 */
 export interface ProxyRestartResult extends ProxyStatus {
   restarted: boolean;

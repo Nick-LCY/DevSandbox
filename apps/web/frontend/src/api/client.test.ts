@@ -540,3 +540,62 @@ describe('只读读取（预览）接口', () => {
     });
   });
 });
+
+describe('镜像缓存清单接口', () => {
+  /** 一份够用的清单响应。 */
+  function cachePayload(): unknown {
+    return {
+      generated_at: '2026-11-15T06:00:00+00:00',
+      images: [
+        {
+          repo: 'library/nginx',
+          tags: ['1.27', 'latest'],
+          digest: 'sha256:aa27bb3390799fefbf6b0ea27ff75b6b44d21beb6f8be93919fedcb0e60b3ea2',
+          total_size_bytes: 187432,
+          cached_at: '2026-11-15T05:58:00+00:00',
+        },
+      ],
+      total_files: 140,
+      blob_files: 135,
+      skipped_files: 5,
+    };
+  }
+
+  it('请求 json 格式端点，带既有 Authorization 头（完整令牌，无新增令牌逻辑）', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(cachePayload()));
+
+    const payload = await api.cacheImages();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${DEFAULT_BACKEND_BASE_URL}/api/proxy/cache/images?format=json`);
+    expect((init.headers as Headers).get('Authorization')).toBe('Bearer sbx_test');
+    // 响应体原样透传（蛇形命名，前端不做转换）。
+    expect(payload.generated_at).toBe('2026-11-15T06:00:00+00:00');
+    expect(payload.images).toHaveLength(1);
+    expect(payload.images[0].tags).toEqual(['1.27', 'latest']);
+    expect(payload.total_files).toBe(140);
+  });
+
+  it('后端 503：取固定中文文案与状态码（不静默回空清单由端点负责）', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        { detail: '镜像缓存清单不可用（缓存扫描失败或超时），请稍后重试' },
+        503,
+      ),
+    );
+
+    await expect(api.cacheImages()).rejects.toMatchObject({
+      name: 'ApiError',
+      message: '镜像缓存清单不可用（缓存扫描失败或超时），请稍后重试',
+      status: 503,
+    });
+  });
+
+  it('令牌缺失：一个请求都不发', async () => {
+    setConnectionConfig({ backendBaseUrl: DEFAULT_BACKEND_BASE_URL, token: '' });
+
+    await expect(api.cacheImages()).rejects.toBeInstanceOf(ConnectionNotConfiguredError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

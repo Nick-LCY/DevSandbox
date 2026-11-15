@@ -15,6 +15,7 @@ import {
 } from '../lib/connection';
 import type {
   AuthTicketResponse,
+  CacheImagesResponse,
   CreateSandboxRequest,
   CreateSandboxResponse,
   DeleteSandboxResponse,
@@ -664,6 +665,15 @@ export const api = {
   listImages: () => request<HostImage[]>('/api/images'),
 
   proxyStatus: () => request<ProxyStatus>('/api/proxy/status'),
+
+  /**
+   * 镜像缓存清单（`GET /api/proxy/cache/images?format=json`）。
+   *
+   * console 用**完整令牌**访问（既有鉴权头自动附带，无新增令牌逻辑）；
+   * json 格式的响应是生成时间戳 + 清单数组（仓库 / 标签 / 摘要 / 总大小 / 缓存时间）。
+   * 特权读失败或超时时后端回 503 + 固定中文文案（`ApiError`）。
+   */
+  cacheImages: () => request<CacheImagesResponse>('/api/proxy/cache/images?format=json'),
 
   restartProxy: () => request<ProxyRestartResult>('/api/proxy/restart', { method: 'POST' }),
 

@@ -2,7 +2,7 @@ import { Loader2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { api } from '../../api/client';
-import type { ProxyRestartResult, ProxyStatus } from '../../api/types';
+import type { CacheImagesResponse, ProxyRestartResult, ProxyStatus } from '../../api/types';
 import { formatBytes, formatTimestamp } from '../../lib/format';
 import {
   DEFAULT_BACKEND_BASE_URL,
@@ -28,6 +28,180 @@ import { TemplateManager } from './TemplateManager';
 
 /** 重启期间的提示文案：代理不可达时依赖镜像拉取失败是预期行为，不做降级。 */
 const RESTARTING_NOTICE = '代理正在重启，重启期间依赖镜像拉取会失败，属预期行为。';
+
+/** 长摘要的展示截断：`sha256:` 前缀 + 12 位十六进制（完整值挂 title）。 */
+function shortDigest(digest: string): string {
+  return digest.length <= 19 ? digest : `${digest.slice(0, 19)}…`;
+}
+
+/**
+ * 缓存镜像清单区（设置抽屉第二区，代理状态区旁）。
+ *
+ * 展示「已完整缓存」的镜像（清单口径保守：manifest 条目在缓存 + 其声明的
+ * 全部 blob 都在缓存才算）：仓库 / 标签 / 摘要 / 大小（人读格式）/ 时间。
+ * 数据源 `GET /api/proxy/cache/images?format=json`（完整令牌，既有鉴权头
+ * 自动附带，无新增令牌逻辑）。
+ *
+ * 三态与刷新：打开抽屉加载一次 + 手动刷新按钮；**零轮询**——不挂任何定时器
+ * （后端另有 60 秒 TTL 内存缓存，前端再轮询只是重复打点；清单新鲜度由生成
+ * 时间戳 + 手动刷新表达）。
+ *
+ * 失败口径对齐模板管理区：失败 toast + 就地一行 role=status 说明，
+ * 已拿到的旧清单保留展示（不白屏、不清空既有内容）。
+ */
+function CacheImagesSection({ open }: { open: boolean }) {
+  const { show } = useToast();
+  const [manifest, setManifest] = useState<CacheImagesResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  /** 读取失败的原因（环境状态说明用 role=status，操作结果仍走 toast）。 */
+  const [loadError, setLoadError] = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setLoadError('');
+    try {
+      setManifest(await api.cacheImages());
+    } catch (exc) {
+      const message = exc instanceof Error ? exc.message : '读取缓存镜像清单失败';
+      setLoadError(message);
+      // 读取失败：弹失败 toast + 就地说明（对齐模板管理区的失败口径）。
+      show('error', message, { source: 'settings-cache-images' });
+    } finally {
+      setLoading(false);
+    }
+  }, [show]);
+
+  // 打开抽屉时加载一次 + 手动刷新；零轮询：不挂任何定时器（既不周期触发，
+  // 也不延迟重试，清单新鲜度由生成时间戳 + 手动刷新表达）。
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    void load();
+  }, [open, load]);
+
+  const images = manifest?.images ?? [];
+
+  return (
+    <section className="mt-6 border-t border-border pt-5" aria-label="缓存镜像清单">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h3 className="text-[13px] font-semibold text-foreground">缓存镜像清单</h3>
+        <button
+          type="button"
+          onClick={() => void load()}
+          disabled={loading}
+          data-testid="page-settings-cache-images-refresh-button"
+          className="inline-flex h-7 items-center justify-center gap-1.5 rounded-lg border border-border bg-card px-2 text-[12.5px] text-foreground transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+        >
+          {loading ? (
+            <>
+              <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+              正在刷新
+            </>
+          ) : (
+            '刷新清单'
+          )}
+        </button>
+      </div>
+
+      {loading && manifest === null && (
+        <p
+          className="text-[12.5px] text-muted-foreground"
+          data-testid="page-settings-cache-images-loading"
+        >
+          正在读取缓存镜像清单…
+        </p>
+      )}
+
+      {loadError && (
+        <p
+          // 环境状态说明（不是操作结果），故走 role=status 而不是行内红字。
+          role="status"
+          className="text-[12px] text-muted-foreground"
+          data-testid="page-settings-cache-images-status"
+        >
+          缓存镜像清单读取失败，原因见右上角提示：{loadError}
+        </p>
+      )}
+
+      {!loading && !loadError && images.length === 0 && (
+        <p
+          className="text-[12.5px] text-muted-foreground"
+          data-testid="page-settings-cache-images-empty"
+        >
+          还没有已完整缓存的镜像。清单只收 manifest 与全部 blob 都在缓存中的镜像。
+        </p>
+      )}
+
+      {images.length > 0 && (
+        <>
+          {/* 多条目时限高滚动：清单可能上百条，不能把抽屉无限撑长。 */}
+          <ul
+            className="m-0 max-h-80 list-none space-y-1.5 overflow-y-auto p-0"
+            data-testid="page-settings-cache-images-list"
+          >
+            {images.map((image) => (
+              <li
+                key={`${image.repo}@${image.digest}`}
+                className="rounded-lg border border-border px-2.5 py-2"
+                data-testid="page-settings-cache-image-item"
+                data-image-repo={image.repo}
+              >
+                <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+                  <span
+                    className="min-w-0 text-[13px] font-medium break-all"
+                    data-testid="page-settings-cache-image-repo"
+                  >
+                    {image.repo}
+                  </span>
+                  <span
+                    className="text-[12px] tabular-nums text-muted-foreground"
+                    data-testid="page-settings-cache-image-size"
+                  >
+                    {formatBytes(image.total_size_bytes)}
+                  </span>
+                </div>
+                <div className="mt-1 space-y-0.5 text-[11.5px] leading-relaxed text-muted-foreground">
+                  <div className="flex gap-2">
+                    <span className="shrink-0">标签</span>
+                    <span className="min-w-0 break-all" data-testid="page-settings-cache-image-tags">
+                      {image.tags.length > 0 ? image.tags.join('、') : '（无）'}
+                    </span>
+                  </div>
+                  <div className="flex gap-2">
+                    <span className="shrink-0">摘要</span>
+                    {/* 长摘要截断展示，完整值挂 title（悬停可看全文）。 */}
+                    <span
+                      className="min-w-0 break-all"
+                      title={image.digest}
+                      data-testid="page-settings-cache-image-digest"
+                    >
+                      {shortDigest(image.digest)}
+                    </span>
+                  </div>
+                  <div className="flex gap-2">
+                    <span className="shrink-0">时间</span>
+                    <span data-testid="page-settings-cache-image-cached-at">
+                      {formatTimestamp(image.cached_at)}
+                    </span>
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+          {manifest !== null && (
+            <p
+              className="mt-2 text-[12px] text-muted-foreground"
+              data-testid="page-settings-cache-images-generated-at"
+            >
+              清单生成时间：{formatTimestamp(manifest.generated_at)}
+            </p>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
 
 /**
  * 重启已开启的本机监听，收集失败原因。
@@ -63,11 +237,13 @@ function Field({ label, value, testId }: { label: string; value: string; testId:
 }
 
 /**
- * 设置抽屉：代理设置 + 启动模板管理 + 连接配置。
+ * 设置抽屉：代理设置 + 缓存镜像清单 + 启动模板管理 + 连接配置。
  *
  * 第一区是代理设置（状态展示 + 刷新状态 + 重启 + CA 重装结果），内容与原
- * 「代理设置」抽屉完全一致；第二区是启动模板管理区（列表 / 行内重命名 / 删除）；
- * 第三区是连接配置（后端地址 + 访问令牌 + 测试连接 + 保存配置）。
+ * 「代理设置」抽屉完全一致；第二区是缓存镜像清单（已完整缓存镜像的只读
+ * 清单，打开加载 + 手动刷新，零轮询）；第三区是启动模板管理区（列表 /
+ * 行内重命名 / 删除）；第四区是连接配置（后端地址 + 访问令牌 + 测试连接 +
+ * 保存配置）。
  *
  * 「刷新状态」与「重启代理」两个按钮**在第一区里**（状态字段区之后），不再挂在
  * 整个抽屉的全局页脚：抽屉页脚只放跟整张抽屉相关的动作，这两个按钮只管代理，
@@ -380,12 +556,15 @@ export function SettingsDialog({
         )}
       </section>
 
-      {/* 第二区：启动模板管理（列表 / 行内重命名 / 删除）。 */}
+      {/* 第二区：缓存镜像清单（代理状态区旁，打开加载 + 手动刷新，零轮询）。 */}
+      <CacheImagesSection open={open} />
+
+      {/* 第三区：启动模板管理（列表 / 行内重命名 / 删除）。 */}
       <section className="mt-6 border-t border-border pt-5" aria-label="启动模板">
         <TemplateManager />
       </section>
 
-      {/* 第三区：连接配置（后端地址 + 访问令牌 + 测试连接 + 保存配置）。 */}
+      {/* 第四区：连接配置（后端地址 + 访问令牌 + 测试连接 + 保存配置）。 */}
       <section className="mt-6 border-t border-border pt-5" aria-label="连接配置">
         <h3 className="mb-2 text-[13px] font-semibold text-foreground">连接配置</h3>
         <div className="space-y-3">

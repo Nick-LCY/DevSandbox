@@ -1,12 +1,17 @@
 // @vitest-environment jsdom
 /**
  * 设置抽屉：代理设置的重启反馈不被「状态刷新失败」顶掉；
- * 第二区的启动模板管理（列表 / 行内重命名 / 删除确认）。
+ * 第二区的缓存镜像清单（字段渲染 / 空态 / 失败态不白屏 / 手动刷新 / 零轮询）；
+ * 第三区的启动模板管理（列表 / 行内重命名 / 删除确认）。
  *
  * 覆盖几件事：
  * - 重启成功：弹成功 toast；
  * - 重启失败：弹失败 toast；随后那次状态刷新也失败时，**不能**再弹一条
  *   「读取代理状态失败」把更具体的「重启代理失败」顶掉；
+ * - 缓存镜像清单：仓库 / 标签 / 摘要（截断 + title 全文）/ 人读大小 / 时间
+ *   与生成时间戳渲染；空态文案；端点失败弹 toast + 就地说明且抽屉其余区
+ *   照常渲染（不白屏）；手动刷新触发重取；零轮询（静态源码断言 + 行为
+ *   推进时钟断言，双保险）；
  * - 模板列表渲染（名称 + 更新时间）与空态；
  * - 行内重命名：回车提交、Esc 取消、空名禁提交；
  * - 删除走确认弹窗，文案写明只删模板、不影响已创建的沙箱；
@@ -15,16 +20,21 @@
  * - 「刷新状态」与「重启代理」两个按钮在代理设置区里（抽屉不再有全局页脚）。
  */
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_BACKEND_BASE_URL, type ConnectionConfig } from '../../lib/connection';
+import { formatTimestamp } from '../../lib/format';
 import { ToastProvider } from '../Toast';
 import { SettingsDialog } from './SettingsDialog';
 
 const mocks = vi.hoisted(() => ({
   proxyStatus: vi.fn(),
   restartProxy: vi.fn(),
+  cacheImages: vi.fn(),
   listTemplates: vi.fn(),
   renameTemplate: vi.fn(),
   deleteTemplate: vi.fn(),
@@ -39,6 +49,7 @@ vi.mock('../../api/client', async (importOriginal) => {
       ...actual.api,
       proxyStatus: mocks.proxyStatus,
       restartProxy: mocks.restartProxy,
+      cacheImages: mocks.cacheImages,
       listTemplates: mocks.listTemplates,
       renameTemplate: mocks.renameTemplate,
       deleteTemplate: mocks.deleteTemplate,
@@ -76,6 +87,41 @@ function makeRestartResult() {
 
 /** 「保存配置」回调的替身。 */
 const onConnectionChange = vi.fn();
+
+/**
+ * 一份够用的缓存镜像清单载荷（字段与后端 `to_payload()` 逐字段对应）。
+ * 缺省两条：一条带标签，一条 digest 直拉（标签列表为空）。
+ */
+function makeCachePayload(
+  options: { generatedAt?: string; images?: unknown[] } = {},
+): unknown {
+  return {
+    generated_at: options.generatedAt ?? '2026-11-15T06:00:00+00:00',
+    images:
+      options.images ??
+      [
+        {
+          repo: 'library/nginx',
+          tags: ['1.27', 'latest'],
+          digest:
+            'sha256:aa27bb3390799fefbf6b0ea27ff75b6b44d21beb6f8be93919fedcb0e60b3ea2',
+          total_size_bytes: 1610612736,
+          cached_at: '2026-11-14T10:30:00+00:00',
+        },
+        {
+          repo: 'quay.io/example/app',
+          tags: [],
+          digest:
+            'sha256:bbb8f4dcd8b9a1e26ee1e2d1f5c7a03e9d4b1a2c3d4e5f60718293a4b5c6d7e8f',
+          total_size_bytes: 2048,
+          cached_at: '2026-11-14T11:00:00+00:00',
+        },
+      ],
+    total_files: 140,
+    blob_files: 135,
+    skipped_files: 5,
+  };
+}
 
 /** 渲染带 Provider 的设置抽屉。 */
 function renderDialog(options?: { connection?: ConnectionConfig }): void {
@@ -128,6 +174,7 @@ afterEach(() => {
   vi.clearAllMocks();
   mocks.proxyStatus.mockReset();
   mocks.restartProxy.mockReset();
+  mocks.cacheImages.mockReset();
   mocks.listTemplates.mockReset();
   mocks.renameTemplate.mockReset();
   mocks.deleteTemplate.mockReset();
@@ -136,9 +183,10 @@ afterEach(() => {
   delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
 });
 
-// 默认：代理状态读得到、模板列表为空（各用例自己覆盖需要的那一项）。
+// 默认：代理状态读得到、缓存清单为空、模板列表为空（各用例自己覆盖需要的那一项）。
 beforeEach(() => {
   mocks.proxyStatus.mockResolvedValue(makeStatus());
+  mocks.cacheImages.mockResolvedValue(makeCachePayload({ images: [] }));
   mocks.listTemplates.mockResolvedValue([]);
   mocks.health.mockResolvedValue({ version: '0.2.0' });
 });
@@ -195,6 +243,153 @@ describe('代理重启反馈', () => {
     await waitFor(() => expect(mocks.proxyStatus).toHaveBeenCalledTimes(2));
     expect(screen.getByTestId('page-toast-item').textContent).toContain('重启代理失败：容器起不来');
     expect(screen.getByTestId('page-toast-item').textContent).not.toContain('读取代理状态失败');
+  });
+});
+
+describe('设置抽屉的缓存镜像清单区', () => {
+  it('字段渲染：仓库 / 标签 / 摘要（截断 + title 全文）/ 人读大小 / 时间，与生成时间戳', async () => {
+    mocks.cacheImages.mockResolvedValue(makeCachePayload());
+
+    renderDialog();
+
+    // 区在代理设置区旁边（独立 section，aria-label 可寻址），刷新按钮在内。
+    const section = await screen.findByLabelText('缓存镜像清单');
+    expect(
+      section.contains(screen.getByTestId('page-settings-cache-images-refresh-button')),
+    ).toBe(true);
+
+    const items = await screen.findAllByTestId('page-settings-cache-image-item');
+    expect(items).toHaveLength(2);
+    expect(items[0].getAttribute('data-image-repo')).toBe('library/nginx');
+
+    // 第一条（带标签）：大小走人读格式（字节 → GiB），标签列表顿号拼接。
+    expect(screen.getAllByTestId('page-settings-cache-image-repo')[0].textContent).toBe(
+      'library/nginx',
+    );
+    expect(screen.getAllByTestId('page-settings-cache-image-size')[0].textContent).toBe(
+      '1.5 GiB',
+    );
+    expect(screen.getAllByTestId('page-settings-cache-image-tags')[0].textContent).toBe(
+      '1.27、latest',
+    );
+    // 摘要截断展示（19 字符 + 省略号），完整 digest 挂 title。
+    const digest = screen.getAllByTestId('page-settings-cache-image-digest')[0];
+    expect(digest.textContent).toBe('sha256:aa27bb339079…');
+    expect(digest.getAttribute('title')).toBe(
+      'sha256:aa27bb3390799fefbf6b0ea27ff75b6b44d21beb6f8be93919fedcb0e60b3ea2',
+    );
+    expect(screen.getAllByTestId('page-settings-cache-image-cached-at')[0].textContent).toBe(
+      formatTimestamp('2026-11-14T10:30:00+00:00'),
+    );
+
+    // 第二条（digest 直拉）：标签列表为空 → （无）。
+    expect(screen.getAllByTestId('page-settings-cache-image-tags')[1].textContent).toBe('（无）');
+    expect(screen.getAllByTestId('page-settings-cache-image-size')[1].textContent).toBe(
+      '2.0 KiB',
+    );
+
+    // 清单生成时间戳随数据一起展示（手动刷新后能看到新鲜度）。
+    expect(screen.getByTestId('page-settings-cache-images-generated-at').textContent).toContain(
+      formatTimestamp('2026-11-15T06:00:00+00:00'),
+    );
+  });
+
+  it('空清单：给空态文案，不误报错误', async () => {
+    renderDialog();
+
+    const empty = await screen.findByTestId('page-settings-cache-images-empty');
+    expect(empty.textContent).toContain('还没有已完整缓存的镜像');
+    expect(screen.queryByTestId('page-settings-cache-images-status')).toBeNull();
+    expect(screen.queryByTestId('page-settings-cache-images-list')).toBeNull();
+  });
+
+  it('端点失败：弹失败 toast + 就地说明，抽屉其余区照常渲染（不白屏）', async () => {
+    mocks.cacheImages.mockRejectedValue(
+      new Error('镜像缓存清单不可用（缓存扫描失败或超时），请稍后重试'),
+    );
+
+    renderDialog();
+
+    const status = await screen.findByTestId('page-settings-cache-images-status');
+    expect(status.getAttribute('role')).toBe('status');
+    expect(status.textContent).toContain('缓存镜像清单读取失败');
+    expect(status.textContent).toContain('镜像缓存清单不可用（缓存扫描失败或超时），请稍后重试');
+
+    const toast = await screen.findByTestId('page-toast-item');
+    expect(toast.getAttribute('data-toast-kind')).toBe('error');
+    expect(toast.getAttribute('data-toast-source')).toBe('settings-cache-images');
+
+    // 不白屏：代理设置区、模板管理区、连接配置区照常在场。
+    expect(screen.getByLabelText('代理设置')).toBeTruthy();
+    expect(screen.getByLabelText('启动模板')).toBeTruthy();
+    expect(screen.getByLabelText('连接配置')).toBeTruthy();
+  });
+
+  it('手动刷新触发重取：清单与生成时间戳都换成新数据', async () => {
+    mocks.cacheImages.mockResolvedValueOnce(makeCachePayload());
+    mocks.cacheImages.mockResolvedValueOnce(
+      makeCachePayload({
+        generatedAt: '2026-11-15T06:30:00+00:00',
+        images: [
+          {
+            repo: 'docker.io/library/postgres',
+            tags: ['16'],
+            digest:
+              'sha256:ccc5d1a3b8e1f8f5a1b2c3d4e5f60718293a4b5c6d7e8f9012345678abcdef90',
+            total_size_bytes: 3221225472,
+            cached_at: '2026-11-15T06:20:00+00:00',
+          },
+        ],
+      }),
+    );
+
+    renderDialog();
+
+    await screen.findAllByTestId('page-settings-cache-image-item');
+    expect(mocks.cacheImages).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId('page-settings-cache-images-refresh-button'));
+
+    await waitFor(() => expect(mocks.cacheImages).toHaveBeenCalledTimes(2));
+    // 刷新后清单被替换成新数据（不是追加）。
+    const repo = await screen.findByTestId('page-settings-cache-image-repo');
+    expect(repo.textContent).toBe('docker.io/library/postgres');
+    expect(screen.getAllByTestId('page-settings-cache-image-item')).toHaveLength(1);
+    expect(screen.getAllByTestId('page-settings-cache-image-size')[0].textContent).toBe(
+      '3.0 GiB',
+    );
+    expect(screen.getByTestId('page-settings-cache-images-generated-at').textContent).toContain(
+      formatTimestamp('2026-11-15T06:30:00+00:00'),
+    );
+  });
+
+  it('零轮询（静态）：组件源码零 setInterval、零 setTimeout', () => {
+    // vitest 恒从包根跑（vitest.config.ts 所在目录），直接从 cwd 解析源码路径。
+    const source = readFileSync(
+      resolve(process.cwd(), 'src/components/workbench/SettingsDialog.tsx'),
+      'utf8',
+    );
+    expect(source).not.toContain('setInterval');
+    expect(source).not.toContain('setTimeout');
+  });
+
+  it('零轮询（行为）：推进 10 分钟不会自动重取，只有打开抽屉那一次', async () => {
+    vi.useFakeTimers();
+    try {
+      renderDialog();
+      // 打开抽屉那一次加载：flush 掉 effect 与已 resolve 的 promise。
+      await act(async () => {});
+      expect(mocks.cacheImages).toHaveBeenCalledTimes(1);
+
+      // 推进 10 分钟：不出现任何自动重取（清单新鲜度只由手动刷新表达）。
+      await act(async () => {
+        vi.advanceTimersByTime(10 * 60 * 1000);
+      });
+      await act(async () => {});
+      expect(mocks.cacheImages).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
