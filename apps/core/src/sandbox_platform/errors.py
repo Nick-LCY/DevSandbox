@@ -76,6 +76,15 @@ class ProxyError(SandboxError):
     """
 
 
+class CacheScanError(SandboxError):
+    """镜像代理缓存目录扫描失败（特权枚举 / 批量读失败或超时）。
+
+    只覆盖「整场扫描跑不起来」的失败：单条缓存条目脏（文件名不合法、
+    ``KEY:`` 头缺失、清单体不可解析）只让该条落榜、不让扫描失败。
+    调用方（服务端）把它映射成 503，而不是静默回空清单。
+    """
+
+
 class LifecycleError(SandboxError):
     """生命周期步骤失败。"""
 

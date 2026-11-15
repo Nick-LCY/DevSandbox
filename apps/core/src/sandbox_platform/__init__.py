@@ -6,6 +6,11 @@
 
 from __future__ import annotations
 
+from .cache_manifest import (
+    CachedImage,
+    CacheScanResult,
+    RegistryCacheScanner,
+)
 from .config import PlatformConfig
 from .daemon import (
     PTY_DEFAULT_COLS,
@@ -26,6 +31,7 @@ from .daemon import (
 )
 from .errors import (
     AlreadyExistsError,
+    CacheScanError,
     CommandError,
     ConfigError,
     ForwardError,
@@ -276,6 +282,9 @@ __all__ = [
     "STATE_STOPPED",
     "AlreadyExistsError",
     "BytePump",
+    "CacheScanError",
+    "CachedImage",
+    "CacheScanResult",
     "CommandError",
     "ConfigError",
     "ConnectionInfo",
@@ -310,6 +319,7 @@ __all__ = [
     "ProxyStatus",
     "PtyProcess",
     "ReclaimPlan",
+    "RegistryCacheScanner",
     "RegistryProxyManager",
     "SandboxError",
     "SandboxHomeScope",
