@@ -85,5 +85,9 @@
 - **vault 根** — Obsidian tab 的笔记库根目录，由用户指定（引导态两条入口：「使用沙箱工作目录」按钮 / 路径输入框），**按沙箱记在前端本地**（localStorage，不入后端）；vault 树只列目录与 `.md` 文件。
 - **wikilink** — Obsidian 阅读器里的 `\[\[目标\]\]` / `\[\[目标|别名\]\]` / `\[\[#标题\]\]` 链接语法：样式 = 强调色 + 虚线下划线，hover 黑色 tooltip 显示解析后的目标路径；解析兜底 **同目录 → vault 根相对 → 全库递归同名匹配（带 exec 看门狗超时）**，结果过 `normalizeContainerPath`；命中沿预览历史栈跳转，未命中在正文顶部就地浅红错误条（不跳转、不弹 toast）。
 
+### 镜像缓存清单轮（2026-11-15 收口）
+- **缓存镜像清单** — 统一镜像代理「**已完整缓存**」镜像的可查询事实与它的两个出口：**已完整缓存** = manifest 条目在缓存 + 其声明的全部 blob（config + layers）都在缓存（多架构 index 解析到 linux/amd64 再验；过期条目落榜——只少一次优先提示、不会误导）；出口一 = 服务端 `GET /api/proxy/cache/images`（json / 预渲染 text 两格式、60 秒 TTL 内存缓存、扫描失败 503 固定文案不静默回空、非法 format 422），出口二 = 基础镜像 `base:0.4.0` 起自带的 `cached-images` 纯 bash 命令（curl 拉 text 直接输出，零 jq 零 JSON 解析；三态退出码 0 / 2 / 3，任何失败态显式降级不阻塞拉取）；console 设置抽屉的视图用完整令牌 + json，沙箱内命令用受限令牌 + text。**字段口径**：`total_size_bytes` 是拉取该条所需的链字节，条目间共享 blob、不可求和当缓存占用（占用看 `/api/proxy/status` 的 `cache_size_bytes`）（见 [[prds/registry-cache-manifest.md|镜像缓存清单与缓存优先拉取引导 PRD]]）。
+- **受限令牌** — 控制台的第二把**只读**钥匙（`sbxr_` 前缀，与 `sbx_` / `sbxt_` 同族）：**平台全权管理**（不由用户管理），随机值存平台数据根下 `cache-images-token.json`（0600、启动幂等，**不在** `registry-proxy/` 子树——那是 root 属主排除区）；语义上**仅**对 `GET /api/proxy/cache/images` 这一条读径有效（按路由 + 方法双限界），其余路径与非 GET（含换票据）一律 401；**缺失 / 损坏不阻断服务启动**（打 WARNING、受限读径 401）——与主令牌「缺了起不来」刻意不同：主令牌是唯一准入边界，受限令牌只是增益能力；轮换 = 重写凭据文件即时生效（中间件每请求重读，服务零重启）；服务端在创建 / 启动沙箱时把它与可达地址一起以平台强制 env（`SANDBOX_IMAGE_CACHE_TOKEN` / `SANDBOX_IMAGE_CACHE_URL`）注入容器（平台值优先、不进 metadata、创建不失败）。（见 [[prds/registry-cache-manifest.md|镜像缓存清单与缓存优先拉取引导 PRD]]）
+
 ### 已废弃
 - **依赖镜像离线包**（已废弃） — 原方案：把 Postgres / MinIO / Logto 打成 tar 随基础镜像分发、沙箱首启自动加载。2026-10-29 起废弃，改由统一镜像代理拉取，见 [[architecture/decisions/0008-统一镜像代理与离线包废弃.md|0008 统一镜像代理与离线包废弃]]。

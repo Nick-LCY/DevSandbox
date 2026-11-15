@@ -681,9 +681,11 @@ docker exec -i <转发容器> socat - TCP:<沙箱容器名>:<容器端口>
 | GET | `/api/sandboxes/{name}/files/download` | 查询参数 `path` | `StreamingResponse`（字节流 + `Content-Disposition`） | 运行期文件传输（见第 16 章） |
 | GET | `/api/sandboxes/{name}/files/read` | 查询参数 `path`、`max_bytes`（可选） | `StreamingResponse`（字节流 + `X-File-*` 元信息响应头） | 运行期文件传输（见第 16 章） |
 | GET | `/api/sandboxes/{name}/files/list` | 查询参数 `path` | `FileListEntry[]`（裸数组） | 运行期文件传输（见第 16 章） |
+| GET | `/api/proxy/cache/images` | 查询参数 `format`（`json` \| `text`，缺省 `json`） | `CacheScanResult` 载荷（json）/ 预渲染文本（text） | 镜像缓存清单（见第 17 章） |
 
 > 三期新增的**端口转发接口**（三条 REST + 隧道 WebSocket）见**第 15 章**；
-> 运行期文件传输的**四个端点**（上传 / 下载 / 只读读取 / 目录列表）见**第 16 章**。
+> 运行期文件传输的**四个端点**（上传 / 下载 / 只读读取 / 目录列表）见**第 16 章**；
+> **镜像缓存清单端点**（json / text 两格式 + 双凭据鉴权矩阵）见**第 17 章**。
 
 ### 11.2 请求字段
 
@@ -1620,3 +1622,136 @@ X-File-Size: 81920
 | 元信息 | `Content-Length` | `X-File-Binary` / `X-File-Size` / `X-File-Truncated` + `Content-Length` |
 | 首块 | 不预处理 | **由服务端读掉做 NUL 嗅探**（必须在响应头发出前完成） |
 | 上限 | 无（按探测值裁剪） | `max_bytes`（调用方可选；**缺省不截断**） |
+
+---
+
+## 17. 镜像缓存清单接口（`GET /api/proxy/cache/images`）
+
+统一镜像代理「已完整缓存」镜像清单的**唯一对外出口**：console 设置抽屉的「缓存
+镜像清单」视图用**完整令牌 + json**，沙箱内 `cached-images` 命令用**受限令牌 +
+text**。分层归属：扫描能力本体在核心包 `sandbox_platform/cache_manifest.py`
+（`RegistryCacheScanner`，特权通道读 `<数据根>/registry-proxy/cache`，解析与特权
+IO 分离可单测）；服务端只做**端点 / 令牌 / TTL 缓存 / text 预渲染**四件事
+（`sandbox_console/cache_images.py` + `routes/proxy.py`）。**无任何 GC 入口**：
+缓存只增不减，本端点只读，清理代理缓存依旧没有接口（见 11.5「缓存只增不减」）。
+
+### 17.1 请求与响应（两格式）
+
+```
+GET /api/proxy/cache/images?format=json|text     （缺省 json；Bearer 令牌见 17.3）
+```
+
+| 格式 | 状态 | `Content-Type` | 正文 |
+|---|---|---|---|
+| `json`（缺省同） | 200 | `application/json` | `generated_at`（生成时间戳，ISO 8601 UTC）+ `images` 数组 + 三计数（`total_files` / `blob_files` / `skipped_files`） |
+| `text` | 200 | `text/plain` | **预渲染文本**：表头（标题 + 生成时间 + 条目/文件计数）→ 逐行条目（仓库 / 标签 / 摘要 / 链大小 / 缓存时间，条目间横线分隔）→ 尾注两则 |
+
+`images` 数组的每条（与核心包清单口径同字段）：`repo`（仓库）、`tags`（标签列表，
+digest 直拉为空数组）、`digest`（manifest 摘要，`sha256:…`）、`total_size_bytes`
+（链大小）、`cached_at`（缓存时间）。
+
+**清单口径（保守）**：只收录「已完整缓存」的镜像——manifest 条目在缓存 + 其声明的
+全部 blob（config + layers）都在缓存；多架构 index 解析到 linux/amd64 manifest 再验；
+半截文件 / `KEY:` 头不可解析的脏条目跳过（只影响条目数、不报错，`skipped_files`
+如实计数）。
+
+**text 的防误读尾注（服务端义务，两则固定在文末）**：基础镜像只有 curl 没有 jq，
+沙箱内 bash 对这份文本**只输出不解析**，所以容易误读的两处由服务端在文末写明——
+
+1. `total_size_bytes`（链大小）是**拉取该条所需链**（manifest + config + layers）的
+   字节数；条目之间共享 blob，**不可把各条链大小求和当作缓存占用**（缓存占用看
+   `GET /api/proxy/status` 的 `cache_size_bytes`）；
+2. 同一镜像可能出现「index 条目 + 平台 manifest 条目」两行，后者标签列表为空——
+   二者摘要不同，属正常，不是重复错误。
+
+**空清单不是错误**：缓存为空时 text 给明确的空态文案「（当前没有已完整缓存的镜像）」
+（json 给空数组）——绝不留空白输出让 bash 把「没有输出」误读成「没有缓存」，也绝不
+把失败伪装成空清单（见 17.2 的 503）。
+
+**TTL 与生成时间戳**：扫描按需执行 + **60 秒 TTL 内存缓存**（避免每次请求扫盘；
+`max_size=32g` 会涨，TTL 兜底）。TTL 内重复请求**生成时间戳不变**、过期后重扫时间
+戳更新；**json 与 text 共享同一份扫描结果（同一生成时间戳）**。扫描超时纪律对齐
+`cache_size_bytes`：30 秒封顶，由核心包保证。
+
+### 17.2 错误
+
+| 场景 | 状态码 | 响应 |
+|---|---|---|
+| `format` 非法值（非 `json` / `text`） | **422** | `{"detail": "format 取值非法（只支持 json 或 text）"}`（固定文案） |
+| 特权读失败或超时（扫描失败） | **503** | `{"detail": "镜像缓存清单不可用（缓存扫描失败或超时），请稍后重试"}`（固定中文文案） |
+| 无令牌 / 错令牌 / 受限令牌越界 | 401 | 与其它 `/api` 接口同一句文案（中间件层拦截，见 17.3） |
+
+**503 不静默回空清单**：特权读失败或超时时端点报 503 + 固定文案，**绝不降级成空
+清单**——空清单会误导「没有缓存」，误导比失败更糟。异常原文（宿主路径、特权命令
+输出）只进服务日志，不回显到响应。扫描失败**不入缓存**：下一次请求立即重试。
+
+`format` 非法值必须 **422**：路由内手动判定（不用框架的参数校验——请求体校验处理器
+把缺字段以外的校验失败统一映射成 400，这里钉 422）。
+
+### 17.3 鉴权矩阵（双凭据）
+
+`BearerAuthMiddleware`（第 14 章）识别两种凭据，请求期都走常量时间比对：
+
+| 凭据 | 对本端点 `GET` | 对其余路径与非 GET |
+|---|---|---|
+| **完整令牌**（`sbx_`） | 200（全 API 一切照旧，现状不变） | 一切照旧 |
+| **受限令牌**（`sbxr_`） | **200（唯一放行的读径）** | **一律 401**——其余路径（如 `GET /api/proxy/status`、`GET /api/sandboxes`、`GET /api/health`）与任何非 GET 方法（含 `POST /api/auth/ticket` 换票据——票据是全权能力）都不放行 |
+| 缺失 / 错误 | 401 | 401（同一句固定文案「访问令牌无效或缺失」，缺失与错误不区分，不泄露宿主路径与文件名，带 `WWW-Authenticate: Bearer`） |
+
+受限令牌的限界按**路由 + 方法**双限界：路径全等比对（不走前缀，`/api/proxy/cache/
+images/` 这类变体不匹配）、方法严格只认字面 `GET`（HEAD、小写 `get` 都不放行）。
+
+**受限令牌凭据文件**：平台数据根下 `cache-images-token.json`（权限 `0600`，`sbxr_`
+前缀随机值，仿 `console-token.json` 先例）——**不在** `registry-proxy/` 子树（那是
+root 属主排除区，服务用户写不进）。启动幂等：已存在不覆盖；文件缺失 / 损坏时服务
+**照常启动**（打 WARNING、受限读径一律 401），不阻断——与主令牌「缺了起不来」刻意
+不同：主令牌是唯一准入边界，受限令牌只是增益能力。
+
+**令牌轮换**：重写凭据文件即时生效（中间件每请求重读，服务零重启）——旧令牌立即
+401。已注入沙箱内的旧 env 随之失效（`cached-images` 进入 401 降级态：一行中文提示、
+退出码 3、不阻塞拉取）；console 对该沙箱「停止 → 启动」一次即重新注入新值。
+
+### 17.4 部署前提与已知边角
+
+| 项 | 口径 |
+|---|---|
+| **部署前提（已接受）** | 当前部署绑 `0.0.0.0:28642` + LAN IP，端到端可用；仓库单元默认绑 `127.0.0.1:8000`——**部署绑回环时本功能沙箱侧失效**：`cached-images` 连不上端点走降级提示（一行中文、退出码 3、不阻塞后续 `docker pull`），**console 视图不受影响**（视图是服务端自己读自己，不走注入给沙箱的地址） |
+| 可达地址 | 创建 / 启动沙箱时平台强制注入 `SANDBOX_IMAGE_CACHE_URL`（后端可达地址）与 `SANDBOX_IMAGE_CACHE_TOKEN`（受限令牌）两个 env：地址由配置项 `SANDBOX_CONSOLE_SANDBOX_URL` 优先 + 宿主非回环 IPv4 + 实际监听端口自动探测兜底；两者皆不可得 → 跳过注入打日志、**创建不失败**（注入是增益能力，两值不进 metadata） |
+| **CLI 边角（已知）** | CLI 创建 / CLI 直接 `start` 不传注入参数 → 沙箱缺这对 env（`cached-images` 报缺凭据、退出码 2）——行为与现状一致，属已知边角：**console 里对该沙箱执行一次「停止 → 启动」即自愈**（服务端在 start 路径同样递参，核心包重装配容器时平台强制注入） |
+| 存量沙箱 | `base:0.4.0` 之前创建的沙箱不带 `cached-images` 命令；**重建至 `base:0.4.0` 后在场**（重建由用户执行，见 `base-image/README.md` 的存量沙箱口径） |
+
+### 17.5 示例
+
+```bash
+# json（console 视图用完整令牌）
+curl -s -H 'Authorization: Bearer <完整令牌>' \
+    'http://127.0.0.1:8000/api/proxy/cache/images?format=json'
+# → {"generated_at": "2026-11-15T06:35:24Z", "images": [{"repo": "library/nginx",
+#    "tags": ["1.27"], "digest": "sha256:…", "total_size_bytes": 63943288,
+#    "cached_at": "…"}, …], "total_files": 140, "blob_files": 91, "skipped_files": 1}
+
+# text（沙箱内 cached-images 用受限令牌；bash 只输出不解析）
+curl -s -H 'Authorization: Bearer <受限令牌>' \
+    'http://127.0.0.1:8000/api/proxy/cache/images?format=text'
+# → 镜像缓存清单（仅收录已完整缓存的镜像）
+#   生成时间：2026-11-15T06:35:24Z
+#   镜像条目：29 条（缓存文件 140 个：blob 91、跳过脏条目 1 个）
+#   ----------------------------------------------------------------
+#   仓库：library/nginx
+#   标签：1.27
+#   摘要：sha256:…
+#   链大小：63943288 字节（total_size_bytes）
+#   缓存时间：…
+#   ----------------------------------------------------------------
+#   说明：total_size_bytes（链大小）……不可把各条链大小求和当作缓存占用。
+#   注记：同一镜像可能出现「index 条目 + 平台 manifest 条目」两行，后者标签列表为空。
+
+# 非法 format → 422
+curl -s -H 'Authorization: Bearer <令牌>' \
+    'http://127.0.0.1:8000/api/proxy/cache/images?format=xml'
+# → {"detail": "format 取值非法（只支持 json 或 text）"}
+
+# 无凭据 / 错误令牌 / 受限令牌越界 → 401（同一句固定文案）
+curl -s 'http://127.0.0.1:8000/api/proxy/cache/images'
+# → {"detail": "访问令牌无效或缺失"}
+```
