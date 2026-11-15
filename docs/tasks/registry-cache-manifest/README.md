@@ -10,7 +10,7 @@
 
 - [[tasks/registry-cache-manifest/01-core-cache-scanner.md]] — 核心包缓存扫描器（`cache_manifest.py`：纯解析函数与特权 IO 分离 + 单测 + 真缓存实测，PRD 验收 1~7；无 GC 入口）——**done（2026-11-15 收口，提交 `82cf57d` 主实现 + `43fec65` 审查修复）**：真缓存实测 29 条 / 10 仓库、抽样核对与过期落榜边界全过；门禁与实测记录见任务文件进展节
 - [[tasks/registry-cache-manifest/02-server-endpoint-and-token.md]] — 服务端端点与受限令牌（`GET /api/proxy/cache/images`：json|text、422、503、60s TTL、30s 超时 + `cache-images-token.json` 凭据文件 + `BearerAuthMiddleware` 双凭据限界 + 单测，PRD 验收 8~15）——**done（2026-11-15 收口，提交 `ab95fa1` 主实现 + `dea6828` 审查收尾）**：门禁 pytest 全量 381 passed / 0 failed、ruff rc=0；交付与审查记录见任务文件进展节
-- [[tasks/registry-cache-manifest/03-injection-pipeline.md]] — 注入管线（服务端创建/启动递参 + 核心包 `_run_sandbox_container` 平台强制注入两 env：平台值优先、不进 metadata + 可达地址配置项与宿主 IP 探测兜底 + 单测，PRD 验收 16~20）
+- [[tasks/registry-cache-manifest/03-injection-pipeline.md]] — 注入管线（服务端创建/启动递参 + 核心包 `_run_sandbox_container` 平台强制注入两 env：平台值优先、不进 metadata + 可达地址配置项与宿主 IP 探测兜底 + 单测，PRD 验收 16~20）——**done（2026-11-15 收口，提交 `3197e1a` 主实现 + `5b337f1` 审查收尾）**：真机验证六项全过（临时实例、生产零接触）+ 门禁服务端 398 passed / 核心包 500 passed（3 例既有环境故障）；交付与审查记录见任务文件进展节
 - [[tasks/registry-cache-manifest/04-base-image-cached-images.md]] — 基础镜像 `base:0.4.0` 与 `cached-images` 命令（纯 bash 三态 + `--noproxy` + Dockerfile/README bump + 构建推送，PRD 验收 22~26；现有沙箱重建由用户完成，登记为验收前置）
 - [[tasks/registry-cache-manifest/05-console-cache-images-view.md]] — console 缓存镜像清单视图（设置抽屉代理状态区旁 + 空态/失败态 + 手动刷新、不加轮询，PRD 验收 27~28）
 - [[tasks/registry-cache-manifest/06-acceptance-and-docs.md]] — 验收与文档收口（e2e 用例含端到端 21 + 门禁全量 + PRD 32 条逐条核销 + API.md/README/词汇表/看板/两份清单同步 + RESULTS.md 留档，PRD 验收 21、29~32）
