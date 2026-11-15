@@ -1,6 +1,6 @@
 # 镜像缓存清单与缓存优先拉取引导任务集
 
-本目录是**镜像缓存清单与缓存优先拉取引导**轮的任务集，共 **6 个任务**，需求来源见 [[prds/registry-cache-manifest.md|镜像缓存清单与缓存优先拉取引导 PRD]]（验收标准 **32 条**）。**2026-11-14 立项，2026-11-15 全轮收口：01~06 全部 done，验收标准 32 条逐条核销（32 / 32），e2e 全量 71 / 71 真沙箱全绿**；全轮留档见 [[tasks/registry-cache-manifest/RESULTS.md|RESULTS.md]]（生产部署已落地（2026-11-15），前端暂不发布（用户决策），存量沙箱重建待用户）。
+本目录是**镜像缓存清单与缓存优先拉取引导**轮的任务集，共 **6 个任务**，需求来源见 [[prds/registry-cache-manifest.md|镜像缓存清单与缓存优先拉取引导 PRD]]（验收标准 **32 条**）。**2026-11-14 立项，2026-11-15 全轮收口：01~06 全部 done，验收标准 32 条逐条核销（32 / 32），e2e 全量 71 / 71 真沙箱全绿**；全轮留档见 [[tasks/registry-cache-manifest/RESULTS.md|RESULTS.md]]（生产部署已落地（2026-11-15），前端暂不发布（用户决策），存量沙箱重建待用户）。**2026-11-15 收口后小增强**：端点新增 `?tags=only` 过滤 + tags=only 时 text 渲染 docker images 风格表格，`cached-images` 随基础镜像 **`base:0.4.1`**（镜像已重建）消费 tags=only 并换用定稿帮助文本（退出码 0 / 2 / 3 不变）——**已实现、未部署生产**（待用户拍板），存量沙箱重建口径从 `0.4.0` 改 **`0.4.1`**；留档见 [[tasks/registry-cache-manifest/RESULTS.md|RESULTS.md]] 第七节。
 
 这一轮把「当前已完整缓存的镜像清单」变成可查询的事实：核心包扫描器（特权通道实扫缓存目录）→ 服务端 `GET /api/proxy/cache/images`（json | 预渲染 text + 60s TTL）→ 两个出口（console 设置抽屉视图、沙箱内 `cached-images` 命令），中间靠**受限令牌**（第二把只读钥匙，平台全权管理）与**平台强制 env 注入**（`SANDBOX_IMAGE_CACHE_URL` / `SANDBOX_IMAGE_CACHE_TOKEN`）打通，最终落地引导约定——agent 拉依赖镜像前先查清单、可接受版本集合中优先选已缓存版本，任何失败态显式降级、不阻塞。
 

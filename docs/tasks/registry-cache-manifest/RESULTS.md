@@ -1,6 +1,6 @@
 # 镜像缓存清单与缓存优先拉取引导：全轮收口留档（01~06）
 
-> **2026-11-15 全轮收口**：6 个任务全部 done，PRD 验收 **32 / 32** 逐条核销（证据分真机 e2e / 单测 / 真机记录与实测三档，逐条注记见 [[prds/registry-cache-manifest.md|PRD]] 验收标准节），e2e 全量 **71 / 71**。本文是该轮的总留档：轮次总表、门禁数字、真缓存实测与真机记录汇总、已知边界与留白、硬约束复核。
+> **2026-11-15 全轮收口**：6 个任务全部 done，PRD 验收 **32 / 32** 逐条核销（证据分真机 e2e / 单测 / 真机记录与实测三档，逐条注记见 [[prds/registry-cache-manifest.md|PRD]] 验收标准节），e2e 全量 **71 / 71**。本文是该轮的总留档：轮次总表、门禁数字、真缓存实测与真机记录汇总、已知边界与留白、硬约束复核，以及**收口后小增强（tags=only 与表格化输出，见第七节）**。
 
 ## 一、轮次总表与提交链
 
@@ -111,3 +111,14 @@
 - 任务集 01~06 全部 done（各任务文件 frontmatter + 进展节 + 看板同步）；
 - 门禁数字见第二节；真机证据见第三节；4.1 现状：生产部署已落地（2026-11-15，push `b229669..ce95adf`、服务更新重启、验证矩阵 10 / 10），前端暂不发布为用户决策，仅剩存量沙箱重建 qilu 待用户执行；
 - 文档落位：`API.md` 第 17 章、根 `README.md` 设置接口段、`base-image/README.md`、`docs/glossary.md`（「受限令牌」「缓存镜像清单」词条）、`docs/current-state.md`、两份清单（`docs/prds/README.md` / `docs/tasks/README.md`）。
+
+## 七、收口后小增强（2026-11-15）：tags=only 与表格化输出
+
+> 全轮收口后用户拍板的增强：端点新增 `?tags=only` 过滤（json / text 双格式、非法值 422、缺省零改动）+ tags=only 时 text 渲染 **docker images 风格表格**（IMAGE repo:tag 多标签展开行 / ID digest 前 12 位 / SIZE 十进制 B/kB/MB/GB / CACHED TIME `YYYY-MM-DD HH:mm:ss UTC`，轻表头含清单生成时间，表尾 SIZE 防误读尾注）+ `cached-images` 消费 tags=only、`--help` 定稿文本替换、退出码 0 / 2 / 3 不变 + 基础镜像 bump **`base:0.4.0 → 0.4.1`**（宿主已重建）。PRD 头部修订行与「验收标准」D 组注记见 [[prds/registry-cache-manifest.md|PRD]]。
+
+- **提交链（4 个）**：`5bcada8`（服务端 tags=only + 表格渲染 + 36 用例）→ `d6af3c3`（cached-images 表格化 / 新帮助 + `0.4.1` bump + verify 更新 + 真机三态）→ `23c87a0`（e2e 同步 + `API.md` / `README` 同步）→ `aa29b23`（审查收尾：SIZE 满千升单元 + 测试名实相符 + spec 注释勘误）。
+- **reviewer 结论**：通过（无 Critical / Warning；三条 Suggestion 已随 `aa29b23` 收拾）。
+- **门禁数字**：后端 pytest **436 passed / 0 failed**（基线 398 → 436）+ ruff rc=0；`verify.sh` **64 项全过**（61 → 64）；e2e 全量 **71 / 71**（真沙箱，12.4 分钟）；前端 vitest **953 passed / 0 failed**、typecheck:tests **0 错**。
+- **真机三态**：随 `d6af3c3` 实测全过（正常 / 缺凭据 / 不可达），退出码 0 / 2 / 3 语义不变。
+- **部署状态**：**未 push、未部署生产**——生产仍跑上一轮版本（无 tags=only），待用户拍板；存量沙箱重建口径从 `base:0.4.0` 改 **`base:0.4.1`**。
+- **运维事故（如实留档）**：真机验证清理时 worker 误用宽匹配 `pkill -f` 误杀生产服务（2026-11-15 13:31:35–13:49:39 中断约 18 分钟），已用原部署版本恢复并复核（服务 active、端点行为正常）。**教训登记：清理进程禁用宽匹配 `pkill -f`**。
