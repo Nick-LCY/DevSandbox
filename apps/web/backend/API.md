@@ -681,7 +681,7 @@ docker exec -i <转发容器> socat - TCP:<沙箱容器名>:<容器端口>
 | GET | `/api/sandboxes/{name}/files/download` | 查询参数 `path` | `StreamingResponse`（字节流 + `Content-Disposition`） | 运行期文件传输（见第 16 章） |
 | GET | `/api/sandboxes/{name}/files/read` | 查询参数 `path`、`max_bytes`（可选） | `StreamingResponse`（字节流 + `X-File-*` 元信息响应头） | 运行期文件传输（见第 16 章） |
 | GET | `/api/sandboxes/{name}/files/list` | 查询参数 `path` | `FileListEntry[]`（裸数组） | 运行期文件传输（见第 16 章） |
-| GET | `/api/proxy/cache/images` | 查询参数 `format`（`json` \| `text`，缺省 `json`） | `CacheScanResult` 载荷（json）/ 预渲染文本（text） | 镜像缓存清单（见第 17 章） |
+| GET | `/api/proxy/cache/images` | 查询参数 `format`（`json` \| `text`，缺省 `json`）、`tags=only`（tag-only 过滤，选填） | `CacheScanResult` 载荷（json）/ 预渲染文本（text；tags=only 时为 docker images 风格表格） | 镜像缓存清单（见第 17 章） |
 
 > 三期新增的**端口转发接口**（三条 REST + 隧道 WebSocket）见**第 15 章**；
 > 运行期文件传输的**四个端点**（上传 / 下载 / 只读读取 / 目录列表）见**第 16 章**；
@@ -1639,16 +1639,40 @@ IO 分离可单测）；服务端只做**端点 / 令牌 / TTL 缓存 / text 预
 
 ```
 GET /api/proxy/cache/images?format=json|text     （缺省 json；Bearer 令牌见 17.3）
+GET /api/proxy/cache/images?tags=only            （选填；tag-only 过滤视图，可与 format 组合）
 ```
 
 | 格式 | 状态 | `Content-Type` | 正文 |
 |---|---|---|---|
 | `json`（缺省同） | 200 | `application/json` | `generated_at`（生成时间戳，ISO 8601 UTC）+ `images` 数组 + 三计数（`total_files` / `blob_files` / `skipped_files`） |
 | `text` | 200 | `text/plain` | **预渲染文本**：表头（标题 + 生成时间 + 条目/文件计数）→ 逐行条目（仓库 / 标签 / 摘要 / 链大小 / 缓存时间，条目间横线分隔）→ 尾注两则 |
+| `text` + `tags=only` | 200 | `text/plain` | **docker images 风格表格**（见下方「tag-only 视图」） |
+| `json` + `tags=only` | 200 | `application/json` | 同 json 载荷，`images` 数组只含标签非空的条目（同参数同语义） |
 
 `images` 数组的每条（与核心包清单口径同字段）：`repo`（仓库）、`tags`（标签列表，
 digest 直拉为空数组）、`digest`（manifest 摘要，`sha256:…`）、`total_size_bytes`
 （链大小）、`cached_at`（缓存时间）。
+
+**`tags=only` 过滤视图（服务端装配层）**：只返回标签列表非空的条目——digest 直拉
+条目与「index 条目 + 平台 manifest 条目」里的无标签行全部滤除；三计数与生成时间戳
+**原样保留**（它们描述的是扫描本身，不是过滤后的视图）；json 与 text 同参数同语义；
+**不带该参数行为完全不变**（json / text 默认渲染零改动）。`tags` 取值非法（非
+`only`，含空串）→ **422** 固定文案（仿 format 的手动判定路径；与 format 同时非法时
+先判 format）。text 在该视图渲染成 **docker images 风格表格**（服务端预渲染，bash
+零解析）：
+
+- 列：`IMAGE`（`{repo}:{tag}`，同一条目多标签展开为多行、ID/SIZE/TIME 重复）、
+  `ID`（digest 去 `sha256:` 前缀后的前 12 位十六进制）、`SIZE`（total_size_bytes
+  十进制人读，仿 docker：1000 进制 B/kB/MB/GB，1 位小数、整数不带小数点，如
+  `63.9MB` / `5.8kB` / `933B`——与 console 视图的人读大小（二进制 KiB/MiB）刻意
+  并存两套）、`CACHED TIME`（cached_at 渲染 `YYYY-MM-DD HH:mm:ss`，UTC 口径不落
+  本地时区）；
+- 列宽按批内最长值对齐（含列头；ljust + 两空格分隔，行尾不留空白），行按 repo、
+  tag 排序保证稳定输出；
+- 表格前一行轻表头：条目数/表格行数 + 「清单生成时间：…」（保持「text 含生成时间」
+  口径）；表格后一行尾注：SIZE 为拉取该条所需链字节，条目间共享 blob，不可求和当
+  缓存占用。默认 text 两则尾注里的「两行现象」注在 tag-only 视图不适用（无标签行
+  已被滤除），不再渲染；空态给明确文案「（当前没有带标签的已缓存镜像）」。
 
 **清单口径（保守）**：只收录「已完整缓存」的镜像——manifest 条目在缓存 + 其声明的
 全部 blob（config + layers）都在缓存；多架构 index 解析到 linux/amd64 manifest 再验；
@@ -1678,6 +1702,7 @@ digest 直拉为空数组）、`digest`（manifest 摘要，`sha256:…`）、`t
 | 场景 | 状态码 | 响应 |
 |---|---|---|
 | `format` 非法值（非 `json` / `text`） | **422** | `{"detail": "format 取值非法（只支持 json 或 text）"}`（固定文案） |
+| `tags` 非法值（非 `only`，含空串） | **422** | `{"detail": "tags 取值非法（只支持 only）"}`（固定文案，仿 format 路径） |
 | 特权读失败或超时（扫描失败） | **503** | `{"detail": "镜像缓存清单不可用（缓存扫描失败或超时），请稍后重试"}`（固定中文文案） |
 | 无令牌 / 错令牌 / 受限令牌越界 | 401 | 与其它 `/api` 接口同一句文案（中间件层拦截，见 17.3） |
 
@@ -1685,7 +1710,7 @@ digest 直拉为空数组）、`digest`（manifest 摘要，`sha256:…`）、`t
 清单**——空清单会误导「没有缓存」，误导比失败更糟。异常原文（宿主路径、特权命令
 输出）只进服务日志，不回显到响应。扫描失败**不入缓存**：下一次请求立即重试。
 
-`format` 非法值必须 **422**：路由内手动判定（不用框架的参数校验——请求体校验处理器
+`format` / `tags` 非法值必须 **422**：路由内手动判定（不用框架的参数校验——请求体校验处理器
 把缺字段以外的校验失败统一映射成 400，这里钉 422）。
 
 ### 17.3 鉴权矩阵（双凭据）
@@ -1718,7 +1743,7 @@ root 属主排除区，服务用户写不进）。启动幂等：已存在不覆
 | **部署前提（已接受）** | 当前部署绑 `0.0.0.0:28642` + LAN IP，端到端可用；仓库单元默认绑 `127.0.0.1:8000`——**部署绑回环时本功能沙箱侧失效**：`cached-images` 连不上端点走降级提示（一行中文、退出码 3、不阻塞后续 `docker pull`），**console 视图不受影响**（视图是服务端自己读自己，不走注入给沙箱的地址） |
 | 可达地址 | 创建 / 启动沙箱时平台强制注入 `SANDBOX_IMAGE_CACHE_URL`（后端可达地址）与 `SANDBOX_IMAGE_CACHE_TOKEN`（受限令牌）两个 env：地址由配置项 `SANDBOX_CONSOLE_SANDBOX_URL` 优先 + 宿主非回环 IPv4 + 实际监听端口自动探测兜底；两者皆不可得 → 跳过注入打日志、**创建不失败**（注入是增益能力，两值不进 metadata） |
 | **CLI 边角（已知）** | CLI 创建 / CLI 直接 `start` 不传注入参数 → 沙箱缺这对 env（`cached-images` 报缺凭据、退出码 2）——行为与现状一致，属已知边角：**console 里对该沙箱执行一次「停止 → 启动」即自愈**（服务端在 start 路径同样递参，核心包重装配容器时平台强制注入） |
-| 存量沙箱 | `base:0.4.0` 之前创建的沙箱不带 `cached-images` 命令；**重建至 `base:0.4.0` 后在场**（重建由用户执行，见 `base-image/README.md` 的存量沙箱口径） |
+| 存量沙箱 | `base:0.4.0` 之前创建的沙箱不带 `cached-images` 命令；**重建至 `base:0.4.1` 后在场**（0.4.1 起输出 tags=only 表格视图；重建由用户执行，见 `base-image/README.md` 的存量沙箱口径） |
 
 ### 17.5 示例
 
@@ -1746,10 +1771,29 @@ curl -s -H 'Authorization: Bearer <受限令牌>' \
 #   说明：total_size_bytes（链大小）……不可把各条链大小求和当作缓存占用。
 #   注记：同一镜像可能出现「index 条目 + 平台 manifest 条目」两行，后者标签列表为空。
 
-# 非法 format → 422
+# text + tags=only（0.4.1 起 cached-images 消费的表格视图；docker images 风格）
+curl -s -H 'Authorization: Bearer <受限令牌>' \
+    'http://127.0.0.1:8000/api/proxy/cache/images?format=text&tags=only'
+# → 已缓存镜像 3 条（表格 3 行）｜ 清单生成时间：2026-11-15T13:31:01Z
+#   IMAGE                     ID            SIZE    CACHED TIME
+#   astral-sh/uv:0.13.7       96f40d3904aa  19.3MB  2026-11-06 15:35:14
+#   library/python:3.11-slim  65bd3d9f1d7f  45.6MB  2026-11-06 15:34:48
+#   library/python:3.12-slim  5e2bdb1b0d54  43.3MB  2026-11-12 14:33:22
+#   SIZE 为拉取该条所需链字节，条目间共享 blob，不可求和当缓存占用
+
+# json + tags=only：同参数同语义（只含标签非空的条目，计数原样保留）
+curl -s -H 'Authorization: Bearer <令牌>' \
+    'http://127.0.0.1:8000/api/proxy/cache/images?format=json&tags=only'
+# → {"generated_at": "…", "images": [{"repo": "library/python",
+#    "tags": ["3.11-slim", "3.12-slim"], …}, …], "total_files": 140, …}
+
+# 非法 format / 非法 tags → 422（固定文案）
 curl -s -H 'Authorization: Bearer <令牌>' \
     'http://127.0.0.1:8000/api/proxy/cache/images?format=xml'
 # → {"detail": "format 取值非法（只支持 json 或 text）"}
+curl -s -H 'Authorization: Bearer <令牌>' \
+    'http://127.0.0.1:8000/api/proxy/cache/images?tags=all'
+# → {"detail": "tags 取值非法（只支持 only）"}
 
 # 无凭据 / 错误令牌 / 受限令牌越界 → 401（同一句固定文案）
 curl -s 'http://127.0.0.1:8000/api/proxy/cache/images'

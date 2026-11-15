@@ -133,7 +133,7 @@ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/api/proxy/status
 # 重启镜像代理（CA 指纹变了会自动为已有沙箱用户重装合并 CA 束）
 curl -s -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/api/proxy/restart
 
-# 镜像缓存清单（已完整缓存的镜像；?format=text 供沙箱内 cached-images 直接输出）
+# 镜像缓存清单（已完整缓存的镜像；?format=text&tags=only 供沙箱内 cached-images 直接输出）
 curl -s -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:8000/api/proxy/cache/images?format=json"
 ```
 
@@ -144,7 +144,7 @@ curl -s -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:8000/api/proxy/cache
 | 代理重启 | 重启后轮询到健康才返回成功；**代理不可达不降级直连**（与一期一致），失败时 `restarted=false`，原因看服务日志。挂载与当前配置不一致时删除后按首次启动路径重建容器 |
 | CA 指纹比对 | 代理 CA 变了自动为已有沙箱用户重装合并 CA 束，响应里回传 `ca_changed`、`ca_reinstalled` 与 `reinstalled_users`；重装失败的用户进 `failed_users` |
 | CA 指纹口径 | 变更前后都读得到证书才算「变了」（读不到不等于变了）；指纹对内容做空白归一化后哈希，换行差异不算变更 |
-| 缓存镜像清单 | `GET /api/proxy/cache/images`（json / text 两格式，60 秒 TTL）：**完整令牌**全 API 照旧；**受限令牌**（`sbxr_` 前缀）仅对这一条只读读径有效，其余路径与非 GET 一律 401——沙箱内 `cached-images` 用它，扫描失败 503 固定文案不静默回空；详见 `apps/web/backend/API.md` 第 17 章 |
+| 缓存镜像清单 | `GET /api/proxy/cache/images`（json / text 两格式 + `tags=only` 过滤视图，60 秒 TTL）：**完整令牌**全 API 照旧；**受限令牌**（`sbxr_` 前缀）仅对这一条只读读径有效，其余路径与非 GET 一律 401——沙箱内 `cached-images` 用它，扫描失败 503 固定文案不静默回空；详见 `apps/web/backend/API.md` 第 17 章 |
 | 缓存只增不减 | **不提供清理代理缓存的接口**，页面只展示占用大小 |
 
 > `POST /api/proxy/restart` 能打断正在拉镜像的沙箱（代理不可达时创建 / 启动直接失败）。三期起全部 `/api` 都受令牌保护，它不再是「未认证的特权端点」；但令牌是单一凭据。**回环这一跳没有网络边界保护**（本机任意进程都能连上端口），但接口仍要求令牌；**令牌是唯一准入门槛**。

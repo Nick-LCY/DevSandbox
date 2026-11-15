@@ -7,7 +7,7 @@
  * 01~05 已分别钉住扫描器、端点单测、注入管线与镜像内命令——本 spec 在
  * **真浏览器 + 真沙箱 + 真缓存**上钉住它们的合流：
  *
- * 一、**端到端（PRD 21）**：console 抽屉创建沙箱（`base:0.4.0`，容器自带
+ * 一、**端到端（PRD 21）**：console 抽屉创建沙箱（`base:0.4.1`，容器自带
  *    `cached-images` 与平台注入的 `SANDBOX_IMAGE_CACHE_URL` / `…_TOKEN`
  *    两个 env）→ 网页终端里读出注入 URL（宿主非回环 IPv4 + 实际端口的
  *    探测兜底形态，PRD 18）→ **spec 侧起一条 TCP 转发**（同一端口绑到注入
@@ -15,13 +15,14 @@
  *    沙箱不可直达；转发只补网络可达性，不改被测服务的绑定与代码，端点数据
  *    仍出自同一个服务进程。生产部署绑 `0.0.0.0` 时不需要它）→ 容器内跑
  *    `cached-images`（stdout/stderr 重定向进 `/workspace`，经文件通道取回
- *    全量字节——真实缓存 29 条目的清单远超终端视口，屏幕只作表头可见旁证）
- *    → 与端点 `?format=text` 比对：同一服务、同一份 TTL 缓存，内容逐字一致
+ *    全量字节——表格虽短仍走同一通道保持全量字节比对）→ 与端点
+ *    `?format=text&tags=only` 比对：同一服务、同一份 TTL 缓存，内容逐字一致
  *    （跨过 60 秒 TTL 时归一化「生成时间」行后比对条目区），仅多一行命令
  *    自带的引导语，退出码 0；
  * 二、**端点两格式（PRD 9/10）**：`?format=json`（缺省同）200 +
  *    `application/json`，`generated_at` + 条目五字段 + 三计数齐全；
  *    `?format=text` 200 + `text/plain`，表头 / 条目 / 尾注两则；
+ *    `tags=only` 补两断言（json 只留标签非空条目 + text 表格关键行）；
  * 三、**端点负例（PRD 8/11）**：无凭据 401、错误令牌 401（同一句固定文案
  *    「访问令牌无效或缺失」原文断言、两种响应逐字节一致）；非法 format 422
  *    （固定文案原文断言）；
@@ -29,8 +30,9 @@
  *    （仓库 / 标签 / 摘要 / 人读大小 / 缓存时间 / 生成时间），手动刷新后
  *    数据仍在（60 秒 TTL 内刷新拿同一份缓存，属预期）。
  *
- * 镜像：显式 pin `sandbox-platform/base:0.4.0`（本轮镜像，`cached-images`
- * 随它发布；既有 spec 各钉各自轮次的版本、不回改，14/15 钉 0.3.1 同款惯例）。
+ * 镜像：显式 pin `sandbox-platform/base:0.4.1`（0.4.1：`cached-images` 消费
+ * `tags=only` 表格视图随它发布；既有 spec 各钉各自轮次的版本、不回改，
+ * 14/15 钉 0.3.1 同款惯例）。
  * 清理：spec 创建的沙箱用例后必删（`acc-` 前缀，按名清理；setup/teardown 收尾另按 `acc-` 前缀自动兜底清扫）。
  * 空态与失败态的字段细节由前端单测覆盖（`SettingsDialog.test.tsx`），这里
  * 只冒烟真机数据态——真缓存在本机非空。
@@ -58,24 +60,30 @@ import { readFixtures } from '../helpers/sandbox';
 import {
   expectTerminalConnected,
   expectTerminalRow,
+  expectTerminalText,
   openTerminal,
   terminalRows,
   typeInTerminal,
 } from '../helpers/terminal';
 
-/** 本轮 base image（0.4.0：`cached-images` 命令随它发布）。 */
-const IMAGE = 'sandbox-platform/base:0.4.0';
+/** 本轮 base image（0.4.1：`cached-images` 消费 tags=only 表格视图随它发布）。 */
+const IMAGE = 'sandbox-platform/base:0.4.1';
 /** 主链路沙箱（console 抽屉创建，用例后必删）。 */
 const SANDBOX = 'acc-cache-images';
 /** 容器内输出文件（stdout / stderr 分开，文件通道取回全量字节）。 */
 const OUTPUT = '/workspace/acc-cached-images.txt';
 const OUTPUT_ERR = '/workspace/acc-cached-images.err';
 
-/** 服务端 text 渲染的表头首行（契约副本，故意各留一份：改了要红）。 */
+/** 服务端 text 渲染（默认视图）的表头首行（契约副本，故意各留一份：改了要红）。 */
 const TEXT_HEADER = '镜像缓存清单（仅收录已完整缓存的镜像）';
 /** 尾注两则的识别前缀（同上，契约副本）。 */
 const TEXT_NOTE_TOTAL = '说明：total_size_bytes';
 const TEXT_NOTE_DUP = '注记：同一镜像可能出现';
+/** tag-only 表格的轻表头关键词与列头行（0.4.1 轮新增视图，契约副本）。 */
+const TABLE_LIGHT_HEADER = '已缓存镜像';
+const TABLE_COLUMN_HEADER = 'IMAGE';
+/** tag-only 表格尾注整行（同上，契约副本）。 */
+const TABLE_FOOTER = 'SIZE 为拉取该条所需链字节，条目间共享 blob，不可求和当缓存占用';
 /** `cached-images` 正常态尾部追加的引导语（`base-image/cached-images` 契约副本）。 */
 const GUIDE_LINE =
   '提示：拉依赖镜像前先查缓存镜像清单，可接受的版本集合中优先选已缓存版本（未命中再回退正常拉取）。';
@@ -149,11 +157,15 @@ async function fetchCacheImages(
   };
 }
 
-/** 归一化「生成时间」行：跨过 60 秒 TTL 时两份文本只有这一行会不同。 */
+/**
+ * 归一化「生成时间」行：跨过 60 秒 TTL 时两份文本只有这两行会不同——
+ * 默认视图的「生成时间：…」行与 tag-only 表格的轻表头行（内嵌「清单生成时间：…」，
+ * 同时携带条目/行数，跨 TTL 期间数据不变则计数也不变）。
+ */
 function stripGeneratedLine(text: string): string {
   return text
     .split('\n')
-    .filter((line) => !line.startsWith('生成时间：'))
+    .filter((line) => !line.startsWith('生成时间：') && !line.includes('清单生成时间：'))
     .join('\n');
 }
 
@@ -233,8 +245,9 @@ test.describe('镜像缓存清单（端点 / 注入 / cached-images）', () => {
     const { port: backendPort } = readFixtures();
     await startForwarder(injected.hostname, Number(injected.port), backendPort);
 
-    // ── ④ 同刻端点 text（先取端点文本，紧跟着跑命令：同一 TTL 窗口内）
-    const expected = await fetchCacheImages('?format=text');
+    // ── ④ 同刻端点 text（tags=only 表格视图，命令消费的就是这个 URL；
+    //    先取端点文本，紧跟着跑命令：同一 TTL 窗口内）
+    const expected = await fetchCacheImages('?format=text&tags=only');
     expect(expected.status, '端点 text 应 200').toBe(200);
 
     // ── ⑤ 容器内跑 cached-images：stdout/stderr 落文件（29 条目清单远超终端视口），
@@ -270,9 +283,11 @@ test.describe('镜像缓存清单（端点 / 注入 / cached-images）', () => {
     }
     expect(output, '输出应以命令自带的引导语收尾').toContain(GUIDE_LINE);
 
-    // ── ⑦ 可见旁证：网页终端里直接跑（不重定向），表头在屏幕上
+    // ── ⑦ 可见旁证：网页终端里直接跑（不重定向），表格轻表头与列头在屏幕上
+    //    （轻表头携带动态计数与生成时间，整行相等不可用；用整屏包含钉关键词）
     await typeInTerminal(page, sessionId, 'cached-images | head -n 2');
-    await expectTerminalRow(page, sessionId, TEXT_HEADER);
+    await expectTerminalText(page, sessionId, TABLE_LIGHT_HEADER);
+    await expectTerminalText(page, sessionId, TABLE_COLUMN_HEADER);
   });
 
   test('端点两格式：json（缺省同）字段齐全、text 预渲染表头尾注（PRD 9/10）', async () => {
@@ -321,6 +336,40 @@ test.describe('镜像缓存清单（端点 / 注入 / cached-images）', () => {
     expect(text.body).toContain(TEXT_NOTE_DUP);
     // json 与 text 共享同一份扫描结果：同一生成时间戳（同一 TTL 窗口内两次取）。
     expect(text.body).toContain(`生成时间：${payload.generated_at}`);
+
+    // ── tags=only（0.4.1 轮）：json 只留标签非空条目（同参数同语义）
+    const tagged = await fetchCacheImages('?format=json&tags=only');
+    expect(tagged.status).toBe(200);
+    expect(tagged.contentType).toContain('application/json');
+    const taggedPayload = JSON.parse(tagged.body) as {
+      generated_at: string;
+      images: { tags: string[] }[];
+    };
+    expect(Array.isArray(taggedPayload.images)).toBe(true);
+    expect(
+      taggedPayload.images.length,
+      'tags=only 条目数应不多于默认视图（同一次扫描结果过滤）',
+    ).toBeLessThanOrEqual(payload.images.length);
+    for (const image of taggedPayload.images) {
+      expect(image.tags.length, 'tags=only 每条都应有非空标签').toBeGreaterThan(0);
+    }
+    expect(
+      taggedPayload.images.length,
+      '本机真缓存应有带标签条目（python 3.11-slim/3.12-slim、uv 0.13.7）',
+    ).toBeGreaterThan(0);
+
+    // ── tags=only 的 text：docker images 风格表格关键行（轻表头/列头/SIZE 尾注）
+    const table = await fetchCacheImages('?format=text&tags=only');
+    expect(table.status).toBe(200);
+    expect(table.contentType).toContain('text/plain');
+    const tableFirstLine = table.body.split('\n')[0] ?? '';
+    expect(tableFirstLine.startsWith(TABLE_LIGHT_HEADER), '表格应以轻表头行开头').toBe(true);
+    expect(tableFirstLine).toContain('清单生成时间：');
+    expect(table.body).toContain(TABLE_COLUMN_HEADER);
+    expect(table.body).toContain('CACHED TIME');
+    expect(table.body).toContain(TABLE_FOOTER);
+    // 「两行现象」注在 tag-only 视图不适用（无标签行已被滤除），不再渲染。
+    expect(table.body).not.toContain(TEXT_NOTE_DUP);
   });
 
   test('端点负例：无凭据 401 / 错误令牌 401（同一句固定文案原文）/ 非法 format 422（PRD 8/11）', async () => {
