@@ -907,6 +907,179 @@ def test_scan_skips_dirty_entries_without_error(
     assert result.skipped_files == 3  # 脏文件名 + 无 KEY + 断裂 JSON
 
 
+def test_scan_untraversable_cache_dir_falls_back_to_privileged(
+    scanner: RegistryCacheScanner, cache_root: Path, monkeypatch
+) -> None:
+    """目录存在但探测受阻（EACCES）→ 不吞空清单、不裸抛，走特权回退实扫。
+
+    ``is_dir()`` / ``exists()`` 对「上级目录 0700 不可穿越」的形态随版本
+    漂移（吞成 False 或裸抛 PermissionError），任何一种都会让特权回退
+    永不触发、踩「空清单比失败更糟」红线——只有 stat 的 ENOENT 才算
+    「不存在」，这里钉住不可穿越必须走回退链。
+    """
+
+    class _UntraversableDir(Path):
+        """指向真实缓存目录的伪路径：``stat`` 一律 EACCES。
+
+        真实路径部分留给特权通道（``str()`` 后 ``find`` 仍能实扫），只有
+        「探测 / 直读」被卡——模拟服务用户无法穿越上级目录的真实形态。
+        """
+
+        def stat(self, **_kwargs):
+            raise PermissionError(13, "模拟上级目录不可穿越")
+
+    fixture = CacheFixture()
+    config, layer = _dg("cfg"), _dg("l1")
+    fixture.add_manifest(
+        "library/nginx", _image_doc(config, [layer]), mtime=NOW - 60, ref="latest"
+    )
+    fixture.add_blob("library/nginx", config, mtime=NOW - 60)
+    fixture.add_blob("library/nginx", layer, mtime=NOW - 60)
+    fixture.write(cache_root)
+
+    untraversable = _UntraversableDir(cache_root)
+    monkeypatch.setattr(
+        RegistryCacheScanner,
+        "cache_dir",
+        property(lambda _self: untraversable),
+    )
+    channel = FakePrivilegedChannel()
+    monkeypatch.setattr("sandbox_platform.cache_manifest.run", channel)
+    # 上级不可穿越 ⇒ 直读枚举 / 直读写文件同样 EACCES，两路都强制受阻
+    _force_privileged(scanner, monkeypatch)
+
+    result = scanner.scan(now=NOW)
+
+    # 特权回退被真实触发（而非静默空清单 / 裸抛 500）：find 枚举先行
+    assert channel.calls, "不可穿越目录必须触发特权回退，而非静默空清单"
+    assert "find" in channel.calls[0][0] and "-printf" in channel.calls[0][0]
+    assert len(result.images) == 1
+    assert result.images[0].tags == ("latest",)
+    assert result.blob_files == 2
+    assert result.skipped_files == 0
+
+
+@pytest.mark.parametrize(
+    ("exc_factory", "scenario"),
+    [
+        pytest.param(
+            lambda: OSError(5, "模拟读取中途 EIO"), "读取中途 EIO", id="eio-midway"
+        ),
+        pytest.param(
+            lambda: FileNotFoundError(2, "模拟读取间隙消失"),
+            "读取间隙消失",
+            id="vanished",
+        ),
+    ],
+)
+def test_scan_direct_read_oserror_skips_entry(
+    exc_factory, scenario, scanner: RegistryCacheScanner, monkeypatch
+) -> None:
+    """直读中途 OSError（非 FileNotFoundError 也能咬住）→ 按脏条目计 skipped。
+
+    读取失败只损失该条目的头（blob 计数 -1、skipped +1），镜像仍按前向
+    公式完整装配，且绝不动用特权通道（单文件脏 ≠ 整批失败）：错误语义
+    闭环，服务端拿到 200 + 真实计数而非 500。
+    """
+    assert scenario  # 参数化说明已生效
+    fixture = CacheFixture()
+    config, layer = _dg("cfg"), _dg("l1")
+    fixture.add_manifest(
+        "library/nginx", _image_doc(config, [layer]), mtime=NOW - 60, ref="latest"
+    )
+    fixture.add_blob("library/nginx", config, mtime=NOW - 60)
+    fixture.add_blob("library/nginx", layer, mtime=NOW - 60)
+    fixture.write(scanner.cache_dir)
+    poisoned_relpath = cache_file_relpath(f"/v2/library/nginx/blobs/{config}")
+    poisoned_path = scanner.cache_dir / poisoned_relpath
+
+    real_open = Path.open
+    opened = {"poisoned": 0}
+
+    class _MidReadFailure:
+        """伪装句柄：open 成功、``read`` 中途抛 OSError（模拟 EIO / 消失）。"""
+
+        def __init__(self, handle) -> None:
+            self._handle = handle
+
+        def read(self, _limit: int) -> bytes:
+            raise exc_factory()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._handle.__exit__(*exc_info)
+
+    def _flaky_open(self, *args, **kwargs):
+        handle = real_open(self, *args, **kwargs)
+        if self == poisoned_path:
+            opened["poisoned"] += 1
+            return _MidReadFailure(handle)
+        return handle
+
+    monkeypatch.setattr(Path, "open", _flaky_open)
+    channel = FakePrivilegedChannel()
+    monkeypatch.setattr("sandbox_platform.cache_manifest.run", channel)
+
+    result = scanner.scan(now=NOW)
+
+    assert opened["poisoned"] == 1, "中毒文件只被头读路径碰到一次"
+    assert channel.calls == [], "单文件读取失败不应整批转特权"
+    assert len(result.images) == 1  # blob 在枚举表里 → 前向存在性成立
+    assert result.images[0].tags == ("latest",)
+    assert result.blob_files == 1  # 中毒 blob 的头没读到，计数 -1
+    assert result.skipped_files == 1  # 消失 / 读取失败按脏条目入账（头对账）
+
+
+def test_scan_privileged_vanished_file_counts_skipped(
+    scanner: RegistryCacheScanner, cache_root: Path, monkeypatch
+) -> None:
+    """特权路竞态消失（枚举到、批量读时没了）→ 同口径计 skipped。
+
+    与直读 FileNotFoundError 同一账本：特权批量脚本对已消失的文件不产出
+    标记，scan 头对账把它计入 skipped_files——直读 / 特权两路统计口径
+    一致（消失的文件也计 skipped）。
+    """
+    fixture = CacheFixture()
+    config, layer = _dg("cfg"), _dg("l1")
+    fixture.add_manifest(
+        "library/nginx", _image_doc(config, [layer]), mtime=NOW - 60, ref="latest"
+    )
+    fixture.add_blob("library/nginx", config, mtime=NOW - 60)
+    fixture.add_blob("library/nginx", layer, mtime=NOW - 60)
+    fixture.write(cache_root)
+    victim_relpath = cache_file_relpath(f"/v2/library/nginx/blobs/{config}")
+    victim_path = scanner.cache_dir / victim_relpath
+
+    class _VanishingChannel(FakePrivilegedChannel):
+        """首条批量读命令执行前移除目标文件（模拟枚举后竞态消失）。"""
+
+        def __init__(self, victim: Path) -> None:
+            super().__init__()
+            self._victim = victim
+            self.vanished = False
+
+        def __call__(self, argv, **kwargs):
+            joined = " ".join(str(item) for item in argv)
+            if not self.vanished and "sandbox-cache-batch-read" in joined:
+                self._victim.unlink()
+                self.vanished = True
+            return super().__call__(argv, **kwargs)
+
+    channel = _VanishingChannel(victim_path)
+    monkeypatch.setattr("sandbox_platform.cache_manifest.run", channel)
+    _force_privileged(scanner, monkeypatch)
+
+    result = scanner.scan(now=NOW)
+
+    assert channel.vanished, "竞态消失发生在特权批量读之前"
+    assert len(result.images) == 1  # blob 文件仍在枚举表 → 镜像装配不受影响
+    assert result.images[0].tags == ("latest",)
+    assert result.blob_files == 1
+    assert result.skipped_files == 1  # 特权批量读缺标记 → 头对账入账
+
+
 # ---------------------------------------------------------------- 批量协议解析
 def test_batch_parse_marker_collision_skips_without_corruption() -> None:
     """标记串撞进载荷 → 相应记录安全跳过，不产生错误关联。"""

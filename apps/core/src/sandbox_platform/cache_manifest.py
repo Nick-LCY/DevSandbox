@@ -679,6 +679,11 @@ class RegistryCacheScanner:
         bodies = (
             self._read_manifest_bodies(manifest_relpaths) if manifest_relpaths else {}
         )
+        # 头对账：枚举到但头没读到（直读消失 / 中途 OSError 脏跳、特权路缺
+        # 标记）→ 统一按「消失的文件计 skipped」入账，与特权路空 base64
+        # （头解析失败跳过）口径对称——两路统计口径一致。体缺失无需对账：
+        # 两路的缺失体都会被 scan_manifest_records 按「manifest 无体」跳过。
+        skipped_names += len(files) - len(heads)
         result = scan_snapshot(files, heads, bodies, now, skipped_names)
         logger.info(
             "镜像缓存扫描完成：%d 个文件（blob %d、脏条目 %d），清单 %d 条",
@@ -693,14 +698,26 @@ class RegistryCacheScanner:
     def _enumerate_cache_files(self) -> tuple[dict[str, CacheFileInfo], int]:
         """枚举缓存文件 → ``(文件表, 脏文件名数)``。
 
-        目录不存在返回空表（对齐 ``cache_size_bytes`` 的「不存在按 0 计」）。
-        叶子目录属主是容器内 nginx 用户映射（0700），服务用户直读必败：
-        先试直读，``PermissionError`` 回退特权 ``find``。非 32 位 hex 文件名
-        （临时 / 半截文件）按脏条目跳过、计数、不报错。
+        目录确实不存在（``ENOENT``）返回空表（对齐 ``cache_size_bytes`` 的
+        「不存在按 0 计」）；目录存在但探测受阻（如上级目录 0700 不可穿越的
+        ``EACCES``）绝不吞成「不存在」——一律落入下方直读 → 特权回退链
+        （与 ``_enumerate_direct`` 的 ``OSError`` 处理对齐），否则特权回退
+        永不触发，踩「空清单比失败更糟」红线。叶子目录属主是容器内 nginx
+        用户映射（0700），服务用户直读必败：先试直读，``PermissionError``
+        回退特权 ``find``。非 32 位 hex 文件名（临时 / 半截文件）按脏条目
+        跳过、计数、不报错。
         """
         cache_dir = self.cache_dir
-        if not cache_dir.is_dir():
+        try:
+            cache_dir.stat()
+        except FileNotFoundError:
+            # 只认 stat 的 ENOENT 为「目录不存在」。不能用 is_dir() /
+            # exists() 区分：两者对 EACCES 的形态随版本漂移——要么吞成
+            # False（静默空清单），要么把 PermissionError 裸抛出 scan()
+            # （500）——两个形态都绕开了特权回退链。
             return {}, 0
+        except OSError as exc:
+            logger.info("缓存目录探测受阻（%s），转入直读 → 特权回退链", exc)
         try:
             return self._enumerate_direct(cache_dir)
         except (PermissionError, OSError) as exc:
@@ -789,7 +806,10 @@ class RegistryCacheScanner:
 
         先试直读（root / 文件可读时零特权）；任何一个文件 ``PermissionError``
         即整批转特权通道（缓存文件权限同构，逐文件试探没有意义）。文件在
-        读取间隙消失（``FileNotFoundError``）按跳过处理。
+        读取间隙消失（``FileNotFoundError``）或读取中途 ``OSError``（EIO、
+        枚举后被替换成目录的竞态等）按脏条目口径跳过：不入账，由
+        :meth:`scan` 的头对账统一计入 ``skipped_files``，与特权路「空
+        base64 → 头解析失败跳过」的统计口径对称。
         """
         if not relpaths:
             return {}
@@ -803,14 +823,26 @@ class RegistryCacheScanner:
             raise CacheScanError(f"批量读取缓存文件失败：{exc}") from exc
 
     def _read_direct(self, relpaths: list[str], limit: int) -> dict[str, bytes]:
-        """直读批量（零特权）。"""
+        """直读批量（零特权）。
+
+        单文件 ``PermissionError`` 原样上抛（由 :meth:`_read_batch` 整批转
+        特权通道裁决）；其余 ``OSError``——文件消失（``FileNotFoundError``）、
+        读取中途 ``EIO``、枚举后被替换成目录的竞态（``IsADirectoryError``）
+        ——一律就地按脏条目跳过：不入账（文件不进 ``chunks``），由
+        :meth:`scan` 头对账计入 ``skipped_files``，绝不裸穿 ``scan()``
+        破坏 ``CacheScanError`` → 503 的错误语义。
+        """
         chunks: dict[str, bytes] = {}
         for relpath in relpaths:
             path = self.cache_dir / relpath
             try:
                 with path.open("rb") as handle:
                     chunks[relpath] = handle.read(limit)
-            except FileNotFoundError:
+            except PermissionError:
+                # 权限问题绝不就地吞：整批转特权通道（_read_batch 裁决）
+                raise
+            except OSError:
+                # 消失 / EIO / 竞态替换：按脏条目跳过（不入账 → scan 对账）
                 continue
         return chunks
 
