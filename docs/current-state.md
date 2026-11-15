@@ -3,7 +3,7 @@
 > 高频变更的工作看板。**开始任何任务前先读这里。** 由团队维护。保持轻量——它是看板，不是叙事。
 
 ## 活跃需求
-- **镜像缓存清单与缓存优先拉取引导** — **进行中（2026-11-14 立项，任务 01~06 全部 todo）**。把统一镜像代理（docker-registry-proxy，HTTP 层 MITM 透明缓存代理）的平台级缓存从「沙箱内不可见」变为可查询事实：核心包扫描器（特权通道实扫缓存目录，保守口径 = manifest 在 + 全部 blob 在才算已完整缓存）→ 服务端 `GET /api/proxy/cache/images`（json | 预渲染 text 两格式 + 60 秒 TTL 内存缓存）→ 两个出口（console 设置抽屉视图、沙箱内 `cached-images` 命令），凭据走**受限令牌**（平台全权管理的第二把只读钥匙，仅对缓存清单读径有效；完整令牌现状不变）与**平台强制 env 注入**（`SANDBOX_IMAGE_CACHE_URL` / `SANDBOX_IMAGE_CACHE_TOKEN`）；配套基础镜像 bump `base:0.3.1 → 0.4.0`。非目标：缓存 GC 命令、CLI 子命令、代理层透明改写、`docker images` 劫持。需求见 [[prds/registry-cache-manifest.md|镜像缓存清单与缓存优先拉取引导 PRD]]，任务集见 [[tasks/registry-cache-manifest/README.md|镜像缓存清单与缓存优先拉取引导任务集]]。**验收前置**：现有沙箱重建至 `base:0.4.0` 由用户执行（端到端验收硬前置）。
+- **镜像缓存清单与缓存优先拉取引导** — **进行中（2026-11-14 立项，任务 01 done，02~06 todo）**。把统一镜像代理（docker-registry-proxy，HTTP 层 MITM 透明缓存代理）的平台级缓存从「沙箱内不可见」变为可查询事实：核心包扫描器（特权通道实扫缓存目录，保守口径 = manifest 在 + 全部 blob 在才算已完整缓存）→ 服务端 `GET /api/proxy/cache/images`（json | 预渲染 text 两格式 + 60 秒 TTL 内存缓存）→ 两个出口（console 设置抽屉视图、沙箱内 `cached-images` 命令），凭据走**受限令牌**（平台全权管理的第二把只读钥匙，仅对缓存清单读径有效；完整令牌现状不变）与**平台强制 env 注入**（`SANDBOX_IMAGE_CACHE_URL` / `SANDBOX_IMAGE_CACHE_TOKEN`）；配套基础镜像 bump `base:0.3.1 → 0.4.0`。非目标：缓存 GC 命令、CLI 子命令、代理层透明改写、`docker images` 劫持。需求见 [[prds/registry-cache-manifest.md|镜像缓存清单与缓存优先拉取引导 PRD]]，任务集见 [[tasks/registry-cache-manifest/README.md|镜像缓存清单与缓存优先拉取引导任务集]]。**验收前置**：现有沙箱重建至 `base:0.4.0` 由用户执行（端到端验收硬前置）。
 
 ## 历史交付
 - **文件窗格与 Obsidian 阅读器** — **已完成（2026-11-14 收口，01~08 全部 done）**。控制台终端区改造：① **文件窗格**——终端右侧伴生**分屏**（默认约 340px、可折叠为 36px 纯图标竖条），锚定当前终端会话的 shell 当前目录（pwd 走 **OSC 1337 shell integration**：镜像 `base:0.3.1` 注入 + 前端 xterm 解析，**pwd 纯前端产物、后端不加字段**），浏览 / 下载为主、纯文本预览为辅，**无自动跟随**（唯一联动入口「回跳」准星），全局文件抽屉**退役**；② **固定 Obsidian tab**——全宽双栏 vault 阅读器，markdown 渲染（react-markdown，不放行原始 HTML）+ wikilink 正向跳转（三级兜底，未命中就地错误条）；③ **配套**——只读端点 `GET /api/sandboxes/{name}/files/read`（两处预览共用，>2 MB 二次确认 + 进度条 + 全文渲染同口径）、全屏对象扩为 **tabs 条下方整个内容区**、`SANDBOX_NETWORK` 与 locale 平台强制注入（平台值优先）。**验收标准 38 条逐条核销（38 / 38，证据分真机 e2e / 单测 / 既有落档三档）**，e2e 全量 **63 / 63（真沙箱）**。需求见 [[prds/file-pane-obsidian.md|文件窗格与 Obsidian 阅读器 PRD]]，任务集见 [[tasks/file-pane-obsidian/README.md|文件窗格与 Obsidian 阅读器任务集]]，全轮留档见 [[tasks/file-pane-obsidian/RESULTS.md|文件窗格与 Obsidian 阅读器全轮收口留档]]；**留白已消除**：存量沙箱已全部重建 / 更新至 `base:0.3.1`（2026-11-14 确认）。**2026-11-14 复验修复（两批共 11 条）**：用户复验反馈的 UI / 交互问题（含文件窗格预览卡死缺陷修复、Obsidian 双栏分隔线改可拖拽）已全部修复并全量回归（vitest 943 / e2e 67 / 67），见 [[tasks/file-pane-obsidian/RESULTS.md|RESULTS]] 复验修复轮第七、八节。
@@ -21,7 +21,7 @@
 - **沙箱详情与转发记录接口合并**：控制台对「沙箱详情」与「转发记录列表」当前是两个接口、前端一个定时器一拍并行双刷；用户倾向后续把两份数据合并为一个接口读径（如详情响应嵌转发记录，或嵌套子资源）。未立项；立项时需处理已发布的三条转发管理 REST 契约的去留（保留则须钉死两条读径等价，废弃则破坏已发布 API 形状）与合并响应的部分失败语义（详情成功但转发读取失败时返回什么）。
 
 ## 任务看板
-进行中任务集：「镜像缓存清单与缓存优先拉取引导」（2026-11-14 立项，01~06 全部 todo），状态见「活跃需求」；已收口任务集的叙事与验收留档见 [[current-state.md#历史交付|历史交付]] 与各任务集 RESULTS。
+进行中任务集：「镜像缓存清单与缓存优先拉取引导」（2026-11-14 立项，01 done，02~06 todo），状态见「活跃需求」；已收口任务集的叙事与验收留档见 [[current-state.md#历史交付|历史交付]] 与各任务集 RESULTS。
 
 ## TODO / 阻塞
 - [ ] 统一镜像代理缓存 GC 命令待做。

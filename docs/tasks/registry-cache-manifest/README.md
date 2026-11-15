@@ -8,7 +8,7 @@
 
 ## 任务清单
 
-- [[tasks/registry-cache-manifest/01-core-cache-scanner.md]] — 核心包缓存扫描器（`cache_manifest.py`：纯解析函数与特权 IO 分离 + 单测 + 真缓存实测，PRD 验收 1~7；无 GC 入口）
+- [[tasks/registry-cache-manifest/01-core-cache-scanner.md]] — 核心包缓存扫描器（`cache_manifest.py`：纯解析函数与特权 IO 分离 + 单测 + 真缓存实测，PRD 验收 1~7；无 GC 入口）——**done（2026-11-15 收口，提交 `82cf57d` 主实现 + `43fec65` 审查修复）**：真缓存实测 29 条 / 10 仓库、抽样核对与过期落榜边界全过；门禁与实测记录见任务文件进展节
 - [[tasks/registry-cache-manifest/02-server-endpoint-and-token.md]] — 服务端端点与受限令牌（`GET /api/proxy/cache/images`：json|text、422、503、60s TTL、30s 超时 + `cache-images-token.json` 凭据文件 + `BearerAuthMiddleware` 双凭据限界 + 单测，PRD 验收 8~15）
 - [[tasks/registry-cache-manifest/03-injection-pipeline.md]] — 注入管线（服务端创建/启动递参 + 核心包 `_run_sandbox_container` 平台强制注入两 env：平台值优先、不进 metadata + 可达地址配置项与宿主 IP 探测兜底 + 单测，PRD 验收 16~20）
 - [[tasks/registry-cache-manifest/04-base-image-cached-images.md]] — 基础镜像 `base:0.4.0` 与 `cached-images` 命令（纯 bash 三态 + `--noproxy` + Dockerfile/README bump + 构建推送，PRD 验收 22~26；现有沙箱重建由用户完成，登记为验收前置）
