@@ -94,7 +94,7 @@ status: todo        # todo | doing | done | blocked
 - [[tasks/registry-cache-manifest/04-base-image-cached-images.md]] — 基础镜像 `base:0.4.0` 与 `cached-images` 命令（纯 bash 三态 + `--noproxy` + bump + 构建推送，PRD 验收 22~26）（**done：2026-11-15 收口**——镜像 384MB 构建推送、verify.sh 61 项全过、真机三态全过（退出码 0/2/3、超时封顶 10.47s）；存量沙箱重建由用户执行，登记为运维留白；②态退出码口径含未知参数，06 复核对齐）
 - [[tasks/registry-cache-manifest/05-console-cache-images-view.md]] — console 缓存镜像清单视图（设置抽屉代理状态区旁 + 空态/失败态 + 手动刷新，PRD 验收 27~28）（**done：2026-11-15 收口**——视图三态齐备、零轮询双保险（整文件静态断言 + 假时钟）、刷新失败保留旧清单回归钉；vitest 953 passed、typecheck 双零错、build 过；真机点验随 06 e2e）
 - [[tasks/registry-cache-manifest/06-acceptance-and-docs.md]] — 验收与文档收口（e2e 含端到端 21 + 门禁全量 + PRD 32 条逐条核销 + 文档同步 + RESULTS.md 留档，PRD 验收 21、29~32）（**done：2026-11-15 收口**——e2e 新增 `16-cache-images` 4 条（真沙箱 `base:0.4.0` 新建端到端不依赖存量重建 + 端点两格式/负例固定文案原文 + 视图冒烟），**全量 71 / 71 真沙箱全绿（12.6 分钟）**；门禁后端 398 + ruff 0 / 核心包 500（3 既有环境故障）+ ruff 0 / vitest 953 + typecheck 双零 + build；**PRD 32 / 32 逐条核销挂证据**；`API.md` 第 17 章 + 根 README + base-image 口径 + 词汇表 + 看板与两份清单同步；**RESULTS.md 落库**）
-- [[tasks/registry-cache-manifest/RESULTS.md]] — 镜像缓存清单轮**全轮收口留档**（01~06，2026-11-15 收口）：轮次总表与提交链、门禁数字表、真缓存实测与真机记录汇总（01 实测 29 条 / 630MB、03 真机六项、04 真机三态、06 e2e）、**已知边界与留白**（含两条运维留白：① 生产服务（systemd，28642）仍跑旧代码，需按部署流程更新重启后新端点/受限令牌/env 注入才生产生效；② 存量沙箱需重建至 `base:0.4.0`——均由用户执行）、硬约束六条复核逐条带证据指针
+- [[tasks/registry-cache-manifest/RESULTS.md]] — 镜像缓存清单轮**全轮收口留档**（01~06，2026-11-15 收口）：轮次总表与提交链、门禁数字表、真缓存实测与真机记录汇总（01 实测 29 条 / 630MB、03 真机六项、04 真机三态、06 e2e）、**已知边界与留白**（生产部署已落地（2026-11-15），前端暂不发布（用户决策），存量沙箱重建待用户）、硬约束六条复核逐条带证据指针
 
 ## 看板
 任务状态汇总见 [[current-state.md]]，由人维护。
