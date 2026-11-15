@@ -1669,10 +1669,14 @@ digest 直拉为空数组）、`digest`（manifest 摘要，`sha256:…`）、`t
   本地时区）；
 - 列宽按批内最长值对齐（含列头；ljust + 两空格分隔，行尾不留空白），行按 repo、
   tag 排序保证稳定输出；
-- 表格前一行轻表头：条目数/表格行数 + 「清单生成时间：…」（保持「text 含生成时间」
-  口径）；表格后一行尾注：SIZE 为拉取该条所需链字节，条目间共享 blob，不可求和当
-  缓存占用。默认 text 两则尾注里的「两行现象」注在 tag-only 视图不适用（无标签行
-  已被滤除），不再渲染；空态给明确文案「（当前没有带标签的已缓存镜像）」。
+- **仅表体（0.4.2 输出清理，用户拍板）**：输出 = 列头行 + 数据行，前后都无
+  说明行——0.4.1 的轻表头行（条目数/表格行数 + 「清单生成时间：…」）与表尾
+  SIZE 防误读尾注行已去。生成时间戳的去向：json `generated_at`、缺省 text
+  （仍含生成时间）与本节；SIZE 防误读口径的去向：本节「text 的防误读尾注」
+  （缺省 text 仍逐次携带，tag-only 视图不重复）。缺省 text 两则尾注里的「两行
+  现象」注在 tag-only 视图不适用（无标签行已被滤除），不渲染；**空清单 →
+  仅列头行**（docker images 同款语义：空输出仍带列头，bash 侧不会拿到空串；
+  「明确空态文案」由缺省 text 承载）。
 
 **清单口径（保守）**：只收录「已完整缓存」的镜像——manifest 条目在缓存 + 其声明的
 全部 blob（config + layers）都在缓存；多架构 index 解析到 linux/amd64 manifest 再验；
@@ -1743,7 +1747,7 @@ root 属主排除区，服务用户写不进）。启动幂等：已存在不覆
 | **部署前提（已接受）** | 当前部署绑 `0.0.0.0:28642` + LAN IP，端到端可用；仓库单元默认绑 `127.0.0.1:8000`——**部署绑回环时本功能沙箱侧失效**：`cached-images` 连不上端点走降级提示（一行中文、退出码 3、不阻塞后续 `docker pull`），**console 视图不受影响**（视图是服务端自己读自己，不走注入给沙箱的地址） |
 | 可达地址 | 创建 / 启动沙箱时平台强制注入 `SANDBOX_IMAGE_CACHE_URL`（后端可达地址）与 `SANDBOX_IMAGE_CACHE_TOKEN`（受限令牌）两个 env：地址由配置项 `SANDBOX_CONSOLE_SANDBOX_URL` 优先 + 宿主非回环 IPv4 + 实际监听端口自动探测兜底；两者皆不可得 → 跳过注入打日志、**创建不失败**（注入是增益能力，两值不进 metadata） |
 | **CLI 边角（已知）** | CLI 创建 / CLI 直接 `start` 不传注入参数 → 沙箱缺这对 env（`cached-images` 报缺凭据、退出码 2）——行为与现状一致，属已知边角：**console 里对该沙箱执行一次「停止 → 启动」即自愈**（服务端在 start 路径同样递参，核心包重装配容器时平台强制注入） |
-| 存量沙箱 | `base:0.4.0` 之前创建的沙箱不带 `cached-images` 命令；**重建至 `base:0.4.1` 后在场**（0.4.1 起输出 tags=only 表格视图；重建由用户执行，见 `base-image/README.md` 的存量沙箱口径） |
+| 存量沙箱 | `base:0.4.0` 之前创建的沙箱不带 `cached-images` 命令；**重建至 `base:0.4.2` 后在场**（0.4.1 起消费 tags=only 表格视图，0.4.2 起输出仅表体且命令正常态零追加；重建由用户执行，见 `base-image/README.md` 的存量沙箱口径） |
 
 ### 17.5 示例
 
@@ -1771,15 +1775,15 @@ curl -s -H 'Authorization: Bearer <受限令牌>' \
 #   说明：total_size_bytes（链大小）……不可把各条链大小求和当作缓存占用。
 #   注记：同一镜像可能出现「index 条目 + 平台 manifest 条目」两行，后者标签列表为空。
 
-# text + tags=only（0.4.1 起 cached-images 消费的表格视图；docker images 风格）
+# text + tags=only（0.4.1 起 cached-images 消费的表格视图；0.4.2 起仅表体：
+# 列头 + 数据行，前后无说明行；docker images 风格）
 curl -s -H 'Authorization: Bearer <受限令牌>' \
     'http://127.0.0.1:8000/api/proxy/cache/images?format=text&tags=only'
-# → 已缓存镜像 3 条（表格 3 行）｜ 清单生成时间：2026-11-15T13:31:01Z
-#   IMAGE                     ID            SIZE    CACHED TIME
+# → IMAGE                     ID            SIZE    CACHED TIME
 #   astral-sh/uv:0.13.7       96f40d3904aa  19.3MB  2026-11-06 15:35:14
 #   library/python:3.11-slim  65bd3d9f1d7f  45.6MB  2026-11-06 15:34:48
 #   library/python:3.12-slim  5e2bdb1b0d54  43.3MB  2026-11-12 14:33:22
-#   SIZE 为拉取该条所需链字节，条目间共享 blob，不可求和当缓存占用
+#   （缓存为空时仅列头行：IMAGE  ID  SIZE  CACHED TIME）
 
 # json + tags=only：同参数同语义（只含标签非空的条目，计数原样保留）
 curl -s -H 'Authorization: Bearer <令牌>' \
