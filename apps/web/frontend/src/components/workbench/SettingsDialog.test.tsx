@@ -10,7 +10,8 @@
  *   「读取代理状态失败」把更具体的「重启代理失败」顶掉；
  * - 缓存镜像清单：仓库 / 标签 / 摘要（截断 + title 全文）/ 人读大小 / 时间
  *   与生成时间戳渲染；空态文案；端点失败弹 toast + 就地说明且抽屉其余区
- *   照常渲染（不白屏）；手动刷新触发重取；零轮询（静态源码断言 + 行为
+ *   照常渲染（不白屏）；手动刷新触发重取；刷新失败保留旧清单（不清空、
+ *   就地 role=status 说明、空态不误显）；零轮询（静态源码断言 + 行为
  *   推进时钟断言，双保险）；
  * - 模板列表渲染（名称 + 更新时间）与空态；
  * - 行内重命名：回车提交、Esc 取消、空名禁提交；
@@ -361,6 +362,44 @@ describe('设置抽屉的缓存镜像清单区', () => {
     expect(screen.getByTestId('page-settings-cache-images-generated-at').textContent).toContain(
       formatTimestamp('2026-11-15T06:30:00+00:00'),
     );
+  });
+
+  it('刷新失败保留旧清单：条目不清空 + 就地说明（role=status）+ 空态不误显', async () => {
+    // 首次加载成功（默认载荷两条镜像）；随后手动刷新失败。
+    mocks.cacheImages.mockResolvedValueOnce(makeCachePayload());
+    mocks.cacheImages.mockRejectedValue(
+      new Error('镜像缓存清单不可用（缓存扫描失败或超时），请稍后重试'),
+    );
+
+    renderDialog();
+
+    const items = await screen.findAllByTestId('page-settings-cache-image-item');
+    expect(items).toHaveLength(2);
+    expect(items[0].getAttribute('data-image-repo')).toBe('library/nginx');
+
+    fireEvent.click(screen.getByTestId('page-settings-cache-images-refresh-button'));
+
+    await waitFor(() => expect(mocks.cacheImages).toHaveBeenCalledTimes(2));
+    // 旧清单原样保留：还是那两条，没有被清空或替换。
+    expect(screen.getAllByTestId('page-settings-cache-image-item')).toHaveLength(2);
+    expect(screen.getAllByTestId('page-settings-cache-image-repo')[0].textContent).toBe(
+      'library/nginx',
+    );
+    expect(screen.getByTestId('page-settings-cache-images-list')).toBeTruthy();
+
+    // 就地失败说明走环境状态口径（role=status），写明原因见右上角提示。
+    const status = screen.getByTestId('page-settings-cache-images-status');
+    expect(status.getAttribute('role')).toBe('status');
+    expect(status.textContent).toContain('缓存镜像清单读取失败');
+    expect(status.textContent).toContain('镜像缓存清单不可用（缓存扫描失败或超时），请稍后重试');
+
+    // 失败 toast 照常弹（来源 settings-cache-images）。
+    const toast = await screen.findByTestId('page-toast-item');
+    expect(toast.getAttribute('data-toast-kind')).toBe('error');
+    expect(toast.getAttribute('data-toast-source')).toBe('settings-cache-images');
+
+    // 有旧数据在场，空态文案不能误显。
+    expect(screen.queryByTestId('page-settings-cache-images-empty')).toBeNull();
   });
 
   it('零轮询（静态）：组件源码零 setInterval、零 setTimeout', () => {
