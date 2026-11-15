@@ -2,6 +2,7 @@
 
 > 日期：2026-11-14
 > **2026-11-15 口径修订（收口后小增强）**：端点新增 `?tags=only` 过滤（json / text 双格式、非法值 422、缺省零改动）+ tags=only 时 text 渲染 **docker images 风格表格**（IMAGE repo:tag 多标签展开行 / ID digest 前 12 位 / SIZE 十进制 B/kB/MB/GB / CACHED TIME `YYYY-MM-DD HH:mm:ss UTC`，轻表头含清单生成时间，表尾 SIZE 防误读尾注）+ `cached-images` 消费 tags=only、`--help` 定稿文本替换、退出码 0 / 2 / 3 不变 + 基础镜像 bump **`base:0.4.0 → 0.4.1`**（宿主已重建，verify.sh 61 → 64 项全过）。验收注记见「验收标准」D 组头部。
+> **2026-11-15 输出清理小轮（收口后第二轮小改，用户拍板「只保留表格本体」）**：tags=only 表格**仅保留表格本体**（去轻表头与表尾 SIZE 尾注）、空清单仅列头行；`cached-images` 正常态去「提示：…」追加——**引导约定仅 `--help` 承载**；缺省 text 零改动；基础镜像 bump **`base:0.4.1 → 0.4.2`**（宿主已重建，verify.sh 65 项全过）。**该小轮未部署生产**（本地领先 4 提交，沙箱侧需重建 `base:0.4.2` 才有新输出）；验收注记见「验收标准」D 组头部，留档见 [[tasks/registry-cache-manifest/RESULTS.md|RESULTS]] 第八节。
 > 来源：[[current-state.md|当前状态]]「规划」区 2026-11-14 登记的方向，已与用户讨论收敛，**本文全部口径为已拍板定论**
 > 关联：TODO「统一镜像代理缓存 GC 命令待做」——与本轮共享同一套缓存扫描底座，**GC 不在本轮范围**
 > 先例：机制落核心包 + 接口在服务端（[[prds/runtime-file-transfer.md|运行期文件传输]]）；平台强制 env 注入（`SANDBOX_NETWORK` / locale，文件窗格轮落地）
@@ -162,6 +163,7 @@
 ### D. `cached-images` 命令
 
 > **2026-11-15 口径修订（收口后小增强）注记**：22 的镜像版本随 bump 为 **`base:0.4.1`**（宿主已重建，verify.sh 61 → 64 项全过）；新增验收点——端点 `?tags=only` 过滤与 tags=only 时 text 的 docker images 风格表格渲染、`cached-images` 消费 tags=only 与定稿帮助文本（退出码 0 / 2 / 3 不变）——证据见 [[tasks/registry-cache-manifest/RESULTS.md|RESULTS]]「收口后小增强」节。既有 32 条表述不重写，22 正文的历史口径（`base:0.4.0`）以本注记为准。
+> **2026-11-15 输出清理小轮注记（版本同步：`base:0.4.1 → 0.4.2`）**：镜像再 bump **`base:0.4.2`**（宿主已重建，verify.sh 64 → 65 项全过）；输出形态修订——tags=only 表格仅保留表格本体（去轻表头与表尾 SIZE 尾注）、空清单仅列头行、`cached-images` 正常态去「提示：…」追加（**引导约定仅 `--help` 承载**）、缺省 text 零改动——证据见 [[tasks/registry-cache-manifest/RESULTS.md|RESULTS]]「收口后小轮」节（**该小轮未部署生产**，沙箱侧需重建 `base:0.4.2` 才有新输出）。
 
 - [x] 22. 基础镜像 **`base:0.4.0`**（0.3.1 → minor bump）新增 `cached-images` 纯 bash 命令（PATH 内）：curl 拉 `?format=text` 直接输出，不解析 JSON、不依赖 jq；对后端调用显式绕过 HTTP(S)_PROXY（`--noproxy`）；Dockerfile ARG / LABEL / README 同步 bump。——**证据（真机实测 + 真机 e2e）**：04 轮镜像构建成功（image id `5e30e1976943`，384MB），`verify.sh` 61 项全过（含新增 13 项：纯 bash 静态断言零 jq / 零解释器、`--noproxy` 与超时参数相邻断言，负向变异测试双红实证）；e2e 端到端在真 0.4.0 沙箱内跑命令生效（PATH 内、拉 text 直接输出）。
 - [x] 23. **三态·正常**：env 在场且端点可达 → 输出清单文本（含仓库 / 标签 / 摘要 / 大小 / 时间）+ 退出 0。——**证据（真机实测 + 真机 e2e）**：04 轮实测（480ms，注入死代理变量实证 `--noproxy` 生效）；e2e 端到端退出码 0 + 输出与端点 text 逐字一致。

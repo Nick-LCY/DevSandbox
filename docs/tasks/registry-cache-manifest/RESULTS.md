@@ -1,6 +1,6 @@
 # 镜像缓存清单与缓存优先拉取引导：全轮收口留档（01~06）
 
-> **2026-11-15 全轮收口**：6 个任务全部 done，PRD 验收 **32 / 32** 逐条核销（证据分真机 e2e / 单测 / 真机记录与实测三档，逐条注记见 [[prds/registry-cache-manifest.md|PRD]] 验收标准节），e2e 全量 **71 / 71**。本文是该轮的总留档：轮次总表、门禁数字、真缓存实测与真机记录汇总、已知边界与留白、硬约束复核，以及**收口后小增强（tags=only 与表格化输出，见第七节）**。
+> **2026-11-15 全轮收口**：6 个任务全部 done，PRD 验收 **32 / 32** 逐条核销（证据分真机 e2e / 单测 / 真机记录与实测三档，逐条注记见 [[prds/registry-cache-manifest.md|PRD]] 验收标准节），e2e 全量 **71 / 71**。本文是该轮的总留档：轮次总表、门禁数字、真缓存实测与真机记录汇总、已知边界与留白、硬约束复核，以及**收口后小增强（tags=only 与表格化输出，见第七节）与收口后输出清理小轮（cached-images 输出清理，`base:0.4.2`，见第八节）**。
 
 ## 一、轮次总表与提交链
 
@@ -76,8 +76,8 @@
 
 ### 4.1 运维留白与部署后状态（**非 PRD 验收项，必须留档**）
 
-1. **生产服务仍跑旧代码**：生产控制台服务（systemd 单元，监听 `0.0.0.0:28642`）仍运行本轮之前的代码——新端点 `GET /api/proxy/cache/images`、受限令牌凭据文件与双凭据鉴权、env 注入管线（`SANDBOX_IMAGE_CACHE_URL` / `SANDBOX_IMAGE_CACHE_TOKEN`）都要**按既有部署流程更新代码并重启服务后**才在生产生效。本轮全程零接触生产服务（06 收口复核：28642 监听进程 PID 未变），**更新与重启由用户执行**，本轮不代劳。——**已消除（2026-11-15 10:59 UTC 生产部署完成）**：22 提交已 push `origin/main`（`b229669..ce95adf`），快照 `/opt/sandbox-platform` 已 rsync 两个运行时包（core/sandbox_platform + backend/sandbox_console）并重启服务（旧 PID 3511625 → 新 PID 2808367；启动清扫：遗留终端会话 3 条清理、遗留转发 0 条）；生产验证矩阵 **10 / 10** 全过——新端点无凭据 401、完整令牌 json 200（真缓存 29 条 / total 140 / blob 91 / skipped 1）、text 200、受限令牌该读径 200 而其余路径与非 GET 401、health 200、回归 `/api/sandboxes` 与 `/api/proxy/status` 200。**前端 Cloudflare（`dev.sankabox.com`）暂不发布——用户决策**：生产控制台暂看不到新「缓存镜像清单」视图，待用户择机 `wrangler deploy`（本轮未碰 wrangler / terraform）。
-2. **存量沙箱需重建**：`base:0.4.0` 之前创建的存量沙箱不带 `cached-images` 命令、也没有新的注入 env（基础镜像随沙箱创建时固化，平台不自动迁移）——**需将存量沙箱重建至 `base:0.4.0` 后**才有完整能力（重建操作见 `base-image/README.md` 存量沙箱口径）。**重建由用户执行**，本轮不代劳；未重建的存量沙箱内执行 `cached-images` 得到「命令不存在」，属预期行为，不是缺陷。另：**新建沙箱需显式指定 `base:0.4.0`**，缺省镜像仍落旧版、同样无该能力。
+1. **生产服务仍跑旧代码**：生产控制台服务（systemd 单元，监听 `0.0.0.0:28642`）仍运行本轮之前的代码——新端点 `GET /api/proxy/cache/images`、受限令牌凭据文件与双凭据鉴权、env 注入管线（`SANDBOX_IMAGE_CACHE_URL` / `SANDBOX_IMAGE_CACHE_TOKEN`）都要**按既有部署流程更新代码并重启服务后**才在生产生效。本轮全程零接触生产服务（06 收口复核：28642 监听进程 PID 未变），**更新与重启由用户执行**，本轮不代劳。——**已消除（2026-11-15 10:59 UTC 生产部署完成）**：22 提交已 push `origin/main`（`b229669..ce95adf`），快照 `/opt/sandbox-platform` 已 rsync 两个运行时包（core/sandbox_platform + backend/sandbox_console）并重启服务（旧 PID 3511625 → 新 PID 2808367；启动清扫：遗留终端会话 3 条清理、遗留转发 0 条）；生产验证矩阵 **10 / 10** 全过——新端点无凭据 401、完整令牌 json 200（真缓存 29 条 / total 140 / blob 91 / skipped 1）、text 200、受限令牌该读径 200 而其余路径与非 GET 401、health 200、回归 `/api/sandboxes` 与 `/api/proxy/status` 200。**收口后小增强二次部署（2026-11-15 14:34:38 UTC）**：tags=only 与表格化输出 5 提交已 push（`a913177..cafa694`）→ 快照 rsync → 服务再次重启（现运行 PID **3231614**；10:59 与 14:34 两次重启均在档）→ 生产验证 **8 / 8** 全过（无凭据 401、json 缺省 29 条、json tags=only 3 条、text 表格 6 行、缺省 text 零改动、tags=abc 422、受限令牌 tags=only 200、回归 200）——生产现运行版本**含 tags=only 与表格化输出**（详见第七节）。**前端 Cloudflare（`dev.sankabox.com`）暂不发布——用户决策**：生产控制台暂看不到新「缓存镜像清单」视图，待用户择机 `wrangler deploy`（本轮未碰 wrangler / terraform）。
+2. **存量沙箱需重建**：`base:0.4.0` 之前创建的存量沙箱不带 `cached-images` 命令、也没有新的注入 env（基础镜像随沙箱创建时固化，平台不自动迁移）——**需将存量沙箱重建至 `base:0.4.0` 后**才有完整能力（重建操作见 `base-image/README.md` 存量沙箱口径）。**重建由用户执行**，本轮不代劳；未重建的存量沙箱内执行 `cached-images` 得到「命令不存在」，属预期行为，不是缺陷。另：**新建沙箱需显式指定 `base:0.4.0`**，缺省镜像仍落旧版、同样无该能力。（镜像其后随收口后两小轮 bump：`0.4.1` 增强、**`0.4.2`** 输出清理——新建 / 重建要拿最新能力与输出应显式指定 **`base:0.4.2`**，见第七、八节。）
 
 ### 4.2 已接受边界（PRD 内已拍板，此处汇总指针）
 
@@ -116,9 +116,19 @@
 
 > 全轮收口后用户拍板的增强：端点新增 `?tags=only` 过滤（json / text 双格式、非法值 422、缺省零改动）+ tags=only 时 text 渲染 **docker images 风格表格**（IMAGE repo:tag 多标签展开行 / ID digest 前 12 位 / SIZE 十进制 B/kB/MB/GB / CACHED TIME `YYYY-MM-DD HH:mm:ss UTC`，轻表头含清单生成时间，表尾 SIZE 防误读尾注）+ `cached-images` 消费 tags=only、`--help` 定稿文本替换、退出码 0 / 2 / 3 不变 + 基础镜像 bump **`base:0.4.0 → 0.4.1`**（宿主已重建）。PRD 头部修订行与「验收标准」D 组注记见 [[prds/registry-cache-manifest.md|PRD]]。
 
-- **提交链（4 个）**：`5bcada8`（服务端 tags=only + 表格渲染 + 36 用例）→ `d6af3c3`（cached-images 表格化 / 新帮助 + `0.4.1` bump + verify 更新 + 真机三态）→ `23c87a0`（e2e 同步 + `API.md` / `README` 同步）→ `aa29b23`（审查收尾：SIZE 满千升单元 + 测试名实相符 + spec 注释勘误）。
+- **提交链（4 个）**：`5bcada8`（服务端 tags=only + 表格渲染 + 36 用例）→ `d6af3c3`（cached-images 表格化 / 新帮助 + `0.4.1` bump + verify 更新 + 真机三态）→ `23c87a0`（e2e 同步 + `API.md` / `README` 同步）→ `aa29b23`（审查收尾：SIZE 满千升单元 + 测试名实相符 + spec 注释勘误）。**以上提交已随生产部署 push（`a913177..cafa694`，区间 5 提交，2026-11-15 14:34:38 UTC 落生产，见下「部署状态」）。**
 - **reviewer 结论**：通过（无 Critical / Warning；三条 Suggestion 已随 `aa29b23` 收拾）。
 - **门禁数字**：后端 pytest **436 passed / 0 failed**（基线 398 → 436）+ ruff rc=0；`verify.sh` **64 项全过**（61 → 64）；e2e 全量 **71 / 71**（真沙箱，12.4 分钟）；前端 vitest **953 passed / 0 failed**、typecheck:tests **0 错**。
 - **真机三态**：随 `d6af3c3` 实测全过（正常 / 缺凭据 / 不可达），退出码 0 / 2 / 3 语义不变。
-- **部署状态**：**未 push、未部署生产**——生产仍跑上一轮版本（无 tags=only），待用户拍板；存量沙箱重建口径从 `base:0.4.0` 改 **`base:0.4.1`**。
+- **部署状态**：**已部署生产（2026-11-15 14:34:38 UTC）**——push（`a913177..cafa694`）→ 快照 rsync → 服务重启（PID → **3231614**）→ 生产验证 **8 / 8** 全过（无凭据 401、json 缺省 29 条、json tags=only 3 条、text 表格 6 行、缺省 text 零改动、tags=abc 422、受限令牌 tags=only 200、回归 200）；存量沙箱重建口径随增强从 `base:0.4.0` 改 `base:0.4.1`（其后输出清理小轮再 bump **`base:0.4.2`**，见第八节）。
 - **运维事故（如实留档）**：真机验证清理时 worker 误用宽匹配 `pkill -f` 误杀生产服务（2026-11-15 13:31:35–13:49:39 中断约 18 分钟），已用原部署版本恢复并复核（服务 active、端点行为正常）。**教训登记：清理进程禁用宽匹配 `pkill -f`**。
+
+## 八、收口后小轮（2026-11-15）：cached-images 输出清理（base:0.4.2）
+
+> tags=only 增强落生产后（见第七节），用户拍板「**只保留表格本体**」的输出清理小轮：**服务端**——tags=only 表格去掉轻表头与表尾 SIZE 防误读尾注（仅保留表格本体）、空清单仅列头行；**脚本**——`cached-images` 正常态去掉尾部「提示：…」追加（**引导约定仅 `--help` 承载**）；**缺省 text 零改动**（无 tags=only 的输出形态不变）。基础镜像 bump **`base:0.4.1 → 0.4.2`**（宿主已重建，`verify.sh` 65 项全过）。PRD 头部修订行与「验收标准」D 组注记已同步（见 [[prds/registry-cache-manifest.md|PRD]]）。
+
+- **提交链（4 个，未 push）**：`c49fcae` / `bcc2b9f` / `f9b526f` / `86efc1a`；base-image/RESULTS 已单独补节（镜像与命令侧明细）。
+- **门禁**：后端 pytest **436 passed / 0 failed**（与第七节持平）+ ruff rc=0；`verify.sh` **65 项全过**（64 → 65）；e2e 全量 **71 / 71**；前端 vitest **953 passed / 0 failed**。
+- **真机三态与跨 TTL 实测**：随本轮全过——正常态输出即「仅表格本体」新形态、缺凭据 / 不可达退出码 0 / 2 / 3 语义不变；端到端跨 60 秒 TTL 比对按新输出形态归一（明细见 base-image/RESULTS 补节）。
+- **部署状态**：**未部署生产、未 push（本地领先 4 提交）**——生产现仍跑第七节版本（tags=only 含轻表头与 SIZE 尾注形态）；**沙箱侧要用上新输出需重建至 `base:0.4.2`**（新建沙箱同样需显式指定 `base:0.4.2`；存量重建 qilu 维持暂停、待用户拍板）。
+- **运维备注（如实留档）**：本轮真机验证时曾在生产缓存挂载路径误加一层 bind mount，当场已按原样复原，并经三视角复核（`findmnt` / `mount` / `mountinfo` 单条自 bind、140 文件对账）；另有上轮登记的 pkill 教训（见第七节运维事故）。
