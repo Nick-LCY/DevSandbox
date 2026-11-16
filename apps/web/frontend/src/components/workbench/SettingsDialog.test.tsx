@@ -388,11 +388,41 @@ describe('设置抽屉的缓存镜像清单区', () => {
     expect(mocks.cacheImages).toHaveBeenCalledWith({ tagsOnly: true });
   });
 
+  it('代理 tab 顶部区自己有界滚动（矮视口下重启结果够得着，不被裁掉）', async () => {
+    renderDialog();
+
+    const section = await screen.findByTestId('page-settings-proxy-section');
+    // 自己滚（overflow-y-auto）+ 允许收缩（min-h-0）+ 有界（max-h）：
+    // 重启结果把顶部区撑高时，滚这一块而不是把底部裁掉。
+    expect(section.getAttribute('aria-label')).toBe('代理设置');
+    expect(section.className).toContain('overflow-y-auto');
+    expect(section.className).toContain('min-h-0');
+    expect(section.className).toContain('max-h-');
+  });
+
+  it('清单表格有独立的滚动容器（表头吸顶靠它）', async () => {
+    mocks.cacheImages.mockResolvedValue(makeCachePayload());
+
+    renderDialog();
+
+    const scroller = await screen.findByTestId('page-settings-cache-images-scroll');
+    const table = screen.getByTestId('page-settings-cache-images-table');
+    // 表格在滚动容器里（容器自己滚，表头吸顶）。
+    expect(scroller.contains(table)).toBe(true);
+    expect(scroller.className).toContain('overflow-auto');
+    // 分离边框模式（collapse 模式下 Chromium 的 sticky 表头底边会随内容滚走）。
+    expect(table.className).toContain('border-separate');
+    expect(table.className).not.toContain('border-collapse');
+  });
+
   it('空清单：给空态文案，不误报错误', async () => {
     renderDialog();
 
     const empty = await screen.findByTestId('page-settings-cache-images-empty');
-    expect(empty.textContent).toContain('还没有拉取过的镜像');
+    // 文案口径：数据源已是 tags=only（空表 = 没有**带标签**的镜像），
+    // 不是「没有拉取过的镜像」（digest 直拉条目可能仍在缓存里）。
+    expect(empty.textContent).toContain('还没有带标签的镜像');
+    expect(empty.textContent).not.toContain('还没有拉取过的镜像');
     expect(screen.queryByTestId('page-settings-cache-images-status')).toBeNull();
     expect(screen.queryByTestId('page-settings-cache-images-table')).toBeNull();
     // 清单本身为空时，搜索无命中那种空态不出现（两种空态分开）。

@@ -204,7 +204,7 @@ Cloudflare Workers 独立托管前端）。验收套件照这条形态走：**�
 | `openTerminal` | 新建一个终端会话 | `page-sandbox-detail-terminal-new-button` → `page-sandbox-detail-terminal-tab` |
 | `reattachTerminal` | 附着到已有会话（点已有标签） | `page-sandbox-detail-terminal-tab[data-session-id=…]` → `page-sandbox-detail-terminal-tab-select` |
 | `openSettingsDrawer` | 开设置抽屉（代理 / 模板 / 后端配置三个 tab） | `page-layout-settings-button` → `page-settings-dialog` |
-| `switchSettingsTab` | 切设置抽屉的 tab（面板 `keepMounted`：切 tab 不发请求，只换面板） | `page-settings-tab-proxy` / `page-settings-tab-templates` / `page-settings-tab-backend`（激活的 tab 带 `data-active`）|
+| `switchSettingsTab` | 切设置抽屉的 tab（面板 `keepMounted`：切 tab 不发请求，只换面板；**「不发请求」这条口径由 spec 16 的请求计数器钉住**） | `page-settings-tab-proxy` / `page-settings-tab-templates` / `page-settings-tab-backend`（激活的 tab 带 `data-active`）|
 | `applyTemplate` | 在新建抽屉里选中模板（选中即回填表单） | `page-sandbox-create-template-select` → `page-sandbox-create-template-popup` → `[data-template-name="…"]` |
 | `saveTemplateFromCreateDialog` | 把当前表单存成模板（命名弹窗） | `page-sandbox-create-template-save-button` → `page-sandbox-create-template-dialog` → `page-sandbox-create-template-name-input` → `page-sandbox-create-template-confirm-button` |
 | `renameTemplate` | 在设置抽屉里行内重命名模板（回车提交） | `page-settings-template-item` → `page-settings-template-rename-button` → `page-settings-template-rename-input`（Enter） |
@@ -228,7 +228,7 @@ await page.getByTestId('page-sandbox-list-create-button').first().click();
 
 | 用例文件 | 覆盖的验收标准 |
 |---|---|
-| `01-lifecycle` | 抽屉里用镜像选择器搜镜像并选中 → 创建（带挂载声明）→ 侧栏选中后核对详情 → 终端执行命令断言回显 → 停止（确认弹窗）→ 再启动 → 删除（确认弹窗先取消、再一次点确认）→ 回空态；镜像列表刷新（刷新前后候选条数不变）；详情刷新后字段一致；抽屉宽度可拖拽且刷新后保持；停止确认框取消时后端没收到停止请求；**设置抽屉里「刷新状态」「重启代理」两个按钮在代理设置区里（点得到、重启后结果面板出来）**；**折叠侧栏：底部工具贴底（折叠按钮的 y 坐标在视口下半部分）、`page-sandbox-list-create-button` 仍有两个且侧栏那份可见可点，展开恢复原状** |
+| `01-lifecycle` | 抽屉里用镜像选择器搜镜像并选中 → 创建（带挂载声明）→ 侧栏选中后核对详情 → 终端执行命令断言回显 → 停止（确认弹窗）→ 再启动 → 删除（确认弹窗先取消、再一次点确认）→ 回空态；镜像列表刷新（刷新前后候选条数不变）；详情刷新后字段一致；抽屉宽度可拖拽且刷新后保持；停止确认框取消时后端没收到停止请求；**设置抽屉里「刷新状态」「重启代理」两个按钮在代理设置区里（点得到、重启后结果面板出来）**，**矮视口（480px 高）下重启结果够得着**（顶部区自己有界且自己滚：滚到底后结果的底边仍在可视区内，不被裁掉）；**折叠侧栏：底部工具贴底（折叠按钮的 y 坐标在视口下半部分）、`page-sandbox-list-create-button` 仍有两个且侧栏那份可见可点，展开恢复原状** |
 | `02-local-image` | 本地构建镜像能搜到（网页镜像选择器里只剩这一条命中）；选中后创建成功；沙箱守护进程里确实拿到了它（注入路径走通）；宿主没有的镜像搜索 0 命中（弹层给空态）且按契约报错，不降级直连 |
 | `03-terminal` | 同一沙箱两个终端并行可用且互不串扰；终端聚焦时 Ctrl+C 真的到达容器内的 shell（提示符回归 + 退出码 130）；断开浏览器后重连（点已有标签重新附着），终端现场（已输出内容与仍在运行的进程）不丢；重启服务后旧会话失效且页面明确提示；**终端全屏：面板覆盖整屏、关会话确认弹窗浮在全屏之上（z 比面板高）、再点按钮退出复原**；**切换标签后不点终端表面，命令仍然敲得进 pty（重挂载后的焦点回填）**；**跨过一次 10 秒轮询窗口：当前会话不变、焦点不丢**（标签条至少一个标签，按真实标签数断言，不对 `.last()` 断言数量） |
 | `04-equivalence` | 同一沙箱：网页与命令行的列表字段、挂载清单、容器状态、回收清单逐项一致；参数相同的两个沙箱（网页建 / 命令行建）挂载与状态流转等价（网页停走确认弹窗） |
@@ -243,7 +243,7 @@ await page.getByTestId('page-sandbox-list-create-button').first().click();
 | `13-static-frontend` | **静态源根 → 200** 且出页面（静态源吐出 index.html 静态外壳；浏览器里 React 照常挂载——证据用 **React 渲染后才有的标识**：已配置态 `page-sandbox-list-title` 可见、引导面板不出现，**不用静态外壳自带的 `page-layout-title` 占位当证据**）；**后端根 → 404** 且响应体不是 HTML（后端不托管前端，前端由独立静态源伺服） |
 | `14-file-pane` | **文件窗格（终端右侧分屏）**：三段式（左终端 + 中 `role="separator"` 分隔条 + 右窗格）从左到右依次排开，窗格默认 **340px**，方向键 ±16px、指针拖拽向左变宽，**最小 240px 且终端面板 ≥ 320px**（终端不被压没）；折叠成 **36px 纯图标竖条**（**无文字、竖条上只有底部一个展开按钮**、分隔条同时收掉），**刷新后折叠态保持**，展开复原；**关闭全部会话** ⇒ 窗格与分隔条整体消失 + 空态标题「没有终端会话」+ 新建会话入口恢复窗格且**折叠态保持**；**回跳准星**（tooltip「跳转到终端当前目录：/workspace」随 pwd 更新、已在目标目录禁用、点击回到 pwd）；**无自动跟随**（终端里 `cd /tmp` 后 tooltip 变、窗格目录一动不动）；换会话时窗格按折叠态重建；**抽屉退役**（两个旧标识 count 0） |
 | `15-obsidian-reader` | **Obsidian 阅读器**：固定 tab 在 **tabs 条最左**、图标是**同源构建产物里的本地 SVG**、tab 上只有「选中」一个按钮（**无关闭钮**）、**零终端会话时照样可用**；引导态（标题 / 「使用沙箱工作目录」/ 路径输入框 / 空值「打开」禁用）→ 设根后**全宽双栏**（左树 + **≤2px 不可拖拽分隔线** + 右预览）与「vault 根：/workspace」+「更改」；vault 树**只列目录与 `.md`**（`.txt` 不在）、目录展开箭头 `rotate-90` / 子层出现 / 收起消失；点 `.md` **markdown 渲染**（内容列 ≤620px 居中、**渲染态隐藏 frontmatter**、**源码态可见**、渲染/源码分段 `aria-pressed`）；**wikilink** 虚线强调色 + hover tooltip = 解析后路径 + 点击**压栈**跳转（返回钮出现 / 退回消失 / 互链回跳）；**目标不存在** ⇒ 正文**顶部**就地红色错误条「链接目标不存在：…」（`role=alert`、可关闭、**不跳转**、**不弹 toast**，附**正向对照**）；激活 Obsidian tab 时**文件窗格与终端分屏整体不出现**，切回终端 tab **按原折叠态恢复** |
-| `16-cache-images` | **镜像缓存清单**：容器内 `cached-images` 的输出与端点 `?format=text&tags=only` **逐字全等**（同数据源、退出码 0）；端点两格式（json 字段齐全 / text 预渲染表头尾注）与 `tags=only` 视图（json 只留标签非空条目、text 仅表体）；负例（无凭据 / 错误令牌 401 逐字节同一份响应、非法 format 422）；**console 视图冒烟**：设置抽屉「代理」tab 的清单**表格**（IMAGE / ID / SIZE / CACHED TIME 四列，ID 是 12 位十六进制、SIZE 是**十进制**单位、CACHED TIME 是 UTC 墙钟）、**本地搜索过滤**（输入 → 行数变少 → 无命中空态 → 清空复原）、手动刷新后数据仍在 |
+| `16-cache-images` | **镜像缓存清单**：容器内 `cached-images` 的输出与端点 `?format=text&tags=only` **逐字全等**（同数据源、退出码 0）；端点两格式（json 字段齐全 / text 预渲染表头尾注）与 `tags=only` 视图（json 只留标签非空条目、text 仅表体）；负例（无凭据 / 错误令牌 401 逐字节同一份响应、非法 format 422）；**console 视图冒烟**：设置抽屉「代理」tab 的清单**表格**（IMAGE / ID / SIZE / CACHED TIME 四列，ID 是 12 位十六进制、SIZE 是**十进制**单位、CACHED TIME 是 UTC 墙钟）、**本地搜索过滤**（输入 → 行数变少 → 无命中空态 → 清空复原；**行数断言防御式**——真缓存只有一行时不假红）、**表头吸顶**（表格真溢出时钉 `scrollTop > 0`，不溢出则分支跳过）、手动刷新后数据仍在、**切 tab 不发请求**（请求计数器钉 `/api/proxy/cache/images` 与 `/api/templates` 前后计数不增长）|
 
 ---
 

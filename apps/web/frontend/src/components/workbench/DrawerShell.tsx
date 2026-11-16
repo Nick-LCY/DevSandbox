@@ -51,13 +51,20 @@ interface DrawerShellProps {
   /**
    * 正文容器的额外类名（可选，缺省行为不变）。
    *
-   * 缺省时正文区**自己滚动**（`overflow-y-auto`）；传值可以把滚动责任交给
-   * 内容（如设置抽屉：传 `flex flex-col overflow-hidden`，让 tab 面板各自
-   * 管高度——面板里固定高度的部分不滚、清单表格自己滚）。
+   * **追加**在基础类名之后，不替换基础类名：基础形态（正文区自己滚）由
+   * `scrollable` 决定，调用方传类名**不会把默认滚动悄悄弄丢**。
    *
    * 三个抽屉共用这个外壳，**默认形态一个都不许变**。
    */
   contentClassName?: string;
+  /**
+   * 正文区自己滚（缺省 true）。
+   *
+   * 传 `false` = **显式**把滚动责任交给内容（如设置抽屉：`scrollable={false}`
+   * 配 `contentClassName="flex flex-col overflow-hidden"`，让 tab 面板各自管
+   * 高度——面板里固定高度的部分不滚、清单表格自己滚）。
+   */
+  scrollable?: boolean;
 }
 
 /** 键盘调整宽度的步长（百分点）。 */
@@ -79,6 +86,7 @@ export function DrawerShell({
   children,
   footer,
   contentClassName,
+  scrollable = true,
 }: DrawerShellProps) {
   /**
    * 拖拽期间的本地宽度。
@@ -334,7 +342,14 @@ export function DrawerShell({
             */}
             <DrawerContent
               data-base-ui-swipe-ignore=""
-              className={cn('min-h-0 flex-1 px-5 py-4', contentClassName ?? 'overflow-y-auto')}
+              // 缺省形态：正文区自己滚（三个抽屉零变化）。滚动责任要交给内容
+              // 时**显式**传 scrollable={false}——不靠调用方传个类名把默认的
+              // overflow-y-auto 顶掉（那样会静默丢滚动）。
+              className={cn(
+                'min-h-0 flex-1 px-5 py-4',
+                scrollable && 'overflow-y-auto',
+                contentClassName,
+              )}
             >
               {children}
             </DrawerContent>

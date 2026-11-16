@@ -2,8 +2,10 @@
 /**
  * 抽屉外壳：基于 Base UI Drawer 原语的焦点管理、关闭途径与宽度调整。
  *
- * 覆盖七件事：
+ * 覆盖十件事：
  * - 抽屉面板与标题挂在一个 role=dialog 的容器上；
+ * - 缺省形态正文区仍带 overflow-y-auto（三个抽屉缺省零变化的护栏）、显式
+ *   scrollable={false} 才退出滚动、传 contentClassName 不会顶掉默认滚动；
  * - Esc 关闭；
  * - 关闭被禁用时（不可逆操作进行中）Esc 与关闭按钮都不响应；
  * - 打开时焦点落进抽屉里；
@@ -88,6 +90,34 @@ describe('DrawerShell', () => {
     expect(drawer.getAttribute('role')).toBe('dialog');
     expect(drawer.textContent).toContain('新建沙箱');
     expect(drawer.textContent).toContain('抽屉正文');
+  });
+
+  it('缺省形态：正文区自己滚（overflow-y-auto）——三个抽屉零变化的护栏', async () => {
+    renderDrawer();
+
+    const drawer = await screen.findByTestId('page-sandbox-create-dialog');
+    const content = drawer.querySelector('[data-slot="drawer-content"]');
+    expect(content).not.toBeNull();
+    expect(content!.className).toContain('overflow-y-auto');
+  });
+
+  it('显式退出滚动（scrollable={false}）：正文区不带 overflow-y-auto', async () => {
+    renderDrawer({ scrollable: false });
+
+    const drawer = await screen.findByTestId('page-sandbox-create-dialog');
+    const content = drawer.querySelector('[data-slot="drawer-content"]');
+    expect(content).not.toBeNull();
+    expect(content!.className).not.toContain('overflow-y-auto');
+  });
+
+  it('传 contentClassName 不会顶掉缺省的 overflow-y-auto（滚动不静默丢）', async () => {
+    renderDrawer({ contentClassName: 'flex flex-col' });
+
+    const drawer = await screen.findByTestId('page-sandbox-create-dialog');
+    const content = drawer.querySelector('[data-slot="drawer-content"]');
+    expect(content!.className).toContain('overflow-y-auto');
+    expect(content!.className).toContain('flex');
+    expect(content!.className).toContain('flex-col');
   });
 
   it('Esc 关闭：回调收到 false', async () => {

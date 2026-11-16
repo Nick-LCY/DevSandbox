@@ -59,6 +59,7 @@ import {
   openCreateDialog,
   openSettingsDrawer,
   selectCreatedSandbox,
+  switchSettingsTab,
 } from '../helpers/console';
 import { readFixtures } from '../helpers/sandbox';
 import {
@@ -391,6 +392,22 @@ test.describe('镜像缓存清单（端点 / 注入 / cached-images）', () => {
   });
 
   test('console 视图冒烟：缓存镜像清单表格渲染 + 搜索过滤 + 手动刷新（PRD 27/28）', async ({ page }) => {
+    /** 用例的原始视口（吸顶断言前压矮一档，之后按它复原）。 */
+    const originalViewport = page.viewportSize();
+
+    // 请求计数器：切 tab 不发请求（helper `switchSettingsTab` 的口径要有钉）。
+    const requestCounts = { cacheImages: 0, templates: 0 };
+    const countRequests = (request: { url(): string }): void => {
+      const url = request.url();
+      if (url.includes('/api/proxy/cache/images')) {
+        requestCounts.cacheImages += 1;
+      }
+      if (url.includes('/api/templates')) {
+        requestCounts.templates += 1;
+      }
+    };
+    page.on('request', countRequests);
+
     await openSettingsDrawer(page);
 
     // 打开抽屉即加载一次：等加载结束（刷新按钮回到可用态）再看数据。
@@ -425,7 +442,13 @@ test.describe('镜像缓存清单（端点 / 注入 / cached-images）', () => {
     const search = page.getByTestId('page-settings-cache-images-search-input');
     await search.fill(image);
     await expect(rows).not.toHaveCount(0);
-    expect(await rows.count(), '按 repo:tag 搜索后行数应变少').toBeLessThan(total);
+    const filtered = await rows.count();
+    // 行数变化：**防御式**——真缓存只有一行时不能断言「变少」（会假红）。
+    expect(filtered, '按 repo:tag 搜索后行数不应变多').toBeLessThanOrEqual(total);
+    expect(filtered, '按 repo:tag 搜索后仍有命中行').toBeGreaterThan(0);
+    if (total > 1) {
+      expect(filtered, '按 repo:tag 搜索后行数应变少').toBeLessThan(total);
+    }
     for (const text of await rows.allTextContents()) {
       expect(text, '命中的行都该含搜索关键字').toContain(image);
     }
@@ -440,21 +463,44 @@ test.describe('镜像缓存清单（端点 / 注入 / cached-images）', () => {
     await expect(rows).toHaveCount(total);
 
     // 表格内部滚动、**表头吸顶**：代理 tab 顶部的状态区不跟着滚。
+    //
+    // 前置：表格得**真的溢出**才能验吸顶（不溢出时 scrollTop 赋值后仍为 0，
+    // 两条断言会平凡通过、什么也没钉住）。视口压矮一档让清单区更小，
+    // 真缓存的十几行放不下 → 表格溢出。
+    await page.setViewportSize({ width: 1280, height: 600 });
+    await page.waitForTimeout(200);
+    const scroller = page.getByTestId('page-settings-cache-images-scroll');
+    const metrics = await scroller.evaluate((element) => ({
+      scrollHeight: element.scrollHeight,
+      clientHeight: element.clientHeight,
+    }));
     const head = page.getByTestId('page-settings-cache-images-head');
     const headTopBefore = (await head.boundingBox())!.y;
     const statusTopBefore = (await page.getByTestId('page-settings-cache-size').boundingBox())!.y;
-    await page.getByTestId('page-settings-cache-images-table').evaluate((table) => {
-      const scroller = table.parentElement;
-      if (scroller) {
-        scroller.scrollTop = scroller.scrollHeight;
-      }
+    await scroller.evaluate((element) => {
+      element.scrollTop = element.scrollHeight;
     });
     await page.waitForTimeout(200);
-    expect((await head.boundingBox())!.y, '表头没有吸顶').toBeCloseTo(headTopBefore, 0);
-    expect(
-      (await page.getByTestId('page-settings-cache-size').boundingBox())!.y,
-      '顶部状态区跟着表格滚了',
-    ).toBeCloseTo(statusTopBefore, 0);
+    if (metrics.scrollHeight > metrics.clientHeight) {
+      // 表格溢出：滚到底后 scrollTop 必须真的变了（否则上面两条是空转）。
+      const scrollTop = await scroller.evaluate((element) => element.scrollTop);
+      expect(scrollTop, '表格没有溢出，吸顶这条断言没法钉住').toBeGreaterThan(0);
+      expect((await head.boundingBox())!.y, '表头没有吸顶').toBeCloseTo(headTopBefore, 0);
+      expect(
+        (await page.getByTestId('page-settings-cache-size').boundingBox())!.y,
+        '顶部状态区跟着表格滚了',
+      ).toBeCloseTo(statusTopBefore, 0);
+    } else {
+      // 真缓存太小（就一两行）时表格不溢出：吸顶无从谈起，只钉住「表头在
+      // 滚动区顶部」这个恒真的事实（分支跳过，不假红）。
+      const headBox = (await head.boundingBox())!;
+      const scrollerBox = (await scroller.boundingBox())!;
+      expect(Math.abs(headBox.y - scrollerBox.y), '表头不在滚动区顶部').toBeLessThanOrEqual(2);
+    }
+    if (originalViewport !== null) {
+      await page.setViewportSize(originalViewport);
+      await page.waitForTimeout(200);
+    }
 
     // 手动刷新：仍在的数据态（60 秒 TTL 内刷新拿同一份缓存，属预期）。
     await refresh.click();
@@ -463,5 +509,24 @@ test.describe('镜像缓存清单（端点 / 注入 / cached-images）', () => {
     await expect(page.getByTestId('page-settings-cache-images-generated-at')).toContainText(
       '清单生成时间：',
     );
+
+    // 切 tab **不发请求**：面板一律 keepMounted（隐藏的不卸载），数据是打开
+    // 抽屉那一次拉好的——helper `switchSettingsTab` 的注释口径要有钉。
+    const beforeSwitch = { ...requestCounts };
+    // 前置：打开抽屉确实把两个列表各拉了一次（否则下面的「不增长」是空转）。
+    expect(beforeSwitch.cacheImages, '打开抽屉应拉过一次缓存清单').toBeGreaterThan(0);
+    expect(beforeSwitch.templates, '打开抽屉应拉过一次模板列表').toBeGreaterThan(0);
+    await switchSettingsTab(page, 'templates');
+    await switchSettingsTab(page, 'backend');
+    await switchSettingsTab(page, 'proxy');
+    await page.waitForTimeout(500);
+    expect(
+      requestCounts.cacheImages,
+      '切 tab 不应触发缓存清单请求（面板 keepMounted，数据是打开抽屉那一次拉的）',
+    ).toBe(beforeSwitch.cacheImages);
+    expect(
+      requestCounts.templates,
+      '切 tab 不应触发模板列表请求（面板 keepMounted，数据是打开抽屉那一次拉的）',
+    ).toBe(beforeSwitch.templates);
   });
 });

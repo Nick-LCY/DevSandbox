@@ -56,22 +56,8 @@ function TabsPanel({ className, ...props }: TabsPrimitive.Panel.Props) {
   )
 }
 
-function TabsIndicator({ className, ...props }: TabsPrimitive.Indicator.Props) {
-  return (
-    <TabsPrimitive.Indicator
-      data-slot="tabs-indicator"
-      className={cn(
-        "absolute bottom-0 h-0.5 rounded-full bg-primary transition-all",
-        className
-      )}
-      {...props}
-    />
-  )
-}
-
 export {
   Tabs,
-  TabsIndicator,
   TabsList,
   TabsPanel,
   TabsTab,

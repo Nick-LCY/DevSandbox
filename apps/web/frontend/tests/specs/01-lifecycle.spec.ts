@@ -387,6 +387,36 @@ test.describe('网页控制台全流程', () => {
       timeout: 60_000,
     });
     await expect(page.getByTestId('page-settings-restarted')).toHaveText('已重启并恢复健康');
+
+    // ── 矮视口：重启结果够得着（不被裁掉）
+    //
+    // 重启结果把代理 tab 顶部的固定区撑到约 480px。矮视口（≈600px 高 /
+    // 150% 缩放 / 矮窗口）下顶部区会被下方的清单挤出面板，而正文区是
+    // overflow-hidden —— 底下的重启结果被裁掉且够不着（旧版整体滚动没这问题）。
+    // 现在顶部区**有界且自己滚**：滚这一块就能看到全部。
+    await page.setViewportSize({ width: 1280, height: 480 });
+    await page.waitForTimeout(300);
+    const proxySection = page.getByTestId('page-settings-proxy-section');
+    const metrics = await proxySection.evaluate((element) => ({
+      scrollHeight: element.scrollHeight,
+      clientHeight: element.clientHeight,
+    }));
+    expect(
+      metrics.scrollHeight,
+      '矮视口下顶部区应有自己的有界滚动（内容超出时不裁掉）',
+    ).toBeGreaterThan(metrics.clientHeight);
+    // 滚到底：重启结果的底边落在可视区内（够得着）。
+    await proxySection.evaluate((element) => {
+      element.scrollTop = element.scrollHeight;
+    });
+    await page.waitForTimeout(200);
+    const resultBox = (await page.getByTestId('page-settings-restart-result').boundingBox())!;
+    const viewport = page.viewportSize()!;
+    expect(resultBox.y, '重启结果顶部不可见').toBeGreaterThanOrEqual(0);
+    expect(
+      resultBox.y + resultBox.height,
+      '重启结果底部被裁且够不着（顶部区自己不滚）',
+    ).toBeLessThanOrEqual(viewport.height);
   });
 
   test('停止确认框取消时，后端没收到停止请求', async ({ page }) => {

@@ -88,15 +88,25 @@ export function formatCachedTimeUtc(value: string): string {
 }
 
 /**
- * 短摘要：去掉 `sha256:` 前缀后取前 12 位十六进制（表格的 ID 列）。
+ * 短摘要：去掉 `sha256:` 前缀后取前 12 位（表格的 ID 列）。
+ *
+ * **与服务端逐字同语义**：`digest.removeprefix("sha256:")[:12]`——
+ * 不转小写、不去空白，原样取前 12 位（服务端是 Python 的 `removeprefix` +
+ * 切片）。小写化只发生在**搜索匹配**那条径上（`digestHex`）。
  *
  * 完整 digest 挂在单元格的 `title` 上（悬停看全文）。
  */
 export function shortImageId(digest: string): string {
-  return digestHex(digest).slice(0, 12);
+  const withoutPrefix = digest.startsWith('sha256:') ? digest.slice('sha256:'.length) : digest;
+  return withoutPrefix.slice(0, 12);
 }
 
-/** 摘要里的十六进制本体（去 `sha256:` 前缀，小写）。 */
+/**
+ * 摘要里的十六进制本体（去 `sha256:` 前缀，**小写**）。
+ *
+ * 只用于**搜索匹配**（大小写不敏感子串匹配）；表格展示走 `shortImageId`
+ * （与服务端逐字同语义，不小写化）。
+ */
 export function digestHex(digest: string): string {
   const trimmed = digest.trim();
   const withoutPrefix = trimmed.startsWith('sha256:') ? trimmed.slice('sha256:'.length) : trimmed;

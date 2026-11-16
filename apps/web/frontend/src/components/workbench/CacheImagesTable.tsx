@@ -77,7 +77,7 @@ export function CacheImagesTable({ open }: { open: boolean }) {
   const visibleRows = useMemo(() => filterImageRows(rows, query), [rows, query]);
 
   return (
-    <section aria-label="缓存镜像清单" className="flex min-h-0 flex-1 flex-col">
+    <section aria-label="缓存镜像清单" className="flex min-h-[7rem] flex-1 flex-col">
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-[13px] font-semibold text-foreground">缓存镜像清单</h3>
         <button
@@ -108,7 +108,8 @@ export function CacheImagesTable({ open }: { open: boolean }) {
         autoComplete="off"
         spellCheck={false}
         data-testid="page-settings-cache-images-search-input"
-        className="mt-2"
+        // 固定部分：清单区矮时不允许被压扁。
+        className="mt-2 shrink-0"
       />
 
       {loading && manifest === null && (
@@ -136,7 +137,7 @@ export function CacheImagesTable({ open }: { open: boolean }) {
           className="mt-2 text-[12.5px] text-muted-foreground"
           data-testid="page-settings-cache-images-empty"
         >
-          还没有拉取过的镜像。
+          还没有带标签的镜像。
         </p>
       )}
 
@@ -151,9 +152,15 @@ export function CacheImagesTable({ open }: { open: boolean }) {
       )}
 
       {visibleRows.length > 0 && (
-        <div className="mt-2 min-h-0 flex-1 overflow-auto rounded-lg border border-border">
+        <div
+          className="mt-2 min-h-0 flex-1 overflow-auto rounded-lg border border-border"
+          data-testid="page-settings-cache-images-scroll"
+        >
           <table
-            className="w-full table-fixed border-collapse text-[12px]"
+            // border-separate（不是 border-collapse）：Chromium 下 collapse 模式
+            // 里 sticky 表头的底边会随内容滚走；分离模式 + 边框挂在 th/td 上，
+            // 表头与其底边一起吸顶。
+            className="w-full table-fixed border-separate border-spacing-0 text-[12px]"
             data-testid="page-settings-cache-images-table"
           >
             {/* 表头吸顶：滚动时固定在表格区顶部（底色用令牌，不透视）。 */}
@@ -163,17 +170,17 @@ export function CacheImagesTable({ open }: { open: boolean }) {
                 （完整值挂 title），ID / SIZE / CACHED TIME 三列宽度是定值，
                 短摘要与时间戳**永远完整可见**。
               */}
-              <tr className="border-b border-border">
-                <th className="w-[33%] px-2 py-2 text-left font-medium text-muted-foreground">
+              <tr>
+                <th className="w-[33%] border-b border-border px-2 py-2 text-left font-medium text-muted-foreground">
                   IMAGE
                 </th>
-                <th className="w-[23%] px-2 py-2 text-left font-medium text-muted-foreground">
+                <th className="w-[23%] border-b border-border px-2 py-2 text-left font-medium text-muted-foreground">
                   ID
                 </th>
-                <th className="w-[14%] px-2 py-2 text-right font-medium text-muted-foreground">
+                <th className="w-[14%] border-b border-border px-2 py-2 text-right font-medium text-muted-foreground">
                   SIZE
                 </th>
-                <th className="w-[30%] px-2 py-2 text-left font-medium text-muted-foreground">
+                <th className="w-[30%] border-b border-border px-2 py-2 text-left font-medium text-muted-foreground">
                   CACHED TIME
                 </th>
               </tr>
@@ -182,20 +189,21 @@ export function CacheImagesTable({ open }: { open: boolean }) {
               {visibleRows.map((row) => (
                 <tr
                   key={`${row.repo}:${row.tag}:${row.digest}`}
-                  className="border-b border-border last:border-b-0 hover:bg-muted/60"
+                  // 边框挂在单元格上（分离模式下行/行组的边框不画）。
+                  className="hover:bg-muted/60 last:[&>td]:border-b-0"
                   data-testid="page-settings-cache-images-row"
                   data-image-repo={row.repo}
                   data-image-tag={row.tag}
                 >
                   <td
-                    className="truncate px-2 py-1.5 font-medium text-foreground"
+                    className="truncate border-b border-border px-2 py-1.5 font-medium text-foreground"
                     title={row.image}
                     data-testid="page-settings-cache-images-image"
                   >
                     {row.image}
                   </td>
                   <td
-                    className="truncate px-2 py-1.5 font-mono text-[11.5px] text-muted-foreground"
+                    className="truncate border-b border-border px-2 py-1.5 font-mono text-[11.5px] text-muted-foreground"
                     // 完整 digest 挂 title（悬停看全文）；单元格展示前 12 位。
                     title={row.digest}
                     data-testid="page-settings-cache-images-id"
@@ -203,13 +211,13 @@ export function CacheImagesTable({ open }: { open: boolean }) {
                     {shortImageId(row.digest)}
                   </td>
                   <td
-                    className="px-2 py-1.5 text-right tabular-nums text-foreground"
+                    className="border-b border-border px-2 py-1.5 text-right tabular-nums text-foreground"
                     data-testid="page-settings-cache-images-size"
                   >
                     {formatSizeDecimal(row.totalSizeBytes)}
                   </td>
                   <td
-                    className="truncate px-2 py-1.5 tabular-nums text-muted-foreground"
+                    className="truncate border-b border-border px-2 py-1.5 tabular-nums text-muted-foreground"
                     data-testid="page-settings-cache-images-time"
                   >
                     {formatCachedTimeUtc(row.cachedAt)}

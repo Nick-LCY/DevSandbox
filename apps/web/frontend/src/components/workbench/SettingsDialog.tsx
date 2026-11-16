@@ -68,8 +68,9 @@ function Field({ label, value, testId }: { label: string; value: string; testId:
  * 设置抽屉：**代理 / 模板 / 后端配置**三个 tab。
  *
  * - **代理** tab：代理设置（状态展示 + 刷新状态 + 重启 + CA 重装结果）+ 缓存
- *   镜像清单（只读表格，打开加载 + 手动刷新，零轮询）。顶部固定高度不滚，
- *   清单表格撑满剩余高度、内容超出时表格内部滚（表头吸顶）。
+ *   镜像清单（只读表格，打开加载 + 手动刷新，零轮询）。顶部的代理设置区
+ *   **有界且自己滚**（重启结果很长时滚这一块，不裁掉），清单表格撑满剩余
+ *   高度、内容超出时表格内部滚（表头吸顶）。
  * - **模板** tab：启动模板管理区（列表 / 行内重命名 / 删除）。
  * - **后端配置** tab：连接配置（后端地址 + 访问令牌 + 测试连接 + 保存配置）。
  *
@@ -281,8 +282,11 @@ export function SettingsDialog({
       onOpenChange={onOpenChange}
       widthVw={widthVw}
       onWidthChange={onWidthChange}
-      // 正文区不自己滚：滚动责任交给 tab 面板（代理 tab 的清单表格内部滚，
-      // 顶部的状态区固定高度不滚）。
+      // 正文区不自己滚：滚动责任交给 tab 面板里各自的子块（代理 tab 的顶部
+      // 设置区自己有界滚、清单表格内部滚）。**显式**退出默认滚动
+      // （scrollable={false}），不靠传类名顶掉默认的 overflow-y-auto（那样会
+      // 静默丢滚动）。
+      scrollable={false}
       contentClassName="flex flex-col overflow-hidden"
     >
       <h2 className="sr-only" data-testid="page-settings-title">
@@ -309,9 +313,22 @@ export function SettingsDialog({
           </TabsTab>
         </TabsList>
 
-        {/* 代理 tab：状态区固定高度 + 缓存镜像清单撑满剩余空间。 */}
+        {/* 代理 tab：状态区有界且自己滚 + 缓存镜像清单撑满剩余空间。 */}
         <TabsPanel value="proxy" keepMounted className="flex min-h-0 flex-1 flex-col">
-          <section aria-label="代理设置" className="shrink-0">
+          {/*
+            代理设置顶部区（状态字段 + 按钮 + 重启结果）：**自己管滚动**。
+
+            重启代理后这一块会长到约 480px；矮视口（≈600px 高 / 150% 缩放 /
+            矮窗口）下它会把下方的清单挤出面板，而正文区是 overflow-hidden
+            ——底下的重启结果被裁掉且够不着（旧版整体滚动没有此问题）。
+            现在这一块**有界且自己滚**：内容再高也够得着，退化行为是
+            「这个块自己滚」而不是「裁掉」。
+          */}
+          <section
+            aria-label="代理设置"
+            data-testid="page-settings-proxy-section"
+            className="min-h-0 max-h-[70vh] shrink overflow-y-auto"
+          >
             <h3 className="mb-2 text-[13px] font-semibold text-foreground">代理设置</h3>
 
             {loading && !status && (

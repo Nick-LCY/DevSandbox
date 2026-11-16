@@ -109,12 +109,36 @@ describe('shortImageId', () => {
   it('不足 12 位时原样返回', () => {
     expect(shortImageId('sha256:abc')).toBe('abc');
   });
+
+  it('与服务端逐字同语义：不转小写、不去空白（原样取前 12 位）', () => {
+    // 服务端是 `digest.removeprefix("sha256:")[:12]`：原样取，不小写化。
+    expect(shortImageId('sha256:AA27BB3390799F')).toBe('AA27BB339079');
+    expect(shortImageId('AA27BB3390799F')).toBe('AA27BB339079');
+    // 前缀只认小写的 `sha256:`（与 Python 的 removeprefix 同款）。
+    expect(shortImageId('SHA256:aa27bb339079')).toBe('SHA256:aa27b');
+  });
 });
 
 describe('digestHex', () => {
-  it('去前缀并转小写', () => {
+  it('去前缀并转小写（只用于搜索匹配径）', () => {
     expect(digestHex('sha256:AA27BB')).toBe('aa27bb');
     expect(digestHex('AA27BB')).toBe('aa27bb');
+  });
+
+  it('搜索匹配走小写化：大小写不敏感的子串命中', () => {
+    const rows = expandImageRows([
+      makeImage({
+        repo: 'library/nginx',
+        tags: ['latest'],
+        digest: 'sha256:AA27BB339079',
+      }),
+    ]);
+    expect(filterImageRows(rows, 'aa27bb3390').map((row) => row.image)).toEqual([
+      'library/nginx:latest',
+    ]);
+    expect(filterImageRows(rows, 'AA27BB3390').map((row) => row.image)).toEqual([
+      'library/nginx:latest',
+    ]);
   });
 });
 
