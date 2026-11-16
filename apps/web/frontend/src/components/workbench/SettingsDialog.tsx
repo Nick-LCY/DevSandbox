@@ -2,7 +2,7 @@ import { Loader2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { api } from '../../api/client';
-import type { CacheImagesResponse, ProxyRestartResult, ProxyStatus } from '../../api/types';
+import type { ProxyRestartResult, ProxyStatus } from '../../api/types';
 import { formatBytes, formatTimestamp } from '../../lib/format';
 import {
   DEFAULT_BACKEND_BASE_URL,
@@ -23,185 +23,13 @@ import {
 } from '../../lib/proxy';
 import { useToast } from '../Toast';
 import { Input } from '../ui/input';
+import { Tabs, TabsList, TabsPanel, TabsTab } from '../ui/tabs';
+import { CacheImagesTable } from './CacheImagesTable';
 import { DrawerShell } from './DrawerShell';
 import { TemplateManager } from './TemplateManager';
 
 /** 重启期间的提示文案：代理不可达时依赖镜像拉取失败是预期行为，不做降级。 */
 const RESTARTING_NOTICE = '代理正在重启，重启期间依赖镜像拉取会失败，属预期行为。';
-
-/** 长摘要的展示截断：`sha256:` 前缀 + 12 位十六进制（完整值挂 title）。 */
-function shortDigest(digest: string): string {
-  return digest.length <= 19 ? digest : `${digest.slice(0, 19)}…`;
-}
-
-/**
- * 缓存镜像清单区（设置抽屉第二区，代理状态区旁）。
- *
- * 展示**拉取过的镜像**（清单口径 = 方案 C「拉过就算」：manifest 文档在缓存
- * 即入列，**不做 blob 完整性拦截**）：仓库 / 标签 / 摘要 / 大小（人读格式）/
- * 时间。数据源 `GET /api/proxy/cache/images?format=json`（完整令牌，既有鉴权头
- * 自动附带，无新增令牌逻辑）。
- *
- * 三态与刷新：打开抽屉加载一次 + 手动刷新按钮；**零轮询**——不挂任何定时器
- * （后端另有 60 秒 TTL 内存缓存，前端再轮询只是重复打点；清单新鲜度由生成
- * 时间戳 + 手动刷新表达）。
- *
- * 失败口径对齐模板管理区：失败 toast + 就地一行 role=status 说明，
- * 已拿到的旧清单保留展示（不白屏、不清空既有内容）。
- */
-function CacheImagesSection({ open }: { open: boolean }) {
-  const { show } = useToast();
-  const [manifest, setManifest] = useState<CacheImagesResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  /** 读取失败的原因（环境状态说明用 role=status，操作结果仍走 toast）。 */
-  const [loadError, setLoadError] = useState('');
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setLoadError('');
-    try {
-      setManifest(await api.cacheImages());
-    } catch (exc) {
-      const message = exc instanceof Error ? exc.message : '读取缓存镜像清单失败';
-      setLoadError(message);
-      // 读取失败：弹失败 toast + 就地说明（对齐模板管理区的失败口径）。
-      show('error', message, { source: 'settings-cache-images' });
-    } finally {
-      setLoading(false);
-    }
-  }, [show]);
-
-  // 打开抽屉时加载一次 + 手动刷新；零轮询：不挂任何定时器（既不周期触发，
-  // 也不延迟重试，清单新鲜度由生成时间戳 + 手动刷新表达）。
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-    void load();
-  }, [open, load]);
-
-  const images = manifest?.images ?? [];
-
-  return (
-    <section className="mt-6 border-t border-border pt-5" aria-label="缓存镜像清单">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <h3 className="text-[13px] font-semibold text-foreground">缓存镜像清单</h3>
-        <button
-          type="button"
-          onClick={() => void load()}
-          disabled={loading}
-          data-testid="page-settings-cache-images-refresh-button"
-          className="inline-flex h-7 items-center justify-center gap-1.5 rounded-lg border border-border bg-card px-2 text-[12.5px] text-foreground transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
-        >
-          {loading ? (
-            <>
-              <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-              正在刷新
-            </>
-          ) : (
-            '刷新清单'
-          )}
-        </button>
-      </div>
-
-      {loading && manifest === null && (
-        <p
-          className="text-[12.5px] text-muted-foreground"
-          data-testid="page-settings-cache-images-loading"
-        >
-          正在读取缓存镜像清单…
-        </p>
-      )}
-
-      {loadError && (
-        <p
-          // 环境状态说明（不是操作结果），故走 role=status 而不是行内红字。
-          role="status"
-          className="text-[12px] text-muted-foreground"
-          data-testid="page-settings-cache-images-status"
-        >
-          缓存镜像清单读取失败，原因见右上角提示：{loadError}
-        </p>
-      )}
-
-      {!loading && !loadError && images.length === 0 && (
-        <p
-          className="text-[12.5px] text-muted-foreground"
-          data-testid="page-settings-cache-images-empty"
-        >
-          还没有拉取过的镜像。清单收录拉取过的镜像（manifest 在缓存即条目）。
-        </p>
-      )}
-
-      {images.length > 0 && (
-        <>
-          {/* 多条目时限高滚动：清单可能上百条，不能把抽屉无限撑长。 */}
-          <ul
-            className="m-0 max-h-80 list-none space-y-1.5 overflow-y-auto p-0"
-            data-testid="page-settings-cache-images-list"
-          >
-            {images.map((image) => (
-              <li
-                key={`${image.repo}@${image.digest}`}
-                className="rounded-lg border border-border px-2.5 py-2"
-                data-testid="page-settings-cache-image-item"
-                data-image-repo={image.repo}
-              >
-                <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
-                  <span
-                    className="min-w-0 text-[13px] font-medium break-all"
-                    data-testid="page-settings-cache-image-repo"
-                  >
-                    {image.repo}
-                  </span>
-                  <span
-                    className="text-[12px] tabular-nums text-muted-foreground"
-                    data-testid="page-settings-cache-image-size"
-                  >
-                    {formatBytes(image.total_size_bytes)}
-                  </span>
-                </div>
-                <div className="mt-1 space-y-0.5 text-[11.5px] leading-relaxed text-muted-foreground">
-                  <div className="flex gap-2">
-                    <span className="shrink-0">标签</span>
-                    <span className="min-w-0 break-all" data-testid="page-settings-cache-image-tags">
-                      {image.tags.length > 0 ? image.tags.join('、') : '（无）'}
-                    </span>
-                  </div>
-                  <div className="flex gap-2">
-                    <span className="shrink-0">摘要</span>
-                    {/* 长摘要截断展示，完整值挂 title（悬停可看全文）。 */}
-                    <span
-                      className="min-w-0 break-all"
-                      title={image.digest}
-                      data-testid="page-settings-cache-image-digest"
-                    >
-                      {shortDigest(image.digest)}
-                    </span>
-                  </div>
-                  <div className="flex gap-2">
-                    <span className="shrink-0">时间</span>
-                    <span data-testid="page-settings-cache-image-cached-at">
-                      {formatTimestamp(image.cached_at)}
-                    </span>
-                  </div>
-                </div>
-              </li>
-            ))}
-          </ul>
-          {manifest !== null && (
-            <p
-              className="mt-2 text-[12px] text-muted-foreground"
-              data-testid="page-settings-cache-images-generated-at"
-            >
-              清单生成时间：{formatTimestamp(manifest.generated_at)}
-            </p>
-          )}
-        </>
-      )}
-    </section>
-  );
-}
 
 /**
  * 重启已开启的本机监听，收集失败原因。
@@ -237,15 +65,18 @@ function Field({ label, value, testId }: { label: string; value: string; testId:
 }
 
 /**
- * 设置抽屉：代理设置 + 缓存镜像清单 + 启动模板管理 + 连接配置。
+ * 设置抽屉：**代理 / 模板 / 后端配置**三个 tab。
  *
- * 第一区是代理设置（状态展示 + 刷新状态 + 重启 + CA 重装结果），内容与原
- * 「代理设置」抽屉完全一致；第二区是缓存镜像清单（拉取过的镜像的只读
- * 清单，打开加载 + 手动刷新，零轮询）；第三区是启动模板管理区（列表 /
- * 行内重命名 / 删除）；第四区是连接配置（后端地址 + 访问令牌 + 测试连接 +
- * 保存配置）。
+ * - **代理** tab：代理设置（状态展示 + 刷新状态 + 重启 + CA 重装结果）+ 缓存
+ *   镜像清单（只读表格，打开加载 + 手动刷新，零轮询）。顶部固定高度不滚，
+ *   清单表格撑满剩余高度、内容超出时表格内部滚（表头吸顶）。
+ * - **模板** tab：启动模板管理区（列表 / 行内重命名 / 删除）。
+ * - **后端配置** tab：连接配置（后端地址 + 访问令牌 + 测试连接 + 保存配置）。
  *
- * 「刷新状态」与「重启代理」两个按钮**在第一区里**（状态字段区之后），不再挂在
+ * 面板一律 `keepMounted`（隐藏的 tab 不卸载）：打开抽屉即全量加载，清单与
+ * 模板列表都是打开抽屉那一次拉，不靠切 tab 触发。
+ *
+ * 「刷新状态」与「重启代理」两个按钮**在代理 tab 里**（状态字段区之后），不再挂在
  * 整个抽屉的全局页脚：抽屉页脚只放跟整张抽屉相关的动作，这两个按钮只管代理，
  * 放在代理设置区里更挨着它管的东西（抽屉因此没有页脚）。
  *
@@ -450,200 +281,231 @@ export function SettingsDialog({
       onOpenChange={onOpenChange}
       widthVw={widthVw}
       onWidthChange={onWidthChange}
+      // 正文区不自己滚：滚动责任交给 tab 面板（代理 tab 的清单表格内部滚，
+      // 顶部的状态区固定高度不滚）。
+      contentClassName="flex flex-col overflow-hidden"
     >
       <h2 className="sr-only" data-testid="page-settings-title">
         设置
       </h2>
 
-      <section aria-label="代理设置">
-        <h3 className="mb-2 text-[13px] font-semibold text-foreground">代理设置</h3>
+      {/*
+        设置抽屉的三个 tab：**代理**（状态 + 按钮 + 缓存镜像清单）/ **模板**
+        （启动模板管理）/ **后端配置**（连接配置）。
 
-        {loading && !status && (
-          <p className="text-[12.5px] text-muted-foreground" data-testid="page-settings-loading">
-            正在读取代理状态…
-          </p>
-        )}
+        面板一律 `keepMounted`：隐藏的 tab **不卸载**，打开抽屉即全量加载
+        （代理状态 / 缓存清单 / 模板列表都是打开抽屉那一次拉）。
+      */}
+      <Tabs defaultValue="proxy" className="flex min-h-0 flex-1 flex-col">
+        <TabsList data-testid="page-settings-tabs">
+          <TabsTab value="proxy" data-testid="page-settings-tab-proxy">
+            代理
+          </TabsTab>
+          <TabsTab value="templates" data-testid="page-settings-tab-templates">
+            模板
+          </TabsTab>
+          <TabsTab value="backend" data-testid="page-settings-tab-backend">
+            后端配置
+          </TabsTab>
+        </TabsList>
 
-        {status && (
-          <div>
-            <div className="grid grid-cols-2 gap-x-6 gap-y-3.5">
-              <Field
-                label="容器运行状态"
-                value={describeContainerState(status.container)}
-                testId="page-settings-container-running"
-              />
-              <Field label="健康状态" value={describeHealth(status.healthy)} testId="page-settings-healthy" />
-              <Field label="端口连通" value={describeTcp(status.tcp_ok)} testId="page-settings-tcp-ok" />
-              <Field
-                label="缓存目录占用"
-                value={formatBytes(status.cache_size_bytes)}
-                testId="page-settings-cache-size"
-              />
-              <Field
-                label="证书就绪状态"
-                value={describeCertificate(status.certificate_ready)}
-                testId="page-settings-certificate-ready"
-              />
-              <Field label="代理访问地址" value={status.proxy_url} testId="page-settings-proxy-url" />
-            </div>
-          </div>
-        )}
+        {/* 代理 tab：状态区固定高度 + 缓存镜像清单撑满剩余空间。 */}
+        <TabsPanel value="proxy" keepMounted className="flex min-h-0 flex-1 flex-col">
+          <section aria-label="代理设置" className="shrink-0">
+            <h3 className="mb-2 text-[13px] font-semibold text-foreground">代理设置</h3>
 
-        {/* 代理区的两个动作按钮：紧跟状态字段区，右对齐。 */}
-        <div className="mt-3 flex items-center justify-end gap-2">
-          <button
-            type="button"
-            onClick={() => void load()}
-            disabled={loading || restarting}
-            data-testid="page-settings-refresh-button"
-            className="inline-flex h-8 items-center justify-center rounded-lg border border-border bg-background px-3 text-[13px] text-foreground transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
-          >
-            刷新状态
-          </button>
-          <button
-            type="button"
-            onClick={() => void restartProxy()}
-            disabled={restarting}
-            data-testid="page-settings-restart-button"
-            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-transparent bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/80 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
-          >
-            {restarting ? (
-              <>
-                <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-                正在重启
-              </>
-            ) : (
-              '重启代理'
+            {loading && !status && (
+              <p className="text-[12.5px] text-muted-foreground" data-testid="page-settings-loading">
+                正在读取代理状态…
+              </p>
             )}
-          </button>
-        </div>
 
-        {restart && (
-          <div className="mt-5 border-t border-border pt-4" data-testid="page-settings-restart-result">
-            <div className="grid grid-cols-2 gap-x-6 gap-y-3.5">
-              <Field
-                label="重启结果"
-                value={restart.restarted ? '已重启并恢复健康' : '重启未成功'}
-                testId="page-settings-restarted"
-              />
-              <Field label="结论" value={describeRestartOutcome(restart)} testId="page-settings-restart-message" />
-              <Field
-                label="CA 指纹是否变更"
-                value={restart.ca_changed ? '已变更' : '未变更'}
-                testId="page-settings-ca-changed"
-              />
-              <Field
-                label="合并证书链是否重装"
-                value={restart.ca_reinstalled ? '已重装' : '未重装'}
-                testId="page-settings-ca-reinstalled"
-              />
-              <Field label="CA 处理结论" value={describeCaOutcome(restart)} testId="page-settings-ca-conclusion" />
-              <Field
-                label="已重装用户"
-                value={restart.reinstalled_users.length > 0 ? restart.reinstalled_users.join('、') : '（无）'}
-                testId="page-settings-reinstalled-users"
-              />
-              <Field
-                label="重装失败用户"
-                value={restart.failed_users.length > 0 ? restart.failed_users.join('、') : '（无）'}
-                testId="page-settings-failed-users"
-              />
-            </div>
-            <p className="mt-3 text-[12px] text-muted-foreground">
-              代理状态采集时间：{formatTimestamp(new Date().toISOString())}
-            </p>
-          </div>
-        )}
-      </section>
-
-      {/* 第二区：缓存镜像清单（代理状态区旁，打开加载 + 手动刷新，零轮询）。 */}
-      <CacheImagesSection open={open} />
-
-      {/* 第三区：启动模板管理（列表 / 行内重命名 / 删除）。 */}
-      <section className="mt-6 border-t border-border pt-5" aria-label="启动模板">
-        <TemplateManager />
-      </section>
-
-      {/* 第四区：连接配置（后端地址 + 访问令牌 + 测试连接 + 保存配置）。 */}
-      <section className="mt-6 border-t border-border pt-5" aria-label="连接配置">
-        <h3 className="mb-2 text-[13px] font-semibold text-foreground">连接配置</h3>
-        <div className="space-y-3">
-          <div>
-            <label
-              htmlFor="settings-connection-base-url"
-              className="mb-1.5 block text-[12.5px] font-medium text-foreground"
-            >
-              后端地址
-            </label>
-            <Input
-              id="settings-connection-base-url"
-              value={baseUrl}
-              autoComplete="off"
-              spellCheck={false}
-              placeholder={DEFAULT_BACKEND_BASE_URL}
-              onChange={(event) => setBaseUrl(event.target.value)}
-              data-testid="page-settings-connection-base-url-input"
-            />
-          </div>
-
-          <div>
-            <label
-              htmlFor="settings-connection-token"
-              className="mb-1.5 block text-[12.5px] font-medium text-foreground"
-            >
-              访问令牌
-            </label>
-            <Input
-              id="settings-connection-token"
-              type="password"
-              value={token}
-              autoComplete="off"
-              spellCheck={false}
-              placeholder="粘贴后端部署处的访问令牌"
-              onChange={(event) => setToken(event.target.value)}
-              data-testid="page-settings-connection-token-input"
-            />
-          </div>
-        </div>
-
-        {connectionError && (
-          <p
-            className="mt-3 text-[12.5px] text-destructive"
-            role="alert"
-            data-testid="page-settings-connection-error"
-          >
-            {connectionError}
-          </p>
-        )}
-
-        <div className="mt-3 flex items-center justify-end gap-2">
-          <button
-            type="button"
-            onClick={() => void testConnection()}
-            disabled={testing}
-            data-testid="page-settings-connection-test-button"
-            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-border bg-background px-3 text-[13px] text-foreground transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
-          >
-            {testing ? (
-              <>
-                <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-                正在测试
-              </>
-            ) : (
-              '测试连接'
+            {status && (
+              <div>
+                <div className="grid grid-cols-2 gap-x-6 gap-y-3.5">
+                  <Field
+                    label="容器运行状态"
+                    value={describeContainerState(status.container)}
+                    testId="page-settings-container-running"
+                  />
+                  <Field label="健康状态" value={describeHealth(status.healthy)} testId="page-settings-healthy" />
+                  <Field label="端口连通" value={describeTcp(status.tcp_ok)} testId="page-settings-tcp-ok" />
+                  <Field
+                    label="缓存目录占用"
+                    value={formatBytes(status.cache_size_bytes)}
+                    testId="page-settings-cache-size"
+                  />
+                  <Field
+                    label="证书就绪状态"
+                    value={describeCertificate(status.certificate_ready)}
+                    testId="page-settings-certificate-ready"
+                  />
+                  <Field label="代理访问地址" value={status.proxy_url} testId="page-settings-proxy-url" />
+                </div>
+              </div>
             )}
-          </button>
-          <button
-            type="button"
-            onClick={() => void saveConnection()}
-            disabled={testing}
-            data-testid="page-settings-connection-save-button"
-            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-transparent bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/80 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
-          >
-            保存配置
-          </button>
-        </div>
-      </section>
+
+            {/* 代理区的两个动作按钮：紧跟状态字段区，右对齐。 */}
+            <div className="mt-3 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => void load()}
+                disabled={loading || restarting}
+                data-testid="page-settings-refresh-button"
+                className="inline-flex h-8 items-center justify-center rounded-lg border border-border bg-background px-3 text-[13px] text-foreground transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+              >
+                刷新状态
+              </button>
+              <button
+                type="button"
+                onClick={() => void restartProxy()}
+                disabled={restarting}
+                data-testid="page-settings-restart-button"
+                className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-transparent bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/80 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+              >
+                {restarting ? (
+                  <>
+                    <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                    正在重启
+                  </>
+                ) : (
+                  '重启代理'
+                )}
+              </button>
+            </div>
+
+            {restart && (
+              <div className="mt-5 border-t border-border pt-4" data-testid="page-settings-restart-result">
+                <div className="grid grid-cols-2 gap-x-6 gap-y-3.5">
+                  <Field
+                    label="重启结果"
+                    value={restart.restarted ? '已重启并恢复健康' : '重启未成功'}
+                    testId="page-settings-restarted"
+                  />
+                  <Field label="结论" value={describeRestartOutcome(restart)} testId="page-settings-restart-message" />
+                  <Field
+                    label="CA 指纹是否变更"
+                    value={restart.ca_changed ? '已变更' : '未变更'}
+                    testId="page-settings-ca-changed"
+                  />
+                  <Field
+                    label="合并证书链是否重装"
+                    value={restart.ca_reinstalled ? '已重装' : '未重装'}
+                    testId="page-settings-ca-reinstalled"
+                  />
+                  <Field label="CA 处理结论" value={describeCaOutcome(restart)} testId="page-settings-ca-conclusion" />
+                  <Field
+                    label="已重装用户"
+                    value={restart.reinstalled_users.length > 0 ? restart.reinstalled_users.join('、') : '（无）'}
+                    testId="page-settings-reinstalled-users"
+                  />
+                  <Field
+                    label="重装失败用户"
+                    value={restart.failed_users.length > 0 ? restart.failed_users.join('、') : '（无）'}
+                    testId="page-settings-failed-users"
+                  />
+                </div>
+                <p className="mt-3 text-[12px] text-muted-foreground">
+                  代理状态采集时间：{formatTimestamp(new Date().toISOString())}
+                </p>
+              </div>
+            )}
+          </section>
+
+          {/* 缓存镜像清单（打开加载 + 手动刷新，零轮询）：撑满剩余高度，表格内部滚。 */}
+          <CacheImagesTable open={open} />
+        </TabsPanel>
+
+        {/* 模板 tab：启动模板管理（列表 / 行内重命名 / 删除）。 */}
+        <TabsPanel value="templates" keepMounted className="min-h-0 flex-1 overflow-y-auto">
+          <section aria-label="启动模板">
+            <TemplateManager />
+          </section>
+        </TabsPanel>
+
+        {/* 后端配置 tab：连接配置（后端地址 + 访问令牌 + 测试连接 + 保存配置）。 */}
+        <TabsPanel value="backend" keepMounted className="min-h-0 flex-1 overflow-y-auto">
+          <section aria-label="连接配置">
+            <h3 className="mb-2 text-[13px] font-semibold text-foreground">连接配置</h3>
+            <div className="space-y-3">
+              <div>
+                <label
+                  htmlFor="settings-connection-base-url"
+                  className="mb-1.5 block text-[12.5px] font-medium text-foreground"
+                >
+                  后端地址
+                </label>
+                <Input
+                  id="settings-connection-base-url"
+                  value={baseUrl}
+                  autoComplete="off"
+                  spellCheck={false}
+                  placeholder={DEFAULT_BACKEND_BASE_URL}
+                  onChange={(event) => setBaseUrl(event.target.value)}
+                  data-testid="page-settings-connection-base-url-input"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="settings-connection-token"
+                  className="mb-1.5 block text-[12.5px] font-medium text-foreground"
+                >
+                  访问令牌
+                </label>
+                <Input
+                  id="settings-connection-token"
+                  type="password"
+                  value={token}
+                  autoComplete="off"
+                  spellCheck={false}
+                  placeholder="粘贴后端部署处的访问令牌"
+                  onChange={(event) => setToken(event.target.value)}
+                  data-testid="page-settings-connection-token-input"
+                />
+              </div>
+            </div>
+
+            {connectionError && (
+              <p
+                className="mt-3 text-[12.5px] text-destructive"
+                role="alert"
+                data-testid="page-settings-connection-error"
+              >
+                {connectionError}
+              </p>
+            )}
+
+            <div className="mt-3 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => void testConnection()}
+                disabled={testing}
+                data-testid="page-settings-connection-test-button"
+                className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-border bg-background px-3 text-[13px] text-foreground transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+              >
+                {testing ? (
+                  <>
+                    <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                    正在测试
+                  </>
+                ) : (
+                  '测试连接'
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => void saveConnection()}
+                disabled={testing}
+                data-testid="page-settings-connection-save-button"
+                className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-transparent bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/80 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+              >
+                保存配置
+              </button>
+            </div>
+          </section>
+        </TabsPanel>
+      </Tabs>
     </DrawerShell>
   );
 }

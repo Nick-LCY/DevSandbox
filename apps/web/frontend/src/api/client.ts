@@ -672,8 +672,18 @@ export const api = {
    * console 用**完整令牌**访问（既有鉴权头自动附带，无新增令牌逻辑）；
    * json 格式的响应是生成时间戳 + 清单数组（仓库 / 标签 / 摘要 / 总大小 / 缓存时间）。
    * 特权读失败或超时时后端回 503 + 固定中文文案（`ApiError`）。
+   *
+   * `tagsOnly` 走 `?tags=only` 视图：**只返回标签列表非空的条目**（json 与
+   * text 同参数同语义，服务端侧过滤）——设置抽屉的清单表格用它（与沙箱内
+   * `cached-images` 命令消费的是同一份视图）。
    */
-  cacheImages: () => request<CacheImagesResponse>('/api/proxy/cache/images?format=json'),
+  cacheImages: (options?: { tagsOnly?: boolean }) => {
+    const query = new URLSearchParams({ format: 'json' });
+    if (options?.tagsOnly) {
+      query.set('tags', 'only');
+    }
+    return request<CacheImagesResponse>(`/api/proxy/cache/images?${query.toString()}`);
+  },
 
   restartProxy: () => request<ProxyRestartResult>('/api/proxy/restart', { method: 'POST' }),
 

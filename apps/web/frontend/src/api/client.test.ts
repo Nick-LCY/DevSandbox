@@ -577,6 +577,27 @@ describe('镜像缓存清单接口', () => {
     expect(payload.total_files).toBe(140);
   });
 
+  it('tags=only 视图：URL 带 tags=only（只取标签列表非空的条目）', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(cachePayload()));
+
+    await api.cacheImages({ tagsOnly: true });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(
+      `${DEFAULT_BACKEND_BASE_URL}/api/proxy/cache/images?format=json&tags=only`,
+    );
+  });
+
+  it('不带参数时不带 tags（缺省视图与既有行为一致）', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(cachePayload()));
+
+    await api.cacheImages();
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${DEFAULT_BACKEND_BASE_URL}/api/proxy/cache/images?format=json`);
+  });
+
   it('后端 503：取固定中文文案与状态码（不静默回空清单由端点负责）', async () => {
     fetchMock.mockResolvedValue(
       jsonResponse(

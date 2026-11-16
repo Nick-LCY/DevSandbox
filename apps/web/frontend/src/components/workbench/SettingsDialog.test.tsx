@@ -1,18 +1,20 @@
 // @vitest-environment jsdom
 /**
- * 设置抽屉：代理设置的重启反馈不被「状态刷新失败」顶掉；
- * 第二区的缓存镜像清单（字段渲染 / 空态 / 失败态不白屏 / 手动刷新 / 零轮询）；
- * 第三区的启动模板管理（列表 / 行内重命名 / 删除确认）。
+ * 设置抽屉：**代理 / 模板 / 后端配置**三个 tab。
  *
  * 覆盖几件事：
+ * - 三个 tab 就位：代理默认激活，切到模板 tab 后 TemplateManager 在场；
+ *   三个区（代理设置 / 启动模板 / 连接配置）各自可寻址；
  * - 重启成功：弹成功 toast；
  * - 重启失败：弹失败 toast；随后那次状态刷新也失败时，**不能**再弹一条
  *   「读取代理状态失败」把更具体的「重启代理失败」顶掉；
- * - 缓存镜像清单：仓库 / 标签 / 摘要（截断 + title 全文）/ 人读大小 / 时间
- *   与生成时间戳渲染；空态文案；端点失败弹 toast + 就地说明且抽屉其余区
- *   照常渲染（不白屏）；手动刷新触发重取；刷新失败保留旧清单（不清空、
- *   就地 role=status 说明、空态不误显）；零轮询（静态源码断言 + 行为
- *   推进时钟断言，双保险）；
+ * - 缓存镜像清单：表格四列（IMAGE / ID / SIZE / CACHED TIME）、多标签展开
+ *   成多行、十进制人读大小、12 位短摘要（title 带完整 digest）、UTC 时间与
+ *   生成时间戳渲染；本地搜索过滤（输入 → 行数变化 → 清空 → 恢复）与摘要
+ *   命中整组显示；两种空态分开（清单为空 / 搜索无命中）；端点失败弹 toast +
+ *   就地说明且抽屉其余区照常渲染（不白屏）；手动刷新触发重取；刷新失败保留
+ *   旧清单（不清空、就地 role=status 说明、空态不误显）；零轮询（静态源码
+ *   断言 + 行为推进时钟断言，双保险）；清单走 `tags=only` 视图；
  * - 模板列表渲染（名称 + 更新时间）与空态；
  * - 行内重命名：回车提交、Esc 取消、空名禁提交；
  * - 删除走确认弹窗，文案写明只删模板、不影响已创建的沙箱；
@@ -28,7 +30,6 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_BACKEND_BASE_URL, type ConnectionConfig } from '../../lib/connection';
-import { formatTimestamp } from '../../lib/format';
 import { ToastProvider } from '../Toast';
 import { SettingsDialog } from './SettingsDialog';
 
@@ -91,7 +92,9 @@ const onConnectionChange = vi.fn();
 
 /**
  * 一份够用的缓存镜像清单载荷（字段与后端 `to_payload()` 逐字段对应）。
- * 缺省两条：一条带标签，一条 digest 直拉（标签列表为空）。
+ *
+ * 缺省两条：一条带两个标签（展开成两行），一条带一个标签。清单走
+ * `tags=only` 视图（只展示有标签的镜像），所以载荷里不出现无标签条目。
  */
 function makeCachePayload(
   options: { generatedAt?: string; images?: unknown[] } = {},
@@ -111,7 +114,7 @@ function makeCachePayload(
         },
         {
           repo: 'quay.io/example/app',
-          tags: [],
+          tags: ['v1'],
           digest:
             'sha256:bbb8f4dcd8b9a1e26ee1e2d1f5c7a03e9d4b1a2c3d4e5f60718293a4b5c6d7e8f',
           total_size_bytes: 2048,
@@ -168,6 +171,24 @@ function makeTemplate(overrides: Record<string, unknown> = {}) {
     updated_at: '2026-10-31T02:00:00+00:00',
     ...overrides,
   };
+}
+
+/** 切到某个 tab（点 tab 按钮）。 */
+function switchTab(
+  tab: 'page-settings-tab-proxy' | 'page-settings-tab-templates' | 'page-settings-tab-backend',
+): void {
+  fireEvent.click(screen.getByTestId(tab));
+}
+
+/**
+ * 当前激活的 tab 面板（Base UI 的 tabpanel：未激活的面板挂 `hidden`）。
+ *
+ * 面板一律 `keepMounted`（隐藏的不卸载），所以「在场」不等于「激活」——
+ * 断言可见性要看它是不是当前激活的那个面板。
+ */
+function activePanel(): HTMLElement | null {
+  const panels = Array.from(document.querySelectorAll<HTMLElement>('[role="tabpanel"]'));
+  return panels.find((panel) => !panel.hasAttribute('hidden')) ?? null;
 }
 
 afterEach(() => {
@@ -247,52 +268,124 @@ describe('代理重启反馈', () => {
   });
 });
 
+describe('设置抽屉的三个 tab', () => {
+  it('三个 tab 就位：代理默认激活', async () => {
+    renderDialog();
+
+    const tabs = await screen.findByTestId('page-settings-tabs');
+    expect(tabs.getAttribute('role')).toBe('tablist');
+    expect(screen.getByTestId('page-settings-tab-proxy').textContent).toBe('代理');
+    expect(screen.getByTestId('page-settings-tab-templates').textContent).toBe('模板');
+    expect(screen.getByTestId('page-settings-tab-backend').textContent).toBe('后端配置');
+
+    // 代理 tab 默认激活（激活态是主色下划线那一条）。
+    expect(screen.getByTestId('page-settings-tab-proxy').getAttribute('data-active')).toBe('');
+    expect(activePanel()?.contains(screen.getByLabelText('代理设置'))).toBe(true);
+  });
+
+  it('切到模板 tab：启动模板管理在场，代理区不在激活面板里', async () => {
+    mocks.listTemplates.mockResolvedValue([makeTemplate()]);
+
+    renderDialog();
+
+    await screen.findByTestId('page-settings-tabs');
+    switchTab('page-settings-tab-templates');
+
+    const panel = activePanel();
+    expect(panel?.contains(screen.getByLabelText('启动模板'))).toBe(true);
+    expect(panel?.contains(screen.getByLabelText('代理设置'))).toBe(false);
+    // 模板管理区在模板 tab 里可用。
+    expect(panel?.contains(screen.getByTestId('page-settings-template-item'))).toBe(true);
+  });
+
+  it('切到后端配置 tab：连接配置区在场', async () => {
+    renderDialog();
+
+    await screen.findByTestId('page-settings-tabs');
+    switchTab('page-settings-tab-backend');
+
+    const panel = activePanel();
+    expect(panel?.contains(screen.getByLabelText('连接配置'))).toBe(true);
+    expect(
+      panel?.contains(screen.getByTestId('page-settings-connection-base-url-input')),
+    ).toBe(true);
+  });
+
+  it('面板 keepMounted：没激活的 tab 也已挂载（打开抽屉即全量加载）', async () => {
+    renderDialog();
+
+    // 模板 tab 没激活，但模板管理区已经挂载并加载过（打开抽屉那一次）。
+    await screen.findByTestId('page-settings-template-empty');
+    expect(screen.getByTestId('page-settings-tab-templates').getAttribute('data-active')).toBeNull();
+    expect(mocks.listTemplates).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('设置抽屉的缓存镜像清单区', () => {
-  it('字段渲染：仓库 / 标签 / 摘要（截断 + title 全文）/ 人读大小 / 时间，与生成时间戳', async () => {
+  it('表格渲染：IMAGE / ID / SIZE / CACHED TIME，多标签展开成多行', async () => {
     mocks.cacheImages.mockResolvedValue(makeCachePayload());
 
     renderDialog();
 
-    // 区在代理设置区旁边（独立 section，aria-label 可寻址），刷新按钮在内。
+    // 区在代理 tab 里（独立 section，aria-label 可寻址），刷新按钮在内。
     const section = await screen.findByLabelText('缓存镜像清单');
     expect(
       section.contains(screen.getByTestId('page-settings-cache-images-refresh-button')),
     ).toBe(true);
 
-    const items = await screen.findAllByTestId('page-settings-cache-image-item');
-    expect(items).toHaveLength(2);
-    expect(items[0].getAttribute('data-image-repo')).toBe('library/nginx');
+    // 表头四列（与服务端 tags=only 表格同列）。
+    const head = screen.getByTestId('page-settings-cache-images-head');
+    expect(head.textContent).toContain('IMAGE');
+    expect(head.textContent).toContain('ID');
+    expect(head.textContent).toContain('SIZE');
+    expect(head.textContent).toContain('CACHED TIME');
 
-    // 第一条（带标签）：大小走人读格式（字节 → GiB），标签列表顿号拼接。
-    expect(screen.getAllByTestId('page-settings-cache-image-repo')[0].textContent).toBe(
-      'library/nginx',
+    // 一个镜像的两个标签展开成两行（ID / 大小 / 时间逐行重复）+ 一条单标签的。
+    const rows = await screen.findAllByTestId('page-settings-cache-images-row');
+    expect(rows).toHaveLength(3);
+    // 行按 (repo, tag) 排序。
+    expect(rows[0].getAttribute('data-image-repo')).toBe('library/nginx');
+    expect(rows[0].getAttribute('data-image-tag')).toBe('1.27');
+    expect(rows[1].getAttribute('data-image-tag')).toBe('latest');
+    expect(rows[2].getAttribute('data-image-repo')).toBe('quay.io/example/app');
+
+    // IMAGE 列 = repo:tag。
+    expect(screen.getAllByTestId('page-settings-cache-images-image')[0].textContent).toBe(
+      'library/nginx:1.27',
     );
-    expect(screen.getAllByTestId('page-settings-cache-image-size')[0].textContent).toBe(
-      '1.5 GiB',
-    );
-    expect(screen.getAllByTestId('page-settings-cache-image-tags')[0].textContent).toBe(
-      '1.27、latest',
-    );
-    // 摘要截断展示（19 字符 + 省略号），完整 digest 挂 title。
-    const digest = screen.getAllByTestId('page-settings-cache-image-digest')[0];
-    expect(digest.textContent).toBe('sha256:aa27bb339079…');
-    expect(digest.getAttribute('title')).toBe(
+
+    // ID 列 = 去 sha256: 前缀后的前 12 位十六进制；完整 digest 挂 title。
+    const id = screen.getAllByTestId('page-settings-cache-images-id')[0];
+    expect(id.textContent).toBe('aa27bb339079');
+    expect(id.getAttribute('title')).toBe(
       'sha256:aa27bb3390799fefbf6b0ea27ff75b6b44d21beb6f8be93919fedcb0e60b3ea2',
     );
-    expect(screen.getAllByTestId('page-settings-cache-image-cached-at')[0].textContent).toBe(
-      formatTimestamp('2026-11-14T10:30:00+00:00'),
-    );
 
-    // 第二条（digest 直拉）：标签列表为空 → （无）。
-    expect(screen.getAllByTestId('page-settings-cache-image-tags')[1].textContent).toBe('（无）');
-    expect(screen.getAllByTestId('page-settings-cache-image-size')[1].textContent).toBe(
-      '2.0 KiB',
+    // SIZE 列 = 十进制人读大小（1000 进制，不是二进制 KiB/MiB）。
+    expect(screen.getAllByTestId('page-settings-cache-images-size')[0].textContent).toBe('1.6GB');
+    expect(screen.getAllByTestId('page-settings-cache-images-size')[2].textContent).toBe('2kB');
+
+    // CACHED TIME 列 = UTC 口径（不是本地时区）。
+    expect(screen.getAllByTestId('page-settings-cache-images-time')[0].textContent).toBe(
+      '2026-11-14 10:30:00',
+    );
+    expect(screen.getAllByTestId('page-settings-cache-images-time')[2].textContent).toBe(
+      '2026-11-14 11:00:00',
     );
 
     // 清单生成时间戳随数据一起展示（手动刷新后能看到新鲜度）。
     expect(screen.getByTestId('page-settings-cache-images-generated-at').textContent).toContain(
-      formatTimestamp('2026-11-15T06:00:00+00:00'),
+      '清单生成时间：2026-11-15 06:00:00',
     );
+  });
+
+  it('清单走 tags=only 视图（只展示有标签的镜像）', async () => {
+    mocks.cacheImages.mockResolvedValue(makeCachePayload());
+
+    renderDialog();
+
+    await screen.findAllByTestId('page-settings-cache-images-row');
+    expect(mocks.cacheImages).toHaveBeenCalledWith({ tagsOnly: true });
   });
 
   it('空清单：给空态文案，不误报错误', async () => {
@@ -301,7 +394,60 @@ describe('设置抽屉的缓存镜像清单区', () => {
     const empty = await screen.findByTestId('page-settings-cache-images-empty');
     expect(empty.textContent).toContain('还没有拉取过的镜像');
     expect(screen.queryByTestId('page-settings-cache-images-status')).toBeNull();
-    expect(screen.queryByTestId('page-settings-cache-images-list')).toBeNull();
+    expect(screen.queryByTestId('page-settings-cache-images-table')).toBeNull();
+    // 清单本身为空时，搜索无命中那种空态不出现（两种空态分开）。
+    expect(screen.queryByTestId('page-settings-cache-images-search-empty')).toBeNull();
+  });
+
+  it('本地搜索过滤：输入 → 行数变化 → 清空 → 恢复（不发请求）', async () => {
+    mocks.cacheImages.mockResolvedValue(makeCachePayload());
+
+    renderDialog();
+
+    await screen.findAllByTestId('page-settings-cache-images-row');
+    expect(mocks.cacheImages).toHaveBeenCalledTimes(1);
+
+    const search = screen.getByTestId(
+      'page-settings-cache-images-search-input',
+    ) as HTMLInputElement;
+    expect(search.getAttribute('placeholder')).toBe('搜索镜像');
+    expect(search.getAttribute('aria-label')).toBe('搜索镜像');
+
+    // 子串匹配 repo:tag（大小写不敏感）。
+    fireEvent.change(search, { target: { value: 'NGINX' } });
+    expect(screen.getAllByTestId('page-settings-cache-images-row')).toHaveLength(2);
+
+    // 命不中：另一种空态（与「清单本身为空」分开）。
+    fireEvent.change(search, { target: { value: '不存在的镜像' } });
+    expect(screen.queryAllByTestId('page-settings-cache-images-row')).toHaveLength(0);
+    expect(screen.getByTestId('page-settings-cache-images-search-empty')).toBeTruthy();
+    // 清单本身非空，空态文案不误显。
+    expect(screen.queryByTestId('page-settings-cache-images-empty')).toBeNull();
+
+    // 清空 → 全部回来。
+    fireEvent.change(search, { target: { value: '' } });
+    expect(screen.getAllByTestId('page-settings-cache-images-row')).toHaveLength(3);
+
+    // 纯本地过滤：一个请求都不多发。
+    expect(mocks.cacheImages).toHaveBeenCalledTimes(1);
+  });
+
+  it('搜索命中摘要：该镜像整组行都显示（带不带 sha256: 前缀都认）', async () => {
+    mocks.cacheImages.mockResolvedValue(makeCachePayload());
+
+    renderDialog();
+
+    await screen.findAllByTestId('page-settings-cache-images-row');
+
+    const search = screen.getByTestId('page-settings-cache-images-search-input');
+
+    // 不带前缀：命中多标签镜像时整组两行都显示。
+    fireEvent.change(search, { target: { value: 'aa27bb339079' } });
+    expect(screen.getAllByTestId('page-settings-cache-images-row')).toHaveLength(2);
+
+    // 带前缀：同样命中。
+    fireEvent.change(search, { target: { value: 'sha256:bbb8f4dcd8b9' } });
+    expect(screen.getAllByTestId('page-settings-cache-images-row')).toHaveLength(1);
   });
 
   it('端点失败：弹失败 toast + 就地说明，抽屉其余区照常渲染（不白屏）', async () => {
@@ -320,10 +466,12 @@ describe('设置抽屉的缓存镜像清单区', () => {
     expect(toast.getAttribute('data-toast-kind')).toBe('error');
     expect(toast.getAttribute('data-toast-source')).toBe('settings-cache-images');
 
-    // 不白屏：代理设置区、模板管理区、连接配置区照常在场。
+    // 不白屏：三个区都还在（切 tab 后各自可寻址）。
     expect(screen.getByLabelText('代理设置')).toBeTruthy();
-    expect(screen.getByLabelText('启动模板')).toBeTruthy();
-    expect(screen.getByLabelText('连接配置')).toBeTruthy();
+    switchTab('page-settings-tab-templates');
+    expect(activePanel()?.contains(screen.getByLabelText('启动模板'))).toBe(true);
+    switchTab('page-settings-tab-backend');
+    expect(activePanel()?.contains(screen.getByLabelText('连接配置'))).toBe(true);
   });
 
   it('手动刷新触发重取：清单与生成时间戳都换成新数据', async () => {
@@ -346,21 +494,19 @@ describe('设置抽屉的缓存镜像清单区', () => {
 
     renderDialog();
 
-    await screen.findAllByTestId('page-settings-cache-image-item');
+    await screen.findAllByTestId('page-settings-cache-images-row');
     expect(mocks.cacheImages).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByTestId('page-settings-cache-images-refresh-button'));
 
     await waitFor(() => expect(mocks.cacheImages).toHaveBeenCalledTimes(2));
     // 刷新后清单被替换成新数据（不是追加）。
-    const repo = await screen.findByTestId('page-settings-cache-image-repo');
-    expect(repo.textContent).toBe('docker.io/library/postgres');
-    expect(screen.getAllByTestId('page-settings-cache-image-item')).toHaveLength(1);
-    expect(screen.getAllByTestId('page-settings-cache-image-size')[0].textContent).toBe(
-      '3.0 GiB',
-    );
+    const image = await screen.findByTestId('page-settings-cache-images-image');
+    expect(image.textContent).toBe('docker.io/library/postgres:16');
+    expect(screen.getAllByTestId('page-settings-cache-images-row')).toHaveLength(1);
+    expect(screen.getAllByTestId('page-settings-cache-images-size')[0].textContent).toBe('3.2GB');
     expect(screen.getByTestId('page-settings-cache-images-generated-at').textContent).toContain(
-      formatTimestamp('2026-11-15T06:30:00+00:00'),
+      '清单生成时间：2026-11-15 06:30:00',
     );
   });
 
@@ -373,19 +519,19 @@ describe('设置抽屉的缓存镜像清单区', () => {
 
     renderDialog();
 
-    const items = await screen.findAllByTestId('page-settings-cache-image-item');
-    expect(items).toHaveLength(2);
-    expect(items[0].getAttribute('data-image-repo')).toBe('library/nginx');
+    const rows = await screen.findAllByTestId('page-settings-cache-images-row');
+    expect(rows).toHaveLength(3);
+    expect(rows[0].getAttribute('data-image-repo')).toBe('library/nginx');
 
     fireEvent.click(screen.getByTestId('page-settings-cache-images-refresh-button'));
 
     await waitFor(() => expect(mocks.cacheImages).toHaveBeenCalledTimes(2));
-    // 旧清单原样保留：还是那两条，没有被清空或替换。
-    expect(screen.getAllByTestId('page-settings-cache-image-item')).toHaveLength(2);
-    expect(screen.getAllByTestId('page-settings-cache-image-repo')[0].textContent).toBe(
-      'library/nginx',
+    // 旧清单原样保留：还是那三行，没有被清空或替换。
+    expect(screen.getAllByTestId('page-settings-cache-images-row')).toHaveLength(3);
+    expect(screen.getAllByTestId('page-settings-cache-images-image')[0].textContent).toBe(
+      'library/nginx:1.27',
     );
-    expect(screen.getByTestId('page-settings-cache-images-list')).toBeTruthy();
+    expect(screen.getByTestId('page-settings-cache-images-table')).toBeTruthy();
 
     // 就地失败说明走环境状态口径（role=status），写明原因见右上角提示。
     const status = screen.getByTestId('page-settings-cache-images-status');
@@ -404,12 +550,15 @@ describe('设置抽屉的缓存镜像清单区', () => {
 
   it('零轮询（静态）：组件源码零 setInterval、零 setTimeout', () => {
     // vitest 恒从包根跑（vitest.config.ts 所在目录），直接从 cwd 解析源码路径。
-    const source = readFileSync(
-      resolve(process.cwd(), 'src/components/workbench/SettingsDialog.tsx'),
-      'utf8',
-    );
-    expect(source).not.toContain('setInterval');
-    expect(source).not.toContain('setTimeout');
+    // 清单组件已抽到独立文件，两处都要覆盖。
+    for (const relative of [
+      'src/components/workbench/SettingsDialog.tsx',
+      'src/components/workbench/CacheImagesTable.tsx',
+    ]) {
+      const source = readFileSync(resolve(process.cwd(), relative), 'utf8');
+      expect(source, relative).not.toContain('setInterval');
+      expect(source, relative).not.toContain('setTimeout');
+    }
   });
 
   it('零轮询（行为）：推进 10 分钟不会自动重取，只有打开抽屉那一次', async () => {

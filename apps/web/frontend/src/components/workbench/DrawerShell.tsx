@@ -48,6 +48,16 @@ interface DrawerShellProps {
   children: ReactNode;
   /** 抽屉底部（按钮区）。 */
   footer?: ReactNode;
+  /**
+   * 正文容器的额外类名（可选，缺省行为不变）。
+   *
+   * 缺省时正文区**自己滚动**（`overflow-y-auto`）；传值可以把滚动责任交给
+   * 内容（如设置抽屉：传 `flex flex-col overflow-hidden`，让 tab 面板各自
+   * 管高度——面板里固定高度的部分不滚、清单表格自己滚）。
+   *
+   * 三个抽屉共用这个外壳，**默认形态一个都不许变**。
+   */
+  contentClassName?: string;
 }
 
 /** 键盘调整宽度的步长（百分点）。 */
@@ -68,6 +78,7 @@ export function DrawerShell({
   onWidthChange,
   children,
   footer,
+  contentClassName,
 }: DrawerShellProps) {
   /**
    * 拖拽期间的本地宽度。
@@ -323,7 +334,7 @@ export function DrawerShell({
             */}
             <DrawerContent
               data-base-ui-swipe-ignore=""
-              className="min-h-0 flex-1 overflow-y-auto px-5 py-4"
+              className={cn('min-h-0 flex-1 px-5 py-4', contentClassName ?? 'overflow-y-auto')}
             >
               {children}
             </DrawerContent>
