@@ -30,6 +30,14 @@
 - 卷：``/docker_mirror_cache``（镜像层缓存）、``/ca``（CA 与私钥，必须持久化）；
 - CA：代理把证书写在 ``/ca/ca.crt``，同时通过 ``http://<host>:3128/ca.crt`` 对外提供；
   私钥在 ``/ca/ca.key``。
+
+代理 referrers 兜底（平台侧补丁，见 :func:`referrers_fallback_fragment`）：
+上游镜像的 nginx 配置**不认识** ``/v2/<repo>/referrers/<digest>`` 这条路径——
+它落进默认的 ``location /``（不缓存、直接回源）。镜像拉完后客户端还要查一次
+引用元数据，缓存里没有这条记录 → 回源 → 上游断网时 502 → 整条拉取失败。
+平台在代理容器里幂等打一个补丁：给 referrers 单开一个 location（走既有缓存区，
+有效期 180d），上游失败（502/503/504/超时）时回一个 **OCI 空引用列表**
+（语义：不知道有没有引用＝按没有处理），对镜像内容与运行零影响。
 """
 
 from __future__ import annotations
@@ -39,6 +47,7 @@ import hashlib
 import http.client
 import json
 import logging
+import shlex
 import socket
 import tempfile
 import time
@@ -47,7 +56,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from .command import run
+from .command import CommandResult, run
 from .config import DEFAULT_PROXY_PORT, PlatformConfig
 from .errors import CommandError, ProxyError
 from .userspace import Privilege, SystemUser, ca_bundle_path
@@ -96,6 +105,139 @@ CACHE_INACTIVE = "180d"
 
 # env 值按**集合**比较的键（空格分隔的列表值）：书写顺序不同不算漂移。
 ENV_LIST_KEYS = frozenset({"REGISTRIES"})
+
+# ---------------------------------------------------------------- referrers 兜底补丁
+#
+# 补丁形态（容器内两个文件）：
+#   · 片段文件 ``/etc/nginx/nginx.referrers.fallback.conf``——referrers 的
+#     location 与空引用列表兜底；
+#   · 主配置 ``/etc/nginx/nginx.conf`` 里一行 include（带标记行）。
+#
+# 为什么是「exec 打补丁」而不是「bind-mount 覆盖片段」：镜像**没有**一个
+# 入口脚本不碰的 server 级 include 目录——入口脚本每次启动重新生成的正是
+# 那几个 include 片段（nginx.manifest.caching.config.conf 等），挂载覆盖
+# 会被下一次启动抹掉；而主配置是镜像烤进来的（入口脚本不动它），改它才能
+# 把 include 挂上去。改主配置这一步无论如何要在容器内做 ⇒ 走 exec 补丁通道。
+#
+# 生命周期：主配置的 include 行一旦打上就跨容器重启存活（入口脚本只重新
+# 生成 include 片段，不动主配置）；容器被重建（env/挂载漂移 → 删除后重建）
+# 时整套文件回到镜像态 ⇒ 补丁必须随 ensure_running / restart **重放**
+# （见 :meth:`RegistryProxyManager._ensure_referrers_fallback`）。
+#
+# 幂等判据：主配置里带标记行 + 片段内容一致 ⇒ 已在位，直接跳过。
+REFERRERS_FALLBACK_MARKER = "sandbox_referrers_fallback_v1"
+# 容器内片段文件路径
+REFERRERS_FALLBACK_CONF = "/etc/nginx/nginx.referrers.fallback.conf"
+# 容器内主配置路径（镜像烤进来的，入口脚本每次启动重新生成的是 include 片段）
+PROXY_NGINX_CONF = "/etc/nginx/nginx.conf"
+# 主配置里的插入锚点：缓存层 server 块的 server_name（主配置里唯一出现一次）
+REFERRERS_FALLBACK_ANCHOR = "server_name proxy_caching_;"
+# 主配置备份（回滚用；补丁成功后删除）
+REFERRERS_FALLBACK_BACKUP = "/etc/nginx/nginx.conf.referrers.bak"
+# 空引用列表（OCI index）：语义「不知道有没有引用＝按没有处理」
+REFERRERS_FALLBACK_BODY = (
+    '{"schemaVersion":2,'
+    '"mediaType":"application/vnd.oci.image.index.v1+json",'
+    '"manifests":[]}'
+)
+# 空引用列表的 Content-Type
+REFERRERS_FALLBACK_MEDIA_TYPE = "application/vnd.oci.image.index.v1+json"
+# referrers 缓存有效期：与 manifest 同口径（统一 180 天）
+REFERRERS_FALLBACK_TTL = "180d"
+# 容器内 exec 的超时上限（补丁通道都是秒级命令，30 秒足够）
+PROXY_EXEC_TIMEOUT = 30
+
+
+def referrers_fallback_fragment() -> str:
+    """referrers 兜底的 nginx 片段（内容确定 ⇒ 可反复重放）。
+
+    片段内容：
+
+    - 一个 ``/v2/<repo>/referrers/`` 的正则 location——**排在既有正则
+      location 之前**（主配置里 include 插在缓存层 server 块的最前面）：
+      nginx 的正则 location 先到先得，排在前面才不会落到默认的
+      ``location /``（那里不缓存、直接回源）；
+    - 缓存走既有缓存区（``proxy_cache_path`` 的 ``keys_zone=cache``），
+      有效期与 manifest 同口径（180d）；
+    - 上游失败（502/503/504/超时）由 ``error_page`` 转兜底 location，
+      回一个 OCI 空引用列表（200 + ``application/vnd.oci.image.index.v1+json``）。
+
+    ``proxy_set_header`` 与既有 manifest location 同口径（复制缓存层
+    server 层的认证头组）：``Authorization`` 走 ``$finalAuth``（客户端自带
+    的令牌优先，否则注入配置的凭据）。
+    """
+    return f"""    # {REFERRERS_FALLBACK_MARKER}
+    # 代理 referrers 兜底：/v2/<repo>/referrers/<digest> 是镜像引用元数据查询，
+    # 缓存未命中时回源；上游不可用（502/503/504/超时）时返回 OCI 空引用列表
+    # （语义：不知道有没有引用＝按没有处理），对镜像内容与运行零影响。
+    location ~ ^/v2/(.*)/referrers/ {{
+        set $docker_proxy_request_type "referrers";
+        add_header X-Docker-Registry-Proxy-Cache-Upstream-Status "$upstream_cache_status";
+        add_header X-Docker-Registry-Proxy-Cache-Type "$docker_proxy_request_type";
+        proxy_pass https://$targetHost;
+        proxy_cache cache;
+        proxy_cache_key $uri;
+        proxy_cache_valid 200 {REFERRERS_FALLBACK_TTL};
+        proxy_cache_use_stale error timeout updating;
+        proxy_intercept_errors on;
+        error_page 502 503 504 = @referrers_fallback;
+        proxy_set_header Authorization $finalAuth;
+        proxy_ssl_protocols TLSv1 TLSv1.1 TLSv1.2 TLSv1.3;
+    }}
+
+    location @referrers_fallback {{
+        default_type {REFERRERS_FALLBACK_MEDIA_TYPE};
+        return 200 '{REFERRERS_FALLBACK_BODY}';
+    }}
+"""
+
+
+# 主配置打补丁的脚本（在容器内执行）：标记在位即 ALREADY；锚点缺失即
+# ANCHOR_MISSING（**什么都没改**，调用方按失败处理，不留半成品）。
+_REFERRERS_PATCH_SCRIPT = f"""# {REFERRERS_FALLBACK_MARKER} patch
+set -e
+CONF={PROXY_NGINX_CONF}
+BAK={REFERRERS_FALLBACK_BACKUP}
+INC='include "{REFERRERS_FALLBACK_CONF}";  # {REFERRERS_FALLBACK_MARKER}'
+if grep -q '{REFERRERS_FALLBACK_MARKER}' "$CONF"; then
+  echo ALREADY
+  exit 0
+fi
+if ! grep -q '{REFERRERS_FALLBACK_ANCHOR}' "$CONF"; then
+  echo ANCHOR_MISSING
+  exit 3
+fi
+cp "$CONF" "$BAK"
+awk -v inc="$INC" '
+  !inserted && index($0, "{REFERRERS_FALLBACK_ANCHOR}") > 0 {{ print inc; print ""; inserted = 1 }}
+  {{ print }}
+' "$CONF" > "$CONF.new"
+mv "$CONF.new" "$CONF"
+if ! grep -q '{REFERRERS_FALLBACK_MARKER}' "$CONF"; then
+  cp "$BAK" "$CONF"
+  echo INSERT_FAILED
+  exit 4
+fi
+echo PATCHED
+"""
+
+# 回滚脚本：还原主配置（备份在则还原）→ 按标记摘掉 include 行 → 删片段。
+# 目的只有一个：**绝不留下打不开的配置**（下次容器启动 nginx -t 必须能过）。
+_REFERRERS_ROLLBACK_SCRIPT = f"""# {REFERRERS_FALLBACK_MARKER} rollback
+CONF={PROXY_NGINX_CONF}
+FRAG={REFERRERS_FALLBACK_CONF}
+BAK={REFERRERS_FALLBACK_BACKUP}
+if [ -f "$BAK" ]; then
+  cp "$BAK" "$CONF" || true
+  rm -f "$BAK" || true
+fi
+if grep -q '{REFERRERS_FALLBACK_MARKER}' "$CONF" 2>/dev/null; then
+  grep -v '{REFERRERS_FALLBACK_MARKER}' "$CONF" > "$CONF.rollback" || true
+  mv "$CONF.rollback" "$CONF" || true
+fi
+rm -f "$FRAG" || true
+echo ROLLED_BACK
+"""
 
 
 def proxy_container_name(port: int) -> str:
@@ -470,6 +612,9 @@ class RegistryProxyManager:
             probe = self.probe()
             if probe.healthy:
                 self.harden_ca_permissions()
+                # 代理健康后重放 referrers 兜底补丁（幂等）：容器被重建过
+                # （env/挂载漂移）时补丁会丢，这里补回来
+                self._replay_referrers_fallback()
                 logger.info("镜像代理已就绪：%s", self.proxy_url)
                 return True
             time.sleep(2)
@@ -550,6 +695,8 @@ class RegistryProxyManager:
                 probe = self.probe()
                 if probe.healthy:
                     self.harden_ca_permissions()
+                    # 重启后重放 referrers 兜底补丁（幂等）
+                    self._replay_referrers_fallback()
                     logger.info("镜像代理已重启并就绪：%s", self.proxy_url)
                     return True
                 time.sleep(2)
@@ -592,6 +739,126 @@ class RegistryProxyManager:
         self.last_error = f"{message}：{self.container_name}"
         logger.error("%s：%s", message, self.container_name)
         raise ProxyError(self.last_error)
+
+    # ---------------------------------------------------------------- referrers 兜底
+    def _exec_in_proxy(
+        self,
+        argv: list[str],
+        *,
+        stdin_text: str | None = None,
+        timeout: int = PROXY_EXEC_TIMEOUT,
+    ) -> CommandResult:
+        """在代理容器内执行一条命令（补丁通道）。
+
+        ``stdin_text`` 非空时带 ``-i``：脚本走标准输入，避开多层引号转义。
+        """
+        flags = ["-i"] if stdin_text is not None else []
+        return run(
+            self.privilege.wrap(
+                ["docker", "exec", *flags, self.container_name, *[str(item) for item in argv]]
+            ),
+            stdin_text=stdin_text,
+            check=False,
+            timeout=timeout,
+        )
+
+    def _referrers_fallback_applied(self) -> bool:
+        """主配置里是否已带标记行（补丁已在位的判据之一）。"""
+        result = self._exec_in_proxy(
+            [
+                "sh",
+                "-c",
+                f"grep -q {shlex.quote(REFERRERS_FALLBACK_MARKER)} "
+                f"{shlex.quote(PROXY_NGINX_CONF)}",
+            ]
+        )
+        return result.ok
+
+    def _referrers_fallback_fragment_text(self) -> str:
+        """容器内片段文件的当前内容（不存在 → 空串）。"""
+        result = self._exec_in_proxy(
+            ["sh", "-c", f"cat {shlex.quote(REFERRERS_FALLBACK_CONF)}"]
+        )
+        return result.stdout if result.ok else ""
+
+    def _rollback_referrers_fallback(self) -> None:
+        """回滚 referrers 兜底补丁（还原主配置 + 摘掉 include 行 + 删片段）。
+
+        回滚后容器里**不残留任何半成品**：主配置回到可启动形态（下次容器
+        启动的 ``nginx -t`` 必须能过），片段文件也不留。
+        """
+        try:
+            result = self._exec_in_proxy(["sh", "-s"], stdin_text=_REFERRERS_ROLLBACK_SCRIPT)
+        except CommandError as exc:
+            # 回滚命令本身跑不起来（如超时）：不掩盖原始错误，只记日志
+            logger.error("referrers 兜底补丁回滚命令执行失败：%s", exc)
+            return
+        if not result.ok:
+            logger.error("referrers 兜底补丁回滚失败：%s", result.output.strip())
+
+    def _ensure_referrers_fallback(self) -> bool:
+        """幂等打上 referrers 兜底补丁（上游失败 → 空引用列表）。
+
+        步骤：片段落盘 → 主配置加 include 行 → ``nginx -t`` 校验 →
+        ``nginx -s reload``。
+
+        - **已在位**（主配置带标记行且片段内容一致）直接跳过：重复调用无害。
+        - 校验或重载失败 → **先回滚再抛错**（:class:`ProxyError`）：
+          绝不留下打不开的配置。
+        - 容器没在跑 → 跳过（调用点在健康检查之后，理论不会走到）。
+        """
+        if not self.container_running():
+            logger.warning("代理容器未运行，跳过 referrers 兜底补丁")
+            return False
+
+        desired = referrers_fallback_fragment()
+        if self._referrers_fallback_applied() and (
+            self._referrers_fallback_fragment_text() == desired
+        ):
+            return True
+
+        written = self._exec_in_proxy(
+            ["sh", "-c", f"cat > {shlex.quote(REFERRERS_FALLBACK_CONF)}"],
+            stdin_text=desired,
+        )
+        if not written.ok:
+            raise ProxyError(f"referrers 兜底片段写入失败：{written.output.strip()}")
+
+        if not self._referrers_fallback_applied():
+            patched = self._exec_in_proxy(["sh", "-s"], stdin_text=_REFERRERS_PATCH_SCRIPT)
+            if not patched.ok:
+                self._rollback_referrers_fallback()
+                raise ProxyError(f"referrers 兜底补丁写入失败：{patched.output.strip()}")
+
+        checked = self._exec_in_proxy(["nginx", "-t"])
+        if not checked.ok:
+            self._rollback_referrers_fallback()
+            raise ProxyError(f"referrers 兜底片段校验失败（已回滚）：{checked.output.strip()}")
+
+        reloaded = self._exec_in_proxy(["nginx", "-s", "reload"])
+        if not reloaded.ok:
+            self._rollback_referrers_fallback()
+            raise ProxyError(f"referrers 兜底片段重载失败（已回滚）：{reloaded.output.strip()}")
+
+        # 成功：备份不再是回滚源，删掉（容器里不留半成品）
+        self._exec_in_proxy(
+            ["sh", "-c", f"rm -f {shlex.quote(REFERRERS_FALLBACK_BACKUP)}"]
+        )
+        logger.info("代理 referrers 兜底补丁已就位：%s", REFERRERS_FALLBACK_CONF)
+        return True
+
+    def _replay_referrers_fallback(self) -> None:
+        """重放 referrers 兜底补丁（幂等；失败只记日志，不拖垮代理可用性）。
+
+        补丁失败时**已经回滚**（代理仍以旧配置正常提供服务），所以这里
+        **不**让沙箱创建失败：兜底是加固项，不是代理可用性的前提。但失败
+        必须显式报错（ERROR 日志 + ``last_error``），不静默吞掉。
+        """
+        try:
+            self._ensure_referrers_fallback()
+        except (ProxyError, CommandError) as exc:
+            self.last_error = f"referrers 兜底补丁失败：{exc}"
+            logger.error("referrers 兜底补丁失败（已回滚，代理仍可用）：%s", exc)
 
     # ---------------------------------------------------------------- 状态查询
     def cache_size_bytes(self) -> int:

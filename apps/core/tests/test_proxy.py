@@ -25,8 +25,14 @@ from sandbox_platform.proxy import (
     CA_CERT_FILENAME,
     PROXY_CA_MOUNT,
     PROXY_CACHE_MOUNT,
+    PROXY_NGINX_CONF,
+    REFERRERS_FALLBACK_BODY,
+    REFERRERS_FALLBACK_CONF,
+    REFERRERS_FALLBACK_MARKER,
+    REFERRERS_FALLBACK_MEDIA_TYPE,
     ca_bundle_path,
     proxy_container_name,
+    referrers_fallback_fragment,
 )
 
 SYSTEM_CA = "-----BEGIN CERTIFICATE-----\n系统根证书\n-----END CERTIFICATE-----\n"
@@ -613,3 +619,267 @@ def test_create_fails_when_proxy_unavailable(service, monkeypatch) -> None:
     assert "镜像代理未就绪" in message
     assert "不做降级直连" in message
     assert "连接被拒绝" in message
+
+
+# ---------------------------------------------------------------- referrers 兜底补丁
+class FakeProxyExec(FakeDocker):
+    """在 FakeDocker 基础上补上「容器内 exec」通道（补丁通道的伪实现）。
+
+    容器内文件状态放在 ``files`` 里，按命令语义应答：
+
+    - ``sh -c 'cat > <路径>'``（带 stdin）→ 写文件；
+    - ``sh -c 'cat <路径>'`` → 读文件（不存在 → 非零退出）；
+    - ``sh -c 'grep -q <标记> <路径>'`` → 按标记判存在；
+    - ``sh -s``（stdin 是脚本）→ 打补丁脚本 / 回滚脚本分别模拟；
+    - ``nginx -t`` → 校验（``check_ok`` 可置假模拟校验失败）；
+    - ``nginx -s reload`` → 重载。
+    """
+
+    #: 主配置样例（只留补丁要用的锚点，够用即可）
+    BASE_CONF = (
+        "http {\n"
+        "    server {\n"
+        "        server_name proxy_caching_;\n"
+        "        location / {\n"
+        "            proxy_pass https://$targetHost;\n"
+        "        }\n"
+        "    }\n"
+        "}\n"
+    )
+
+    def __init__(self, *, check_ok: bool = True) -> None:
+        super().__init__()
+        self.check_ok = check_ok
+        self.files: dict[str, str] = {PROXY_NGINX_CONF: self.BASE_CONF}
+        self.patches = 0
+        self.rollbacks = 0
+        self.reloads = 0
+        self.writes: list[str] = []
+
+    def __call__(self, argv, *, env=None, check=False, timeout=None, cwd=None, stdin_text=None):
+        args = [str(item) for item in argv]
+        while args[:1] == ["sudo"]:
+            args = args[2:]
+        if args[:2] == ["docker", "exec"]:
+            self.commands.append(args)
+            return self._exec(args, stdin_text)
+        return super().__call__(
+            argv,
+            env=env,
+            check=check,
+            timeout=timeout,
+            cwd=cwd,
+            stdin_text=stdin_text,
+        )
+
+    # ------------------------------------------------------------ exec 语义
+    def _exec(self, args: list[str], stdin_text: str | None) -> CommandResult:
+        argv = tuple(args)
+        # docker exec [flags] <容器> <命令...>
+        index = args.index("exec") + 1
+        while args[index].startswith("-"):
+            index += 1
+        command = args[index + 1 :]
+        if command[:1] == ["sh"] and command[1:2] == ["-s"]:
+            return self._script(argv, stdin_text)
+        if command[:1] == ["sh"] and command[1:2] == ["-c"]:
+            return self._shell(argv, command[2], stdin_text)
+        if command[:1] == ["nginx"] and command[1:2] == ["-t"]:
+            if self.check_ok:
+                return CommandResult(argv, 0, "syntax is ok\n", "")
+            return CommandResult(argv, 1, "", "syntax error")
+        if command[:3] == ["nginx", "-s", "reload"]:
+            self.reloads += 1
+            return CommandResult(argv, 0, "", "")
+        return CommandResult(argv, 0, "", "")
+
+    def _shell(self, argv: tuple, script: str, stdin_text: str | None) -> CommandResult:
+        text = script.strip()
+        if text.startswith("cat > "):
+            path = text[len("cat > ") :].strip()
+            self.files[path] = stdin_text or ""
+            self.writes.append(path)
+            return CommandResult(argv, 0, "", "")
+        if text.startswith("cat "):
+            path = text[len("cat ") :].strip()
+            if path not in self.files:
+                return CommandResult(argv, 1, "", "No such file or directory")
+            return CommandResult(argv, 0, self.files[path], "")
+        if text.startswith("grep -q "):
+            parts = text.split()
+            marker = parts[2]
+            path = parts[3]
+            content = self.files.get(path, "")
+            found = marker in content
+            return CommandResult(argv, 0 if found else 1, "", "")
+        if text.startswith("rm -f "):
+            path = text[len("rm -f ") :].strip()
+            self.files.pop(path, None)
+            return CommandResult(argv, 0, "", "")
+        return CommandResult(argv, 0, "", "")
+
+    def _script(self, argv: tuple, stdin_text: str | None) -> CommandResult:
+        script = stdin_text or ""
+        if "rollback" in script:
+            self.rollbacks += 1
+            conf = self.files.get(PROXY_NGINX_CONF, "")
+            kept = [
+                line
+                for line in conf.splitlines()
+                if REFERRERS_FALLBACK_MARKER not in line
+            ]
+            self.files[PROXY_NGINX_CONF] = "\n".join(kept) + "\n"
+            self.files.pop(REFERRERS_FALLBACK_CONF, None)
+            return CommandResult(argv, 0, "ROLLED_BACK\n", "")
+        # 打补丁脚本：按脚本里的 INC= 与锚点模拟插入
+        include = ""
+        for line in script.splitlines():
+            if line.startswith("INC='"):
+                include = line[len("INC='") :].rstrip("'")
+        anchor = "server_name proxy_caching_;"
+        for line in script.splitlines():
+            if "index($0," in line:
+                anchor = line.split('"')[1]
+        conf = self.files.get(PROXY_NGINX_CONF, "")
+        if REFERRERS_FALLBACK_MARKER in conf:
+            return CommandResult(argv, 0, "ALREADY\n", "")
+        if anchor not in conf:
+            return CommandResult(argv, 3, "", "ANCHOR_MISSING")
+        lines = conf.splitlines()
+        out: list[str] = []
+        for line in lines:
+            out.append(line)
+            if anchor in line:
+                out.append(include)
+                out.append("")
+        self.files[PROXY_NGINX_CONF] = "\n".join(out) + "\n"
+        self.patches += 1
+        return CommandResult(argv, 0, "PATCHED\n", "")
+
+
+def _running_proxy(fake: FakeProxyExec, manager: RegistryProxyManager) -> None:
+    """给假 exec 通道装一个「在跑且配置对得上」的代理容器。"""
+    fake.containers[manager.container_name] = {
+        "running": True,
+        "mounts": [
+            (str(manager.config.proxy_cache_dir), PROXY_CACHE_MOUNT),
+            (str(manager.config.proxy_ca_dir), PROXY_CA_MOUNT),
+        ],
+        "env": [f"{key}={value}" for key, value in manager._container_env().items()],
+    }
+
+
+def test_referrers_fallback_fragment_shape() -> None:
+    """兜底片段内容：标记行 + 空引用列表 + Content-Type + 180d + 既有缓存区。"""
+    fragment = referrers_fallback_fragment()
+    assert REFERRERS_FALLBACK_MARKER in fragment
+    assert "location ~ ^/v2/(.*)/referrers/" in fragment
+    assert "location @referrers_fallback" in fragment
+    # 空引用列表本体与它的 Content-Type
+    assert REFERRERS_FALLBACK_BODY in fragment
+    assert REFERRERS_FALLBACK_MEDIA_TYPE in fragment
+    assert (
+        REFERRERS_FALLBACK_BODY
+        == '{"schemaVersion":2,'
+        '"mediaType":"application/vnd.oci.image.index.v1+json",'
+        '"manifests":[]}'
+    )
+    # 缓存：既有缓存区 + 180d + 陈旧可用 + 错误转兜底
+    assert "proxy_cache cache;" in fragment
+    assert "proxy_cache_valid 200 180d;" in fragment
+    assert "proxy_cache_use_stale error timeout updating;" in fragment
+    assert "error_page 502 503 504 = @referrers_fallback;" in fragment
+    assert "proxy_intercept_errors on;" in fragment
+    # 认证头组与既有 manifest location 同口径
+    assert "proxy_set_header Authorization $finalAuth;" in fragment
+
+
+def test_ensure_referrers_fallback_is_idempotent(
+    manager: RegistryProxyManager, monkeypatch
+) -> None:
+    """二次调用不重复追加（标记在位即跳过，也不重复重载）。"""
+    fake = FakeProxyExec()
+    monkeypatch.setattr("sandbox_platform.proxy.run", fake)
+    _running_proxy(fake, manager)
+
+    assert manager._ensure_referrers_fallback() is True
+    assert fake.patches == 1
+    assert fake.reloads == 1
+    assert REFERRERS_FALLBACK_MARKER in fake.files[PROXY_NGINX_CONF]
+    assert fake.files[REFERRERS_FALLBACK_CONF] == referrers_fallback_fragment()
+
+    assert manager._ensure_referrers_fallback() is True
+    assert fake.patches == 1, "已在位时不应再次打补丁"
+    assert fake.reloads == 1, "已在位时不应再次重载"
+    assert fake.files[PROXY_NGINX_CONF].count(REFERRERS_FALLBACK_MARKER) == 1
+
+
+def test_ensure_referrers_fallback_rolls_back_when_check_fails(
+    manager: RegistryProxyManager, monkeypatch
+) -> None:
+    """校验失败 → 回滚（主配置还原 + 片段删除）并抛错，不留打不开的配置。"""
+    fake = FakeProxyExec(check_ok=False)
+    monkeypatch.setattr("sandbox_platform.proxy.run", fake)
+    _running_proxy(fake, manager)
+
+    with pytest.raises(ProxyError):
+        manager._ensure_referrers_fallback()
+
+    assert fake.rollbacks == 1, "校验失败必须回滚"
+    assert REFERRERS_FALLBACK_MARKER not in fake.files[PROXY_NGINX_CONF]
+    assert REFERRERS_FALLBACK_CONF not in fake.files
+
+
+def test_ensure_running_applies_referrers_fallback(
+    manager: RegistryProxyManager, monkeypatch
+) -> None:
+    """ensure_running 健康通过后打上兜底补丁（随容器生命周期重放）。"""
+    fake = FakeProxyExec()
+    monkeypatch.setattr("sandbox_platform.proxy.run", fake)
+    monkeypatch.setattr(
+        manager,
+        "probe",
+        lambda: ProxyProbe(tcp=True, http=True, detail="ok"),
+    )
+    monkeypatch.setattr(manager, "host_image_exists", lambda: True)
+
+    assert manager.ensure_running(timeout=5) is True
+    assert fake.patches == 1
+    assert REFERRERS_FALLBACK_MARKER in fake.files[PROXY_NGINX_CONF]
+    assert fake.files[REFERRERS_FALLBACK_CONF] == referrers_fallback_fragment()
+
+
+def test_restart_applies_referrers_fallback(
+    manager: RegistryProxyManager, monkeypatch
+) -> None:
+    """restart 成功后同样打上兜底补丁（幂等重放）。"""
+    fake = FakeProxyExec()
+    monkeypatch.setattr("sandbox_platform.proxy.run", fake)
+    monkeypatch.setattr(
+        manager,
+        "probe",
+        lambda: ProxyProbe(tcp=True, http=True, detail="ok"),
+    )
+    _running_proxy(fake, manager)
+
+    assert manager.restart(timeout=5) is True
+    assert fake.patches == 1
+    assert REFERRERS_FALLBACK_MARKER in fake.files[PROXY_NGINX_CONF]
+    assert fake.files[REFERRERS_FALLBACK_CONF] == referrers_fallback_fragment()
+
+
+def test_referrers_fallback_failure_does_not_break_proxy(
+    manager: RegistryProxyManager, monkeypatch
+) -> None:
+    """补丁失败（已回滚）不拖垮代理可用性，但必须显式报错。"""
+    fake = FakeProxyExec(check_ok=False)
+    monkeypatch.setattr("sandbox_platform.proxy.run", fake)
+    monkeypatch.setattr(
+        manager,
+        "probe",
+        lambda: ProxyProbe(tcp=True, http=True, detail="ok"),
+    )
+    monkeypatch.setattr(manager, "host_image_exists", lambda: True)
+
+    assert manager.ensure_running(timeout=5) is True
+    assert "referrers 兜底补丁失败" in manager.last_error
