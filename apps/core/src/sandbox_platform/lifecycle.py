@@ -945,7 +945,13 @@ class SandboxService:
 
     def _ensure_proxy_running(self, step: str) -> None:
         """拉起代理并做健康检查；不通过则直接失败（不降级直连）。"""
-        if not self.proxy.ensure_running():
+        try:
+            ready = self.proxy.ensure_running()
+        except ProxyError as exc:
+            # 重建路径上删除旧容器失败：代理起不来（env 漂移无法生效），
+            # 直接失败——不降级直连，也不把漂移静默吞掉
+            raise LifecycleError(step, f"镜像代理重建失败：{exc}") from exc
+        if not ready:
             probe = self.proxy.probe()
             detail = probe.detail
             if self.proxy.last_error:

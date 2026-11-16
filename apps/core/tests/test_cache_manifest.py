@@ -24,6 +24,7 @@ from sandbox_platform import (
 from sandbox_platform.cache_manifest import (
     HEAD_BYTES,
     HEAD_MARKER,
+    INACTIVE_TTL,
     MANIFEST_BODY_MAX_BYTES,
     CacheFileInfo,
     ManifestShape,
@@ -144,16 +145,21 @@ class CacheFixture:
         bind_tag_digest: bool = True,
         tamper_body: bool = False,
         break_body: bool = False,
+        trailing: bytes = b"trailing-junk",
+        digest_over_trailing: bool = False,
     ) -> str:
         """添加一个 manifest/index 条目，返回其真实内容摘要。
 
         ``ref=None`` 用 digest 键（KEY 行携带真实内容摘要，自洽）；``ref``
         是标签时用标签键并默认写入 ``docker-content-digest`` 响应头绑定。
         ``tamper_body`` 让 JSON 字节与 digest 不一致；``break_body`` 让清单
-        体不可解析。
+        体不可解析。``trailing`` 是 JSON 之后的尾随字节（默认脏尾巴
+        ``trailing-junk``）；``digest_over_trailing=True`` 时摘要覆盖
+        「JSON + 尾随」整段（真机 nginx 落盘的纯空白尾随形态）。
         """
         json_bytes = _json_bytes(doc)
-        digest = hashlib.sha256(json_bytes).hexdigest()
+        digest_source = json_bytes + trailing if digest_over_trailing else json_bytes
+        digest = hashlib.sha256(digest_source).hexdigest()
         if ref is None:
             key = f"/v2/{repo}/manifests/sha256:{digest}"
         else:
@@ -168,7 +174,7 @@ class CacheFixture:
         if ref is not None and bind_tag_digest:
             headers += f"docker-content-digest: sha256:{digest}\r\n".encode()
         headers += b"docker-distribution-api-version: registry/2.0\r\n"
-        self._add(key, headers + b"\r\n" + body + b"trailing-junk", mtime)
+        self._add(key, headers + b"\r\n" + body + trailing, mtime)
         return f"sha256:{digest}"
 
     def add_blob(
@@ -361,9 +367,11 @@ def test_extract_json_document_bytes_are_exact() -> None:
     )
     extracted = extract_json_document(content)
     assert extracted is not None
-    parsed, exact = extracted
+    parsed, exact, trailing = extracted
     assert parsed == doc
     assert exact == payload
+    # 尾随字节 = JSON 文档之后的文件剩余字节（真机形态：nginx 补的换行）
+    assert trailing == b"\r\njunk"
     assert verify_manifest_bytes(exact, f"sha256:{hashlib.sha256(payload).hexdigest()}")
 
 
@@ -447,15 +455,15 @@ def test_classify_index_without_amd64_is_still_a_usable_shape() -> None:
 
 
 def test_classify_single_arch_manifest_lists_config_and_layers() -> None:
-    """单架构 manifest → config + layers 清单（去重保序）+ 声明字节。"""
+    """单架构 manifest → config + layers 清单（去重保序）+ 声明字节（同样去重）。"""
     config, layer1, layer2 = _dg("cfg"), _dg("l1"), _dg("l2")
     shape = classify_manifest_document(_image_doc(config, [layer1, layer2, layer1]))
     assert shape is not None
     assert shape.kind == "image"
     assert shape.blob_digests == (config, layer1, layer2)
-    # 声明字节 = config + 两层 layer（去重前两层：layer1 重复只算一次？
-    # 不——layers 是数组，每项各算一次；声明字节按声明项求和）
-    assert shape.declared_blob_bytes == CONFIG_SIZE + 3 * LAYER_SIZE
+    # 声明字节与 blob 清单**同口径**（同一 digest 只算一次）：layer1 在
+    # layers 数组里出现两次，字节数也只算一次
+    assert shape.declared_blob_bytes == CONFIG_SIZE + 2 * LAYER_SIZE
 
 
 def test_classify_rejects_incomplete_blob_declarations() -> None:
@@ -474,6 +482,64 @@ def test_verify_manifest_bytes_detects_tamper() -> None:
     assert verify_manifest_bytes(payload, digest) is True
     assert verify_manifest_bytes(payload + b" ", digest) is False
     assert verify_manifest_bytes(payload, "sha256:" + "0" * 64) is False
+
+
+def test_verify_manifest_bytes_accepts_whitespace_only_trailing() -> None:
+    """上游摘要覆盖「JSON + 纯空白尾随」时也认（真机 busybox 子 manifest 形态）。
+
+    真机实证：busybox amd64 子 manifest 缓存体 = JSON 609 字节 + 尾随
+    ``\\n`` = 610 字节，摘要 sha256(610B) 覆盖**整段**；只哈希 JSON 段
+    （609B）→ 自洽失败 → 子文档被判脏 → busybox:1.37 的 SIZE 只剩 index
+    声明的 610 字节（真值 2,212,583）。
+    """
+    payload = _json_bytes({"a": 1})
+    digest = f"sha256:{hashlib.sha256(payload + b'\n').hexdigest()}"
+    assert verify_manifest_bytes(payload, digest, b"\n") is True
+    # 尾随字节必须与摘要覆盖的那一段**逐字节相同**（摘要钉死整段）
+    crlf_digest = f"sha256:{hashlib.sha256(payload + b'\r\n').hexdigest()}"
+    assert verify_manifest_bytes(payload, crlf_digest, b"\r\n") is True
+    assert verify_manifest_bytes(payload, crlf_digest, b"\n") is False
+    # 尾随信息不知情（调用方没给）→ 不放行
+    assert verify_manifest_bytes(payload, digest) is False
+
+
+def test_verify_manifest_bytes_rejects_non_whitespace_trailing() -> None:
+    """尾随含非空白字节 → 仍拒（内容寻址约束不放松成「前缀匹配」）。"""
+    payload = _json_bytes({"a": 1})
+    digest = f"sha256:{hashlib.sha256(payload + b'\n').hexdigest()}"
+    assert verify_manifest_bytes(payload, digest, b"trailing-junk") is False
+    # 纯空白但摘要对不上 → 仍拒
+    assert verify_manifest_bytes(payload, digest, b" ") is False
+
+
+def test_manifest_with_whitespace_trailing_body_still_lists_entry() -> None:
+    """尾随纯空白、摘要覆盖整段 → 条目照样上榜（真机形态回归）。"""
+    fixture = CacheFixture()
+    digest = fixture.add_manifest(
+        "library/busybox",
+        _image_doc(_dg("cfg"), [_dg("l1")]),
+        mtime=NOW - 60,
+        trailing=b"\n",
+        digest_over_trailing=True,
+    )
+    result = fixture.result()
+    assert [image.digest for image in result.images] == [digest]
+    assert result.skipped_files == 0, "尾随空白不该被判成脏条目"
+
+
+def test_manifest_with_non_whitespace_trailing_body_is_skipped() -> None:
+    """尾随含非空白字节 → 条目落榜（脏条目口径，不报错）。"""
+    fixture = CacheFixture()
+    fixture.add_manifest(
+        "library/busybox",
+        _image_doc(_dg("cfg"), [_dg("l1")]),
+        mtime=NOW - 60,
+        trailing=b"x",
+        digest_over_trailing=True,
+    )
+    result = fixture.result()
+    assert result.images == ()
+    assert result.skipped_files == 1
 
 
 # ---------------------------------------------------------------- 有效期分层
@@ -496,6 +562,16 @@ def test_blob_ttl_is_60d_hardcoded_in_proxy_image() -> None:
     登记：它与 manifest 的 180d **不同源**（镜像模板写死，平台管不到）。
     """
     assert blob_ttl_seconds() == 60 * DAY
+
+
+def test_inactive_ttl_is_180d_matching_proxy_env() -> None:
+    """nginx inactive 回收阈值 180d——与代理启动 env 的 CACHE_INACTIVE 同值。
+
+    「统一 180 天」要落到**回收侧**才有意义：manifest 有效期 180d、回收
+    阈值也 180d，两者同值（平台显式传 CACHE_INACTIVE=180d，见
+    ``proxy.CACHE_INACTIVE``）。
+    """
+    assert INACTIVE_TTL == TTL_180D
 
 
 # ---------------------------------------------------------------- 条目聚合

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 from pathlib import Path
@@ -10,9 +11,11 @@ from pathlib import Path
 import pytest
 
 from sandbox_platform import (
+    CommandError,
     LifecycleError,
     PlatformConfig,
     ProxyProbe,
+    ProxyError,
     RegistryProxyManager,
     SystemUser,
     UserSpaceManager,
@@ -113,6 +116,30 @@ class FakeDocker:
     def creations(self) -> list[list[str]]:
         """所有「创建容器」的命令。"""
         return [cmd for cmd in self.commands if cmd[:2] == ["docker", "run"]]
+
+
+class RemoveFailsDocker(FakeDocker):
+    """删容器必失败的假 docker（``docker rm -f`` 返回非零）。
+
+    用于钉「重建路径上删除失败必须报错」：旧容器删不掉时不能继续往下走
+    （否则 env 漂移被静默吞掉）。
+    """
+
+    def __call__(self, argv, *, env=None, check=False, timeout=None, cwd=None, stdin_text=None):
+        args = [str(item) for item in argv]
+        while args[:1] == ["sudo"]:
+            args = args[2:]
+        if args[:2] == ["docker", "rm"]:
+            self.commands.append(args)
+            return CommandResult(tuple(args), 1, "", "cannot remove container")
+        return super().__call__(
+            argv,
+            env=env,
+            check=check,
+            timeout=timeout,
+            cwd=cwd,
+            stdin_text=stdin_text,
+        )
 
 
 @pytest.fixture
@@ -281,6 +308,29 @@ def test_ensure_running_injects_manifest_ttl_env(
     assert "MANIFEST_CACHE_DEFAULT_TIME=180d" in created
 
 
+def test_ensure_running_injects_cache_inactive_180d(
+    manager: RegistryProxyManager, monkeypatch
+) -> None:
+    """代理容器启动 env 显式带 ``CACHE_INACTIVE=180d``（统一 180 天的回收侧）。
+
+    入口脚本的 ``CACHE_INACTIVE`` 默认 60d（平台不传就是这个值）：不显式
+    传 180d，nginx 会在 60 天回收长期未访问的条目——manifest 声明的 180d
+    有效期就形同虚设。
+    """
+    fake = FakeDocker()
+    monkeypatch.setattr("sandbox_platform.proxy.run", fake)
+    monkeypatch.setattr(
+        manager,
+        "probe",
+        lambda: ProxyProbe(tcp=True, http=True, detail="ok"),
+    )
+    monkeypatch.setattr(manager, "host_image_exists", lambda: True)
+
+    manager.ensure_running(timeout=5)
+    created = " ".join(fake.creations()[0])
+    assert "CACHE_INACTIVE=180d" in created
+
+
 def _stale_env_container(manager: RegistryProxyManager) -> dict:
     """一个 env 过期（SECONDARY 仍是 60d）的代理容器状态。"""
     return {
@@ -357,6 +407,7 @@ def test_restart_reuses_container_when_env_matches(
             "MANIFEST_CACHE_PRIMARY_TIME=180d",
             "MANIFEST_CACHE_SECONDARY_TIME=180d",
             "MANIFEST_CACHE_DEFAULT_TIME=180d",
+            "CACHE_INACTIVE=180d",
             f"REGISTRIES={' '.join(manager.config.proxy_registries)}",
         ],
     }
@@ -373,6 +424,122 @@ def test_restart_reuses_container_when_env_matches(
     assert any(cmd[:2] == ["docker", "restart"] for cmd in fake.commands), (
         "env 一致时走原地重启"
     )
+
+
+def test_registries_order_does_not_count_as_env_drift(
+    manager: RegistryProxyManager, monkeypatch
+) -> None:
+    """REGISTRIES 同集合不同书写顺序 → 不算 env 漂移（不重建容器）。
+
+    ``REGISTRIES`` 是空格分隔的列表值：书写顺序不同是同一份配置，白白重建
+    一个健康的容器（重建是破坏性操作：容器 id 与进程都换掉）。
+    """
+    fake = FakeDocker()
+    fake.containers[manager.container_name] = {
+        "running": True,
+        "mounts": [
+            (str(manager.config.proxy_cache_dir), PROXY_CACHE_MOUNT),
+            (str(manager.config.proxy_ca_dir), PROXY_CA_MOUNT),
+        ],
+        "env": [
+            "ENABLE_MANIFEST_CACHE=true",
+            "MANIFEST_CACHE_PRIMARY_TIME=180d",
+            "MANIFEST_CACHE_SECONDARY_TIME=180d",
+            "MANIFEST_CACHE_DEFAULT_TIME=180d",
+            "CACHE_INACTIVE=180d",
+            f"REGISTRIES={' '.join(reversed(manager.config.proxy_registries))}",
+        ],
+    }
+    monkeypatch.setattr("sandbox_platform.proxy.run", fake)
+    monkeypatch.setattr(
+        manager,
+        "probe",
+        lambda: ProxyProbe(tcp=True, http=True, detail="ok"),
+    )
+    monkeypatch.setattr(manager, "host_image_exists", lambda: True)
+
+    assert manager.restart(timeout=5) is True
+    assert fake.creations() == [], "同集合不同顺序不算 env 漂移"
+    assert any(cmd[:2] == ["docker", "restart"] for cmd in fake.commands), (
+        "env 实质一致时走原地重启"
+    )
+
+
+def test_env_probe_failure_is_treated_as_consistent(
+    manager: RegistryProxyManager, monkeypatch, caplog
+) -> None:
+    """env 探测失败（命令超时抛异常）→ 视为一致：不删容器、不重建，但**打 warning**。
+
+    取舍（docstring 承诺）：重建是破坏性操作，不能因一次探测失败就删容器；
+    但 fail-open 必须**可观测**——静默的「视为一致」会让 env 漂移被吞掉。
+    """
+    def failing(argv, **kwargs):
+        raise CommandError(tuple(str(item) for item in argv), 124, "", "命令超时")
+
+    monkeypatch.setattr("sandbox_platform.proxy.run", failing)
+
+    with caplog.at_level(logging.WARNING):
+        assert manager._container_env_matches() is True
+
+    assert "env 探测失败" in caplog.text
+    assert manager.container_name in caplog.text
+
+
+def test_env_probe_empty_output_is_treated_as_consistent_with_warning(
+    manager: RegistryProxyManager, monkeypatch, caplog
+) -> None:
+    """env 探测输出为空 → 视为一致 + warning（同样不许静默）。"""
+    def empty(argv, *, env=None, check=False, timeout=None, cwd=None, stdin_text=None):
+        args = [str(item) for item in argv]
+        while args[:1] == ["sudo"]:
+            args = args[2:]
+        return CommandResult(tuple(args), 0, "", "")
+
+    monkeypatch.setattr("sandbox_platform.proxy.run", empty)
+
+    with caplog.at_level(logging.WARNING):
+        assert manager._container_env_matches() is True
+
+    assert "env 探测输出为空" in caplog.text
+
+
+def test_ensure_running_raises_when_container_removal_fails(
+    manager: RegistryProxyManager, monkeypatch
+) -> None:
+    """env 漂移要重建、旧容器却删不掉 → **报错**（不静默吞掉漂移）。"""
+    fake = RemoveFailsDocker()
+    fake.containers[manager.container_name] = _stale_env_container(manager)
+    monkeypatch.setattr("sandbox_platform.proxy.run", fake)
+    monkeypatch.setattr(
+        manager,
+        "probe",
+        lambda: ProxyProbe(tcp=True, http=True, detail="ok"),
+    )
+    monkeypatch.setattr(manager, "host_image_exists", lambda: True)
+
+    with pytest.raises(ProxyError):
+        manager.ensure_running(timeout=5)
+    assert manager.last_error
+    assert fake.creations() == [], "旧容器没删掉就不该建新的"
+
+
+def test_restart_reports_failure_when_container_removal_fails(
+    manager: RegistryProxyManager, monkeypatch
+) -> None:
+    """重启路径上删除失败 → 返回 False + 记原因（不让异常穿透到接口层）。"""
+    fake = RemoveFailsDocker()
+    fake.containers[manager.container_name] = _stale_env_container(manager)
+    monkeypatch.setattr("sandbox_platform.proxy.run", fake)
+    monkeypatch.setattr(
+        manager,
+        "probe",
+        lambda: ProxyProbe(tcp=True, http=True, detail="ok"),
+    )
+    monkeypatch.setattr(manager, "host_image_exists", lambda: True)
+
+    assert manager.restart(timeout=5) is False
+    assert manager.last_error
+    assert fake.creations() == [], "旧容器没删掉就不该建新的"
 
 
 def test_probe_requires_tcp_and_http() -> None:

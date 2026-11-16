@@ -25,7 +25,10 @@ manifest 文档声明的 config + layers 字节之和（manifest JSON 自带各�
   **无需算哈希**；tag 键的条目靠存储的上游响应头 ``docker-content-digest:``
   （小写，大小写不敏感解析）绑定到 digest；
 - manifest 体 = 存储的上游响应（``\\r\\n\\r\\n`` 之后）+ JSON，直接对 JSON
-  字节做 sha256 即可核对 digest（内容寻址自洽性校验）。
+  字节做 sha256 即可核对 digest（内容寻址自洽性校验）；**上游摘要覆盖
+  「JSON + 纯空白尾随」时同样认**（真机 busybox amd64 子 manifest：JSON
+  609 字节 + 尾随 ``\\n`` = 610 字节，摘要覆盖整段）——尾随含**非空白**
+  字节一律拒（那是文件被追加/替换过的形态）。
 
 有效期口径（对齐真机容器内 nginx 配置，全部按条目年龄 = now − mtime 判定）：
 
@@ -39,9 +42,10 @@ manifest 文档声明的 config + layers 字节之和（manifest JSON 自带各�
 - blob（按 digest）→ 60d：**写死在代理镜像的 ``nginx.conf`` 里**
   （``proxy_cache_valid 200 206 60d``，无 env 旋钮）——遗留登记项；方案 C 起
   blob 不再参与落榜判定；
-- ``inactive=60d``：入口脚本有 ``CACHE_INACTIVE`` 旋钮（默认 60d，平台未
-  传 → 实际 60d），全条目 60 天未访问被回收——mtime 口径下它不会把 180d 的
-  有效期截短（未访问 60 天的条目早已被回收，扫描器根本看不到）。
+- ``inactive=180d``：入口脚本有 ``CACHE_INACTIVE`` 旋钮（默认 60d，平台
+  **显式传 180d**——2026-11-16 用户拍板「统一 180 天」，见
+  ``proxy.CACHE_INACTIVE``），全条目 180 天未访问被回收——与 manifest
+  有效期同值，不再截短判定。
 
 实现纪律（对齐 ``proxy.py`` 的 ``cache_size_bytes`` / ``certificate_ready``）：
 
@@ -105,9 +109,9 @@ TTL_MANIFEST = 180 * _DAY
 # 方案 C 起 blob 不再参与落榜判定，此值只用于口径登记与文档。
 TTL_BLOB = 60 * _DAY
 # nginx inactive（回收长期未访问的条目）：入口脚本的 CACHE_INACTIVE 旋钮
-# 默认 60d，平台未传 → 实际 60d（遗留登记项）。它比 TTL_MANIFEST 短，但
-# 不截短判定：未访问 60 天的条目早已被 nginx 回收，扫描器看不到它们。
-INACTIVE_TTL = 60 * _DAY
+# 默认 60d，平台**显式传 180d**（proxy.CACHE_INACTIVE，2026-11-16 用户拍板
+# 「统一 180 天」）。它与 TTL_MANIFEST 同值，不截短判定。
+INACTIVE_TTL = 180 * _DAY
 
 # primary 标签前缀（真机 nginx：location ~ ^/v2/(.*)/manifests/(stable|...)）
 # 代理侧的三个分层 location 仍在（PRIMARY / SECONDARY / DEFAULT），但三个
@@ -274,15 +278,27 @@ class ManifestShape:
 
     @property
     def declared_blob_bytes(self) -> int:
-        """该文档声明的 blob 字节（config + layers 的 ``size`` 之和）。
+        """该文档声明的 blob 字节（config + layers 的 ``size`` 之和，**去重**）。
 
         **声明值**，不依赖 blob 在不在缓存——manifest JSON 自带各层大小。
+        去重口径与 :attr:`blob_digests` **同源**（同一 digest 只算一次）：
+        两个口径必须一致，否则「声明了哪些 blob」与「声明了多少字节」会
+        对不上（同一层被列两次时，字节数不能被数两次）。
         """
-        return self.config_size + sum(self.layer_sizes)
+        sizes: dict[str, int] = {}
+        if self.config_digest is not None:
+            sizes[self.config_digest] = self.config_size
+        for digest, size in zip(self.layer_digests, self.layer_sizes, strict=False):
+            sizes.setdefault(digest, size)
+        return sum(sizes.values())
 
 
-def extract_json_document(content: bytes) -> tuple[dict, bytes] | None:
+def extract_json_document(content: bytes) -> tuple[dict, bytes, bytes] | None:
     """从缓存文件字节里截出 JSON 文档（响应头与二进制头在它前面）。
+
+    返回 ``(文档对象, JSON 字节, 尾随字节)``：JSON 字节是从文件里截出的
+    **原样字节**（可直接 sha256），尾随字节是 JSON 文档**之后**的文件剩余
+    字节（真机形态通常是 nginx 落盘时补的换行 ``\\n``）。
 
     对每个 ``{`` 逐个尝试 ``raw_decode``（容忍尾部多余字节），第一个能解析
     出对象的起点胜出：nginx 二进制头里偶发 ``0x7B`` 字节（真机 python
@@ -302,7 +318,9 @@ def extract_json_document(content: bytes) -> tuple[dict, bytes] | None:
             start = text.find("{", start + 1)
             continue
         if isinstance(obj, dict):
-            return obj, content[start : start + (end - start)]
+            # latin-1 是 1 字符 = 1 字节，text 的下标与 content 的字节下标同构
+            json_bytes = content[start:end]
+            return obj, json_bytes, content[end:]
         start = text.find("{", start + 1)
     return None
 
@@ -388,16 +406,30 @@ def _classify_index(entries: list) -> ManifestShape:
     return ManifestShape(kind="index")
 
 
-def verify_manifest_bytes(json_bytes: bytes, digest: str) -> bool:
+def verify_manifest_bytes(json_bytes: bytes, digest: str, trailing: bytes = b"") -> bool:
     """manifest 的内容寻址自洽性：JSON 字节的 sha256 应等于 digest。
 
     这一条把「缓存文件确实是对应 digest 的那份 manifest」钉死：KEY 行、
     响应头与 JSON 体三者互相印证，任一被篡改都过不了。
+
+    **两种口径都接受**（上游摘要有时覆盖「JSON + 尾随空白」整段体）：
+
+    1. ``sha256(纯 JSON)``——上游摘要只覆盖 JSON 文档本身；
+    2. ``sha256(JSON + 仅空白尾随)``——上游摘要覆盖 JSON 文档连同其后
+       的**纯空白**尾随（真机 busybox amd64 子 manifest：JSON 609 字节 +
+       尾随 ``\\n`` = 610 字节，摘要覆盖整段 610 字节）。
+
+    尾随**含非空白字节**时一律拒：那是文件被追加 / 替换过的形态，不是
+    「排版差异」，放行等于把内容寻址约束放松成「前缀匹配」。
     """
     if not is_sha256_digest(digest):
         return False
-    actual = f"sha256:{hashlib.sha256(json_bytes).hexdigest()}"
-    return actual == digest
+    expected = digest.removeprefix("sha256:")
+    if hashlib.sha256(json_bytes).hexdigest() == expected:
+        return True
+    if trailing and not trailing.strip():
+        return hashlib.sha256(json_bytes + trailing).hexdigest() == expected
+    return False
 
 
 def extract_header_digest(content: bytes) -> str | None:
@@ -554,9 +586,9 @@ def scan_manifest_records(
         if extracted is None:
             skipped += 1
             continue
-        doc, json_bytes = extracted
+        doc, json_bytes, trailing = extracted
         digest = ref.digest or extract_header_digest(body)
-        if digest is None or not verify_manifest_bytes(json_bytes, digest):
+        if digest is None or not verify_manifest_bytes(json_bytes, digest, trailing):
             skipped += 1
             continue
         shape = classify_manifest_document(doc)
@@ -743,7 +775,7 @@ class RegistryCacheScanner:
         return self.config.proxy_cache_dir
 
     def scan(self, now: float | None = None) -> CacheScanResult:
-        """扫描缓存目录，产出已完整缓存的镜像清单。
+        """扫描缓存目录，产出拉取过的镜像清单（方案 C：manifest 在缓存即条目）。
 
         特权 IO 分三步、每步尽量一次批量完成，宿主命令 30 秒超时封顶：
         ① 枚举文件（直读失败回退特权 ``find``）；② 全量文件头批量读；

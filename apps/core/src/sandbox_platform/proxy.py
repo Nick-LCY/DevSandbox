@@ -24,7 +24,9 @@
   ``AUTH_REGISTRIES``、``ENABLE_MANIFEST_CACHE``、
   ``MANIFEST_CACHE_PRIMARY_TIME`` / ``MANIFEST_CACHE_SECONDARY_TIME`` /
   ``MANIFEST_CACHE_DEFAULT_TIME``（manifest 缓存三层有效期，平台**全部显式
-  180d**，见 :data:`MANIFEST_CACHE_PRIMARY_TIME`）；
+  180d**，见 :data:`MANIFEST_CACHE_PRIMARY_TIME`）、
+  ``CACHE_INACTIVE``（nginx 回收长期未访问条目的阈值，平台**显式 180d**，
+  见 :data:`CACHE_INACTIVE`）；
 - 卷：``/docker_mirror_cache``（镜像层缓存）、``/ca``（CA 与私钥，必须持久化）；
 - CA：代理把证书写在 ``/ca/ca.crt``，同时通过 ``http://<host>:3128/ca.crt`` 对外提供；
   私钥在 ``/ca/ca.key``。
@@ -79,11 +81,21 @@ RESTART_COMMAND_TIMEOUT = 120
 #
 # 注意：manifest 的两个分层正则（MANIFEST_CACHE_PRIMARY_REGEX /
 # MANIFEST_CACHE_SECONDARY_REGEX）由镜像自带，平台不接管；blob 的
-# `proxy_cache_valid 200 206 60d` 写死在镜像的 nginx.conf 里（无 env 旋钮），
-# inactive 的 CACHE_INACTIVE 旋钮平台未传（实际 60d）——两项均为遗留登记。
+# `proxy_cache_valid 200 206 60d` 写死在镜像的 nginx.conf 里（无 env 旋钮）
+# ——遗留登记。
 MANIFEST_CACHE_PRIMARY_TIME = "180d"
 MANIFEST_CACHE_SECONDARY_TIME = "180d"
 MANIFEST_CACHE_DEFAULT_TIME = "180d"
+
+# nginx inactive（回收长期未访问的缓存条目）：入口脚本的 CACHE_INACTIVE 旋钮
+# 默认 60d，平台未传 → 实际 60d。**平台显式传 180d**（2026-11-16 用户拍板
+# 「统一 180 天」）：这是「统一 180 天」真正落到回收侧的旋钮——manifest
+# 条目声明的有效期 180d，回收阈值也得是 180d，否则 manifest 有效期形同
+# 虚设（条目会被 inactive 提前回收）。
+CACHE_INACTIVE = "180d"
+
+# env 值按**集合**比较的键（空格分隔的列表值）：书写顺序不同不算漂移。
+ENV_LIST_KEYS = frozenset({"REGISTRIES"})
 
 
 def proxy_container_name(port: int) -> str:
@@ -306,8 +318,9 @@ class RegistryProxyManager:
     def _container_env(self) -> dict[str, str]:
         """平台托管的容器 env（启动时以 ``-e`` 显式传入的那几个）。
 
-        平台只管这几个：仓库清单、manifest 缓存开关、manifest 三层有效期。
-        镜像自带的其余 env（两个分层正则、``CACHE_INACTIVE`` 等）平台不接管。
+        平台只管这几个：仓库清单、manifest 缓存开关、manifest 三层有效期、
+        nginx inactive 回收阈值。镜像自带的其余 env（两个分层正则等）平台
+        不接管。
         """
         return {
             "REGISTRIES": " ".join(self.config.proxy_registries),
@@ -315,7 +328,21 @@ class RegistryProxyManager:
             "MANIFEST_CACHE_PRIMARY_TIME": MANIFEST_CACHE_PRIMARY_TIME,
             "MANIFEST_CACHE_SECONDARY_TIME": MANIFEST_CACHE_SECONDARY_TIME,
             "MANIFEST_CACHE_DEFAULT_TIME": MANIFEST_CACHE_DEFAULT_TIME,
+            "CACHE_INACTIVE": CACHE_INACTIVE,
         }
+
+    @staticmethod
+    def _env_value_matches(key: str, actual: str | None, expected: str) -> bool:
+        """env 值是否一致（列表型 env 按**集合**比较）。
+
+        ``REGISTRIES`` 之类是空格分隔的列表值：同集合不同书写顺序**不算**
+        漂移（否则会白白删掉一个健康的容器重建）。其余 env 按字面比较。
+        """
+        if actual is None:
+            return False
+        if key in ENV_LIST_KEYS:
+            return sorted(actual.split()) == sorted(expected.split())
+        return actual == expected
 
     def _container_env_matches(self) -> bool:
         """容器当前 env 是否与平台托管 env 一致（不一致 → 需重建容器）。
@@ -323,34 +350,63 @@ class RegistryProxyManager:
         ``docker restart`` **不会**换 env：改了启动参数想让新值生效，必须
         删除后重建容器。因此重启 / 确保在跑的路径都要先对账 env。
 
-        探测失败（命令失败 / 输出不可解析）→ **视为一致**（不触发重建）：
-        重建是破坏性操作（容器 id 与进程都换掉），不能因一次探测失败就删
-        容器——宁可不重建（旧 env 继续跑），也不误删。
+        探测失败（命令失败 / 超时 / 输出为空 / 输出不可解析）→ **视为一致**
+        （不触发重建）：重建是破坏性操作（容器 id 与进程都换掉），不能因
+        一次探测失败就删容器——宁可不重建（旧 env 继续跑），也不误删。
+
+        **每一次 fail-open 都打 warning**（容器名 + 原因）：静默的「视为
+        一致」会让 env 漂移被吞掉，事后无从查起（这正是本轮审查补的洞）。
         """
-        result = run(
-            self.privilege.wrap(
-                [
-                    "docker",
-                    "inspect",
-                    "--format",
-                    "{{json .Config.Env}}",
-                    self.container_name,
-                ]
-            ),
-            check=False,
-            timeout=DOCKER_INSPECT_TIMEOUT,
-        )
+        try:
+            result = run(
+                self.privilege.wrap(
+                    [
+                        "docker",
+                        "inspect",
+                        "--format",
+                        "{{json .Config.Env}}",
+                        self.container_name,
+                    ]
+                ),
+                check=False,
+                timeout=DOCKER_INSPECT_TIMEOUT,
+            )
+        except CommandError as exc:
+            logger.warning(
+                "代理容器 env 探测失败（%s）：%s；按「视为一致」处理，不重建容器",
+                self.container_name,
+                exc,
+            )
+            return True
         if not result.ok:
+            logger.warning(
+                "代理容器 env 探测失败（%s，退出码 %s）；按「视为一致」处理，不重建容器",
+                self.container_name,
+                result.returncode,
+            )
             return True
         raw_text = result.stdout.strip()
         if not raw_text:
             # 探测不到 env（输出为空）→ 视为一致：不因探测失败删容器
+            logger.warning(
+                "代理容器 env 探测输出为空（%s）；按「视为一致」处理，不重建容器",
+                self.container_name,
+            )
             return True
         try:
             raw = json.loads(raw_text)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "代理容器 env 探测输出不可解析（%s）：%s；按「视为一致」处理，不重建容器",
+                self.container_name,
+                exc,
+            )
             return True
         if not isinstance(raw, list):
+            logger.warning(
+                "代理容器 env 探测输出不是列表（%s）；按「视为一致」处理，不重建容器",
+                self.container_name,
+            )
             return True
         current: dict[str, str] = {}
         for item in raw:
@@ -359,7 +415,8 @@ class RegistryProxyManager:
             key, _, value = item.partition("=")
             current[key] = value
         return all(
-            current.get(key) == value for key, value in self._container_env().items()
+            self._env_value_matches(key, current.get(key), value)
+            for key, value in self._container_env().items()
         )
 
     def ensure_running(self, timeout: int = 120) -> bool:
@@ -386,10 +443,10 @@ class RegistryProxyManager:
         if self.container_exists():
             if not self._bind_mounts_match():
                 logger.warning("代理容器挂载与当前配置不一致，重建容器")
-                self.remove()
+                self._remove_or_raise()
             elif not self._container_env_matches():
                 logger.warning("代理容器 env 与当前配置不一致，重建容器")
-                self.remove()
+                self._remove_or_raise()
             elif not self.container_running():
                 logger.info("代理容器已存在但未运行，启动它")
                 started = run(
@@ -401,7 +458,7 @@ class RegistryProxyManager:
                     # 起不动的容器（比如端口被占）不能一直占着名字：删掉重建
                     self.last_error = started.output.strip()
                     logger.warning("代理容器启动失败，删除后重建：%s", self.last_error)
-                    self.remove()
+                    self._remove_or_raise()
         if not self.container_exists():
             if not self.ensure_image():
                 return False
@@ -462,12 +519,12 @@ class RegistryProxyManager:
                 if not self._bind_mounts_match():
                     # 挂载与当前配置不一致（数据根被重定向过）：删除后按首次启动路径重建
                     logger.warning("代理容器挂载与当前配置不一致，删除后重建")
-                    self.remove()
+                    self._remove_or_raise()
                 elif not self._container_env_matches():
                     # env 与当前配置不一致（如 manifest 有效期从 60d 改 180d）：
                     # `docker restart` 不会换 env，必须删除后重建才能生效
                     logger.warning("代理容器 env 与当前配置不一致，删除后重建")
-                    self.remove()
+                    self._remove_or_raise()
                 else:
                     logger.info("重启代理容器：%s", self.container_name)
                     result = run(
@@ -503,6 +560,12 @@ class RegistryProxyManager:
             self.last_error = f"代理重启命令执行失败：{exc}"
             logger.error("重启代理失败：%s", exc)
             return False
+        except ProxyError as exc:
+            # 删除失败（重建路径）：错误已在 _remove_or_raise 里记过 last_error，
+            # 这里不让异常穿透到接口层——重启接口据此稳定返回 200 + 失败状态
+            self.last_error = str(exc)
+            logger.error("重启代理失败：%s", exc)
+            return False
 
     def remove(self) -> bool:
         """删除代理容器。"""
@@ -512,6 +575,23 @@ class RegistryProxyManager:
             timeout=120,
         )
         return result.ok
+
+    def _remove_or_raise(self) -> None:
+        """删除代理容器；删除失败**抛错**（fail loud，不静默吞掉）。
+
+        删除失败还继续往下走 = 旧容器占着名字与端口，新容器起不来，**env
+        漂移被静默吞掉**（最典型的表现：改了有效期，重启后旧 env 照旧跑，
+        而日志里什么异常都没有）。重建路径上的删除必须失败即报错。
+
+        抛 :class:`ProxyError`：它与代理的其它失败（不可达 / CA 读不到）
+        同属一个域，调用方按同一口径处理。
+        """
+        if self.remove():
+            return
+        message = "删除代理容器失败（旧容器删不掉，env / 挂载漂移无法重建）"
+        self.last_error = f"{message}：{self.container_name}"
+        logger.error("%s：%s", message, self.container_name)
+        raise ProxyError(self.last_error)
 
     # ---------------------------------------------------------------- 状态查询
     def cache_size_bytes(self) -> int:
