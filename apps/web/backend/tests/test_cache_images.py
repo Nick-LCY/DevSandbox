@@ -335,7 +335,7 @@ def test_text_format_is_prerendered_plain_text(
     assert "链大小：123 字节" in text
     assert "缓存时间：2026-11-14T01:00:00+00:00" in text
     # 防误读说明在场（表头/尾注）
-    assert "不可把各条链大小求和" in text
+    assert "不可求和当缓存占用" in text
     assert "后者标签列表为空" in text
 
 
@@ -534,7 +534,29 @@ def test_render_text_empty_list_is_explicit_not_misleading() -> None:
     text = render_cache_images_text(make_result(images=()))
     assert "没有已完整缓存的镜像" in text
     assert "生成时间：" in text
-    assert "不可把各条链大小求和" in text
+    assert "不可求和当缓存占用" in text
+
+
+def test_render_text_size_note_uses_declared_bytes_wording() -> None:
+    """SIZE 尾注改为「声明字节数」措辞（2026-11-16 用户拍板），旧措辞退役。
+
+    方案 C 下 ``total_size_bytes`` 是**声明链字节**（manifest 文档声明的
+    config + layers），不再是「拉取该条所需链字节」——尾注必须同步改口径，
+    否则 bash 侧会把声明值误读成实际下载量。
+    """
+    text = render_cache_images_text(make_result(images=(make_image(),)))
+    assert (
+        "说明：total_size_bytes（链大小）为该镜像链的声明字节数，"
+        "条目间共享 blob，不可求和当缓存占用。"
+    ) in text
+    # 旧措辞整体退役
+    assert "拉取该条目所需链" not in text
+    assert "不可把各条链大小求和" not in text
+    # 另一则尾注（「两行现象」）不变
+    assert (
+        "注记：同一镜像可能出现「index 条目 + 平台 manifest 条目」两行，"
+        "后者标签列表为空。"
+    ) in text
 
 
 # ---------------------------------------------------------------- tags=only：装配层过滤
@@ -853,5 +875,5 @@ def test_default_text_render_unchanged_without_table_markers() -> None:
     assert "CACHED TIME" not in text
     assert "清单生成时间" not in text
     # 两则尾注维持不变
-    assert "不可把各条链大小求和" in text
+    assert "不可求和当缓存占用" in text
     assert "后者标签列表为空" in text

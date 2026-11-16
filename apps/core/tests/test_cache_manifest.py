@@ -54,6 +54,13 @@ BINARY_NOISE = (
     b"\x05\x00\x00\x00" + b"\xff" * 8 + b"\x1c{\x00" + b"\x00" * 295 + b"\n"
 )
 DAY = 24 * 3600
+# manifest 有效期：统一 180 天（2026-11-16 用户拍板）
+TTL_180D = 180 * DAY
+
+# ---- 声明字节常量（方案 C 的 SIZE 口径：manifest JSON 自带的 size 字段）
+CONFIG_SIZE = 1000  # config 描述符声明的字节数
+LAYER_SIZE = 5000  # 每个 layer 描述符声明的字节数
+CHILD_MANIFEST_SIZE = 2000  # index 里声明的 amd64 子 manifest 文档字节数
 
 
 # ---------------------------------------------------------------- 小工具
@@ -62,12 +69,19 @@ def _dg(seed: str) -> str:
     return "sha256:" + hashlib.sha256(seed.encode()).hexdigest()
 
 
-def _index_doc(amd64_digest: str, extra_entries: list | None = None) -> dict:
-    """多架构 index 文档（OCI index 与 docker manifest list 同构）。"""
+def _index_doc(
+    amd64_digest: str, extra_entries: list | None = None, *, amd64_size: int = CHILD_MANIFEST_SIZE
+) -> dict:
+    """多架构 index 文档（OCI index 与 docker manifest list 同构）。
+
+    amd64 描述项带 ``size``（子 manifest 文档的字节数）——index 声明的
+    子 manifest 大小是方案 C 的 SIZE 口径里「已可计算部分」的一半。
+    """
     entries = [
         {
             "mediaType": "application/vnd.oci.image.manifest.v1+json",
             "digest": amd64_digest,
+            "size": amd64_size,
             "platform": {"os": "linux", "architecture": "amd64"},
         }
     ]
@@ -76,16 +90,27 @@ def _index_doc(amd64_digest: str, extra_entries: list | None = None) -> dict:
     return {"schemaVersion": 2, "manifests": entries}
 
 
-def _image_doc(config_digest: str, layer_digests: list[str]) -> dict:
-    """单架构 manifest 文档（config + layers）。"""
+def _image_doc(
+    config_digest: str,
+    layer_digests: list[str],
+    *,
+    config_size: int = CONFIG_SIZE,
+    layer_size: int = LAYER_SIZE,
+) -> dict:
+    """单架构 manifest 文档（config + layers，带各自声明的字节数）。"""
     return {
         "schemaVersion": 2,
         "config": {
             "mediaType": "application/vnd.oci.image.config.v1+json",
             "digest": config_digest,
+            "size": config_size,
         },
         "layers": [
-            {"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip", "digest": d}
+            {
+                "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+                "digest": d,
+                "size": layer_size,
+            }
             for d in layer_digests
         ],
     }
@@ -149,7 +174,7 @@ class CacheFixture:
     def add_blob(
         self, repo: str, digest: str, *, mtime: float, padding: int = 64
     ) -> None:
-        """添加一个 blob 条目（存在性由前向公式判定，内容无关紧要）。"""
+        """添加一个 blob 条目（内容无关紧要：方案 C 起 blob 不参与落榜判定）。"""
         key = f"/v2/{repo}/blobs/{digest}"
         headers = b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\r\n"
         self._add(key, headers + b"\x00" * padding, mtime)
@@ -386,37 +411,55 @@ def test_classify_index_selects_amd64_and_skips_attestation() -> None:
             {
                 "mediaType": "application/vnd.oci.image.manifest.v1+json",
                 "digest": attestation,
+                "size": 700,
                 "platform": {"os": "unknown", "architecture": "unknown"},
             }
         ],
     )
     shape = classify_manifest_document(doc)
-    assert shape == ManifestShape(kind="index", amd64_digest=amd64)
+    assert shape == ManifestShape(
+        kind="index",
+        amd64_digest=amd64,
+        amd64_manifest_size=CHILD_MANIFEST_SIZE,
+    )
 
 
-def test_classify_index_without_amd64_is_unusable() -> None:
-    """没有 linux/amd64 平台的 index → ``None``（整条落榜）。"""
+def test_classify_index_without_amd64_is_still_a_usable_shape() -> None:
+    """没有 linux/amd64 的 index 仍可解析（方案 C：拉过就算，条目照旧上榜）。
+
+    只认 arm64 的 index 是合法文档：形状成立但 amd64 缺席 → SIZE 只含已可
+    计算部分（即 0）。结构不可解析（不是 manifest/index）才落榜。
+    """
     arm_only = {
         "schemaVersion": 2,
         "manifests": [
-            {"digest": _dg("arm64"), "platform": {"os": "linux", "architecture": "arm64"}}
+            {
+                "digest": _dg("arm64"),
+                "size": 671,
+                "platform": {"os": "linux", "architecture": "arm64"},
+            }
         ],
     }
-    assert classify_manifest_document(arm_only) is None
-    assert classify_manifest_document({"manifests": []}) is None
+    shape = classify_manifest_document(arm_only)
+    assert shape == ManifestShape(kind="index")
+    assert shape.amd64_digest is None
+    assert shape.declared_blob_bytes == 0
 
 
 def test_classify_single_arch_manifest_lists_config_and_layers() -> None:
-    """单架构 manifest → config + layers 清单（去重保序）。"""
+    """单架构 manifest → config + layers 清单（去重保序）+ 声明字节。"""
     config, layer1, layer2 = _dg("cfg"), _dg("l1"), _dg("l2")
     shape = classify_manifest_document(_image_doc(config, [layer1, layer2, layer1]))
     assert shape is not None
     assert shape.kind == "image"
     assert shape.blob_digests == (config, layer1, layer2)
+    # 声明字节 = config + 两层 layer（去重前两层：layer1 重复只算一次？
+    # 不——layers 是数组，每项各算一次；声明字节按声明项求和）
+    assert shape.declared_blob_bytes == CONFIG_SIZE + 3 * LAYER_SIZE
 
 
 def test_classify_rejects_incomplete_blob_declarations() -> None:
-    """config 缺失 / layer digest 形态非法 / 结构不对 → ``None``。"""
+    """结构不全（无 config / layers 非列表 / 摘要形态非法）→ ``None``（落榜）。"""
     config, layer = _dg("cfg"), _dg("l1")
     assert classify_manifest_document({"layers": [{"digest": layer}]}) is None
     broken_layer = {"config": {"digest": config}, "layers": [{"digest": "sha256:zz"}]}
@@ -434,39 +477,30 @@ def test_verify_manifest_bytes_detects_tamper() -> None:
 
 
 # ---------------------------------------------------------------- 有效期分层
-def test_manifest_ttl_by_digest_and_blob_are_60d() -> None:
-    """按 digest 引用的 manifest 与 blob 都是 60d（nginx 全局规则）。"""
-    ref = parse_cache_key("/v2/library/nginx/manifests/sha256:" + "a" * 64)
-    assert manifest_ttl_seconds(ref) == 60 * DAY
+def test_manifest_ttl_is_180d_for_every_reference_form() -> None:
+    """有效期统一 180 天：任何引用形态都一样（对齐代理 env 三个 TIME 旋钮）。"""
+    digest_ref = parse_cache_key("/v2/library/nginx/manifests/sha256:" + "a" * 64)
+    assert digest_ref is not None
+    assert manifest_ttl_seconds(digest_ref) == TTL_180D
+    # 旧分层里的三类标签（primary 前缀 / 版本式 / 其余）现在同值
+    for tag in ("stable", "nightly", "production", "test", "3.12-slim", "16", "latest"):
+        ref = parse_cache_key(f"/v2/library/postgres/manifests/{tag}")
+        assert ref is not None
+        assert manifest_ttl_seconds(ref) == TTL_180D
+
+
+def test_blob_ttl_is_60d_hardcoded_in_proxy_image() -> None:
+    """blob 有效期 60d——代理镜像 nginx.conf 里写死（无 env 旋钮，遗留登记项）。
+
+    方案 C 起 blob 不再参与落榜判定（manifest 在缓存即上榜），此值只作口径
+    登记：它与 manifest 的 180d **不同源**（镜像模板写死，平台管不到）。
+    """
     assert blob_ttl_seconds() == 60 * DAY
-
-
-@pytest.mark.parametrize(
-    ("tag", "expected"),
-    [
-        ("stable", 10 * 60),  # primary 前缀
-        ("nightly", 10 * 60),
-        ("production", 10 * 60),
-        ("test", 10 * 60),
-        ("test-suite", 10 * 60),  # 前缀语义（nginx 正则不锚定结尾）
-        ("unstable", 3600),  # 「stable」不在开头，不命中 primary
-        ("3.12-slim", 60 * DAY),  # 版本式标签（≥3 个数字/点字符）
-        ("5.2.37", 60 * DAY),
-        ("1.2", 60 * DAY),
-        ("16", 3600),  # 只有一个数字段 → 默认 1h
-        ("16-alpine", 3600),
-        ("latest", 3600),
-    ],
-)
-def test_manifest_tag_tiers(tag: str, expected: int) -> None:
-    """标签分层复刻真机 nginx：primary 10m / 版本式 60d / 其余 1h。"""
-    ref = parse_cache_key(f"/v2/library/postgres/manifests/{tag}")
-    assert manifest_ttl_seconds(ref) == expected
 
 
 # ---------------------------------------------------------------- 条目聚合
 def test_assemble_multi_arch_chain_with_merged_sources() -> None:
-    """多架构完整链：标签条目与 digest 条目同 digest 归并，字段完整。"""
+    """多架构链：标签条目与 digest 条目同 digest 归并，SIZE = 声明链字节。"""
     fixture = CacheFixture()
     index_digest, child_digest, blobs = _add_full_chain(
         fixture, tag="v2", index_mtime=NOW - 120, child_mtime=NOW - 60
@@ -479,20 +513,18 @@ def test_assemble_multi_arch_chain_with_merged_sources() -> None:
     assert len(index_images) == 1
     image = index_images[0]
     assert image.tags == ("v2",)
-    # 总大小 = index 文件 + 平台 manifest 文件 + config + 两层 layer（实际字节）
-    relpaths = [
-        cache_file_relpath(
-            f"/v2/library/postgres/manifests/sha256:{index_digest.split(':')[-1]}"
-        ),
-        cache_file_relpath(
-            f"/v2/library/postgres/manifests/sha256:{child_digest.split(':')[-1]}"
-        ),
-        *[blob_forward_relpath("library/postgres", d) for d in blobs],
-    ]
-    assert image.total_size_bytes == sum(
-        len(fixture.content[relpath]) for relpath in relpaths
+    # 声明链字节 = index 声明的子 manifest 文档字节 + 子 manifest 声明的
+    # config + 两层 layer（**不看 blob 在不在缓存**）
+    assert image.total_size_bytes == (
+        CHILD_MANIFEST_SIZE + CONFIG_SIZE + 2 * LAYER_SIZE
     )
     assert image.cached_at == "2027-01-15T07:59:30Z"
+    # 子 manifest 自己也单列一条（它自己的声明字节）
+    child_images = [
+        image for image in result.images if image.digest == child_digest
+    ]
+    assert len(child_images) == 1
+    assert child_images[0].total_size_bytes == CONFIG_SIZE + 2 * LAYER_SIZE
 
 
 def test_assemble_merges_two_tags_pointing_to_same_digest() -> None:
@@ -530,7 +562,7 @@ def test_assemble_digest_pull_only_has_empty_tags() -> None:
 
 
 def test_assemble_expired_tag_drops_tag_but_digest_entry_stays() -> None:
-    """标签条目过期（1h 分层）落标签绑定；同内容的 digest 条目仍上榜。"""
+    """标签条目过期（超过 180d）落标签绑定；同内容的 digest 条目仍上榜。"""
     fixture = CacheFixture()
     config, layer1, layer2 = _dg("cfg"), _dg("l1"), _dg("l2")
     child_digest = fixture.add_manifest(
@@ -538,8 +570,8 @@ def test_assemble_expired_tag_drops_tag_but_digest_entry_stays() -> None:
     )
     index_doc = _index_doc(child_digest)
     index_digest = fixture.add_manifest(
-        "library/postgres", index_doc, mtime=NOW - 7200, ref="16"
-    )  # 「16」是 1h 分层，2 小时前缓存 → 已过期
+        "library/postgres", index_doc, mtime=NOW - 181 * DAY, ref="16"
+    )  # 181 天前缓存 → 超过 180d 有效期
     fixture.add_manifest("library/postgres", index_doc, mtime=NOW - 60)
     fixture.add_blob("library/postgres", config, mtime=NOW - 60)
     fixture.add_blob("library/postgres", layer1, mtime=NOW - 60)
@@ -553,19 +585,19 @@ def test_assemble_expired_tag_drops_tag_but_digest_entry_stays() -> None:
 
 
 def test_assemble_all_expired_entries_drop_off() -> None:
-    """整组条目都超过 60d → 全部落榜（PRD 验收 7 的「过期不误导」）。"""
+    """整组条目都超过 180d → 全部落榜（过期不误导）。"""
     fixture = CacheFixture()
     _add_full_chain(
         fixture,
-        index_mtime=NOW - 61 * DAY,
-        child_mtime=NOW - 61 * DAY,
-        blob_mtime=NOW - 61 * DAY,
+        index_mtime=NOW - 181 * DAY,
+        child_mtime=NOW - 181 * DAY,
+        blob_mtime=NOW - 181 * DAY,
     )
     assert fixture.result().images == ()
 
 
-def test_assemble_versionish_tag_survives_beyond_one_hour() -> None:
-    """版本式标签（60d 分层）超过 1h 仍存活——分层口径的正例。"""
+def test_assemble_tag_survives_beyond_one_hour() -> None:
+    """标签有效期统一 180 天：2 小时前的标签绑定仍存活（旧 1h 分层已废）。"""
     fixture = CacheFixture()
     child_digest = fixture.add_manifest(
         "library/python",
@@ -584,50 +616,102 @@ def test_assemble_versionish_tag_survives_beyond_one_hour() -> None:
     assert slim_images[0].tags == ("3.12-slim",)
 
 
-def test_assemble_missing_blob_drops_entry() -> None:
-    """blob 不在缓存 → 整条落榜（保守口径，绝不把不完整说成已缓存）。"""
+def test_assemble_missing_blob_still_lists_entry_with_declared_size() -> None:
+    """blob 不在缓存 → **条目仍上榜**（方案 C：拉过就算），SIZE = 声明值。"""
     fixture = CacheFixture()
     config, layer1, layer2 = _dg("cfg"), _dg("l1"), _dg("l2")
     child_digest = fixture.add_manifest(
         "library/postgres", _image_doc(config, [layer1, layer2]), mtime=NOW - 60
     )
-    fixture.add_manifest(
+    index_digest = fixture.add_manifest(
         "library/postgres", _index_doc(child_digest), mtime=NOW - 60
     )
     fixture.add_blob("library/postgres", config, mtime=NOW - 60)
     fixture.add_blob("library/postgres", layer1, mtime=NOW - 60)
-    # layer2 故意缺席
-    assert fixture.result().images == ()
+    # layer2 故意缺席（blob 未缓存）
+    images = fixture.result().images
+    index_images = [image for image in images if image.digest == index_digest]
+    assert len(index_images) == 1, "manifest 在缓存即上榜，不做 blob 完整性拦截"
+    assert index_images[0].total_size_bytes == (
+        CHILD_MANIFEST_SIZE + CONFIG_SIZE + 2 * LAYER_SIZE
+    )
+    # 子 manifest 自身也上榜（它也是一份可解析的 manifest 文档）
+    child_images = [image for image in images if image.digest == child_digest]
+    assert len(child_images) == 1
+    assert child_images[0].total_size_bytes == CONFIG_SIZE + 2 * LAYER_SIZE
 
 
-def test_assemble_expired_blob_drops_entry() -> None:
-    """blob 超过 60d 有效期 → 整条落榜。"""
+def test_assemble_expired_blob_still_lists_entry() -> None:
+    """blob 超过自身 60d 有效期 → **条目仍上榜**（blob TTL 不再是落榜判据）。"""
     fixture = CacheFixture()
-    _add_full_chain(
+    index_digest, _child, _blobs = _add_full_chain(
         fixture,
         index_mtime=NOW - 60,
         child_mtime=NOW - 60,
         blob_mtime=NOW - (61 * DAY),
     )
-    assert fixture.result().images == ()
+    images = [
+        image for image in fixture.result().images if image.digest == index_digest
+    ]
+    assert len(images) == 1
+    assert images[0].total_size_bytes == (
+        CHILD_MANIFEST_SIZE + CONFIG_SIZE + 2 * LAYER_SIZE
+    )
 
 
-def test_assemble_index_without_cached_amd64_child_drops_entry() -> None:
-    """index 在、linux/amd64 平台 manifest 不在缓存 → 整条落榜。"""
+def test_assemble_index_without_cached_amd64_child_still_lists_entry() -> None:
+    """index 在、amd64 子 manifest 不在缓存 → 条目仍上榜，SIZE 只含 index 部分。"""
     fixture = CacheFixture()
     config, layer = _dg("cfg"), _dg("l1")
-    fixture.add_manifest(
+    digest = fixture.add_manifest(
         "library/postgres",
         _index_doc("sha256:" + "c" * 64),  # 平台 manifest 没有对应缓存条目
         mtime=NOW - 60,
     )
     fixture.add_blob("library/postgres", config, mtime=NOW - 60)
     fixture.add_blob("library/postgres", layer, mtime=NOW - 60)
-    assert fixture.result().images == ()
+    images = fixture.result().images
+    index_images = [image for image in images if image.digest == digest]
+    assert len(index_images) == 1, "子 manifest 缺席不拦截条目"
+    # SIZE = index 声明的子 manifest 文档字节（已可计算部分）
+    assert index_images[0].total_size_bytes == CHILD_MANIFEST_SIZE
+
+
+def test_assemble_attestation_child_absent_does_not_block_entry() -> None:
+    """index 声明的 attestation 子 manifest 不在缓存 → 不影响条目上榜与 SIZE。"""
+    fixture = CacheFixture()
+    child_digest = fixture.add_manifest(
+        "library/nginx",
+        _image_doc(_dg("cfg"), [_dg("l1")]),
+        mtime=NOW - 60,
+    )
+    attestation = _dg("attestation")
+    index_digest = fixture.add_manifest(
+        "library/nginx",
+        _index_doc(
+            child_digest,
+            [
+                {
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "digest": attestation,
+                    "size": 700,
+                    "platform": {"os": "unknown", "architecture": "unknown"},
+                }
+            ],
+        ),
+        mtime=NOW - 60,
+    )
+    images = [
+        image for image in fixture.result().images if image.digest == index_digest
+    ]
+    assert len(images) == 1
+    assert images[0].total_size_bytes == (
+        CHILD_MANIFEST_SIZE + CONFIG_SIZE + LAYER_SIZE
+    )
 
 
 def test_assemble_single_arch_manifest_direct() -> None:
-    """单架构镜像：直接验该 manifest 的全部 blob，齐全才上榜。"""
+    """单架构镜像：manifest 在缓存即上榜，SIZE = 它声明的 config + layers。"""
     fixture = CacheFixture()
     config, layer = _dg("cfg"), _dg("l1")
     digest = fixture.add_manifest(
@@ -639,14 +723,7 @@ def test_assemble_single_arch_manifest_direct() -> None:
     assert len(images) == 1
     assert images[0].digest == digest
     assert images[0].tags == ()
-    relpaths = [
-        cache_file_relpath(f"/v2/rclone/rclone/manifests/sha256:{digest.split(':')[-1]}"),
-        blob_forward_relpath("rclone/rclone", config),
-        blob_forward_relpath("rclone/rclone", layer),
-    ]
-    assert images[0].total_size_bytes == sum(
-        len(fixture.content[relpath]) for relpath in relpaths
-    )
+    assert images[0].total_size_bytes == CONFIG_SIZE + LAYER_SIZE
 
 
 # ---------------------------------------------------------------- 纯解析阶段计数
@@ -716,8 +793,8 @@ def test_assemble_images_is_deterministic() -> None:
     _add_full_chain(fixture, index_mtime=NOW - 60, child_mtime=NOW - 60)
     files, heads, bodies = fixture.snapshot()
     records, _blobs, _skipped = scan_manifest_records(files, heads, bodies)
-    first = assemble_images(records, files, NOW)
-    second = assemble_images(records, files, NOW)
+    first = assemble_images(records, NOW)
+    second = assemble_images(records, NOW)
     assert first == second
 
 
@@ -977,9 +1054,9 @@ def test_scan_direct_read_oserror_skips_entry(
 ) -> None:
     """直读中途 OSError（非 FileNotFoundError 也能咬住）→ 按脏条目计 skipped。
 
-    读取失败只损失该条目的头（blob 计数 -1、skipped +1），镜像仍按前向
-    公式完整装配，且绝不动用特权通道（单文件脏 ≠ 整批失败）：错误语义
-    闭环，服务端拿到 200 + 真实计数而非 500。
+    读取失败只损失该条目的头（blob 计数 -1、skipped +1），manifest 条目照旧
+    上榜（方案 C：拉过就算），且绝不动用特权通道（单文件脏 ≠ 整批失败）：
+    错误语义闭环，服务端拿到 200 + 真实计数而非 500。
     """
     assert scenario  # 参数化说明已生效
     fixture = CacheFixture()

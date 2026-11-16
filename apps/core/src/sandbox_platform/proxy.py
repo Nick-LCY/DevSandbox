@@ -21,7 +21,10 @@
 - 镜像：``rpardini/docker-registry-proxy:0.8.0``（Docker Hub 与 GHCR 同源同版本）；
 - 端口：容器内 3128（上游 ``EXPOSE 3128``，客户端只应使用这一个端口）；
 - 环境变量：``REGISTRIES``（空格分隔的被拦截仓库清单，docker.io 由上游内置处理）、
-  ``AUTH_REGISTRIES``、``ENABLE_MANIFEST_CACHE`` 等；
+  ``AUTH_REGISTRIES``、``ENABLE_MANIFEST_CACHE``、
+  ``MANIFEST_CACHE_PRIMARY_TIME`` / ``MANIFEST_CACHE_SECONDARY_TIME`` /
+  ``MANIFEST_CACHE_DEFAULT_TIME``（manifest 缓存三层有效期，平台**全部显式
+  180d**，见 :data:`MANIFEST_CACHE_PRIMARY_TIME`）；
 - 卷：``/docker_mirror_cache``（镜像层缓存）、``/ca``（CA 与私钥，必须持久化）；
 - CA：代理把证书写在 ``/ca/ca.crt``，同时通过 ``http://<host>:3128/ca.crt`` 对外提供；
   私钥在 ``/ca/ca.key``。
@@ -66,6 +69,21 @@ DOCKER_INSPECT_TIMEOUT = 30
 CACHE_SIZE_TIMEOUT = 30
 # 重启命令的超时上限：实际超时取它与 restart(timeout) 的较小值
 RESTART_COMMAND_TIMEOUT = 120
+
+# manifest 缓存有效期：三个分层旋钮**全部显式 180d**（2026-11-16 用户拍板）。
+#
+# 上游镜像（rpardini/docker-registry-proxy 0.8.0）的入口脚本按这三个 env
+# 生成 nginx 的三段 manifest location（primary 前缀 / 版本式 / 其余）——分层
+# 结构保留，只是有效期同值。扫描器侧（cache_manifest.TTL_MANIFEST）同值，
+# 两端口径严格对齐。
+#
+# 注意：manifest 的两个分层正则（MANIFEST_CACHE_PRIMARY_REGEX /
+# MANIFEST_CACHE_SECONDARY_REGEX）由镜像自带，平台不接管；blob 的
+# `proxy_cache_valid 200 206 60d` 写死在镜像的 nginx.conf 里（无 env 旋钮），
+# inactive 的 CACHE_INACTIVE 旋钮平台未传（实际 60d）——两项均为遗留登记。
+MANIFEST_CACHE_PRIMARY_TIME = "180d"
+MANIFEST_CACHE_SECONDARY_TIME = "180d"
+MANIFEST_CACHE_DEFAULT_TIME = "180d"
 
 
 def proxy_container_name(port: int) -> str:
@@ -266,22 +284,83 @@ class RegistryProxyManager:
             "unless-stopped",
             "-p",
             f"127.0.0.1:{self.config.proxy_port}:{PROXY_INTERNAL_PORT}",
-            "-e",
-            f"REGISTRIES={' '.join(self.config.proxy_registries)}",
-            "-e",
-            "ENABLE_MANIFEST_CACHE=true",
-            "-v",
-            f"{self.config.proxy_cache_dir}:{PROXY_CACHE_MOUNT}",
-            "-v",
-            f"{self.config.proxy_ca_dir}:{PROXY_CA_MOUNT}",
-            self.config.proxy_image,
         ]
+        for key, value in self._container_env().items():
+            args.extend(["-e", f"{key}={value}"])
+        args.extend(
+            [
+                "-v",
+                f"{self.config.proxy_cache_dir}:{PROXY_CACHE_MOUNT}",
+                "-v",
+                f"{self.config.proxy_ca_dir}:{PROXY_CA_MOUNT}",
+                self.config.proxy_image,
+            ]
+        )
         result = run(self.privilege.wrap(args), check=False, timeout=300)
         if not result.ok:
             self.last_error = result.output.strip()
             logger.error("启动代理容器失败：%s", self.last_error)
             return False
         return True
+
+    def _container_env(self) -> dict[str, str]:
+        """平台托管的容器 env（启动时以 ``-e`` 显式传入的那几个）。
+
+        平台只管这几个：仓库清单、manifest 缓存开关、manifest 三层有效期。
+        镜像自带的其余 env（两个分层正则、``CACHE_INACTIVE`` 等）平台不接管。
+        """
+        return {
+            "REGISTRIES": " ".join(self.config.proxy_registries),
+            "ENABLE_MANIFEST_CACHE": "true",
+            "MANIFEST_CACHE_PRIMARY_TIME": MANIFEST_CACHE_PRIMARY_TIME,
+            "MANIFEST_CACHE_SECONDARY_TIME": MANIFEST_CACHE_SECONDARY_TIME,
+            "MANIFEST_CACHE_DEFAULT_TIME": MANIFEST_CACHE_DEFAULT_TIME,
+        }
+
+    def _container_env_matches(self) -> bool:
+        """容器当前 env 是否与平台托管 env 一致（不一致 → 需重建容器）。
+
+        ``docker restart`` **不会**换 env：改了启动参数想让新值生效，必须
+        删除后重建容器。因此重启 / 确保在跑的路径都要先对账 env。
+
+        探测失败（命令失败 / 输出不可解析）→ **视为一致**（不触发重建）：
+        重建是破坏性操作（容器 id 与进程都换掉），不能因一次探测失败就删
+        容器——宁可不重建（旧 env 继续跑），也不误删。
+        """
+        result = run(
+            self.privilege.wrap(
+                [
+                    "docker",
+                    "inspect",
+                    "--format",
+                    "{{json .Config.Env}}",
+                    self.container_name,
+                ]
+            ),
+            check=False,
+            timeout=DOCKER_INSPECT_TIMEOUT,
+        )
+        if not result.ok:
+            return True
+        raw_text = result.stdout.strip()
+        if not raw_text:
+            # 探测不到 env（输出为空）→ 视为一致：不因探测失败删容器
+            return True
+        try:
+            raw = json.loads(raw_text)
+        except json.JSONDecodeError:
+            return True
+        if not isinstance(raw, list):
+            return True
+        current: dict[str, str] = {}
+        for item in raw:
+            if not isinstance(item, str) or "=" not in item:
+                continue
+            key, _, value = item.partition("=")
+            current[key] = value
+        return all(
+            current.get(key) == value for key, value in self._container_env().items()
+        )
 
     def ensure_running(self, timeout: int = 120) -> bool:
         """幂等拉起代理并等到健康。
@@ -307,6 +386,9 @@ class RegistryProxyManager:
         if self.container_exists():
             if not self._bind_mounts_match():
                 logger.warning("代理容器挂载与当前配置不一致，重建容器")
+                self.remove()
+            elif not self._container_env_matches():
+                logger.warning("代理容器 env 与当前配置不一致，重建容器")
                 self.remove()
             elif not self.container_running():
                 logger.info("代理容器已存在但未运行，启动它")
@@ -380,6 +462,11 @@ class RegistryProxyManager:
                 if not self._bind_mounts_match():
                     # 挂载与当前配置不一致（数据根被重定向过）：删除后按首次启动路径重建
                     logger.warning("代理容器挂载与当前配置不一致，删除后重建")
+                    self.remove()
+                elif not self._container_env_matches():
+                    # env 与当前配置不一致（如 manifest 有效期从 60d 改 180d）：
+                    # `docker restart` 不会换 env，必须删除后重建才能生效
+                    logger.warning("代理容器 env 与当前配置不一致，删除后重建")
                     self.remove()
                 else:
                     logger.info("重启代理容器：%s", self.container_name)

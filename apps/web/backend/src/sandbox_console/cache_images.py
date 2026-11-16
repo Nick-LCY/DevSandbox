@@ -13,7 +13,7 @@
   + 生成时间 + 防误读说明）。
 - **tags=only 视图（0.4.1 轮新增；0.4.2 输出清理）**：``?tags=only`` 只保留
   标签列表非空的条目（json 与 text 同参数同语义）；text 在该视图渲染成
-  docker images 风格表格（IMAGE / ID / SIZE / CACHED TIME，服务端预渲染，
+  镜像列表工具风格表格（IMAGE / ID / SIZE / CACHED TIME，服务端预渲染，
   bash 零解析）——0.4.2 起输出**仅表体**（列头行 + 数据行）：轻表头行与
   SIZE 防误读尾注行去除（生成时间在 json ``generated_at`` 与缺省 text
   仍有承载；防误读口径承载在 API 文档第 17 章）。
@@ -99,7 +99,7 @@ def filter_tag_only(result: CacheScanResult) -> CacheScanResult:
     )
 
 
-# 十进制（1000 进制）单位序列，仿 docker images 的人读大小；TB 作兜底封顶位。
+# 十进制（1000 进制）单位序列，仿镜像列表工具的人读大小；TB 作兜底封顶位。
 _SIZE_UNITS_DECIMAL = ("B", "kB", "MB", "GB", "TB")
 
 
@@ -107,16 +107,16 @@ def format_size_decimal(size_bytes: int) -> str:
     """十进制（1000 进制）人读大小：``63.9MB`` / ``5.8kB`` / ``933B``。
 
     与 console 前端的 ``formatBytes``（KiB / MiB，二进制 1024 进制）**刻意
-    并存两套**：表格仿 docker images 的观感，docker 用十进制；console 视图
+    并存两套**：表格仿镜像列表工具的观感，它用十进制；console 视图
     维持二进制不动，互不影响。1 位小数、整数不带小数点（``1kB`` 不是
     ``1.0kB``）；本单元内四舍五入满 1000 即升单元（999_950~999_999B 渲染
-    ``1kB``、999_950kB~999_999kB 渲染 ``1MB``……与 docker 习惯一致，不会
+    ``1kB``、999_950kB~999_999kB 渲染 ``1MB``……与该习惯一致，不会
     出现 ``1000kB`` 这种行）。
     """
     size = float(size_bytes)
     unit_index = len(_SIZE_UNITS_DECIMAL) - 1
     # 999.95 = 1 位小数下四舍五入满 1000 的门槛：本单元内值 ≥ 999.95 时按
-    # docker 习惯进位升单元（999_999B → ``1MB`` 而非 ``1000kB``）；
+    # 镜像列表工具的习惯进位升单元（999_999B → ``1MB`` 而非 ``1000kB``）；
     # 999_949B 舍入仍是 ``999.9kB``。TB 作兜底封顶位，到此不再进位。
     for index, unit_name in enumerate(_SIZE_UNITS_DECIMAL):
         if size < 999.95:
@@ -149,7 +149,7 @@ def format_cached_time(cached_at: str) -> str:
 
 
 def render_cache_images_tag_only_table(result: CacheScanResult) -> str:
-    """tags=only 视图的 text 渲染：docker images 风格表格（服务端预渲染）。
+    """tags=only 视图的 text 渲染：镜像列表工具风格表格（服务端预渲染）。
 
     布局（0.4.2 输出清理后的用户拍板口径）——**仅表体**：
 
@@ -162,7 +162,7 @@ def render_cache_images_tag_only_table(result: CacheScanResult) -> str:
       读）、CACHED TIME（``YYYY-MM-DD HH:mm:ss``，UTC）；
     - 列宽按批内最长值对齐（含列表头；ljust + 两空格分隔，行尾不留空白），
       行按 repo、tag 排序保证稳定输出；
-    - 空清单 → 仅列头行（docker images 同款语义：空输出仍带列头，bash 侧
+    - 空清单 → 仅列头行（镜像列表工具同款语义：空输出仍带列头，bash 侧
       不会拿到空串；「明确空态文案」由缺省 text 承载，tag-only 视图保持
       纯表格形态）。
 
@@ -188,7 +188,7 @@ def render_cache_images_tag_only_table(result: CacheScanResult) -> str:
         max([len(title), *[len(row[column]) for row in rows]])
         for column, title in enumerate(header)
     ]
-    # 仅表体：列头行 + 数据行（空清单 → 仅列头行，docker images 同款语义）。
+    # 仅表体：列头行 + 数据行（空清单 → 仅列头行，镜像列表工具同款语义）。
     # 不再渲染轻表头行与 SIZE 尾注行（0.4.2 输出清理，口径见 docstring）。
     lines = [
         "  ".join(
@@ -211,10 +211,11 @@ def render_cache_images_text(result: CacheScanResult) -> str:
     摘要 / 链大小 / 缓存时间，条目间以横线分隔）→ 尾注两则。空清单给明确的
     空态文案——**绝不**让 bash 把「没有输出」误读成「没有缓存」。
 
-    尾注防误读（任务 01 审查裁决口径）：
+    尾注防误读（任务 01 审查裁决口径 + 2026-11-16 用户拍板修订）：
 
-    - ``total_size_bytes`` 是**拉取该条所需链**（manifest + config + layers）
-      的字节数；条目之间共享 blob，**不可求和当缓存占用**；
+    - ``total_size_bytes`` 是**该镜像链的声明字节数**（manifest 文档声明的
+      config + layers 字节总和，方案 C 下不依赖 blob 在不在缓存）；条目之间
+      共享 blob，**不可求和当缓存占用**；
     - 同一镜像可能出现「index 条目 + 平台 manifest 条目」两行（后者标签列表
       为空）——二者摘要不同，属正常。
     """
@@ -246,9 +247,8 @@ def render_cache_images_text(result: CacheScanResult) -> str:
         lines.append(separator)
     lines.extend(
         [
-            "说明：total_size_bytes（链大小）是拉取该条目所需链"
-            "（manifest + config + layers）的字节数；条目之间共享 blob，"
-            "不可把各条链大小求和当作缓存占用。",
+            "说明：total_size_bytes（链大小）为该镜像链的声明字节数，"
+            "条目间共享 blob，不可求和当缓存占用。",
             "注记：同一镜像可能出现「index 条目 + 平台 manifest 条目」两行，"
             "后者标签列表为空。",
         ]

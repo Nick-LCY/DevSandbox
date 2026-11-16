@@ -75,7 +75,7 @@ def cache_images(
     - **text**：预渲染文本（``text/plain``）——表头 + 逐行条目 + 生成时间，
       bash（``cached-images``）直接输出可读；
     - **tags=only**：只保留标签列表非空的条目（json 与 text 同参数同语义）；
-      text 在该视图渲染成 docker images 风格表格（IMAGE / ID / SIZE /
+      text 在该视图渲染成镜像列表工具风格表格（IMAGE / ID / SIZE /
       CACHED TIME，服务端预渲染）；不带该参数行为完全不变；
     - 两种格式共享同一份扫描结果（同一生成时间戳），TTL 内存缓存钉 60 秒；
     - ``format`` / ``tags`` 非法值 → 422；特权读失败或超时 → **503 + 固定文案**，

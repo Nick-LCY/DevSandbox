@@ -74,6 +74,10 @@ class FakeDocker:
                 for source, destination in container["mounts"]
             ]
             return CommandResult(tuple(args), 0, json.dumps(mounts), "")
+        if "Config.Env" in template:
+            return CommandResult(
+                tuple(args), 0, json.dumps(container.get("env", [])), ""
+            )
         if "State.Running" in template:
             return CommandResult(tuple(args), 0, "true" if container["running"] else "false", "")
         return CommandResult(tuple(args), 0, "", "")
@@ -81,12 +85,15 @@ class FakeDocker:
     def _run(self, args: list[str]) -> CommandResult:
         name = args[args.index("--name") + 1]
         mounts = []
-        for item in args:
+        env = []
+        for index, item in enumerate(args):
             if item.startswith("/") and ":" in item:
                 source, destination = item.split(":", 1)
                 if destination.startswith("/"):
                     mounts.append((source, destination))
-        self.containers[name] = {"running": True, "mounts": mounts}
+            if item == "-e" and index + 1 < len(args):
+                env.append(args[index + 1])
+        self.containers[name] = {"running": True, "mounts": mounts, "env": env}
         return CommandResult(tuple(args), 0, "container-id", "")
 
     def _apply_install(self, args: list[str]) -> None:
@@ -251,6 +258,121 @@ def test_ensure_running_rebuilds_container_with_stale_mounts(
     assert len(fake.creations()) == 1
     created = " ".join(fake.creations()[0])
     assert str(manager.config.proxy_cache_dir) in created
+
+
+def test_ensure_running_injects_manifest_ttl_env(
+    manager: RegistryProxyManager, monkeypatch
+) -> None:
+    """代理容器启动 env 显式带 manifest 三层有效期（**全部 180d**）。"""
+    fake = FakeDocker()
+    monkeypatch.setattr("sandbox_platform.proxy.run", fake)
+    monkeypatch.setattr(
+        manager,
+        "probe",
+        lambda: ProxyProbe(tcp=True, http=True, detail="ok"),
+    )
+    monkeypatch.setattr(manager, "host_image_exists", lambda: True)
+
+    manager.ensure_running(timeout=5)
+    created = " ".join(fake.creations()[0])
+    assert "ENABLE_MANIFEST_CACHE=true" in created
+    assert "MANIFEST_CACHE_PRIMARY_TIME=180d" in created
+    assert "MANIFEST_CACHE_SECONDARY_TIME=180d" in created
+    assert "MANIFEST_CACHE_DEFAULT_TIME=180d" in created
+
+
+def _stale_env_container(manager: RegistryProxyManager) -> dict:
+    """一个 env 过期（SECONDARY 仍是 60d）的代理容器状态。"""
+    return {
+        "running": True,
+        "mounts": [
+            (str(manager.config.proxy_cache_dir), PROXY_CACHE_MOUNT),
+            (str(manager.config.proxy_ca_dir), PROXY_CA_MOUNT),
+        ],
+        "env": [
+            "ENABLE_MANIFEST_CACHE=true",
+            "MANIFEST_CACHE_PRIMARY_TIME=10m",
+            "MANIFEST_CACHE_SECONDARY_TIME=60d",
+            "MANIFEST_CACHE_DEFAULT_TIME=1h",
+        ],
+    }
+
+
+def test_ensure_running_rebuilds_container_with_stale_env(
+    manager: RegistryProxyManager, monkeypatch
+) -> None:
+    """容器 env 与当前配置不一致（旧的 60d 分层）→ 删除后重建，新 env 生效。
+
+    ``docker restart`` 不会换 env：想让新的有效期真正落到容器上，必须重建。
+    """
+    fake = FakeDocker()
+    fake.containers[manager.container_name] = _stale_env_container(manager)
+    monkeypatch.setattr("sandbox_platform.proxy.run", fake)
+    monkeypatch.setattr(
+        manager,
+        "probe",
+        lambda: ProxyProbe(tcp=True, http=True, detail="ok"),
+    )
+    monkeypatch.setattr(manager, "host_image_exists", lambda: True)
+
+    assert manager.ensure_running(timeout=5) is True
+    assert len(fake.creations()) == 1, "env 漂移必须重建容器"
+    created = " ".join(fake.creations()[0])
+    assert "MANIFEST_CACHE_SECONDARY_TIME=180d" in created
+
+
+def test_restart_recreates_container_when_env_differs(
+    manager: RegistryProxyManager, monkeypatch
+) -> None:
+    """重启接口遇 env 漂移 → 重建容器（而不是原地 restart 继续用旧 env）。"""
+    fake = FakeDocker()
+    fake.containers[manager.container_name] = _stale_env_container(manager)
+    monkeypatch.setattr("sandbox_platform.proxy.run", fake)
+    monkeypatch.setattr(
+        manager,
+        "probe",
+        lambda: ProxyProbe(tcp=True, http=True, detail="ok"),
+    )
+    monkeypatch.setattr(manager, "host_image_exists", lambda: True)
+
+    assert manager.restart(timeout=5) is True
+    assert len(fake.creations()) == 1, "env 漂移时重启必须重建容器"
+    created = " ".join(fake.creations()[0])
+    assert "MANIFEST_CACHE_SECONDARY_TIME=180d" in created
+
+
+def test_restart_reuses_container_when_env_matches(
+    manager: RegistryProxyManager, monkeypatch
+) -> None:
+    """env 一致 → 原地 ``docker restart``（不重建容器）。"""
+    fake = FakeDocker()
+    fake.containers[manager.container_name] = {
+        "running": True,
+        "mounts": [
+            (str(manager.config.proxy_cache_dir), PROXY_CACHE_MOUNT),
+            (str(manager.config.proxy_ca_dir), PROXY_CA_MOUNT),
+        ],
+        "env": [
+            "ENABLE_MANIFEST_CACHE=true",
+            "MANIFEST_CACHE_PRIMARY_TIME=180d",
+            "MANIFEST_CACHE_SECONDARY_TIME=180d",
+            "MANIFEST_CACHE_DEFAULT_TIME=180d",
+            f"REGISTRIES={' '.join(manager.config.proxy_registries)}",
+        ],
+    }
+    monkeypatch.setattr("sandbox_platform.proxy.run", fake)
+    monkeypatch.setattr(
+        manager,
+        "probe",
+        lambda: ProxyProbe(tcp=True, http=True, detail="ok"),
+    )
+    monkeypatch.setattr(manager, "host_image_exists", lambda: True)
+
+    assert manager.restart(timeout=5) is True
+    assert fake.creations() == [], "env 一致时不该重建容器"
+    assert any(cmd[:2] == ["docker", "restart"] for cmd in fake.commands), (
+        "env 一致时走原地重启"
+    )
 
 
 def test_probe_requires_tcp_and_http() -> None:

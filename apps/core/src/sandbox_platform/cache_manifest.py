@@ -2,9 +2,16 @@
 
 统一镜像代理（``rpardini/docker-registry-proxy``）把拉过的镜像内容按 nginx
 ``proxy_cache`` 落盘在宿主 ``<数据根>/registry-proxy/cache``。本模块把这份
-落盘事实扫描成「已完整缓存的镜像清单」：**清单只收保守口径下的完整条目**
-——manifest 条目在缓存 + 该 manifest 声明的全部 blob（config + layers）在
-缓存。任何失败态都只让条目落榜，绝不把不完整的东西说成已缓存。
+落盘事实扫描成「已缓存的镜像清单」：**清单口径 = 拉过就算（方案 C）**——
+每个**可解析**的 manifest 文档都是一条条目（tag 键与 digest 键同权重），
+**不做 blob 完整性拦截**：manifest 声明的 blob 在不在缓存都不影响上榜。
+不可解析 / 不可信的条目照旧落榜，绝不把坏东西说成已缓存。
+
+SIZE 语义（2026-11-16 用户拍板）：``total_size_bytes`` 是**声明链字节**——
+manifest 文档声明的 config + layers 字节之和（manifest JSON 自带各层
+``size`` 字段，**不依赖 blob 在场**）；多架构 index 另加 index 声明的 amd64
+子 manifest 文档字节，子文档在缓存时再合并它声明的 config + layers。完整条目的
+声明值与实际缓存字节天然一致（内容寻址：blob 的声明大小就是它的字节数）。
 
 缓存目录事实（上游 nginx 配置 + 真机双向实证）：
 
@@ -24,13 +31,17 @@
 
 - ``proxy_ignore_headers Cache-Control ...``：上游缓存头被忽略，有效期全部
   来自 nginx 静态规则；
-- manifest 按 digest 引用（``manifests/sha256:…``）→ 60d；
-- manifest 按标签引用 → 分层：``(stable|nightly|production|test)`` 前缀命中
-  → 10m；标签含 ≥3 个「数字或点」字符（版本式标签，复刻 nginx 正则
-  ``(\\d|\\.)+.*(\\d|\\.)+.*(\\d|\\.)+``）→ 60d；其余 → 1h；
-- blob（按 digest）→ 60d；
-- ``inactive=60d``：全条目 60 天未访问被回收——mtime 口径下与最长分层同值，
-  不单独短于任何条目有效期。
+- **manifest 统一 180 天**（2026-11-16 用户拍板）：代理启动 env 的三个分层
+  旋钮（``MANIFEST_CACHE_PRIMARY_TIME`` / ``MANIFEST_CACHE_SECONDARY_TIME`` /
+  ``MANIFEST_CACHE_DEFAULT_TIME``）全部显式 180d，扫描器侧的 ``TTL_MANIFEST``
+  随之同值——nginx 侧的三段 location（primary 前缀 / 版本式 / 其余）仍在，
+  只是有效期同值，扫描器不再做分层判定；
+- blob（按 digest）→ 60d：**写死在代理镜像的 ``nginx.conf`` 里**
+  （``proxy_cache_valid 200 206 60d``，无 env 旋钮）——遗留登记项；方案 C 起
+  blob 不再参与落榜判定；
+- ``inactive=60d``：入口脚本有 ``CACHE_INACTIVE`` 旋钮（默认 60d，平台未
+  传 → 实际 60d），全条目 60 天未访问被回收——mtime 口径下它不会把 180d 的
+  有效期截短（未访问 60 天的条目早已被回收，扫描器根本看不到）。
 
 实现纪律（对齐 ``proxy.py`` 的 ``cache_size_bytes`` / ``certificate_ready``）：
 
@@ -41,7 +52,7 @@
   即 ``sudo -n``），批量协议一次读完全部文件（避免逐文件 sudo 抖动），
   每条宿主命令 **30 秒超时封顶**；
 - 脏条目（非 32 位 hex 文件名、``KEY:`` 缺失/不可解析、清单体损坏、digest
-  自洽性不通过、blob 不全、条目过期）一律**跳过、不报错**，只影响条目数；
+  自洽性不通过、条目过期）一律**跳过、不报错**，只影响条目数；
 - 整场失败（枚举 / 批量读命令失败或超时）抛 :class:`CacheScanError`，
   由调用方决定降级形态（服务端将映射成 503，不静默回空清单）。
 
@@ -81,16 +92,27 @@ HEAD_MARKER = "@SANDBOX-CACHE-HEAD@"
 
 # 一天的秒数（有效期口径里的「d」）
 _DAY = 24 * 3600
-# blob 与 manifest 按 digest 引用的有效期（nginx 全局 200/206 60d）
-TTL_BY_DIGEST = 60 * _DAY
-# manifest 标签分层：primary 标签 10m、版本式标签 60d、其余 1h
-# （真机 nginx.manifest.caching.config.conf 的三段 location）
-TTL_MANIFEST_PRIMARY = 10 * 60
-TTL_MANIFEST_DEFAULT = 3600
-# nginx inactive=60d：mtime 口径下与最长分层同值，不构成更短的有效期
+# manifest 条目的有效期：**统一 180 天**（2026-11-16 用户拍板）。
+#
+# 与代理启动 env 严格对齐：MANIFEST_CACHE_PRIMARY_TIME /
+# MANIFEST_CACHE_SECONDARY_TIME / MANIFEST_CACHE_DEFAULT_TIME 三个分层旋钮
+# 全部显式 180d，扫描器侧的 manifest 有效期随之同值。nginx 侧的三段
+# location（primary 前缀 / 版本式标签 / 其余）仍在，只是有效期同值——
+# 扫描器不再做分层判定（manifest_ttl_seconds 退化为「任何引用形态 180d」）。
+TTL_MANIFEST = 180 * _DAY
+# blob 条目的有效期：60d——**事实值**，代理镜像的 nginx.conf 里
+# `proxy_cache_valid 200 206 60d` 写死（无 env 旋钮，遗留登记项）。
+# 方案 C 起 blob 不再参与落榜判定，此值只用于口径登记与文档。
+TTL_BLOB = 60 * _DAY
+# nginx inactive（回收长期未访问的条目）：入口脚本的 CACHE_INACTIVE 旋钮
+# 默认 60d，平台未传 → 实际 60d（遗留登记项）。它比 TTL_MANIFEST 短，但
+# 不截短判定：未访问 60 天的条目早已被 nginx 回收，扫描器看不到它们。
 INACTIVE_TTL = 60 * _DAY
 
 # primary 标签前缀（真机 nginx：location ~ ^/v2/(.*)/manifests/(stable|...)）
+# 代理侧的三个分层 location 仍在（PRIMARY / SECONDARY / DEFAULT），但三个
+# TIME 旋钮现全是 180d → 扫描器不再需要按前缀 / 版本式标签分层判定，
+# 常量保留仅为口径登记（改回分层时不必重新考古 nginx 正则）。
 PRIMARY_TAG_PREFIXES = ("stable", "nightly", "production", "test")
 # digest 形态：sha256 + 64 位小写 hex
 _DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
@@ -144,8 +166,11 @@ def is_valid_tag(value: str) -> bool:
 def blob_forward_relpath(repo: str, digest: str) -> str:
     """blob 的前向验证路径。
 
-    ``md5("/v2/<repo>/blobs/<digest>")`` 拼三级布局——不依赖反向枚举即可判
-    定某个 blob 是否在缓存（真机 ``test -f`` 双向命中实证）。
+    ``md5("/v2/<repo>/blobs/<digest>")`` 拼三级布局——不依赖反向枚举即可算
+    出某个 blob 的缓存文件路径（真机 ``test -f`` 双向命中实证）。
+
+    方案 C 起它**不再是落榜判据**（manifest 在缓存即上榜，不校验 blob 在场），
+    保留为布局事实的公共 helper（测试与将来的 GC 轮可直接复用）。
     """
     return cache_file_relpath(f"/v2/{repo}/blobs/{digest}")
 
@@ -218,18 +243,24 @@ def parse_cache_key(key: str) -> CacheKeyRef | None:
 # ---------------------------------------------------------------- 纯解析：manifest 体
 @dataclass(frozen=True)
 class ManifestShape:
-    """一个 manifest/index 文档解析出的结构。
+    """一个 manifest/index 文档解析出的结构（含**声明字节**）。
 
-    ``kind`` 为 ``index``（多架构）时只有 ``amd64_digest`` 有值——平台
-    manifest 的 digest；``kind`` 为 ``image``（单架构）时是 config 与
-    layers 的 blob 清单。解析不到 amd64 / blob 声明不全时整个文档不可用
-    （调用方让条目落榜）。
+    ``kind`` 为 ``index``（多架构）时只有 amd64 相关字段有值——平台
+    manifest 的摘要与它在 index 里声明的文档字节数；``kind`` 为 ``image``
+    （单架构）时是 config 与 layers 的 blob 清单与各自声明的字节数。
+
+    方案 C（拉过就算）：**文档结构不可解析**才返回 ``None``（落榜）；
+    可解析但 amd64 子 manifest 缺席（``amd64_digest=None``）时形状仍成立，
+    条目照样上榜，SIZE 只含已可计算部分。
     """
 
     kind: str
     amd64_digest: str | None = None
+    amd64_manifest_size: int = 0
     config_digest: str | None = None
+    config_size: int = 0
     layer_digests: tuple[str, ...] = ()
+    layer_sizes: tuple[int, ...] = ()
 
     @property
     def blob_digests(self) -> tuple[str, ...]:
@@ -240,6 +271,14 @@ class ManifestShape:
         for item in (self.config_digest, *self.layer_digests):
             seen.setdefault(item, None)
         return tuple(seen)
+
+    @property
+    def declared_blob_bytes(self) -> int:
+        """该文档声明的 blob 字节（config + layers 的 ``size`` 之和）。
+
+        **声明值**，不依赖 blob 在不在缓存——manifest JSON 自带各层大小。
+        """
+        return self.config_size + sum(self.layer_sizes)
 
 
 def extract_json_document(content: bytes) -> tuple[dict, bytes] | None:
@@ -268,14 +307,29 @@ def extract_json_document(content: bytes) -> tuple[dict, bytes] | None:
     return None
 
 
+def _declared_size(descriptor: dict) -> int:
+    """描述符（config / layer / index 条目）声明的字节数。
+
+    manifest JSON 自带各层的 ``size`` 字段（字节数）；缺失 / 非法（负数、
+    非整数）→ 0（不猜、不报错）。**声明值与 blob 在不在缓存无关**。
+    """
+    size = descriptor.get("size")
+    if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+        return 0
+    return size
+
+
 def classify_manifest_document(doc: dict) -> ManifestShape | None:
-    """把 manifest/index JSON 文档分类并提取结构。
+    """把 manifest/index JSON 文档分类并提取结构（含声明字节）。
 
     - 多架构 index（有 ``manifests`` 数组，docker manifest list 与 OCI
-      index 同构）：解析到 ``linux/amd64`` 平台的 manifest digest；没有
-      amd64 描述项 → ``None``（整条落榜）；
-    - 单架构 manifest：取 config + layers 的 blob digest 清单，声明不全
-      或 digest 形态非法 → ``None``。
+      index 同构）：取 linux/amd64 平台的 manifest 摘要与它在 index 里
+      声明的文档字节数；**没有 amd64 描述项也返回形状**（``amd64_digest``
+      为 ``None``）——方案 C「拉过就算」：文档本身可解析就该上榜，SIZE
+      只含已可计算部分（即 0）；
+    - 单架构 manifest：取 config + layers 的 blob 摘要与各自声明的字节数；
+      **结构**不全（无 config / layers 不是列表 / 摘要形态非法）→ ``None``
+      （落榜）。
     """
     manifests = doc.get("manifests")
     if isinstance(manifests, list):
@@ -288,6 +342,7 @@ def classify_manifest_document(doc: dict) -> ManifestShape | None:
     if not isinstance(config_digest, str) or not is_sha256_digest(config_digest):
         return None
     layer_digests = []
+    layer_sizes = []
     for layer in layers:
         if not isinstance(layer, dict):
             return None
@@ -295,15 +350,23 @@ def classify_manifest_document(doc: dict) -> ManifestShape | None:
         if not isinstance(digest, str) or not is_sha256_digest(digest):
             return None
         layer_digests.append(digest)
+        layer_sizes.append(_declared_size(layer))
     return ManifestShape(
         kind="image",
         config_digest=config_digest,
+        config_size=_declared_size(config),
         layer_digests=tuple(layer_digests),
+        layer_sizes=tuple(layer_sizes),
     )
 
 
-def _classify_index(entries: list) -> ManifestShape | None:
-    """多架构 index → linux/amd64 平台 manifest 的 digest。"""
+def _classify_index(entries: list) -> ManifestShape:
+    """多架构 index → linux/amd64 平台 manifest 的摘要与声明字节。
+
+    没有 amd64 描述项 → 返回 ``amd64_digest=None`` 的形状（条目仍上榜，
+    SIZE 只含已可计算部分）。attestation 描述项（unknown 平台）照旧忽略
+    ——它不影响条目上榜，只不进 SIZE。
+    """
     for entry in entries:
         if not isinstance(entry, dict):
             continue
@@ -317,8 +380,12 @@ def _classify_index(entries: list) -> ManifestShape | None:
             platform.get("os") == _INDEX_PLATFORM_OS
             and platform.get("architecture") == _INDEX_PLATFORM_ARCH
         ):
-            return ManifestShape(kind="index", amd64_digest=digest)
-    return None
+            return ManifestShape(
+                kind="index",
+                amd64_digest=digest,
+                amd64_manifest_size=_declared_size(entry),
+            )
+    return ManifestShape(kind="index")
 
 
 def verify_manifest_bytes(json_bytes: bytes, digest: str) -> bool:
@@ -349,29 +416,29 @@ def extract_header_digest(content: bytes) -> str | None:
 
 # ---------------------------------------------------------------- 纯解析：有效期分层
 def manifest_ttl_seconds(ref: CacheKeyRef) -> int:
-    """manifest 条目的有效期（秒），按引用形态分层（对齐真机 nginx 规则）。
+    """manifest 条目的有效期（秒）：**统一 180 天**。
 
-    - 按 digest 引用 → 60d（nginx 全局 ``proxy_cache_valid 200 206 60d``）；
-    - 按标签引用 → primary 前缀（stable/nightly/production/test）10m；
-      版本式标签（含 ≥3 个「数字或点」字符）60d；其余 1h。
+    对齐代理启动 env 的三个分层旋钮（``MANIFEST_CACHE_PRIMARY_TIME`` /
+    ``MANIFEST_CACHE_SECONDARY_TIME`` / ``MANIFEST_CACHE_DEFAULT_TIME`` 全部
+    显式 180d）：任何引用形态——按 digest 引用、按 primary 前缀标签引用、
+    按版本式标签引用、其余标签——的 manifest 条目，有效期都是 180 天。
 
-    版本式判定复刻 nginx 正则
-    ``((\\d|\\.)+.*)(\\d|\\.)+.*((\\d|\\.)+)``：三条可留任意间隙的「数字/点」
-    串存在 ⟺ 标签里「数字或点」字符 ≥ 3。
+    分层判定（primary 前缀 / 版本式标签 / 其余）随 180d 统一而停用：
+    nginx 侧的三段 location 仍在，只是有效期同值。``ref`` 参数保留（调用点
+    与契约不变），不再参与判定。
     """
-    if ref.digest is not None:
-        return TTL_BY_DIGEST
-    tag = ref.tag or ""
-    if tag.startswith(PRIMARY_TAG_PREFIXES):
-        return TTL_MANIFEST_PRIMARY
-    if sum(1 for ch in tag if ch.isdigit() or ch == ".") >= 3:
-        return TTL_BY_DIGEST
-    return TTL_MANIFEST_DEFAULT
+    return TTL_MANIFEST
 
 
 def blob_ttl_seconds() -> int:
-    """blob 条目的有效期（秒）：60d。"""
-    return TTL_BY_DIGEST
+    """blob 条目的有效期（秒）：60d。
+
+    **事实值**：代理镜像的 ``nginx.conf`` 里 ``proxy_cache_valid 200 206
+    60d`` 写死（无 env 旋钮——遗留登记项，入口脚本只给了 manifest 三旋钮与
+    ``CACHE_INACTIVE``）。方案 C 起 blob 不再参与落榜判定（manifest 在缓存
+    即上榜），此值只用于口径登记与文档。
+    """
+    return TTL_BLOB
 
 
 # ---------------------------------------------------------------- 纯解析：条目聚合
@@ -391,6 +458,10 @@ class ManifestRecord:
     ``digest`` 是该 manifest 的内容摘要：digest 键条目来自 KEY 行，
     tag 键条目来自响应头的 ``docker-content-digest`` 绑定；两者的 JSON
     字节都已通过 sha256 自洽性校验。
+
+    ``size`` 是该 manifest 缓存文件在盘上的字节数（**含 nginx 响应头**），
+    仅作留档——方案 C 的 SIZE 取**声明链字节**（``shape`` 里的声明值），
+    不用它在盘字节。
     """
 
     ref: CacheKeyRef
@@ -403,13 +474,14 @@ class ManifestRecord:
 
 @dataclass(frozen=True)
 class CachedImage:
-    """清单里的一条已完整缓存镜像。
+    """清单里的一条已缓存镜像（方案 C：拉过就算）。
 
     ``digest`` 是顶层摘要（多架构即 index 摘要、单架构即 manifest 摘要），
-    与标签解析、digest 直拉的缓存键一致；``total_size_bytes`` 是完整缓存链
-    中各文件的实际字节数之和（顶层 manifest + 多架构时的平台 manifest +
-    config + layers，按内容摘要去重）；``cached_at`` 是参与条目的 manifest
-    缓存文件里最新的 mtime（ISO 8601 UTC）。
+    与标签解析、digest 直拉的缓存键一致；``total_size_bytes`` 是**声明链
+    字节**——manifest 文档声明的 config + layers 字节之和（多架构 index 另加
+    index 声明的 amd64 子 manifest 文档字节，子文档在缓存时再合并它声明的
+    config + layers），**不依赖 blob 在不在缓存**；``cached_at`` 是参与条目
+    的 manifest 缓存文件里最新的 mtime（ISO 8601 UTC）。
     """
 
     repo: str
@@ -510,14 +582,20 @@ def scan_manifest_records(
 
 def assemble_images(
     records: tuple[ManifestRecord, ...],
-    files: dict[str, CacheFileInfo],
     now: float,
 ) -> tuple[CachedImage, ...]:
-    """纯聚合阶段：manifest 记录 + 文件清单 → 已完整缓存的镜像条目。
+    """纯聚合阶段：manifest 记录 → 已缓存的镜像条目（方案 C：拉过就算）。
 
-    同仓库多标签指向同一 digest 归并为一条（标签列表聚合，只收未过期的
-    标签绑定）；digest 直拉的条目标签列表为空。完整链任一环缺失或过期
-    （manifest 分层 10m/1h/60d、blob 60d）→ 整条落榜，不报错。
+    口径（2026-11-16 用户拍板）：
+
+    - **条目 = 每个可解析的 manifest 文档**：tag 键与 digest 键同权重；同
+      仓库同 digest 的多条记录（标签绑定 + digest 直拉）归并为一条，标签
+      列表聚合；
+    - **不做 blob 完整性拦截**：声明的 blob 在不在缓存都不影响上榜——SIZE
+      取**声明链字节**（见 :func:`_declared_chain_bytes`）；
+    - **保留的跳过纪律**：不可解析的文档、digest 自洽性不通过的条目、超过
+      有效期（180 天）的条目一律落榜，不报错；
+    - digest 直拉的条目标签列表为空。
     """
     groups: dict[tuple[str, str], list[ManifestRecord]] = {}
     for record in records:
@@ -533,28 +611,7 @@ def assemble_images(
         alive.sort(key=lambda r: (0 if r.ref.is_by_digest else 1, r.relpath))
         anchor = alive[0]
 
-        chain_sizes: dict[str, int] = {digest: anchor.size}
-        blob_digests: tuple[str, ...] = ()
-        if anchor.shape.kind == "index":
-            child = _resolve_amd64_child(groups, repo, anchor.shape.amd64_digest, now)
-            if child is None:
-                continue
-            chain_sizes[child.digest] = child.size
-            blob_digests = child.shape.blob_digests
-        else:
-            blob_digests = anchor.shape.blob_digests
-
-        total = sum(chain_sizes.values())
-        complete = True
-        for blob_digest in blob_digests:
-            info = files.get(blob_forward_relpath(repo, blob_digest))
-            if info is None or now - info.mtime > blob_ttl_seconds():
-                complete = False
-                break
-            total += info.size
-        if not complete:
-            continue
-
+        total = _declared_chain_bytes(anchor, groups, repo, now)
         tags = sorted({r.ref.tag for r in alive if r.ref.tag is not None})
         cached_at = _format_utc(max(r.mtime for r in alive))
         images.append(
@@ -567,6 +624,31 @@ def assemble_images(
             )
         )
     return tuple(images)
+
+
+def _declared_chain_bytes(
+    anchor: ManifestRecord,
+    groups: dict[tuple[str, str], list[ManifestRecord]],
+    repo: str,
+    now: float,
+) -> int:
+    """条目的**声明链字节**（方案 C 的 SIZE 口径）。
+
+    - 单架构 manifest：文档声明的 config + layers 字节之和（各描述符自带
+      ``size`` 字段，**与 blob 在不在缓存无关**）；
+    - 多架构 index：index 声明的 amd64 子 manifest 文档字节（子 manifest
+      文档自身的字节数）**+** 子文档在缓存且在有效期内时它声明的
+      config + layers 字节；子文档不在缓存 / 脏 / 过期 → 只含 index 声明的
+      那部分（已可计算部分）。
+    """
+    shape = anchor.shape
+    if shape.kind != "index":
+        return shape.declared_blob_bytes
+    total = shape.amd64_manifest_size
+    child = _resolve_amd64_child(groups, repo, shape.amd64_digest, now)
+    if child is not None:
+        total += child.shape.declared_blob_bytes
+    return total
 
 
 def _resolve_amd64_child(
@@ -603,7 +685,7 @@ def scan_snapshot(
     产出，本函数零文件系统、零特权依赖。
     """
     records, blob_files, skipped = scan_manifest_records(files, heads, bodies)
-    images = assemble_images(records, files, now)
+    images = assemble_images(records, now)
     return CacheScanResult(
         generated_at=_format_utc(now),
         images=images,
