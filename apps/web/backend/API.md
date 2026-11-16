@@ -1627,7 +1627,7 @@ X-File-Size: 81920
 
 ## 17. 镜像缓存清单接口（`GET /api/proxy/cache/images`）
 
-统一镜像代理「已完整缓存」镜像清单的**唯一对外出口**：console 设置抽屉的「缓存
+统一镜像代理「已缓存」镜像清单的**唯一对外出口**：console 设置抽屉的「缓存
 镜像清单」视图用**完整令牌 + json**，沙箱内 `cached-images` 命令用**受限令牌 +
 text**。分层归属：扫描能力本体在核心包 `sandbox_platform/cache_manifest.py`
 （`RegistryCacheScanner`，特权通道读 `<数据根>/registry-proxy/cache`，解析与特权
@@ -1651,7 +1651,7 @@ GET /api/proxy/cache/images?tags=only            （选填；tag-only 过滤视�
 
 `images` 数组的每条（与核心包清单口径同字段）：`repo`（仓库）、`tags`（标签列表，
 digest 直拉为空数组）、`digest`（manifest 摘要，`sha256:…`）、`total_size_bytes`
-（链大小）、`cached_at`（缓存时间）。
+（**声明链字节**，见下方「清单口径」）、`cached_at`（缓存时间）。
 
 **`tags=only` 过滤视图（服务端装配层）**：只返回标签列表非空的条目——digest 直拉
 条目与「index 条目 + 平台 manifest 条目」里的无标签行全部滤除；三计数与生成时间戳
@@ -1678,17 +1678,32 @@ digest 直拉为空数组）、`digest`（manifest 摘要，`sha256:…`）、`t
   仅列头行**（docker images 同款语义：空输出仍带列头，bash 侧不会拿到空串；
   「明确空态文案」由缺省 text 承载）。
 
-**清单口径（保守）**：只收录「已完整缓存」的镜像——manifest 条目在缓存 + 其声明的
-全部 blob（config + layers）都在缓存；多架构 index 解析到 linux/amd64 manifest 再验；
-半截文件 / `KEY:` 头不可解析的脏条目跳过（只影响条目数、不报错，`skipped_files`
-如实计数）。
+**清单口径（方案 C：拉过即上榜）**：**条目 = 每个可解析的 manifest 文档**——
+manifest 在缓存就算数（tag 键与 digest 键同权重），**不做 blob 完整性拦截**：
+manifest 声明的 blob（config + layers）在不在缓存都不影响上榜。
+
+- **SIZE = 声明链字节**（`total_size_bytes`）：manifest 文档**声明**的
+  config + layers 字节总和（manifest JSON 自带各层 `size` 字段，**不依赖 blob
+  在场**）；多架构 index 另加 index 声明的 amd64 子 manifest 文档字节，子
+  文档在缓存时再合并它声明的 config + layers。完整条目的声明值与实际缓存
+  字节天然一致（内容寻址：blob 的声明大小就是它的字节数）；
+- **保留的跳过纪律**：不可解析的文档、digest 自洽性不通过的条目（digest 键
+  条目的 JSON 体哈希与键不符）、超过有效期（180 天）的条目一律落榜；半截文件
+  / `KEY:` 头不可解析的脏条目跳过（只影响条目数、不报错，`skipped_files`
+  如实计数）；
+- **有效期统一 180 天**：代理侧的 manifest 三层有效期旋钮
+  （`MANIFEST_CACHE_PRIMARY_TIME` / `MANIFEST_CACHE_SECONDARY_TIME` /
+  `MANIFEST_CACHE_DEFAULT_TIME`）全部显式 180d，扫描器同值（不再分层）。
+  遗留：blob 的 `proxy_cache_valid 200 206 60d` 写死在代理镜像的 nginx.conf
+  里（无 env 旋钮）、`inactive` 仍是 60d（入口脚本的 `CACHE_INACTIVE` 旋钮
+  平台未传）——两者均不参与条目判定。
 
 **text 的防误读尾注（服务端义务，两则固定在文末）**：基础镜像只有 curl 没有 jq，
 沙箱内 bash 对这份文本**只输出不解析**，所以容易误读的两处由服务端在文末写明——
 
-1. `total_size_bytes`（链大小）是**拉取该条所需链**（manifest + config + layers）的
-   字节数；条目之间共享 blob，**不可把各条链大小求和当作缓存占用**（缓存占用看
-   `GET /api/proxy/status` 的 `cache_size_bytes`）；
+1. `total_size_bytes`（链大小）为**该镜像链的声明字节数**，条目间共享 blob，
+   **不可求和当缓存占用**（缓存占用看 `GET /api/proxy/status` 的
+   `cache_size_bytes`）；
 2. 同一镜像可能出现「index 条目 + 平台 manifest 条目」两行，后者标签列表为空——
    二者摘要不同，属正常，不是重复错误。
 
@@ -1772,7 +1787,7 @@ curl -s -H 'Authorization: Bearer <受限令牌>' \
 #   链大小：63943288 字节（total_size_bytes）
 #   缓存时间：…
 #   ----------------------------------------------------------------
-#   说明：total_size_bytes（链大小）……不可把各条链大小求和当作缓存占用。
+#   说明：total_size_bytes（链大小）为该镜像链的声明字节数，条目间共享 blob，不可求和当缓存占用。
 #   注记：同一镜像可能出现「index 条目 + 平台 manifest 条目」两行，后者标签列表为空。
 
 # text + tags=only（0.4.1 起 cached-images 消费的表格视图；0.4.2 起仅表体：
