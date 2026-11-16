@@ -119,11 +119,11 @@ export interface ProxyStatus {
 }
 
 /**
- * 一条已完整缓存的镜像（镜像缓存清单数组的一项）。
+ * 一条拉取过的镜像（镜像缓存清单数组的一项）。
  *
- * 口径（PRD「保守」定义）：manifest 条目在缓存 + 该 manifest 声明的全部 blob
- * （config + layers）在缓存才算已完整缓存。字段与核心包 `CacheScanResult`
- * `to_payload()` 逐字段对应（蛇形命名，前端不做转换）。
+ * 口径（方案 C「拉过就算」）：manifest 文档在缓存即入列，**不做 blob 完整性
+ * 拦截**（声明的 blob 在不在缓存都不影响上榜）。字段与核心包
+ * `CacheScanResult` `to_payload()` 逐字段对应（蛇形命名，前端不做转换）。
  */
 export interface CachedImage {
   /** 仓库名（如 `library/nginx`）。 */
@@ -132,7 +132,7 @@ export interface CachedImage {
   tags: string[];
   /** 顶层摘要（多架构即 index 摘要、单架构即 manifest 摘要）。 */
   digest: string;
-  /** 完整缓存链各文件的实际字节数之和（manifest + config + layers）。 */
+  /** 镜像链的声明字节数（manifest 文档声明的 config + layers）。 */
   total_size_bytes: number;
   /** 缓存时间（参与条目的 manifest 缓存文件里最新的 mtime，ISO 8601 UTC）。 */
   cached_at: string;
@@ -142,7 +142,7 @@ export interface CachedImage {
 export interface CacheImagesResponse {
   /** 扫描结果的生成时间戳（ISO 8601 UTC；TTL 内重复请求不变）。 */
   generated_at: string;
-  /** 已完整缓存的镜像清单。 */
+  /** 拉取过的镜像清单（manifest 在缓存即条目）。 */
   images: CachedImage[];
   /** 枚举到的合法缓存文件数。 */
   total_files: number;

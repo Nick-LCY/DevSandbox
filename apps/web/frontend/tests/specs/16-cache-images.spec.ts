@@ -78,7 +78,7 @@ const OUTPUT = '/workspace/acc-cached-images.txt';
 const OUTPUT_ERR = '/workspace/acc-cached-images.err';
 
 /** 服务端 text 渲染（默认视图）的表头首行（契约副本，故意各留一份：改了要红）。 */
-const TEXT_HEADER = '镜像缓存清单（仅收录已完整缓存的镜像）';
+const TEXT_HEADER = '镜像缓存清单（收录拉取过的镜像：manifest 在缓存即条目）';
 /** 尾注两则的识别前缀（同上，契约副本）。 */
 const TEXT_NOTE_TOTAL = '说明：total_size_bytes';
 const TEXT_NOTE_DUP = '注记：同一镜像可能出现';

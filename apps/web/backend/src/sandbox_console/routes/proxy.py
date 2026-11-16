@@ -68,7 +68,7 @@ def cache_images(
     tags: str | None = None,
     cache: CacheImagesCache = Depends(get_cache_images_cache),
 ) -> Response:
-    """已完整缓存的镜像清单（``?format=json|text``，缺省 json；``?tags=only`` 选填）。
+    """拉取过的镜像清单（``?format=json|text``，缺省 json；``?tags=only`` 选填）。
 
     - **json**：生成时间戳 + 清单数组（仓库 / 标签列表 / 摘要 / 总大小 /
       缓存时间），``Content-Type: application/json``；

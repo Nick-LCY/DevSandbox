@@ -532,9 +532,22 @@ def test_render_text_shows_index_and_platform_manifest_as_two_rows() -> None:
 def test_render_text_empty_list_is_explicit_not_misleading() -> None:
     """空清单给明确空态文案（不让 bash 把「没有输出」误读成「没有缓存」）。"""
     text = render_cache_images_text(make_result(images=()))
-    assert "没有已完整缓存的镜像" in text
+    assert "当前没有拉取过的镜像" in text
     assert "生成时间：" in text
     assert "不可求和当缓存占用" in text
+
+
+def test_render_text_header_uses_scheme_c_wording() -> None:
+    """表头按方案 C 口径措辞（拉过就算：manifest 在缓存即条目）。
+
+    旧口径「仅收录已完整缓存的镜像」是**保守口径**的遗留：方案 C 下不做
+    blob 完整性拦截，表头继续自称「已完整缓存」就是**假话**（清单里可能有
+    blob 未落缓存的条目）。
+    """
+    text = render_cache_images_text(make_result(images=(make_image(),)))
+    assert text.startswith("镜像缓存清单（收录拉取过的镜像：manifest 在缓存即条目）")
+    assert "仅收录已完整缓存的镜像" not in text
+    assert "已完整缓存" not in text
 
 
 def test_render_text_size_note_uses_declared_bytes_wording() -> None:
@@ -543,11 +556,16 @@ def test_render_text_size_note_uses_declared_bytes_wording() -> None:
     方案 C 下 ``total_size_bytes`` 是**声明链字节**（manifest 文档声明的
     config + layers），不再是「拉取该条所需链字节」——尾注必须同步改口径，
     否则 bash 侧会把声明值误读成实际下载量。
+
+    尾注还要说清 SIZE **可能是部分值**：子 manifest 不在缓存或不可信时，
+    SIZE 只含已可计算部分（index 声明的子 manifest 文档字节），可能偏小。
     """
     text = render_cache_images_text(make_result(images=(make_image(),)))
     assert (
         "说明：total_size_bytes（链大小）为该镜像链的声明字节数，"
         "条目间共享 blob，不可求和当缓存占用。"
+        "SIZE 可能是部分值——子 manifest 不在缓存或不可信时仅含已可计算部分，"
+        "可能偏小。"
     ) in text
     # 旧措辞整体退役
     assert "拉取该条目所需链" not in text

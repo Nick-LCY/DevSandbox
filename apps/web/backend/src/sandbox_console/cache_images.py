@@ -211,16 +211,22 @@ def render_cache_images_text(result: CacheScanResult) -> str:
     摘要 / 链大小 / 缓存时间，条目间以横线分隔）→ 尾注两则。空清单给明确的
     空态文案——**绝不**让 bash 把「没有输出」误读成「没有缓存」。
 
+    表头与空态按**方案 C 口径**（拉过就算：manifest 在缓存即条目）措辞：
+    「收录拉取过的镜像」/「当前没有拉取过的镜像」——旧口径（「已完整缓存」）
+    是保守口径的遗留，与实际清单语义不符（方案 C 下不做 blob 完整性拦截）。
+
     尾注防误读（任务 01 审查裁决口径 + 2026-11-16 用户拍板修订）：
 
     - ``total_size_bytes`` 是**该镜像链的声明字节数**（manifest 文档声明的
       config + layers 字节总和，方案 C 下不依赖 blob 在不在缓存）；条目之间
       共享 blob，**不可求和当缓存占用**；
+    - SIZE **可能是部分值**：子 manifest 不在缓存或不可信时，SIZE 只含已可
+      计算部分（index 声明的子 manifest 文档字节），可能偏小；
     - 同一镜像可能出现「index 条目 + 平台 manifest 条目」两行（后者标签列表
       为空）——二者摘要不同，属正常。
     """
     lines = [
-        "镜像缓存清单（仅收录已完整缓存的镜像）",
+        "镜像缓存清单（收录拉取过的镜像：manifest 在缓存即条目）",
         f"生成时间：{result.generated_at}",
         (
             f"镜像条目：{len(result.images)} 条"
@@ -229,7 +235,7 @@ def render_cache_images_text(result: CacheScanResult) -> str:
         ),
     ]
     if not result.images:
-        lines.append("（当前没有已完整缓存的镜像）")
+        lines.append("（当前没有拉取过的镜像）")
     else:
         separator = "-" * 64
         for image in result.images:
@@ -248,7 +254,9 @@ def render_cache_images_text(result: CacheScanResult) -> str:
     lines.extend(
         [
             "说明：total_size_bytes（链大小）为该镜像链的声明字节数，"
-            "条目间共享 blob，不可求和当缓存占用。",
+            "条目间共享 blob，不可求和当缓存占用。"
+            "SIZE 可能是部分值——子 manifest 不在缓存或不可信时仅含已可计算部分，"
+            "可能偏小。",
             "注记：同一镜像可能出现「index 条目 + 平台 manifest 条目」两行，"
             "后者标签列表为空。",
         ]

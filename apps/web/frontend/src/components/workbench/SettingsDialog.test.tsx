@@ -299,7 +299,7 @@ describe('设置抽屉的缓存镜像清单区', () => {
     renderDialog();
 
     const empty = await screen.findByTestId('page-settings-cache-images-empty');
-    expect(empty.textContent).toContain('还没有已完整缓存的镜像');
+    expect(empty.textContent).toContain('还没有拉取过的镜像');
     expect(screen.queryByTestId('page-settings-cache-images-status')).toBeNull();
     expect(screen.queryByTestId('page-settings-cache-images-list')).toBeNull();
   });

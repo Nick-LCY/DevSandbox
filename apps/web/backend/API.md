@@ -1690,24 +1690,28 @@ manifest 声明的 blob（config + layers）在不在缓存都不影响上榜。
 - **保留的跳过纪律**：不可解析的文档、digest 自洽性不通过的条目（digest 键
   条目的 JSON 体哈希与键不符）、超过有效期（180 天）的条目一律落榜；半截文件
   / `KEY:` 头不可解析的脏条目跳过（只影响条目数、不报错，`skipped_files`
-  如实计数）；
+  如实计数）；**内容寻址自洽性接受两种口径**——`sha256(纯 JSON)` 或
+  `sha256(JSON + 仅空白尾随)`（真机 nginx 落盘会在 JSON 后补一个换行，
+  上游摘要覆盖的是含换行的整段；尾随含**非空白**字节时一律拒）；
 - **有效期统一 180 天**：代理侧的 manifest 三层有效期旋钮
   （`MANIFEST_CACHE_PRIMARY_TIME` / `MANIFEST_CACHE_SECONDARY_TIME` /
-  `MANIFEST_CACHE_DEFAULT_TIME`）全部显式 180d，扫描器同值（不再分层）。
+  `MANIFEST_CACHE_DEFAULT_TIME`）全部显式 180d，扫描器同值（不再分层）；
+  nginx 回收侧旋钮 `CACHE_INACTIVE`（入口脚本默认 60d）平台**也显式传
+  180d**——回收阈值与有效期同值，manifest 的 180 天有效期才真正成立。
   遗留：blob 的 `proxy_cache_valid 200 206 60d` 写死在代理镜像的 nginx.conf
-  里（无 env 旋钮）、`inactive` 仍是 60d（入口脚本的 `CACHE_INACTIVE` 旋钮
-  平台未传）——两者均不参与条目判定。
+  里（无 env 旋钮）——它不参与条目判定。
 
 **text 的防误读尾注（服务端义务，两则固定在文末）**：基础镜像只有 curl 没有 jq，
 沙箱内 bash 对这份文本**只输出不解析**，所以容易误读的两处由服务端在文末写明——
 
 1. `total_size_bytes`（链大小）为**该镜像链的声明字节数**，条目间共享 blob，
    **不可求和当缓存占用**（缓存占用看 `GET /api/proxy/status` 的
-   `cache_size_bytes`）；
+   `cache_size_bytes`）；**SIZE 可能是部分值**——子 manifest 不在缓存或不可信时
+   仅含已可计算部分（index 声明的子 manifest 文档字节），可能偏小；
 2. 同一镜像可能出现「index 条目 + 平台 manifest 条目」两行，后者标签列表为空——
    二者摘要不同，属正常，不是重复错误。
 
-**空清单不是错误**：缓存为空时 text 给明确的空态文案「（当前没有已完整缓存的镜像）」
+**空清单不是错误**：缓存为空时 text 给明确的空态文案「（当前没有拉取过的镜像）」
 （json 给空数组）——绝不留空白输出让 bash 把「没有输出」误读成「没有缓存」，也绝不
 把失败伪装成空清单（见 17.2 的 503）。
 
@@ -1777,7 +1781,7 @@ curl -s -H 'Authorization: Bearer <完整令牌>' \
 # text（沙箱内 cached-images 用受限令牌；bash 只输出不解析）
 curl -s -H 'Authorization: Bearer <受限令牌>' \
     'http://127.0.0.1:8000/api/proxy/cache/images?format=text'
-# → 镜像缓存清单（仅收录已完整缓存的镜像）
+# → 镜像缓存清单（收录拉取过的镜像：manifest 在缓存即条目）
 #   生成时间：2026-11-15T06:35:24Z
 #   镜像条目：29 条（缓存文件 140 个：blob 91、跳过脏条目 1 个）
 #   ----------------------------------------------------------------
@@ -1787,7 +1791,7 @@ curl -s -H 'Authorization: Bearer <受限令牌>' \
 #   链大小：63943288 字节（total_size_bytes）
 #   缓存时间：…
 #   ----------------------------------------------------------------
-#   说明：total_size_bytes（链大小）为该镜像链的声明字节数，条目间共享 blob，不可求和当缓存占用。
+#   说明：total_size_bytes（链大小）为该镜像链的声明字节数，条目间共享 blob，不可求和当缓存占用。SIZE 可能是部分值——子 manifest 不在缓存或不可信时仅含已可计算部分，可能偏小。
 #   注记：同一镜像可能出现「index 条目 + 平台 manifest 条目」两行，后者标签列表为空。
 
 # text + tags=only（0.4.1 起 cached-images 消费的表格视图；0.4.2 起仅表体：

@@ -37,9 +37,9 @@ function shortDigest(digest: string): string {
 /**
  * 缓存镜像清单区（设置抽屉第二区，代理状态区旁）。
  *
- * 展示「已完整缓存」的镜像（清单口径保守：manifest 条目在缓存 + 其声明的
- * 全部 blob 都在缓存才算）：仓库 / 标签 / 摘要 / 大小（人读格式）/ 时间。
- * 数据源 `GET /api/proxy/cache/images?format=json`（完整令牌，既有鉴权头
+ * 展示**拉取过的镜像**（清单口径 = 方案 C「拉过就算」：manifest 文档在缓存
+ * 即入列，**不做 blob 完整性拦截**）：仓库 / 标签 / 摘要 / 大小（人读格式）/
+ * 时间。数据源 `GET /api/proxy/cache/images?format=json`（完整令牌，既有鉴权头
  * 自动附带，无新增令牌逻辑）。
  *
  * 三态与刷新：打开抽屉加载一次 + 手动刷新按钮；**零轮询**——不挂任何定时器
@@ -129,7 +129,7 @@ function CacheImagesSection({ open }: { open: boolean }) {
           className="text-[12.5px] text-muted-foreground"
           data-testid="page-settings-cache-images-empty"
         >
-          还没有已完整缓存的镜像。清单只收 manifest 与全部 blob 都在缓存中的镜像。
+          还没有拉取过的镜像。清单收录拉取过的镜像（manifest 在缓存即条目）。
         </p>
       )}
 
@@ -240,7 +240,7 @@ function Field({ label, value, testId }: { label: string; value: string; testId:
  * 设置抽屉：代理设置 + 缓存镜像清单 + 启动模板管理 + 连接配置。
  *
  * 第一区是代理设置（状态展示 + 刷新状态 + 重启 + CA 重装结果），内容与原
- * 「代理设置」抽屉完全一致；第二区是缓存镜像清单（已完整缓存镜像的只读
+ * 「代理设置」抽屉完全一致；第二区是缓存镜像清单（拉取过的镜像的只读
  * 清单，打开加载 + 手动刷新，零轮询）；第三区是启动模板管理区（列表 /
  * 行内重命名 / 删除）；第四区是连接配置（后端地址 + 访问令牌 + 测试连接 +
  * 保存配置）。
