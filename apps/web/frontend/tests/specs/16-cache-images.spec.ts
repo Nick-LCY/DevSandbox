@@ -28,9 +28,10 @@
  * 三、**端点负例（PRD 8/11）**：无凭据 401、错误令牌 401（同一句固定文案
  *    「访问令牌无效或缺失」原文断言、两种响应逐字节一致）；非法 format 422
  *    （固定文案原文断言）；
- * 四、**console 视图冒烟（PRD 27/28）**：设置抽屉「缓存镜像清单」区数据态
- *    （仓库 / 标签 / 摘要 / 人读大小 / 缓存时间 / 生成时间），手动刷新后
- *    数据仍在（60 秒 TTL 内刷新拿同一份缓存，属预期）。
+ * 四、**console 视图冒烟（PRD 27/28）**：设置抽屉「代理」tab 的「缓存镜像清单」
+ *    表格数据态（IMAGE / ID / SIZE / CACHED TIME 四列 + 生成时间脚注）、本地
+ *    搜索过滤（纯本地，不发请求）、手动刷新后数据仍在（60 秒 TTL 内刷新拿
+ *    同一份缓存，属预期）。
  *
  * 镜像：显式 pin `sandbox-platform/base:0.4.2`（0.4.1：`cached-images` 消费
  * `tags=only` 表格视图随它发布；0.4.2：输出仅表体、正常态零追加随它发布；
@@ -389,7 +390,7 @@ test.describe('镜像缓存清单（端点 / 注入 / cached-images）', () => {
     expect(invalid.body, '非法 format 的 422 detail 原文').toContain(FORMAT_422_DETAIL);
   });
 
-  test('console 视图冒烟：缓存镜像清单区数据态字段渲染 + 手动刷新（PRD 27/28）', async ({ page }) => {
+  test('console 视图冒烟：缓存镜像清单表格渲染 + 搜索过滤 + 手动刷新（PRD 27/28）', async ({ page }) => {
     await openSettingsDrawer(page);
 
     // 打开抽屉即加载一次：等加载结束（刷新按钮回到可用态）再看数据。
@@ -398,27 +399,67 @@ test.describe('镜像缓存清单（端点 / 注入 / cached-images）', () => {
       timeout: 30_000,
     });
 
-    // 数据态（本机真缓存非空）：条目在场，字段齐全。
-    const items = page.getByTestId('page-settings-cache-image-item');
-    await expect(items, '本机真缓存应有条目（空态由前端单测钉）').not.toHaveCount(0);
-    const first = items.first();
-    const repo = ((await first.getByTestId('page-settings-cache-image-repo').textContent()) ?? '').trim();
-    expect(repo, '仓库字段应非空').not.toBe('');
-    await expect(first.getByTestId('page-settings-cache-image-size')).toHaveText(
-      /^\d+(\.\d+)? (B|KiB|MiB|GiB|TiB)$/,
+    // 数据态（本机真缓存非空）：表格在场，行按 (repo, tag) 排序。
+    const rows = page.getByTestId('page-settings-cache-images-row');
+    await expect(rows, '本机真缓存应有条目（空态由前端单测钉）').not.toHaveCount(0);
+    const first = rows.first();
+    const image = ((await first.getByTestId('page-settings-cache-images-image').textContent()) ?? '').trim();
+    expect(image, 'IMAGE 列应是 repo:tag').toMatch(/^[^\s]+:[^\s]+$/);
+    // ID 列：去 sha256: 前缀后的前 12 位十六进制（完整 digest 挂 title）。
+    await expect(first.getByTestId('page-settings-cache-images-id')).toHaveText(/^[0-9a-f]{12}$/);
+    // SIZE 列：**十进制**人读大小（1000 进制，不是二进制 KiB/MiB）。
+    await expect(first.getByTestId('page-settings-cache-images-size')).toHaveText(
+      /^\d+(\.\d+)?(B|kB|MB|GB|TB)$/,
     );
-    const digest = ((await first.getByTestId('page-settings-cache-image-digest').textContent()) ?? '').trim();
-    expect(digest, '摘要字段应是 sha256 摘要（截断展示）').toMatch(/^sha256:[0-9a-f]+…?$/);
-    await expect(first.getByTestId('page-settings-cache-image-cached-at')).not.toHaveText('');
+    // CACHED TIME 列：UTC 口径 YYYY-MM-DD HH:mm:ss。
+    await expect(first.getByTestId('page-settings-cache-images-time')).toHaveText(
+      /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/,
+    );
     // 生成时间戳随数据一起展示。
     await expect(page.getByTestId('page-settings-cache-images-generated-at')).toContainText(
       '清单生成时间：',
     );
 
+    // 搜索过滤：**纯本地**，不发请求。按完整 repo:tag 搜 → 只剩命中的行。
+    const total = await rows.count();
+    const search = page.getByTestId('page-settings-cache-images-search-input');
+    await search.fill(image);
+    await expect(rows).not.toHaveCount(0);
+    expect(await rows.count(), '按 repo:tag 搜索后行数应变少').toBeLessThan(total);
+    for (const text of await rows.allTextContents()) {
+      expect(text, '命中的行都该含搜索关键字').toContain(image);
+    }
+
+    // 搜索无命中：另一种空态（与「清单本身为空」分开）。
+    await search.fill('zzz-没有这个镜像');
+    await expect(page.getByTestId('page-settings-cache-images-search-empty')).toBeVisible();
+    await expect(rows).toHaveCount(0);
+
+    // 清空 → 全部回来。
+    await search.fill('');
+    await expect(rows).toHaveCount(total);
+
+    // 表格内部滚动、**表头吸顶**：代理 tab 顶部的状态区不跟着滚。
+    const head = page.getByTestId('page-settings-cache-images-head');
+    const headTopBefore = (await head.boundingBox())!.y;
+    const statusTopBefore = (await page.getByTestId('page-settings-cache-size').boundingBox())!.y;
+    await page.getByTestId('page-settings-cache-images-table').evaluate((table) => {
+      const scroller = table.parentElement;
+      if (scroller) {
+        scroller.scrollTop = scroller.scrollHeight;
+      }
+    });
+    await page.waitForTimeout(200);
+    expect((await head.boundingBox())!.y, '表头没有吸顶').toBeCloseTo(headTopBefore, 0);
+    expect(
+      (await page.getByTestId('page-settings-cache-size').boundingBox())!.y,
+      '顶部状态区跟着表格滚了',
+    ).toBeCloseTo(statusTopBefore, 0);
+
     // 手动刷新：仍在的数据态（60 秒 TTL 内刷新拿同一份缓存，属预期）。
     await refresh.click();
     await expect(refresh, '刷新应完成（按钮回到可用态）').toBeEnabled({ timeout: 30_000 });
-    await expect(items).not.toHaveCount(0);
+    await expect(rows).not.toHaveCount(0);
     await expect(page.getByTestId('page-settings-cache-images-generated-at')).toContainText(
       '清单生成时间：',
     );

@@ -1,6 +1,6 @@
 # 网页控制台前端
 
-沙箱平台的网页控制台：**单页工作台**。左侧边栏是沙箱列表，右侧工作区是选中沙箱的摘要与网页终端；新建沙箱 / 沙箱详情 / 设置（代理设置 + 启动模板）都是**右侧滑出、宽度可拖拽的抽屉**。
+沙箱平台的网页控制台：**单页工作台**。左侧边栏是沙箱列表，右侧工作区是选中沙箱的摘要与网页终端；新建沙箱 / 沙箱详情 / 设置（代理 / 模板 / 后端配置三个 tab）都是**右侧滑出、宽度可拖拽的抽屉**。
 
 - 技术栈：React 19 + Vite 7 + TypeScript 5.9 + Tailwind v4 + shadcn/ui（Base UI 原语），pnpm 管理，Node ≥ 22。
 - 产物由独立静态源提供（后端只提供 `/api`，不托管前端），**前端不含任何认证逻辑**（只按连接配置发 `Authorization` 头）；**请求恒为绝对地址**（基址默认 `http://127.0.0.1:8000`，可在界面里改），**也可以在界面里配远端后端地址**（见下方「连接配置」）。
@@ -105,6 +105,8 @@ Obsidian 阅读器轮（任务 06 / 07）新增：tabs 条**最左的固定 Obsi
 
 任务 07 的**阅读器**（右栏）：**markdown 渲染**为主视图（`react-markdown@10.1.0` + `remark-gfm@4.0.1`；**没装 `rehype-raw`**，源码里的 `<script>` 只被**转义成文本**、不会渲染成标签也不执行）、内容列**填满预览区宽度**（复验修复轮起不再 620px 居中限宽）、标题层级 / **深底代码块** / 列表 / **任务列表（静态不可勾）** / 引用块 / 行内码 / 粗体、**frontmatter 渲染态隐藏、源码态可见**（识别与剥离在 `src/lib/markdown.ts`）；工具条 = **返回**（预览历史栈；栈底不渲染）+ 文件名 / 大小 + 「**渲染 / 源码**」分段切换 + **复制**（两态复制的都是 **markdown 源文**，成功零 toast、失败才 toast 来源 `obsidian`，对勾约 1 秒复原）；**wikilink**（`[[目标]]` / `[[目标|别名]]` / `[[#标题]]`，强调色 + 虚线下划线，hover 出**黑底小 tooltip**，内容是**解析后的目标路径**且**防视口裁切**——定位算法在 `src/lib/tooltip-position.ts`（上方优先、越界翻转、水平钳位），有单测）；**点击命中**沿历史栈推入目标渲染视图（返回键逐层退回），**点击未命中**在正文顶部**就地**给浅红错误条「**链接目标不存在：<名>**」——可手动关闭、**不跳转、不弹 toast**；**三级解析兜底** = 同目录 → vault 根相对路径 → **全库递归同名匹配**（BFS，**5 秒 exec 看门狗**，超时按「未找到」处理、不挂死），解析结果过 `normalizeContainerPath`（纯逻辑在 `src/lib/wikilink.ts`，目录列举与计时器都可注入，兜底顺序与超时逐条单测）；**大文件（> 2 MB）与文件窗格预览同口径**——**同一个** `PreviewConfirmDialog` 与**同一个** `PreviewLoading`（确认才发起读取、取消不发请求、进度条加载、全文渲染、无「文件过大」提示条），读取同样走 `api.readFile`（`max_bytes` = 列表条目的 `size`，二进制 / 非 UTF-8 / 中断的错误形态与 05 同款）；**阅读位按沙箱持久化**（Obsidian ↔ 终端 tab 往返后仍停在原来那一篇；**大文件不自动恢复**，避免绕过「> 2 MB 先二次确认」）。vault 两侧的存取逻辑（根 / 展开态 / 阅读位）在 `src/lib/obsidian-vault.ts`，各有单元测试。
 
+设置抽屉改造轮新增：**设置抽屉拆三个 tab**（代理 / 模板 / 后端配置，Base UI Tabs 原语，封装在 `src/components/ui/tabs.tsx`；面板一律 `keepMounted`，打开抽屉即全量加载；代理 tab 默认激活）；**缓存镜像清单改表格视图**（IMAGE / ID / SIZE / CACHED TIME 四列，数据源 `?format=json&tags=only`，多标签展开成多行、ID 是 12 位十六进制短摘要、SIZE 是十进制人读大小、CACHED TIME 是 UTC 墙钟，口径与服务端 `cache_images.py` 逐字对齐）；**本地搜索过滤**（纯本地、不发请求；摘要命中时整组行显示；「清单为空」与「搜索无命中」两种空态分开）；纯逻辑在 `src/lib/cache-images.ts`（十进制大小 / UTC 时间 / 短摘要 / 多标签展开 / 搜索过滤，有单元测试）。
+
 toast 挂全局 `ToastProvider`：组件测试渲染带 Provider 的片段，断言看 `page-toast-item` 与 `data-toast-kind`（必要时再加 `data-toast-source`）。
 
 ## 端到端验收
@@ -155,6 +157,7 @@ apps/web/frontend/
     │   ├── router.ts     两层哈希路由
     │   ├── connection.ts 连接配置（存取 / 默认基址与归一 / 基址推导 / 形态探测 / 未配置判定 / 桌面 CSP 同步）
     │   ├── format.ts     字节数 / 时间戳格式化
+    │   ├── cache-images.ts 缓存镜像清单纯逻辑（十进制人读大小 / UTC 缓存时间 / 短摘要 / 多标签展开 / 本地搜索过滤，口径与服务端 cache_images.py 逐字对齐）
     │   ├── file-transfer.ts 运行期文件传输纯逻辑（容器内路径 / Content-Disposition 文件名 / 格式化 / 排序 / 图标映射 / 进度）
     │   ├── file-pane.ts      文件窗格的纯逻辑（宽度钳位 / Obsidian 双栏树宽钳位 / 定位 fallback 链 / 同路径判定 / 入口条件）
     │   ├── file-pane-collapsed.ts 文件窗格折叠状态的存取（默认展开，挂载不写）
@@ -192,7 +195,8 @@ apps/web/frontend/
     │   ├── TerminalPanel.tsx 终端标签与面板
     │   ├── TerminalView.tsx  单个终端（xterm + WebSocket）
     │   ├── ui/                shadcn/ui 原语（Base UI）
-    │   │   └── combobox.tsx     可搜索选择器（Base UI Combobox：输入即本地筛选）
+    │   │   ├── combobox.tsx     可搜索选择器（Base UI Combobox：输入即本地筛选）
+    │   │   └── tabs.tsx        页签（Base UI Tabs：下划线式 tab 条 + keepMounted 面板）
     │   └── workbench/         工作台各部件
     │       ├── Workbench.tsx          总装与状态中枢（未配置时分流到引导面板）
     │       ├── AppShell.tsx           外壳（侧栏 + 工作区）
@@ -212,7 +216,8 @@ apps/web/frontend/
     │       ├── PreviewConfirmDialog.tsx 大文件二次确认对话框（**共用**：确认才读、取消不发请求）
     │       ├── SplitHandle.tsx           骑缝拖拽把手（文件窗格与 Obsidian 双栏**共用**：常显、直角，复验修复轮·第二批）
     │       ├── PortForwardInstallDialog.tsx 「安装桌面端」指引弹窗（ModalShell）
-    │       ├── SettingsDialog.tsx      设置抽屉（代理设置 + 启动模板 + 连接配置）
+    │       ├── SettingsDialog.tsx      设置抽屉（三个 tab：代理 / 模板 / 后端配置）
+    │       ├── CacheImagesTable.tsx    缓存镜像清单区（表格：IMAGE / ID / SIZE / CACHED TIME + 本地搜索）
     │       ├── TemplateManager.tsx     启动模板管理区（列表 / 重命名 / 删除）
     │       ├── DrawerShell.tsx        抽屉外壳（Base UI Drawer：右侧滑出 / 宽度可拖拽）
     │       ├── DeleteSandboxDialog.tsx 删除确认弹窗（一次点即执行）
@@ -315,9 +320,9 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
   重载回来时用它体检，**体检通过才提升为生效配置**；不通过就清掉待验证配置、回引导面板并就地红字。
 - 令牌从哪来：后端部署处的 `<平台数据根>/console-token.json` 文件，或用环境变量 `SANDBOX_CONSOLE_TOKEN` 注入。
 
-### 设置抽屉的「连接配置」区
+### 设置抽屉的「后端配置」tab
 
-设置抽屉第三区（代理设置、启动模板之后）：后端地址 + 访问令牌 + 「测试连接」+「保存配置」。
+设置抽屉的第三个 tab（「后端配置」，在「代理」「模板」之后）：后端地址 + 访问令牌 + 「测试连接」+「保存配置」。
 
 - 「测试连接」拿**还没保存的草稿值**打一次 `GET /api/health`，成功弹成功 toast、失败弹失败 toast（来源 `connection`）。
 - 「保存配置」把草稿落盘（桌面形态下顺带把后端基址经 IPC 告诉 Rust 侧，让动态 CSP 跟着走）。
@@ -448,6 +453,7 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 - **关闭途径**：Esc、点遮罩、点右上角 `×`；三条都走 `onOpenChange(false)`。
 - **退场动画两层同长（150ms）**：遮罩（`ui/drawer.tsx` 的 `duration-150`）与面板（`DrawerShell.tsx` 的 `[--tw-duration:150ms]`）必须一致——Base UI 只等**面板**上的动画结束就卸载整棵树，遮罩若先播完，淡出结束后会闪回全屏（实测透明度 0.07 → 1.00）。两层都带 `data-closed:[--tw-animation-fill-mode:forwards]`，动画播完停在末帧，不回弹。
 - **面板不挂 `duration-*`**：Tailwind 的 `duration-*` 会同时输出 `transition-duration`，默认 `transition-property: all` 会把宽度一起过渡，拖拽把手时面板滞后 150ms 不跟手。动画时长只写 `[--tw-duration:…]`（只影响 `animation` 简写）。
+- **正文区的滚动责任可切换**：`DrawerShell` 的可选属性 `contentClassName` 换掉正文容器的类名——缺省时正文区自己滚（`overflow-y-auto`，**三个抽屉的默认形态一个都不变**）；设置抽屉传 `flex flex-col overflow-hidden`，滚动交给 tab 面板（代理 tab 的清单表格内部滚、表头吸顶）。
 
 ## 关键行为
 
@@ -622,19 +628,27 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 - 纯逻辑（端口校验、状态文案、圆点配色、tooltip 文案、本机地址拼接）在 `src/lib/port-forward.ts`，有单元测试；
   桌面 IPC 桥在 `src/lib/desktop-forward.ts`，有单元测试。
 
-### 设置（代理设置 + 启动模板 + 连接配置）
+### 设置（代理 / 模板 / 后端配置三个 tab）
 
-设置是抽屉（侧边栏底部的入口文案是「设置」，图标是 lucide `Settings`）。抽屉分三区：
+设置是抽屉（侧边栏底部的入口文案是「设置」，图标是 lucide `Settings`）。抽屉正文是**三个 tab**（Base UI Tabs 原语，封装在 `src/components/ui/tabs.tsx`）：**代理** / **模板** / **后端配置**，**代理 tab 默认激活**。
 
-**第一区：代理设置**。直接展示六个字段：容器运行状态、健康状态、端口连通、缓存目录占用、证书就绪状态与代理访问地址。读状态失败与重启失败都弹**失败 toast**；点「重启代理」后弹一条**提示 toast（蓝色）**「代理正在重启，重启期间依赖镜像拉取会失败，属预期行为」（toast 5 秒后消失；按钮自身的加载态是「旋转图标 + 正在重启」）；重启结果按 `restarted` / `ca_changed` / `ca_reinstalled` / `reinstalled_users` / `failed_users` 如实展示，不把未修复报成已修复。**「刷新状态」与「重启代理」两个按钮在第一区里**（状态字段区之后、右对齐）：它们只管代理，挨着代理设置区更贴切；因此**抽屉不再有全局页脚**（两个按钮的 `data-testid` 与行为一个没变）。
+三个面板一律 `keepMounted`（隐藏的 tab **不卸载**）：打开抽屉即全量加载（代理状态 / 缓存镜像清单 / 模板列表都是打开抽屉那一次拉），切 tab 只换面板、**不发请求**。
 
-**第二区：启动模板**（`src/components/workbench/TemplateManager.tsx`）：
+**代理 tab**（上半：代理设置；下半：缓存镜像清单）：
+
+- **代理设置**：直接展示六个字段：容器运行状态、健康状态、端口连通、缓存目录占用、证书就绪状态与代理访问地址。读状态失败与重启失败都弹**失败 toast**；点「重启代理」后弹一条**提示 toast（蓝色）**「代理正在重启，重启期间依赖镜像拉取会失败，属预期行为」（toast 5 秒后消失；按钮自身的加载态是「旋转图标 + 正在重启」）；重启结果按 `restarted` / `ca_changed` / `ca_reinstalled` / `reinstalled_users` / `failed_users` 如实展示，不把未修复报成已修复。**「刷新状态」与「重启代理」两个按钮在代理设置区里**（状态字段区之后、右对齐）：它们只管代理，挨着代理设置区更贴切；因此**抽屉不再有全局页脚**（两个按钮的 `data-testid` 与行为一个没变）。
+- **缓存镜像清单**（`src/components/workbench/CacheImagesTable.tsx`）：**表格**视图（列：IMAGE / ID / SIZE / CACHED TIME），数据源 `GET /api/proxy/cache/images?format=json&tags=only`（**只展示有标签的镜像**，与沙箱内 `cached-images` 命令消费的是同一份视图）。一个镜像的多个标签**展开成多行**（ID / 大小 / 时间逐行重复），行按 (repo, tag) 排序；**ID** 是去 `sha256:` 前缀后的前 12 位十六进制（完整 digest 挂单元格 `title`）；**SIZE** 是**十进制**人读大小（1000 进制：`B / kB / MB / GB / TB`，1 位小数、整数不带 `.0`；与 console 其余处的二进制 `KiB / MiB` **刻意并存两套**）；**CACHED TIME** 是 **UTC** 口径 `YYYY-MM-DD HH:mm:ss`（不落本地时区）。口径与服务端 `cache_images.py` 逐字对齐（纯逻辑在 `src/lib/cache-images.ts`，含中点取偶的小数舍入，与 Python 的 `f"{x:.1f}"` 同款）。
+- **本地搜索过滤**：表格上方的搜索框（placeholder 与 `aria-label` 都是「搜索镜像」）**纯本地过滤、不发请求**：大小写不敏感子串匹配 `repo:tag`；查询串命中摘要时（带不带 `sha256:` 前缀都认）该镜像**整组行**都显示。**「清单本身为空」与「搜索无命中」是两种空态**：文案与 `data-testid` 都分开。
+- **布局**：代理 tab 顶部（标题行 + 状态字段区 + 按钮行 + 重启结果）**固定高度不滚**；下方缓存镜像清单**撑满剩余高度**（`flex-1 min-h-0`），内容超出时**表格内部滚动、表头吸顶**（sticky 表头，底色走令牌不透视）。搜索框与刷新按钮属于清单区的固定部分，不随表格滚动。（滚动责任的切换靠 `DrawerShell` 的可选 `contentClassName`：缺省时正文区自己滚，三个抽屉共用此外壳、**默认形态一个都不变**。）
+- **零轮询**：打开抽屉加载一次 + 手动刷新按钮，**不挂任何定时器**（后端另有 60 秒 TTL 内存缓存）；读取失败弹失败 toast（来源 `settings-cache-images`）+ 就地一行 `role="status"` 说明，**刷新失败保留旧清单**（不清空、不误显空态）。
+
+**模板 tab**：启动模板管理区（`src/components/workbench/TemplateManager.tsx`）：
 
 - 列表每行给**模板名 + 最近更新时间**，另有「重命名」与「删除」两个行内按钮；列表为空时给一句空态说明，列表读不到时弹失败 toast（来源 `settings-template`）并在抽屉里留一行就地环境状态说明。
 - **行内重命名**：该行变成输入框，**回车提交 / Esc 取消**，**空名禁提交**（按钮禁用 + 就地红字）；成功后弹成功 toast（来源 `settings-template`）。模板**标识不变**（标识由服务端生成，与名称解耦）。
 - **删除**走 `ModalShell` 确认弹窗（面板宽 400px），文案写明**只删模板、不影响已创建的沙箱**（沙箱一旦创建就不再依赖模板）；删除失败弹失败 toast，弹窗留在原地可以重试。
 
-**第三区：连接配置**（详见上方「连接配置」一节）。后端地址 + 访问令牌 + 「测试连接」+「保存配置」；结果按 toast 规范反馈（来源 `connection`）。**桌面形态下「保存配置」还会把已开启的本机监听用新凭据重启一遍**（端口不变；失败逐条弹失败提示，来源 `port-forward`，不中断保存流程）——令牌与基址是开启监听那一刻的快照，不重启旧监听会拿着旧凭据收场。
+**后端配置 tab**：连接配置（详见上方「设置抽屉的『后端配置』tab」一节）。后端地址 + 访问令牌 + 「测试连接」+「保存配置」；结果按 toast 规范反馈（来源 `connection`）。**桌面形态下「保存配置」还会把已开启的本机监听用新凭据重启一遍**（端口不变；失败逐条弹失败提示，来源 `port-forward`，不中断保存流程）——令牌与基址是开启监听那一刻的快照，不重启旧监听会拿着旧凭据收场。
 
 ## data-testid 规范
 
@@ -651,7 +665,8 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
 | 文件窗格（终端右侧分屏） | `file-pane` / `file-browser` | `page-file-pane`（窗格容器；内联宽度 = 展开时的窗格宽 / 折叠时 36px）/ `page-file-pane-content`（展开态的面板根）/ `page-file-pane-collapse-button`（「折叠文件窗格」；**工具条最左**，复验修复轮·第二批 #1）/ `page-file-pane-collapsed`（折叠态竖条：**只有顶部一个按钮、没有任何文字**）/ `page-file-pane-expand-button`（竖条顶部的「展开文件窗格」）/ `page-file-pane-jump-button`（回跳准星；tooltip「跳转到终端当前目录：<路径>」随会话 pwd 更新，已在目标目录或 pwd 不可得时禁用，后者 tooltip 为「当前会话未上报工作目录」）/ `page-file-browser-refresh-button`（刷新：**同路径强制重读**当前目录，loading = 按钮瞬时禁用 + 旋转；**列表态专属**，预览态不出现）/ `page-file-browser-crumbs` / `page-file-browser-crumb`（带 `data-depth`，根目录为 `-1`；**父级为链接样式按钮、当前层级为纯文本 span（不可点、无 hover / 下划线 / 底色 / 焦点环）**，根作为父级时是图标钮、作为当前层级时是纯文本图标）/ `page-file-browser-crumb-ellipsis`（浅层级被收进省略号时的提示标记，**纯展示、不可点**；量宽行里的 `data-crumb-level` / `data-crumb-ellipsis` 是**量宽内部属性**、不对外暴露）/ `page-file-browser-upload-button` / `page-file-browser-file-input`（隐藏的原生文件选择框，`multiple`）/ `page-file-browser-list` / `page-file-browser-row`（一行，带 `data-name` 与 `data-kind="file\|dir\|special"`；**点击行本身即下载 / 进入目录**）/ `page-file-browser-row-icon` / `page-file-browser-row-name` / `page-file-browser-row-size` / `page-file-browser-row-mtime` / `page-file-browser-upload-row`（带 `data-upload-name` 与 `data-state="queued\|uploading"`）/ `page-file-browser-upload-progress`（`role="progressbar"`）/ `page-file-browser-upload-cancel-button` / `page-file-browser-download-progress`（`role="progressbar"`）/ `page-file-browser-overwrite-dialog`（同名普通文件的覆盖确认）/ `page-file-browser-overwrite-confirm-button` / `page-file-browser-overwrite-cancel-button` / `page-file-browser-loading` / `page-file-browser-empty` / `page-file-browser-error`（目录读取失败的就地错误态，`role="alert"`）/ `page-file-browser-row-preview-button`（行尾 hover 浮现的「预览」眼睛钮：**约 150ms 淡入、不带文字**、带 `aria-label`「预览 <文件名>」；仅文件行有，目录行没有；点击**不**触发行下载）/ `page-file-preview`（**窗格内的第二视图**容器，不是弹层 / 抽屉）/ `page-file-preview-back-button`（返回；**返回栈为空（列表态）时不渲染**，`Esc` 与它等价）/ `page-file-preview-title` / `page-file-preview-size` / `page-file-preview-copy-button`（复制正文：成功图标变对勾约 1 秒后复原、**成功零 toast**、失败才 toast 来源 `file-browser`；`aria-label` 在「复制 / 已复制」间切换）/ `page-file-preview-loading`（加载中；小文件只有这一行）/ `page-file-preview-progress`（**仅大文件（> 2 MB）**加载时出现的进度条，`role="progressbar"`，进度 = 已接收字节 / 列表条目 `size`）/ `page-file-preview-confirm-dialog`（大文件二次确认弹窗；**确认才发起读取、取消不发任何请求**）/ `page-file-preview-confirm-button` / `page-file-preview-confirm-cancel-button` / `page-file-preview-body`（正文：等宽字体 + 行号槽，全文渲染；`.md` 也是纯文本）/ `page-file-preview-line` / `page-file-preview-line-number` / `page-file-preview-unsupported`（二进制 / 非 UTF-8 的空态构图：居中线框图标 + 文案 + 描边下载钮）/ `page-file-preview-download-button`（空态里的「下载文件」，走既有下载通道）/ `page-file-preview-error`（预览读取失败的就地错误态，`role="alert"`，**不弹 toast**）|
 | 终端 | `sandbox-detail-terminal` | `page-sandbox-detail-terminal-panel` / `page-terminal-split`（三段式分屏容器）/ `page-terminal-split-terminal`（左：终端面板，带终端最小宽度钳位）/ `page-terminal-split-handle`（中：**骑缝拖拽把手**，`role="separator"`，指针拖拽与 ←/→ 方向键调宽；折叠态不渲染；**固定常显区域**——把手带与抓握图标静置就可见——本体与 hover 高亮都**直角**，复验修复轮·第二批 #2/#6；样式为共用组件 `SplitHandle`）/ `page-sandbox-detail-terminal-tabs` / `page-sandbox-detail-terminal-tab` / `page-sandbox-detail-terminal-tab-select` / `page-sandbox-detail-terminal-tab-close` / `page-sandbox-detail-terminal-new-button` / `page-sandbox-detail-terminal-status` / `page-sandbox-detail-terminal-fullscreen-button`（全屏开关；可访问名随状态在「全屏终端 / 退出全屏」之间切换，**不带 `aria-pressed`**）/ `page-sandbox-detail-terminal-retry-button` / `page-sandbox-detail-terminal-stopped-hint` / `page-sandbox-detail-terminal-surface` / `page-sandbox-detail-terminal-mount`（终端表面内层的测量/挂载盒，xterm 根元素的父节点）/ `page-sandbox-detail-terminal-placeholder`（没有终端会话时的空态）/ `page-sandbox-detail-terminal-empty-title`（空态标题「没有终端会话」）/ `page-sandbox-detail-terminal-empty-create-button`（空态里的「新建会话」入口）/ `page-sandbox-detail-terminal-remove-confirm` / `page-sandbox-detail-terminal-remove-confirm-button` / `page-sandbox-detail-terminal-remove-cancel-button` |
 | Obsidian 阅读器 | `sandbox-detail-obsidian` | `page-sandbox-detail-obsidian-tab`（固定 tab，**tabs 条最左**；带 `aria-selected` 与 `data-active`）/ `page-sandbox-detail-obsidian-tab-select`（tab 上**唯一**的按钮，**没有关闭按钮**）/ `page-sandbox-detail-obsidian-tab-icon`（本地 logo 资产 `<img>`，无外链）/ `page-sandbox-detail-obsidian`（视图根；引导态与双栏共用）/ `page-sandbox-detail-obsidian-onboarding`（未设根时的引导态；「更改」时出现在右栏）/ `page-sandbox-detail-obsidian-onboarding-icon` / `page-sandbox-detail-obsidian-onboarding-title`（「选择一个目录作为 vault 根」）/ `page-sandbox-detail-obsidian-use-workdir-button`（workdir 不可得时禁用）/ `page-sandbox-detail-obsidian-root-input`（回车同样提交）/ `page-sandbox-detail-obsidian-root-open-button` / `page-sandbox-detail-obsidian-root-error`（路径非法就地红字，`role="alert"`）/ `page-sandbox-detail-obsidian-vault-tree` / `page-sandbox-detail-obsidian-vault-header` / `page-sandbox-detail-obsidian-vault-root`（「vault 根：<路径>」）/ `page-sandbox-detail-obsidian-change-root-button` / `page-sandbox-detail-obsidian-tree-node`（带 `data-path`）/ `page-sandbox-detail-obsidian-tree-dir`（带 `data-path` / `data-expanded` / `aria-expanded`）/ `page-sandbox-detail-obsidian-tree-chevron`（展开时 `rotate-90`）/ `page-sandbox-detail-obsidian-tree-children`（含层级线）/ `page-sandbox-detail-obsidian-tree-file`（`.md` 行，带 `data-path` / `data-active`）/ `page-sandbox-detail-obsidian-tree-loading` / `page-sandbox-detail-obsidian-tree-error`（目录读取失败就地错误，`role="alert"`）/ `page-sandbox-detail-obsidian-tree-refresh-button`（左栏 header 刷新：**失效全部目录缓存后按当前展开态重拉**，保留选中与阅读位、不重读正文；loading 同上）/ `page-sandbox-detail-obsidian-divider`（两栏间**可拖拽的骑缝把手**，复验修复轮·第二批 #4：原「不可拖拽细分隔线」升级，与文件窗格把手同一份共用组件 `SplitHandle`——常显、直角；`role="separator"`，指针拖拽与 ←/→ 方向键调宽，左树最小宽度钳位默认 264px / 下限 180 / 上限 520 / 预览区最小宽 320 保底，钳位纯函数在 `src/lib/file-pane.ts`；宽度会话内内存态、不入 localStorage）/ `page-sandbox-detail-obsidian-preview`（右栏容器，`data-selected-path` = 历史栈栈顶文件路径）/ `page-sandbox-detail-obsidian-preview-empty`（「从左侧选择文件」）/ `page-sandbox-detail-obsidian-preview-toolbar` / `page-sandbox-detail-obsidian-preview-back-button`（返回上一层历史栈；**栈底不渲染**）/ `page-sandbox-detail-obsidian-preview-title` / `page-sandbox-detail-obsidian-preview-size` / `page-sandbox-detail-obsidian-preview-mode-render` / `page-sandbox-detail-obsidian-preview-mode-source`（「渲染 / 源码」分段切换，带 `aria-pressed` 与 `data-active`）/ `page-sandbox-detail-obsidian-preview-copy-button`（复制 markdown 源文：成功图标变对勾约 1 秒后复原、**成功零 toast**、失败才 toast 来源 `obsidian`）/ `page-sandbox-detail-obsidian-preview-body`（渲染态容器，`data-mode="render"`）/ `page-sandbox-detail-obsidian-preview-content`（**填满预览区宽度的内容列**；不再 620px 居中限宽）/ `page-sandbox-detail-obsidian-preview-source`（源码态原文，`data-mode="source"`；frontmatter 可见）/ `page-sandbox-detail-obsidian-preview-loading` / `page-sandbox-detail-obsidian-preview-progress`（大文件进度条，`role="progressbar"`；与文件窗格预览**共用组件**）/ `page-sandbox-detail-obsidian-preview-confirm-dialog` / `page-sandbox-detail-obsidian-preview-confirm-button` / `page-sandbox-detail-obsidian-preview-confirm-cancel-button`（大文件二次确认：**确认才读、取消不发请求**；与文件窗格预览**共用组件**）/ `page-sandbox-detail-obsidian-preview-error`（读取失败就地错误，`role="alert"`，不弹 toast）/ `page-sandbox-detail-obsidian-preview-unsupported`（二进制 / 非 UTF-8 的「无法展示」空态）/ `page-sandbox-detail-obsidian-preview-wikilink`（每条 wikilink，带 `data-target` / `data-status="unknown\|found\|missing"` / 命中时 `data-resolved-path`）/ `page-sandbox-detail-obsidian-preview-wikilink-tooltip`（hover 出的黑底小 tooltip，`role="tooltip"`，内容 = 解析后的路径，`position: fixed` 防裁切）/ `page-sandbox-detail-obsidian-preview-wikilink-error`（未命中的就地浅红错误条「链接目标不存在：<名>」，`role="alert"`）/ `page-sandbox-detail-obsidian-preview-wikilink-error-close-button` |
-| 设置 | `settings` | `page-settings-dialog`（抽屉容器）/ `page-settings-title` / `page-settings-container-running` / `page-settings-healthy` / `page-settings-tcp-ok` / `page-settings-cache-size` / `page-settings-certificate-ready` / `page-settings-proxy-url` / `page-settings-refresh-button` / `page-settings-restart-button` / `page-settings-restart-result` / `page-settings-restarted` / `page-settings-restart-message` / `page-settings-ca-changed` / `page-settings-ca-reinstalled` / `page-settings-ca-conclusion` / `page-settings-reinstalled-users` / `page-settings-failed-users` / `page-settings-loading` |
+| 设置 | `settings` | `page-settings-dialog`（抽屉容器）/ `page-settings-title` / `page-settings-tabs`（**三个 tab 的 tablist**）/ `page-settings-tab-proxy`（「代理」）/ `page-settings-tab-templates`（「模板」）/ `page-settings-tab-backend`（「后端配置」；激活的 tab 带 `data-active`）/ `page-settings-container-running` / `page-settings-healthy` / `page-settings-tcp-ok` / `page-settings-cache-size` / `page-settings-certificate-ready` / `page-settings-proxy-url` / `page-settings-refresh-button` / `page-settings-restart-button` / `page-settings-restart-result` / `page-settings-restarted` / `page-settings-restart-message` / `page-settings-ca-changed` / `page-settings-ca-reinstalled` / `page-settings-ca-conclusion` / `page-settings-reinstalled-users` / `page-settings-failed-users` / `page-settings-loading` |
+| 缓存镜像清单 | `settings-cache-images` | `page-settings-cache-images-search-input`（搜索框：placeholder 与 `aria-label` 都是「搜索镜像」；**纯本地过滤，不发请求**）/ `page-settings-cache-images-table`（表格）/ `page-settings-cache-images-head`（表头）/ `page-settings-cache-images-row`（一行，带 `data-image-repo` 与 `data-image-tag`）/ `page-settings-cache-images-image`（IMAGE 列 = `repo:tag`）/ `page-settings-cache-images-id`（ID 列 = 去 `sha256:` 前缀后的前 12 位，完整 digest 挂 `title`）/ `page-settings-cache-images-size`（SIZE 列 = **十进制**人读大小）/ `page-settings-cache-images-time`（CACHED TIME 列 = **UTC** 墙钟）/ `page-settings-cache-images-empty`（**清单本身为空**）/ `page-settings-cache-images-search-empty`（**搜索无命中**，与前者分开）/ `page-settings-cache-images-refresh-button` / `page-settings-cache-images-loading` / `page-settings-cache-images-status`（读取失败的就地环境状态说明，`role="status"`）/ `page-settings-cache-images-generated-at`（「清单生成时间：…」脚注）|
 | 连接配置 | `connection` | `page-connection-setup`（未配置态的引导面板）/ `page-connection-base-url-input` / `page-connection-token-input` / `page-connection-submit-button`（「保存并连接」）/ `page-connection-error`（本地校验红字 / 体检失败红字，`role="alert"`）/ `page-settings-connection-base-url-input` / `page-settings-connection-token-input` / `page-settings-connection-test-button`（「测试连接」）/ `page-settings-connection-save-button`（「保存配置」）/ `page-settings-connection-error`（本地校验红字，`role="alert"`）|
 | 启动模板 | `settings-template` | `page-settings-template-section` / `page-settings-template-list` / `page-settings-template-item`（带 `data-template-id` 与 `data-template-name`）/ `page-settings-template-name` / `page-settings-template-updated-at` / `page-settings-template-rename-button` / `page-settings-template-rename-input` / `page-settings-template-rename-save-button` / `page-settings-template-rename-cancel-button` / `page-settings-template-rename-error` / `page-settings-template-delete-button` / `page-settings-template-delete-dialog` / `page-settings-template-delete-untouched-note`（「只删模板，不影响已创建的沙箱」）/ `page-settings-template-delete-confirm-button` / `page-settings-template-delete-cancel-button` / `page-settings-template-empty` / `page-settings-template-loading` / `page-settings-template-status`（模板列表读取失败的就地环境状态说明，`role="status"`）/ `page-settings-template-refresh-button` |
 | 删除沙箱 | `sandbox-detail-delete` | `page-sandbox-detail-delete-dialog` / `page-sandbox-detail-delete-title` / `page-sandbox-detail-delete-untouched-note` / `page-sandbox-detail-delete-confirm-button` / `page-sandbox-detail-delete-cancel-button` |
@@ -698,6 +713,12 @@ Tailwind v4 + CSS 变量令牌（`src/styles/globals.css`）：
   `page-forward-item-record-state`（后端转发记录的状态，独立一行文字）/ `page-forward-item-url`（本机访问地址）/
   `page-forward-item-copy-button`（复制本机地址）/ `page-forward-item-toggle-button`（开启 / 关闭本机监听）/
   `page-forward-item-stop-button`（停止转发）/ `page-forward-list`（行列表容器）。
+
+缓存镜像清单改成表格视图后下线的标识（**名字不得复用**）：
+
+- **清单条目的单数系列**（旧的是卡片式清单：一行一个镜像，带仓库 / 标签 / 摘要 / 大小 / 时间五个字段）：
+  `page-settings-cache-image-item`（行容器）/ `page-settings-cache-image-repo`（仓库）/ `page-settings-cache-image-size`（大小）/ `page-settings-cache-image-tags`（标签）/ `page-settings-cache-image-digest`（摘要）/ `page-settings-cache-image-cached-at`（缓存时间）；
+- `page-settings-cache-images-list`（旧的清单容器 `<ul>`；现在是真 `<table>`）。
 
 侧边栏「代理设置」改名「设置」后下线的标识：
 
@@ -778,6 +799,7 @@ toast 5 秒后自动消失，断言要放在动作之后立即执行。
 | GET | `/api/images` | 新建抽屉的镜像选择器（裸数组） |
 | GET | `/api/proxy/status` | 代理设置抽屉 |
 | POST | `/api/proxy/restart` | 重启代理 |
+| GET | `/api/proxy/cache/images?format=json&tags=only` | 设置抽屉「代理」tab 的缓存镜像清单（表格视图；**只取有标签的镜像**）|
 | GET | `/api/templates` | 启动模板列表（裸数组；新建抽屉的模板选择器与设置抽屉的模板管理区共用） |
 | POST | `/api/templates` | 保存为模板（名称 + 配置体） |
 | POST | `/api/templates/{id}/rename` | 重命名模板（只改名称，标识不变） |

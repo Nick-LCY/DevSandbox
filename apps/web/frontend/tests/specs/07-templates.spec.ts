@@ -24,6 +24,7 @@ import {
   renameTemplate,
   saveTemplateFromCreateDialog,
   selectImage,
+  switchSettingsTab,
 } from '../helpers/console';
 import { readFixtures } from '../helpers/sandbox';
 
@@ -128,6 +129,7 @@ test.describe('启动模板', () => {
       // ── ⑤ 刷新不复活：重新加载页面，删掉的模板不再出现
       await page.reload();
       await openSettingsDrawer(page);
+      await switchSettingsTab(page, 'templates');
       await expect(templateRow(page, RENAMED_TEMPLATE_NAME)).toHaveCount(0);
       expect(
         (await listTemplates()).some((item) => item.name === RENAMED_TEMPLATE_NAME),
@@ -246,6 +248,8 @@ test.describe('启动模板', () => {
 
       await page.keyboard.press('Escape');
       await openSettingsDrawer(page);
+      // 模板区在「模板」tab 面板里：先切过去。
+      await switchSettingsTab(page, 'templates');
 
       const row = templateRow(page, TEMPLATE_NAME);
       await expect(row).toHaveCount(1);

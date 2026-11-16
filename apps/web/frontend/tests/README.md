@@ -43,7 +43,8 @@ apps/web/frontend/tests/
 │   ├── 12-file-transfer.spec.ts # 运行期文件传输（**入口 = 终端右侧文件窗格**；上传 / 下载 / 列表 / 覆盖 / 负例）
 │   ├── 13-static-frontend.spec.ts # 静态源与后端的分工（静态源出页面 / 后端根路径 404）
 │   ├── 14-file-pane.spec.ts     # 文件窗格（三段式分屏 / 折叠 / 空态 / 回跳 / 无自动跟随）
-│   └── 15-obsidian-reader.spec.ts # Obsidian 阅读器（固定 tab / 双栏 / 树 / 渲染 / wikilink / 错误条）
+│   ├── 15-obsidian-reader.spec.ts # Obsidian 阅读器（固定 tab / 双栏 / 树 / 渲染 / wikilink / 错误条）
+│   └── 16-cache-images.spec.ts   # 镜像缓存清单（端点两格式 / tags=only / 负例 / console 表格视图）
 └── artifacts/                   # 运行产物：截图 / trace / 报告（不进版本库）
 ```
 
@@ -202,7 +203,8 @@ Cloudflare Workers 独立托管前端）。验收套件照这条形态走：**�
 | `openStopDialog` / `confirmStop` | 开停止确认弹窗 / 确认停止 | `page-sandbox-detail-stop-button` → `page-sandbox-detail-stop-dialog` → `page-sandbox-detail-stop-confirm-button` |
 | `openTerminal` | 新建一个终端会话 | `page-sandbox-detail-terminal-new-button` → `page-sandbox-detail-terminal-tab` |
 | `reattachTerminal` | 附着到已有会话（点已有标签） | `page-sandbox-detail-terminal-tab[data-session-id=…]` → `page-sandbox-detail-terminal-tab-select` |
-| `openSettingsDrawer` | 开设置抽屉（代理设置 + 启动模板） | `page-layout-settings-button` → `page-settings-dialog` |
+| `openSettingsDrawer` | 开设置抽屉（代理 / 模板 / 后端配置三个 tab） | `page-layout-settings-button` → `page-settings-dialog` |
+| `switchSettingsTab` | 切设置抽屉的 tab（面板 `keepMounted`：切 tab 不发请求，只换面板） | `page-settings-tab-proxy` / `page-settings-tab-templates` / `page-settings-tab-backend`（激活的 tab 带 `data-active`）|
 | `applyTemplate` | 在新建抽屉里选中模板（选中即回填表单） | `page-sandbox-create-template-select` → `page-sandbox-create-template-popup` → `[data-template-name="…"]` |
 | `saveTemplateFromCreateDialog` | 把当前表单存成模板（命名弹窗） | `page-sandbox-create-template-save-button` → `page-sandbox-create-template-dialog` → `page-sandbox-create-template-name-input` → `page-sandbox-create-template-confirm-button` |
 | `renameTemplate` | 在设置抽屉里行内重命名模板（回车提交） | `page-settings-template-item` → `page-settings-template-rename-button` → `page-settings-template-rename-input`（Enter） |
@@ -232,7 +234,7 @@ await page.getByTestId('page-sandbox-list-create-button').first().click();
 | `04-equivalence` | 同一沙箱：网页与命令行的列表字段、挂载清单、容器状态、回收清单逐项一致；参数相同的两个沙箱（网页建 / 命令行建）挂载与状态流转等价（网页停走确认弹窗） |
 | `05-reclaim` | 经工作台删除（侧栏选中 → 头部删除 → 确认弹窗点一次即删），回收清单通过接口直取逐项核对（沙箱容器、依赖容器、守护进程、systemd 单元、用户与家目录、子 UID/GID 段、平台元数据）；用户声明挂载的外部目录原样存在、内容未变；重复删除幂等 |
 | `06-boundary` | 沙箱内依赖镜像拉取统一经镜像代理（代理访问日志 + 守护进程单元环境变量取证）；服务只监听回环、**接口要令牌**（不带凭据 401 / 带令牌 200）、不暴露接口文档；**后端只提供 `/api`**（根路径与 `/assets/*` 一律 404 且不吐 HTML）+ **正向对照**（静态源根 200 且含 `page-layout-title`）+ 页面照常进沙箱详情（页面 origin 已是静态源，与后端不同源） |
-| `07-templates` | 保存模板（新建抽屉页脚按钮 → 命名弹窗）→ 重新打开抽屉选中模板即回填（镜像与挂载一并回填、声明原样回填）→ 设置抽屉里行内重命名（标识不变）→ 删除（走确认弹窗，文案写明不影响已建沙箱）→ 刷新不复活；模板合并语义（出现的字段整体替换、没出现的保持现状）；删除确认弹窗的文案与取消不删；**模板下拉的箭头在输入框内（不可点、展开时转向）、候选项是指针光标、空列表不留空白带** |
+| `07-templates` | 保存模板（新建抽屉页脚按钮 → 命名弹窗）→ 重新打开抽屉选中模板即回填（镜像与挂载一并回填、声明原样回填）→ 设置抽屉的**模板 tab** 里行内重命名（标识不变）→ 删除（走确认弹窗，文案写明不影响已建沙箱）→ 刷新不复活；模板合并语义（出现的字段整体替换、没出现的保持现状）；删除确认弹窗的文案与取消不删；**模板下拉的箭头在输入框内（不可点、展开时转向）、候选项是指针光标、空列表不留空白带** |
 | `08-file-injection` | 注入 0600 宿主文件 → 容器内读到副本 → 只读写入失败 → 宿主原件零变化（权限 / 内容 / 修改时间）；删除沙箱后注入副本随家目录消失、宿主原件仍在；模板里带文件声明 → 保存 → 回填 → 真机全流程（用模板建沙箱，容器内读到副本） |
 | `09-terminal-clipboard` | `Ctrl+Shift+C` 把终端选区复制到系统剪贴板（读回来逐字比对）；`Ctrl+Shift+V` 把系统剪贴板的内容粘贴进终端（容器内的 shell 真收到了，判据是输出行整行就是标记串）；语义锁：`Ctrl+V` 仍然是字面量 0x16（不碰系统剪贴板），`Ctrl+C` 仍然是中断；没有选区时按 `Ctrl+Shift+C` 静默无反馈；剪贴板 API 不可用时弹失败提示 |
 | `10-auth-connection` | **无令牌访问后端 → 401**（缺失与错误同一句文案「访问令牌无效或缺失」、不回显令牌、带 `WWW-Authenticate: Bearer`；`/api/health` 与业务接口都不豁免）；**错误令牌 → 401**；**正确令牌 → 200**；**终端 WebSocket 无票据 → 握手被拒**（连不上，关闭码**精确判 1006**；配一条**正向对照**：换票后带票连同一地址 → 握手成功，证明「连不上」确实是票据闸拒的）；**未配置连接 → 引导面板出现、工作台不挂载**（`page-connection-*` 在、`page-sandbox-list-title` 不在、地址栏里没有沙箱路由）；**配置正确 → 工作台挂载**（预置配置与引导面板里「保存并连接」两条路都验，页面请求确实带 `Authorization` 头）；**令牌无效时侧栏健康自检显示「令牌无效」**（与「后端不可达」分开） |
@@ -241,6 +243,7 @@ await page.getByTestId('page-sandbox-list-create-button').first().click();
 | `13-static-frontend` | **静态源根 → 200** 且出页面（静态源吐出 index.html 静态外壳；浏览器里 React 照常挂载——证据用 **React 渲染后才有的标识**：已配置态 `page-sandbox-list-title` 可见、引导面板不出现，**不用静态外壳自带的 `page-layout-title` 占位当证据**）；**后端根 → 404** 且响应体不是 HTML（后端不托管前端，前端由独立静态源伺服） |
 | `14-file-pane` | **文件窗格（终端右侧分屏）**：三段式（左终端 + 中 `role="separator"` 分隔条 + 右窗格）从左到右依次排开，窗格默认 **340px**，方向键 ±16px、指针拖拽向左变宽，**最小 240px 且终端面板 ≥ 320px**（终端不被压没）；折叠成 **36px 纯图标竖条**（**无文字、竖条上只有底部一个展开按钮**、分隔条同时收掉），**刷新后折叠态保持**，展开复原；**关闭全部会话** ⇒ 窗格与分隔条整体消失 + 空态标题「没有终端会话」+ 新建会话入口恢复窗格且**折叠态保持**；**回跳准星**（tooltip「跳转到终端当前目录：/workspace」随 pwd 更新、已在目标目录禁用、点击回到 pwd）；**无自动跟随**（终端里 `cd /tmp` 后 tooltip 变、窗格目录一动不动）；换会话时窗格按折叠态重建；**抽屉退役**（两个旧标识 count 0） |
 | `15-obsidian-reader` | **Obsidian 阅读器**：固定 tab 在 **tabs 条最左**、图标是**同源构建产物里的本地 SVG**、tab 上只有「选中」一个按钮（**无关闭钮**）、**零终端会话时照样可用**；引导态（标题 / 「使用沙箱工作目录」/ 路径输入框 / 空值「打开」禁用）→ 设根后**全宽双栏**（左树 + **≤2px 不可拖拽分隔线** + 右预览）与「vault 根：/workspace」+「更改」；vault 树**只列目录与 `.md`**（`.txt` 不在）、目录展开箭头 `rotate-90` / 子层出现 / 收起消失；点 `.md` **markdown 渲染**（内容列 ≤620px 居中、**渲染态隐藏 frontmatter**、**源码态可见**、渲染/源码分段 `aria-pressed`）；**wikilink** 虚线强调色 + hover tooltip = 解析后路径 + 点击**压栈**跳转（返回钮出现 / 退回消失 / 互链回跳）；**目标不存在** ⇒ 正文**顶部**就地红色错误条「链接目标不存在：…」（`role=alert`、可关闭、**不跳转**、**不弹 toast**，附**正向对照**）；激活 Obsidian tab 时**文件窗格与终端分屏整体不出现**，切回终端 tab **按原折叠态恢复** |
+| `16-cache-images` | **镜像缓存清单**：容器内 `cached-images` 的输出与端点 `?format=text&tags=only` **逐字全等**（同数据源、退出码 0）；端点两格式（json 字段齐全 / text 预渲染表头尾注）与 `tags=only` 视图（json 只留标签非空条目、text 仅表体）；负例（无凭据 / 错误令牌 401 逐字节同一份响应、非法 format 422）；**console 视图冒烟**：设置抽屉「代理」tab 的清单**表格**（IMAGE / ID / SIZE / CACHED TIME 四列，ID 是 12 位十六进制、SIZE 是**十进制**单位、CACHED TIME 是 UTC 墙钟）、**本地搜索过滤**（输入 → 行数变少 → 无命中空态 → 清空复原）、手动刷新后数据仍在 |
 
 ---
 

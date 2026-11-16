@@ -520,6 +520,24 @@ export async function openSettingsDrawer(page: Page): Promise<void> {
   await expect(page.getByTestId('page-settings-dialog')).toBeVisible();
 }
 
+/** 设置抽屉的三个 tab。 */
+export type SettingsTab = 'proxy' | 'templates' | 'backend';
+
+/**
+ * 切到设置抽屉的某个 tab。
+ *
+ * 设置抽屉是三 tab 结构（代理 / 模板 / 后端配置）：模板区与连接配置区在
+ * 各自的 tab 面板里，操作前先切过去。
+ *
+ * **切 tab 不发请求**：面板一律 `keepMounted`（隐藏的不卸载），数据是打开
+ * 抽屉那一次加载好的，切 tab 只是换个面板。
+ */
+export async function switchSettingsTab(page: Page, tab: SettingsTab): Promise<void> {
+  const button = page.getByTestId(`page-settings-tab-${tab}`);
+  await button.click();
+  await expect(button).toHaveAttribute('data-active', '');
+}
+
 /**
  * 在新建沙箱抽屉里选中一个模板（**选中即回填表单**）。
  *
@@ -579,6 +597,8 @@ export async function renameTemplate(
   currentName: string,
   nextName: string,
 ): Promise<void> {
+  // 模板区在「模板」tab 面板里：先切过去（面板 keepMounted，数据已加载）。
+  await switchSettingsTab(page, 'templates');
   const row = templateRow(page, currentName);
   await expect(row).toHaveCount(1);
   await row.getByTestId('page-settings-template-rename-button').click();
@@ -598,6 +618,8 @@ export async function renameTemplate(
  * 确认弹窗里写明「只删模板，不影响已创建的沙箱」。
  */
 export async function deleteTemplate(page: Page, name: string): Promise<void> {
+  // 模板区在「模板」tab 面板里：先切过去（面板 keepMounted，数据已加载）。
+  await switchSettingsTab(page, 'templates');
   const row = templateRow(page, name);
   await expect(row).toHaveCount(1);
   await row.getByTestId('page-settings-template-delete-button').click();
