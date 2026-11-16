@@ -21,7 +21,7 @@ function TabsList({ className, ...props }: TabsPrimitive.List.Props) {
     <TabsPrimitive.List
       data-slot="tabs-list"
       className={cn(
-        "flex shrink-0 items-end gap-1 border-b border-border",
+        "flex shrink-0 items-end gap-1 border-b border-border mb-4",
         className
       )}
       {...props}

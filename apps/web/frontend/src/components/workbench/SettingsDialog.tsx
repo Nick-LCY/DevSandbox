@@ -327,7 +327,7 @@ export function SettingsDialog({
           <section
             aria-label="代理设置"
             data-testid="page-settings-proxy-section"
-            className="min-h-0 max-h-[70vh] shrink overflow-y-auto"
+            className="min-h-0 max-h-[70vh] shrink overflow-y-auto mb-4"
           >
             <h3 className="mb-2 text-[13px] font-semibold text-foreground">代理设置</h3>
 
