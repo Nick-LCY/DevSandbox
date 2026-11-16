@@ -1,6 +1,6 @@
 # 镜像缓存清单与缓存优先拉取引导：全轮收口留档（01~06）
 
-> **2026-11-15 全轮收口**：6 个任务全部 done，PRD 验收 **32 / 32** 逐条核销（证据分真机 e2e / 单测 / 真机记录与实测三档，逐条注记见 [[prds/registry-cache-manifest.md|PRD]] 验收标准节），e2e 全量 **71 / 71**。本文是该轮的总留档：轮次总表、门禁数字、真缓存实测与真机记录汇总、已知边界与留白、硬约束复核，以及**收口后小增强（tags=only 与表格化输出，见第七节）与收口后输出清理小轮（cached-images 输出清理，`base:0.4.2`，见第八节）**、**方案 C 与 180d 轮（清单口径「拉过即上榜」+ 有效期统一 180 天，见第九节）**。
+> **2026-11-15 全轮收口**：6 个任务全部 done，PRD 验收 **32 / 32** 逐条核销（证据分真机 e2e / 单测 / 真机记录与实测三档，逐条注记见 [[prds/registry-cache-manifest.md|PRD]] 验收标准节），e2e 全量 **71 / 71**。本文是该轮的总留档：轮次总表、门禁数字、真缓存实测与真机记录汇总、已知边界与留白、硬约束复核，以及**收口后小增强（tags=only 与表格化输出，见第七节）与收口后输出清理小轮（cached-images 输出清理，`base:0.4.2`，见第八节）**、**方案 C 与 180d 轮（清单口径「拉过即上榜」+ 有效期统一 180 天，见第九节）**、**收口后 console 视图改版小轮（设置抽屉三 tabs + 清单表格化 + 本地搜索，见第十节）**。
 
 ## 一、轮次总表与提交链
 
@@ -130,7 +130,7 @@
 - **提交链（4 个，未 push）**：`c49fcae` / `bcc2b9f` / `f9b526f` / `86efc1a`；base-image/RESULTS 已单独补节（镜像与命令侧明细）。
 - **门禁**：后端 pytest **436 passed / 0 failed**（与第七节持平）+ ruff rc=0；`verify.sh` **65 项全过**（64 → 65）；e2e 全量 **71 / 71**；前端 vitest **953 passed / 0 failed**。
 - **真机三态与跨 TTL 实测**：随本轮全过——正常态输出即「仅表格本体」新形态、缺凭据 / 不可达退出码 0 / 2 / 3 语义不变；端到端跨 60 秒 TTL 比对按新输出形态归一（明细见 base-image/RESULTS 补节）。
-- **部署状态**：**未部署生产、未 push（本地领先 4 提交）**——生产现仍跑第七节版本（tags=only 含轻表头与 SIZE 尾注形态）；**沙箱侧要用上新输出需重建至 `base:0.4.2`**（新建沙箱同样需显式指定 `base:0.4.2`；存量重建 qilu 维持暂停、待用户拍板）。
+- **部署状态**：**未部署生产、未 push（本地领先 4 提交）**——生产现仍跑第七节版本（tags=only 含轻表头与 SIZE 尾注形态）；**沙箱侧要用上新输出需重建至 `base:0.4.2`**（新建沙箱同样需显式指定 `base:0.4.2`；存量重建 qilu 维持暂停、待用户拍板）。——**push 状态其后更新（2026-11-16）：该 4 提交已随方案 C 轮的 push 上 origin（见第九节），生产仍未部署本小轮输出**。
 - **运维备注（如实留档）**：本轮真机验证时曾在生产缓存挂载路径误加一层 bind mount，当场已按原样复原，并经三视角复核（`findmnt` / `mount` / `mountinfo` 单条自 bind、140 文件对账）；另有上轮登记的 pkill 教训（见第七节运维事故）。
 
 ## 九、方案 C 与 180d 轮（2026-11-15）：拉过即上榜
@@ -185,3 +185,18 @@
 | S2 | 死常量注记 |
 | S3 | 锁内多次 inspect 合并 |
 | S5 | inactive 生效说明 |
+
+## 十、收口后小轮（2026-11-16）：console 视图改版——设置抽屉三 tabs + 清单表格化 + 本地搜索
+
+> 输出清理与方案 C 两轮之后用户拍板的第三轮小改（**纯前端，后端与 API 契约零改动**）：① 设置抽屉由四个纵向 section 拆成**三个 tabs**——**代理**（含缓存镜像清单，**默认激活**）/ **模板** / **后端配置**（连接配置）；② 缓存镜像清单**对齐沙箱内 `cached-images` 命令口径**——数据改拉 `GET /api/proxy/cache/images?format=json&tags=only`（只展示有 tag 的镜像），**表格化**：IMAGE（repo:tag，多标签展开行，按 (repo, tag) 排序）/ ID（digest 去 `sha256:` 前缀取前 12 位，`title` 保留完整 digest）/ SIZE（十进制 1000 进制）/ CACHED TIME（UTC `YYYY-MM-DD HH:mm:ss`），「清单生成时间」脚注保留（改 UTC 口径）；③ **本地搜索过滤**——大小写不敏感子串匹配 repo:tag，命中 digest 整组显示，「清单为空」与「搜索无命中」两种空态；④ **代理 tab 布局**——顶部状态区有界自滚（`max-h-[70vh] overflow-y-auto`，矮视口下重启结果可达）、下方清单撑满剩余空间、表格内部滚动 + 表头吸顶（`border-separate`）。稳定口径已沉淀 [[conventions/console-frontend.md|控制台前端约定]]。
+
+- **提交链（3 个，未 push）**：`cadac74`（feat 主实现）→ `2216de6`（e2e helper/spec 同步三个 tab 与清单表格 + 前端 README 标识表）→ `7d6be6b`（审查修复：代理区矮视口自滚 + 抽屉滚动显式开关 + 表头吸顶与短摘要口径）。
+- **关键实现决策**：
+  - **tabs 封装**：新增 `src/components/ui/tabs.tsx`（Base UI Tabs 原语封装），**Panel keepMounted**——打开抽屉即全量加载、切 tab 不发请求；
+  - **滚动责任显式开关**：`DrawerShell` 新增 `scrollable` prop（缺省 `true`，既有三个抽屉零行为变化）与 `contentClassName`（只追加不替换）；设置抽屉显式 `scrollable={false}`，滚动责任交给 tab 面板；
+  - **纯函数对齐口径**：新增 `src/lib/cache-images.ts`——`formatSizeDecimal` 与服务端 Python 实现逐值对拍 **4025 个值 0 分歧**（BigInt 中点取偶）、`formatCachedTimeUtc`（UTC）、`shortImageId` 与服务端逐字同语义、`expandImageRows`（多标签展开行）、`filterImageRows`（本地过滤）；api 客户端新增 `cacheImages(options?: { tagsOnly?: boolean })`；
+  - **标识换代**：新增 `page-settings-tabs` / `page-settings-tab-proxy|templates|backend` / `page-settings-cache-images-search-input|table|scroll|row|image|id|size|time|head|search-empty` / `page-settings-proxy-section`；旧单数 `page-settings-cache-image-*` 系列退役（登记与退役清单见前端 `apps/web/frontend/README.md` 标识表）。
+- **审查两轮**：首轮审出 **1 Critical**（矮视口下重启结果被裁不可达——顶部区改有界自滚修复）+ **4 Warning** + 5 建议 → 随 `7d6be6b` 修复；复审**七个修复项全过**、结论「可合并」——两条非阻塞观察：e2e digest 正则隐含小写可加注释、`toContain('max-h-')` 弱断言。
+- **门禁数字**：前端 vitest **53 文件 / 992 用例全绿**（基线 953）+ typecheck 双零错 + build 成功；字体子集重跑（charset 补进 `≡ 铌 锢` 三字符）；e2e 全量 **71 / 71**（真沙箱，12.6 分钟）；后端 / 核心包零改动。
+- **已知差异（登记不修）**：`cached_at` 不可解析时前端「—」占位、服务端回原文——前端口径优先。
+- **部署状态**：**未 push（本地领先 3 提交）**，纯前端改动不涉生产服务；前端 Cloudflare（`dev.sankabox.com`）发布仍待择机（用户决策不变）——发布后生产控制台才见三 tabs 新形态。

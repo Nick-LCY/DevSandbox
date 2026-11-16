@@ -49,7 +49,8 @@
 - **按钮加载态统一用旋转图标**：进行中的按钮保留文字、去掉省略号，文字前放一个旋转图标（lucide `Loader2`，`size-3.5` + `animate-spin`，`aria-hidden`）；不是按钮的加载文案（段落里的「正在读取…」）保持省略号不变。
 - **可搜索选择器统一走 Base UI Combobox 原语封装**（`src/components/ui/combobox.tsx`）：**不得手搓 Popover + 自建列表**，也**不得引入其他组件库**。选中值语义、键盘导航（↑↓ / Enter）、列表的 ARIA 语义与本地筛选都由原语接管；页面只传候选集（`items`）、取值文案（`itemToStringLabel`）、相等比较（`isItemEqualToValue`）与筛选规则（`filter`），不自己维护命中列表。原生 `<select>` 不再用于候选多的场景（新建沙箱的镜像选择器已改）。
 - **可搜索选择器的展开箭头贴在输入框内部**：绝对定位在输入框右侧、垂直居中，是**纯指示器**（`pointer-events-none`、对辅助技术隐藏、不进 Tab 序列），点击穿透到输入框、开合仍由输入框触发（原语默认点输入框即展开）；弹层展开时输入组带 `data-popup-open`，箭头据此旋转 180°（带过渡）。**候选项逐项给指针光标**（`cursor-pointer`，写在组件层）；**候选为空时列表去掉内边距**（`data-[empty]:p-0`），弹层高度贴合内容，底部不留空白带。
-- 纯数据转换逻辑（路由解析、挂载声明、环境变量、格式化、终端帧协议、终端状态提示口径与去重、终端选中会话解析、终端焦点回填门控、终端尺寸自适应去抖、代理文案、主题存取、侧栏折叠存取、抽屉宽度的存取与换算、会话定序、轮询失败计数、文件窗格宽度换算与折叠态存取、终端 pwd 解析（OSC 1337）、wikilink 解析、大文件预览判定与进度换算、tooltip 视口定位）收敛在 `src/lib/`，并有单元测试。
+- **多 tab 面板统一走 Base UI Tabs 原语封装**（`src/components/ui/tabs.tsx`）：**不得手搓 tab 条，也不引入其他组件库**；**Panel keepMounted**——面板内容挂载一次常驻（外层容器打开即全量加载、切 tab 不重发请求），需要「切到才加载」的场景必须显式偏离并说明；激活态标识由原语的 `data-active` 承载。落地实例：设置抽屉的三个 tab（见「设置抽屉的三个 tab 与缓存镜像清单」一节）。
+- 纯数据转换逻辑（路由解析、挂载声明、环境变量、格式化、终端帧协议、终端状态提示口径与去重、终端选中会话解析、终端焦点回填门控、终端尺寸自适应去抖、代理文案、主题存取、侧栏折叠存取、抽屉宽度的存取与换算、会话定序、轮询失败计数、文件窗格宽度换算与折叠态存取、终端 pwd 解析（OSC 1337）、wikilink 解析、大文件预览判定与进度换算、tooltip 视口定位、缓存镜像清单展示换算（`cache-images.ts`，与服务端 `cache_images.py` 逐值对拍对齐））收敛在 `src/lib/`，并有单元测试。
 - **交互组件的 pointer 光标由 `src/styles/globals.css` 的 base 层统一兜底**（Tailwind v4 的 preflight 把 button 等元素的默认光标改成了 `default`，v3 时代是 `pointer`）：新增交互原语不必逐个补 `cursor-pointer`；要别的光标语义就用工具类覆盖（工具类层级高于 base）。**兜底清单里的 `[role=option]` 会被组件层的工具类盖住**：可搜索选择器的候选项渲染成 `role="option"` 的 div，组件层自己写了 `cursor-pointer`（工具类层级更高，与 base 层那条不冲突，只是它不决定最终光标）。
 
 ## 界面文案与操作语义
@@ -72,6 +73,16 @@
 - **传送 body 后配色不丢**：抽屉传送到 `body` 会脱离 `[data-console-shell]` 作用域，因此面板自己挂 `data-console-shell=""`，选中态与 `color-scheme` 规则照样命中。
 - **正文区的滚动责任靠显式开关切换**：缺省正文区**自己滚**（`overflow-y-auto`，三个抽屉缺省零变化）；要把滚动责任交给内容，**必须显式传 `scrollable={false}`**（不靠传个类名顶掉默认滚动——那样会静默丢滚动，页面内容直接被裁掉且够不着）。额外类名（`contentClassName`）只**追加**、不替换基础类名。
 - **设置抽屉没有全局页脚**：只管代理的「刷新状态」「重启代理」两个按钮放在**第一区代理设置里**（状态字段区之后、右对齐），不放抽屉页脚；两个按钮的标识与行为不变。页脚只放跟整张抽屉相关的动作（新建沙箱抽屉的页脚放「保存为模板」与「创建沙箱」，保存按钮在主按钮左侧）。
+
+## 设置抽屉的三个 tab 与缓存镜像清单
+
+- **设置抽屉三个 tab**：抽屉内容由四个纵向 section 拆为**三个 tab——代理 / 模板 / 后端配置**，**代理 tab 默认激活**，代理 tab 含缓存镜像清单。tablist 标识 `page-settings-tabs`，三个 tab 各挂 `page-settings-tab-proxy` / `page-settings-tab-templates` / `page-settings-tab-backend`（激活态带 `data-active`）。tab 原语封装与 keepMounted 口径见「组件与路由」节。
+- **缓存镜像清单数据口径**：**只展示有 tag 的镜像**——改拉 `GET /api/proxy/cache/images?format=json&tags=only`（api 层 `cacheImages({ tagsOnly: true })`），与沙箱内 `cached-images` 命令同一口径；**后端与 API 契约零改动**。
+- **表格列口径**：IMAGE = `repo:tag`（多标签逐行展开、按 (repo, tag) 排序）；ID = digest 去 `sha256:` 前缀取**前 12 位**（完整 digest 挂 `title`）；SIZE = **十进制**（1000 进制）；CACHED TIME = **UTC** `YYYY-MM-DD HH:mm:ss`；「清单生成时间」脚注保留（UTC 口径）。
+- **本地搜索过滤**：**纯本地、不发请求**——大小写不敏感子串匹配 `repo:tag`；命中 digest 时**整组展开显示**；空态两种分开：「清单为空」与「搜索无命中」不是同一句话。
+- **展示换算收敛纯函数**：`src/lib/cache-images.ts`（`formatSizeDecimal` / `formatCachedTimeUtc` / `shortImageId` / `expandImageRows` / `filterImageRows`），**与服务端 `cache_images.py` 对齐**——`formatSizeDecimal` 与服务端实现逐值对拍 4025 个值 0 分歧（BigInt 中点取偶）、`shortImageId` 逐字同语义；改任何一侧口径必须两侧同步（含对拍）。
+- **代理 tab 布局**：顶部代理设置区（`page-settings-proxy-section`）**有界且自己滚**（`max-h-[70vh] overflow-y-auto`——重启结果把这块撑到约 480px，矮视口下不滚就会被裁掉且够不着）；下方缓存镜像清单**撑满剩余高度**；内容超出时**表格内部滚动、表头吸顶**——表格用 `border-separate`（`border-collapse` 下 Chromium 的 sticky 表头底边会随内容滚走），滚动容器挂 `page-settings-cache-images-scroll`；搜索框与刷新按钮是清单区固定部分（`shrink-0`），不随表格滚。抽屉正文显式 `scrollable={false}`（滚动责任开关见「抽屉外壳」节）。
+- **已知差异（登记不修）**：`cached_at` 不可解析时前端显示「—」占位、服务端回原文——前端口径优先。
 
 ## 确认类弹窗
 
@@ -190,3 +201,4 @@
 - [[tasks/file-pane-obsidian/04-file-pane-split.md|04 文件窗格分屏骨架]] — 伴生形态、分屏 / 折叠 / 空态、全屏范围改造的落地任务。
 - [[tasks/file-pane-obsidian/05-file-preview.md|05 文件窗格文本预览]] — 预览第二视图与只读端点、大文件预览统一口径的落地任务。
 - [[tasks/file-pane-obsidian/07-markdown-wikilink.md|07 markdown 渲染与 wikilink]] — Obsidian 渲染与 wikilink、`PreviewConfirmDialog` / `PreviewLoading` 共用组件抽取的落地任务。
+- [[tasks/registry-cache-manifest/05-console-cache-images-view.md|05 console 缓存镜像清单视图]] — 设置抽屉缓存镜像清单视图的首次落地；三 tab 化、清单表格化与本地搜索的改造口径见 [[tasks/registry-cache-manifest/RESULTS.md|RESULTS]] 第十节。
