@@ -3,7 +3,8 @@
  *
  * **快照是什么**：服务端常驻一份终端模拟器（pyghostty），与容器内的输出
  * 并行跑；浏览器附着时，服务端把「当前屏幕 + 光标 + 终端模式」导成一份
- * VT 恢复流，按 64 KiB 分片、base64 装在文本帧里下发（`snapshot` 帧）。
+ * VT 恢复流，按 48 KiB 原文分片（base64 后约 64 KiB）、装在文本帧里下发
+ * （`snapshot` 帧）。
  * 前端把它喂回 xterm，画面与模式一次性恢复——**不是历史回放**。
  *
  * **为什么不是历史回放**：历史字节里有终端探测（kitty 键盘查询、DA1、
@@ -62,6 +63,7 @@ export function base64ToBytes(text: string): Uint8Array | null {
  *
  * - 没有分片；
  * - 片数与 `parts` 对不上（缺片）；
+ * - 各分片的 `parts` / `cols` / `rows` 不一致（不是同一份快照）；
  * - 序号重复；
  * - 序号越界或不是整数；
  * - 某一片的 base64 非法。
@@ -71,6 +73,8 @@ export function decodeSnapshotParts(parts: SnapshotPart[]): Uint8Array | null {
     return null;
   }
   const total = parts[0].parts;
+  const expectedCols = parts[0].cols;
+  const expectedRows = parts[0].rows;
   if (!Number.isInteger(total) || total <= 0) {
     return null;
   }
@@ -82,6 +86,10 @@ export function decodeSnapshotParts(parts: SnapshotPart[]): Uint8Array | null {
   const chunks: Uint8Array[] = [];
   const seen = new Set<number>();
   for (const item of ordered) {
+    if (item.parts !== total || item.cols !== expectedCols || item.rows !== expectedRows) {
+      // 分片间元数据不一致：这不是同一份快照（片数/几何对不上）
+      return null;
+    }
     if (!Number.isInteger(item.part) || item.part < 0 || item.part >= total) {
       return null;
     }

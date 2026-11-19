@@ -62,6 +62,30 @@ describe('decodeSnapshotParts', () => {
     ).toBeNull();
   });
 
+  it('分片间的 parts 不一致：返回 null（不是同一份快照）', () => {
+    expect(
+      decodeSnapshotParts([
+        part({ part: 0, parts: 2, data: btoa('ONE') }),
+        part({ part: 1, parts: 3, data: btoa('TWO') }),
+      ]),
+    ).toBeNull();
+  });
+
+  it('分片间的 cols / rows 不一致：返回 null（几何对不上，拼出来也错位）', () => {
+    expect(
+      decodeSnapshotParts([
+        part({ part: 0, parts: 2, cols: 80, rows: 24, data: btoa('ONE') }),
+        part({ part: 1, parts: 2, cols: 100, rows: 24, data: btoa('TWO') }),
+      ]),
+    ).toBeNull();
+    expect(
+      decodeSnapshotParts([
+        part({ part: 0, parts: 2, cols: 80, rows: 24, data: btoa('ONE') }),
+        part({ part: 1, parts: 2, cols: 80, rows: 30, data: btoa('TWO') }),
+      ]),
+    ).toBeNull();
+  });
+
   it('序号重复：返回 null', () => {
     expect(
       decodeSnapshotParts([

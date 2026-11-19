@@ -58,6 +58,18 @@ const RECONNECT_STABLE_AFTER = 5000;
  */
 const FIT_DEBOUNCE_MS = 100;
 
+/**
+ * attach 之后等快照分片的窗口（毫秒）。
+ *
+ * **降级兜底用**：旧后端（不认 attach / 不下发 snapshot）与模拟器关闭的会话
+ * 只回放历史字节，pwd 只能靠实时流里的 OSC 1337 更新；重新附着后没有新提示符
+ * 就永远拿不到新 pwd。超过这个窗口还没见到任何快照分片时，用一次「尺寸真变化」
+ * 逼 readline 重绘提示符（重绘会顺带重发 OSC 1337）。
+ *
+ * 正常路径（服务端下发快照）在窗口内就有分片到达 ⇒ 不做这两步。
+ */
+const SNAPSHOT_FALLBACK_MS = 2000;
+
 /** 剪贴板失败提示的来源标记（端到端脚本靠它定位这条提示）。 */
 const CLIPBOARD_TOAST_SOURCE = 'terminal-clipboard';
 
@@ -145,7 +157,12 @@ export function TerminalView({
   const focusRef = useRef<(() => void) | null>(null);
   /** 上一次生效的可见性（判断 false → true 的那一跳）。 */
   const wasActiveRef = useRef(active);
-  /** 隐藏时记下的滚动位置（变可见时还原）。 */
+  /**
+   * 隐藏时记下的滚动位置：**距底部多少行**（不是绝对的 viewportY）。
+   *
+   * 绝对行号会在隐藏期间有新输出时漂移：缓冲区往下长，同一个绝对行号对应的
+   * 内容已经变了。记「距底部行数」才能跟住原来那段输出。
+   */
   const scrollRef = useRef<number | null>(null);
   /** 已消费到的焦点回填请求序号（一次请求只回填一次）。 */
   const consumedFocusRef = useRef(0);
@@ -181,9 +198,18 @@ export function TerminalView({
     /**
      * 本次连接收到的快照分片（按序号累积）。
      *
-     * 服务端按 64 KiB 分片下发，集齐后才拼成完整的恢复流。
+     * 服务端按 48 KiB 原文（base64 后约 64 KiB）分片下发，集齐后才拼成完整的恢复流。
      */
     let snapshotParts = new Map<number, Extract<TerminalFrame, { type: 'snapshot' }>>();
+    /**
+     * 本次连接收到过快照分片了吗（降级兜底的判据）。
+     *
+     * 只要见到**任何一片**就算快照路径已生效：分片可能还没集齐，但服务端显然
+     * 会走快照恢复，不该再补两步 resize。
+     */
+    let snapshotSeen = false;
+    /** attach 之后等快照分片的定时器（超时走降级兜底）。 */
+    let snapshotFallbackTimer: number | null = null;
 
     const term = new Terminal({
       cursorBlink: true,
@@ -383,6 +409,59 @@ export function TerminalView({
       socket.send(encodeResize(cols, rows));
     };
 
+    /** 取消「等快照」的降级定时器。 */
+    const cancelSnapshotFallback = (): void => {
+      if (snapshotFallbackTimer !== null) {
+        window.clearTimeout(snapshotFallbackTimer);
+        snapshotFallbackTimer = null;
+      }
+    };
+
+    /**
+     * 降级兜底：用一次「尺寸真变化」把 readline 的提示符（连同 OSC 1337 pwd）
+     * 逼出来。
+     *
+     * 依据 01 轮实测：readline 收到 SIGWINCH 后**只在尺寸真的变了**时才重绘提示符
+     * ——同尺寸的 resize 实测 0 字节；尺寸真变了就会重绘，并顺带重新带一条
+     * OSC 1337（拿到新鲜的 pwd）。
+     *
+     * 基准取**当前终端尺寸**（不是 hello 帧里的旧尺寸）：attach 已经把会话对齐到
+     * 前端尺寸，用旧尺寸当基准会把 pty 尺寸改回去。两步的净效果是尺寸不变。
+     * 列数上限 1000（后端超限会回「窗口大小参数非法」）：顶到上限时往下挪一格，
+     * 同样能让尺寸真变化。
+     */
+    const refreshPwdByResize = (): void => {
+      const baseCols = term.cols;
+      const baseRows = term.rows;
+      const bumped = baseCols >= 1000 ? baseCols - 1 : baseCols + 1;
+      sendResize(bumped, baseRows);
+      sendResize(baseCols, baseRows);
+    };
+
+    /**
+     * 安排降级兜底：attach 发出去后等一个窗口，期间没有快照分片才补两步 resize。
+     *
+     * 收到快照分片、连接关掉、组件卸载都会让这次检查变成空操作（见调用点与
+     * `cancelSnapshotFallback`）。
+     */
+    const scheduleSnapshotFallback = (): void => {
+      cancelSnapshotFallback();
+      snapshotFallbackTimer = window.setTimeout(() => {
+        snapshotFallbackTimer = null;
+        if (disposed || finished || gaveUp) {
+          return;
+        }
+        if (snapshotSeen) {
+          // 服务端走了快照路径：pwd 由快照帧带回，不做兜底。
+          return;
+        }
+        if (!attachSent || !socket || socket.readyState !== WebSocket.OPEN) {
+          return;
+        }
+        refreshPwdByResize();
+      }, SNAPSHOT_FALLBACK_MS);
+    };
+
     /** 尺寸自适应：容器还没铺开（隐藏的标签）时跳过，避免算出 0 列。 */
     const safeFit = (): void => {
       if (container.clientWidth === 0 || container.clientHeight === 0) {
@@ -494,6 +573,8 @@ export function TerminalView({
       // 新的一条连接 ⇒ 握手重来一遍（attach 重发、快照分片重新累积）
       attachSent = false;
       snapshotParts = new Map();
+      snapshotSeen = false;
+      cancelSnapshotFallback();
 
       let next: WebSocket;
       try {
@@ -546,18 +627,25 @@ export function TerminalView({
             safeFit();
             const cols = term.cols;
             const rows = term.rows;
-            attachSent = true;
             if (socket && socket.readyState === WebSocket.OPEN) {
+              // 标记置位与真正的发送放在同一个分支里：连接不是 OPEN 时什么都没发
+              // 出去，不能把「已发」先记上（否则尺寸帧会在没 attach 的连接上空转）。
+              attachSent = true;
               // **attach 必须是第一个控制帧**：报自己的窗口大小，
               // 服务端据此对齐会话尺寸，再导出屏幕快照。
               socket.send(encodeAttach(cols, rows));
               // 第二帧 resize：兼容旧后端（它不认 attach，只会处理 resize）。
               socket.send(encodeResize(cols, rows));
+              // 降级兜底：窗口内没等到快照分片就补两步 resize（旧后端 / 模拟器关闭）。
+              scheduleSnapshotFallback();
             }
             return;
           }
           if (frame.type === 'snapshot') {
             // 快照分片：集齐 parts 才拼（缺一片宁可不写，也不写半截画面）
+            // 收到任何一片 ⇒ 服务端走的是快照路径，降级兜底不再做。
+            snapshotSeen = true;
+            cancelSnapshotFallback();
             snapshotParts.set(frame.part, frame);
             const total = frame.parts;
             if (snapshotParts.size < total) {
@@ -692,6 +780,7 @@ export function TerminalView({
       if (stableTimer !== null) {
         window.clearTimeout(stableTimer);
       }
+      cancelSnapshotFallback();
       fitDebouncer.cancel();
       observer.disconnect();
       dataDisposable.dispose();
@@ -713,10 +802,14 @@ export function TerminalView({
    * **变可见必须 refit**：隐藏态是 `display:none`，xterm 量不到尺寸
    * （fit 会算出 0 列），不补这一次就会出现「显示出来的是旧尺寸」。
    *
-   * **滚动位置还原**（记 viewportY → 变可见时 scrollLines 还原）：
+   * **滚动位置还原按相对口径**（记「距底部行数」，不是绝对 viewportY）：
+   * 隐藏期间终端仍在收输出，缓冲区会往下长；用绝对行号还原会落到别的内容上。
+   * 记 `baseY - viewportY`，变可见时按「当前 baseY − 距底部行数」定位；
+   * 原本就在底部（距底部 0 行）则 scrollToBottom（跟着新输出回到底部）。
    * jsdom 里测不了（没有真实布局与滚动），**真机验证口径**：在一个有滚动的
-   * 会话里往上翻几页 → 切到别的标签 → 切回来 ⇒ 视口停在原来那几页
-   * （不是跳回底部）。还原失败也不影响终端可用性（位置是锦上添花）。
+   * 会话里往上翻几页 → 切到别的标签 → 切回来 ⇒ 视口停在**同样几行之前**
+   * （距离底部不变，而不是跳回底部或跳到别的绝对行）。
+   * 还原失败也不影响终端可用性（位置是锦上添花）。
    */
   useEffect(() => {
     const wasActive = wasActiveRef.current;
@@ -725,11 +818,12 @@ export function TerminalView({
       return;
     }
     if (!active) {
-      // 变隐藏：记下当前视口位置。
+      // 变隐藏：记下当前视口距离底部多少行。
       const term = termRef.current;
       if (term) {
         try {
-          scrollRef.current = term.buffer.active.viewportY;
+          const buffer = term.buffer.active;
+          scrollRef.current = buffer.baseY - buffer.viewportY;
         } catch {
           scrollRef.current = null;
         }
@@ -743,17 +837,19 @@ export function TerminalView({
       if (!term) {
         return;
       }
-      const saved = scrollRef.current;
-      if (saved === null) {
+      const fromBottom = scrollRef.current;
+      if (fromBottom === null) {
         return;
       }
       try {
         const buffer = term.buffer.active;
-        if (saved >= buffer.baseY) {
+        if (fromBottom <= 0) {
           // 原来停在底部：隐藏期间有新输出 ⇒ 跟着回到底部。
           term.scrollToBottom();
         } else {
-          term.scrollLines(saved - buffer.viewportY);
+          // 距底部行数不变 ⇒ 原来的那段输出仍在视口里（隐藏期间的新输出在它下面）。
+          const targetY = Math.max(0, buffer.baseY - fromBottom);
+          term.scrollLines(targetY - buffer.viewportY);
         }
       } catch {
         // 还原失败就算了：终端照样能用。

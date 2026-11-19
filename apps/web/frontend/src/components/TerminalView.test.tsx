@@ -239,7 +239,7 @@ describe('终端视图的 pwd 通道接线', () => {
     await waitFor(() => expect(getSessionPwd('sess-pwd')).toBe('/workspace'));
   });
 
-  it('重新附着（第二次握手）：不再做「±1 两步 resize」', async () => {
+  it('重新附着且快照到达：不再做「±1 两步 resize」（pwd 由快照带回）', async () => {
     const view = render(
       <ToastProvider>
         <TerminalView sessionId="sess-pwd" onStateChange={() => {}} />
@@ -262,11 +262,35 @@ describe('终端视图的 pwd 通道接线', () => {
     const second = FakeWebSocket.instances[1];
     second.emitOpen();
     second.emitText(HELLO_FRAME);
+    // 快照到了 ⇒ 服务端走快照路径，pwd 随快照帧带回。
+    second.emitText(snapshotFrame({ data: 'SNAPSHOT' }));
 
     // 重新附着**只发一帧尺寸同步**（80）：不再有 bump（81）/ 还原（80）那两步。
-    // 那两步是为了「刷 pwd」；现在 pwd 由服务端快照帧带回来。
     expect(resizeCols(second)).toEqual([80]);
-  });
+    // 等过降级窗口：收到过快照分片 ⇒ 也不会补两步 resize。
+    await new Promise((resolve) => setTimeout(resolve, 2300));
+    expect(resizeCols(second)).toEqual([80]);
+  }, 10_000);
+
+  it('降级路径：attach 后窗口内没有快照分片 ⇒ 补两步 resize 逼 readline 重发 pwd', async () => {
+    render(
+      <ToastProvider>
+        <TerminalView sessionId="sess-pwd" onStateChange={() => {}} />
+      </ToastProvider>,
+    );
+
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    socket.emitOpen();
+    socket.emitText(HELLO_FRAME);
+    // attach 后先只有一帧尺寸同步（80）：pwd 等快照；旧后端不发快照。
+    expect(resizeCols(socket)).toEqual([80]);
+
+    // 超过降级窗口仍无任何快照分片 ⇒ cols+1 再还原（两步尺寸帧）。
+    await waitFor(() => expect(resizeCols(socket)).toEqual([80, 81, 80]), {
+      timeout: 4_000,
+    });
+  }, 10_000);
 
   it('首次握手只发一帧尺寸同步（没有多余的 ±1 帧）', async () => {
     render(
@@ -335,6 +359,28 @@ describe('终端视图的 pwd 通道接线', () => {
     socket.emitText(HELLO_FRAME);
     socket.emitText(snapshotFrame({ data: 'X', pwd: 'CurrentDir=/workspace' }));
 
+    await waitFor(() => expect(getSessionPwd('sess-pwd')).toBe('/workspace'));
+  });
+
+  it('快照 reset 之后实时流的 OSC 1337 仍然更新 pwd（钉住 xterm reset 不清 OSC handler）', async () => {
+    render(
+      <ToastProvider>
+        <TerminalView sessionId="sess-pwd" onStateChange={() => {}} />
+      </ToastProvider>,
+    );
+
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    socket.emitOpen();
+    socket.emitText(HELLO_FRAME);
+    // 快照内部会调 term.reset()：先让 pwd 落到快照带来的旧值。
+    socket.emitText(snapshotFrame({ data: 'X', pwd: 'CurrentDir=/opt' }));
+    await waitFor(() => expect(getSessionPwd('sess-pwd')).toBe('/opt'));
+
+    // reset 只清缓冲区与终端模式，**不清 parser / OSC handler**（xterm.js 5.5.0）：
+    // 快照之后实时流里的 OSC 1337 仍应更新 pwd。xterm 升级若改变这个行为，
+    // 这一条会变红——那是升级需要先处理的事，不是可以顺手放宽的断言。
+    socket.emitBytes(REAL_OSC_BYTES);
     await waitFor(() => expect(getSessionPwd('sess-pwd')).toBe('/workspace'));
   });
 

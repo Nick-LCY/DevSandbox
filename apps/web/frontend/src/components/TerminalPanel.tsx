@@ -138,7 +138,7 @@ export function TerminalPanel({
    * 会话表这一轮的状态（还没读到 / 读到了 / 读失败）。
    *
    * 读失败时表不可信：选中的会话要沿用上一轮（不能因为读不到就跳走，
-   * 跳一次就是一次终端重挂载）。
+   * 跳一次就是一次终端切换，焦点也跟着丢一次）。
    */
   const [refreshState, setRefreshState] = useState<TerminalRefreshState>('pending');
   /** 正在等确认的会话（关标签时弹确认）。 */
@@ -205,9 +205,11 @@ export function TerminalPanel({
   /**
    * 焦点宿主：最后一次 `focusin` 的落点。
    *
-   * 记它是为了认出「宿主已经被摘出 DOM」——终端重挂载时 xterm 的 helper
-   * textarea 会被摘掉，浏览器把焦点复位到 body 且**不派发 `focusin`**，
-   * 只靠事件跟踪记下来的标志会永远停在 true（门控退化成「永远回填」）。
+   * 记它是为了认出「宿主已经被摘出 DOM」：终端实例常驻之后，切标签只是
+   * `display:none` 藏起来（DOM 仍连着文档），但**整块分屏卸载**（切到
+   * Obsidian tab 再回来、面板卸载）仍会把 xterm 的 helper textarea 摘掉，
+   * 浏览器把焦点复位到 body 且**不派发 `focusin`**——只靠事件跟踪记下来的
+   * 标志会永远停在 true（门控退化成「永远回填」）。
    */
   const focusHostRef = useRef<Element | null>(null);
   /** 本沙箱的标签序号登记表：序号跟会话身份绑定，关掉标签不重排。 */
@@ -347,7 +349,7 @@ export function TerminalPanel({
    * 就用它；不在表里且会话表还不可信（首轮还没读到 / 这一轮读失败）就沿用上一轮；
    * 不在表里且会话表是权威的（这一轮读到了，会话真消失）就回落一次到第一个标签，
    * 并把回落结果同步回路由——否则选中的会话会在两次轮询之间来回跳，
-   * 每跳一次终端就重挂载一次。
+   * 每跳一次终端就切换一次（实例不重建，但可见性与焦点会跟着跳）。
    */
   const active = resolveActiveSession({
     routeSessionId: activeSessionId,
@@ -382,9 +384,10 @@ export function TerminalPanel({
    * 焦点回填的结论。
    *
    * 判定当下的焦点位置是**活读** `document.activeElement`（口径见
-   * `src/lib/terminal-focus.ts`）：终端实例被摘出 DOM 时，浏览器把焦点复位到
-   * body 且不派发 `focusin`——只靠事件跟踪记下来的标志会永远停在 true，
-   * 门控退化成「永远回填」。
+   * `src/lib/terminal-focus.ts`）：终端实例的宿主被摘出 DOM 时（切到
+   * Obsidian tab 再回来、面板卸载——普通切标签只 `display:none`，不摘 DOM），
+   * 浏览器把焦点复位到 body 且不派发 `focusin`——只靠事件跟踪记下来的标志
+   * 会永远停在 true，门控退化成「永远回填」。
    *
    * 活读发生在渲染期：此刻旧终端还在 DOM 里，焦点宿主仍连着文档，
    * 读到的就是「切换之前焦点在哪」。只在激活会话真的变了的那一轮写。
@@ -465,8 +468,8 @@ export function TerminalPanel({
         show('error', failure, { source: 'terminal-sessions' });
       }
       // 新会话直接选中：路由带上会话标识，刷新页面也能回到这个终端。
-      // 新建会话是明确的用户操作意图：终端重挂载后要把焦点还给用户
-      // （否则新终端成了看得见、敲不进 pty 的「空心光标」）。
+      // 新建会话是明确的用户操作意图：新终端挂载（或切回可见）后要把焦点
+      // 还给用户（否则新终端成了看得见、敲不进 pty 的「空心光标」）。
       focusIntentRef.current = true;
       // 新建会话必然落在终端 tab 上（Obsidian tab 与终端会话无关）。
       setActiveTabKind('terminal');
@@ -561,8 +564,9 @@ export function TerminalPanel({
   /**
    * 点标签：选会话 + 记一次焦点回填意图。
    *
-   * 点标签后终端会整块重挂载（key 变了），浏览器焦点会落到标签按钮上——
-   * 这次意图就是告诉终端「重挂载之后把焦点还给我」。
+   * 点标签后终端实例**不重建**（旧实例只是被 `display:none` 藏起来），
+   * 但浏览器焦点会落到标签按钮上——这次意图就是告诉终端「切回来之后
+   * 把焦点还给我」。
    */
   const selectSession = useCallback(
     (sessionId: string) => {
