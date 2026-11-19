@@ -8,11 +8,15 @@ import { getConnectionConfig } from '../lib/connection';
 import {
   CLOSE_CODE_UNKNOWN_SESSION,
   SESSION_INVALID_MESSAGE,
+  encodeAttach,
   encodeResize,
   isSessionInvalidMessage,
+  isUnknownAttachMessage,
   parseTerminalFrame,
   terminalSocketUrl,
+  type TerminalFrame,
 } from '../lib/terminal';
+import { decodeSnapshotParts } from '../lib/terminal-snapshot';
 import {
   MAX_RECONNECT_FAILURES,
   classifyTicketFailure,
@@ -80,9 +84,17 @@ interface TerminalViewProps {
 /**
  * 单个终端视图：xterm 实例 + 一条 WebSocket。
  *
- * 帧协议：二进制帧是终端字节流，文本帧是 `hello` / `exit` / `error` / `resize`。
- * 断线后按退避节奏重连，**始终携带原 `session_id`**（服务端会先回放缓冲再接实时流）。
- * 服务端重启导致会话失效时，停止重连并提示需要新开终端。
+ * 帧协议：二进制帧是终端字节流，文本帧是 `hello` / `snapshot` / `exit` /
+ * `error` / `resize` / `attach`。
+ * 断线后按退避节奏重连，**始终携带原 `session_id`**（服务端会先下发屏幕
+ * 快照再接实时流）。服务端重启导致会话失效时，停止重连并提示需要新开终端。
+ *
+ * **握手次序（attach 必须是第一个控制帧）**：连接建立后**不发任何帧**，
+ * 等服务端的 `hello`；收到 hello ⇒ fit 一次、拿到终端尺寸 ⇒ 先发 `attach`
+ * （报尺寸）再补发一帧 `resize`（兼容旧后端）。服务端据此把会话对齐到
+ * 客户端尺寸，再把「屏幕现场」导成 VT 恢复流下发（`snapshot` 帧）——
+ * 前端按它 `reset` + 重放，画面与终端模式（鼠标上报 / 焦点上报 / 括号粘贴 /
+ * 备用屏）一次性恢复。
  *
  * 快捷键：带 Ctrl / Meta / Alt 的组合一律拦下来（不触发浏览器行为），
  * 但仍然编码后送进容器内的 shell（Ctrl+C 必须能到 pty）；
@@ -114,25 +126,6 @@ export function TerminalView({
    * 同一个 effect，但不会把挂载时刻的值再拿出来用一次。
    */
   const autoFocusRef = useRef(autoFocus);
-  /**
-   * 这个终端实例**握过几次手**的标记（重连 / 重新附着的判定依据）。
-   *
-   * 首次握手 = 新起一条 shell ⇒ shell 自己会画带 OSC 的提示符，pwd 不用刷新；
-   * 再次握手 = **重新附着**到还活着的 shell（自动重连 / 用户点「重试」）⇒ shell
-   * 不会主动再报一次 pwd，要靠一次尺寸变化把它逼出来。
-   *
-   * 用 ref 而不是 effect 里的局部变量：局部变量会被 effect 重跑重置，而
-   * 「重试连接」正是**同一个组件实例**里重跑 effect —— 那次握手同样属于重新附着。
-   */
-  const attachedOnceRef = useRef(false);
-  /**
-   * 上一次挂载的会话标识：会话换了就把「握过几次手」的判定复位。
-   *
-   * **不依赖调用方用 `key={activeId}` 强制重挂载**——将来换一种渲染方式
-   * （比如同一实例里切 `sessionId`）时，新会话的**第一次**握手仍是「新起一条
-   * shell」，不该被误判成「重新附着」而白跑一次两步 resize。
-   */
-  const lastSessionIdRef = useRef<string | null>(null);
   const { show } = useToast();
   /** 反馈接口走引用：换身份时不重建终端连接。 */
   const showRef = useRef(show);
@@ -154,13 +147,20 @@ export function TerminalView({
     /** 上一条票据失败的提示键（同一句不重复弹）。 */
     let lastTicketFailureKey = '';
 
-    // 会话换了 ⇒ 「握过几次手」的判定复位：新会话的第一次握手是**新起一条 shell**
-    // （自己会画带 OSC 的提示符），不是重新附着。
-    // 用「上一个 sessionId」判定，不依赖调用方用 `key` 强制重挂载。
-    if (lastSessionIdRef.current !== sessionId) {
-      lastSessionIdRef.current = sessionId;
-      attachedOnceRef.current = false;
-    }
+    /**
+     * attach 帧发过了吗（每条连接各自一份）。
+     *
+     * **attach 必须是第一个控制帧**：服务端拿它对齐尺寸，再导出屏幕快照。
+     * 在这之前发出去的 resize 帧一律空转（否则尺寸帧会抢在 attach 前面到，
+     * 服务端会先按旧尺寸改一轮）。
+     */
+    let attachSent = false;
+    /**
+     * 本次连接收到的快照分片（按序号累积）。
+     *
+     * 服务端按 64 KiB 分片下发，集齐后才拼成完整的恢复流。
+     */
+    let snapshotParts = new Map<number, Extract<TerminalFrame, { type: 'snapshot' }>>();
 
     const term = new Terminal({
       cursorBlink: true,
@@ -358,40 +358,11 @@ export function TerminalView({
       if (!socket || socket.readyState !== WebSocket.OPEN) {
         return;
       }
+      if (!attachSent) {
+        // attach 还没发：尺寸帧一律空转（attach 必须是第一个控制帧）
+        return;
+      }
       socket.send(encodeResize(cols, rows));
-    };
-
-    /**
-     * 断线重连后的 pwd 刷新：**先发一个与当前不同的尺寸，再发回真实尺寸**。
-     *
-     * 依据 01 轮实测：readline 收到 SIGWINCH 后**只在尺寸真的变了**时才重绘提示符
-     * ——同尺寸的 resize 实测 0 字节（什么都不会发生）；尺寸真变了就会重绘提示符，
-     * 并顺带重新带一条 OSC 1337（拿到新鲜的 pwd）。
-     *
-     * **基准 = 会话的真实尺寸**（`hello` 帧带的 `cols` / `rows`），**不是**前端视宽
-     * （`term.cols`）：标签不可见 / 重建终端时，前端视宽可能 ≠ pty 真实宽度，
-     * 拿它当基准就等于「刷 pwd」顺带把 pty 尺寸改了。以会话真实尺寸为基准时，
-     * 这两步的净效果是**尺寸不变**。
-     *
-     * 两步走完 = **两次重绘**（01 轮实测：bump 与还原各触发一次提示符重画，
-     * 各带一条 OSC 1337）⇒ pwd 拿到最新值，**不产生多余的可见输出**
-     * （没有往终端里写任何字符）。
-     *
-     * 通道是现成的：resize 帧 → 后端 `PtyProcess.resize()` → TIOCSWINSZ → SIGWINCH
-     * → 容器内 readline 重绘。
-     *
-     * **不用「发空行」兜底**：空行会写进 shell 的 stdin，可能提交用户断线前敲了
-     * 一半的命令，也可能被前台程序吞掉（01 轮实测的副作用清单）。
-     *
-     * @param baseCols 会话的真实列数（`hello` 帧带的 `cols`）。
-     * @param baseRows 会话的真实行数（`hello` 帧带的 `rows`）。
-     */
-    const refreshPwdByResize = (baseCols: number, baseRows: number): void => {
-      // 后端对 resize 的列数上限是 1000（超了会回一条「窗口大小参数非法」）——
-      // 顶到上限时往下挪一格，同样能让尺寸「真变化」。
-      const bumped = baseCols >= 1000 ? baseCols - 1 : baseCols + 1;
-      sendResize(bumped, baseRows);
-      sendResize(baseCols, baseRows);
     };
 
     /** 尺寸自适应：容器还没铺开（隐藏的标签）时跳过，避免算出 0 列。 */
@@ -499,6 +470,10 @@ export function TerminalView({
         return;
       }
 
+      // 新的一条连接 ⇒ 握手重来一遍（attach 重发、快照分片重新累积）
+      attachSent = false;
+      snapshotParts = new Map();
+
       let next: WebSocket;
       try {
         // 连接地址从连接配置推导（恒从基址推导：http→ws / https→wss）。
@@ -529,8 +504,7 @@ export function TerminalView({
           attempt === 0 ? 'connecting' : 'reconnecting',
           '连接已建立，等待会话握手…',
         );
-        safeFit();
-        sendResize();
+        // **不发任何帧**：attach 必须是第一个控制帧，它要等 hello 里的会话尺寸。
         stableTimer = window.setTimeout(() => {
           stableTimer = null;
           if (disposed || finished) {
@@ -545,28 +519,49 @@ export function TerminalView({
         if (typeof event.data === 'string') {
           const frame = parseTerminalFrame(event.data);
           if (frame.type === 'hello') {
-            // **重连 / 重新附着的判定**：这个终端实例是不是已经握过一次手。
-            // 首次握手是新起一条 shell（shell 自己会画带 OSC 的提示符）；
-            // 再次握手是重新附着到还活着的 shell ⇒ 靠一次尺寸变化把 pwd 逼出来。
-            const reattaching = attachedOnceRef.current;
-            attachedOnceRef.current = true;
             markConnected();
             report('connected', `已连接（会话 ${frame.sessionId.slice(0, 8)}）`);
-            if (reattaching) {
-              // 重新附着：多走一次「cols+1 → 还原」的尺寸刷新，把最新 pwd 要回来。
-              // **基准用 hello 帧带的会话真实尺寸**（不是前端视宽）：
-              // 标签不可见 / 重建终端时前端视宽可能 ≠ pty 真实宽度，
-              // 拿它当基准等于「刷 pwd」顺带把 pty 尺寸改了。
-              refreshPwdByResize(frame.cols, frame.rows);
-            }
-            // 尺寸自适应（前端视宽 → pty）：**放在刷新之后**——
-            // 刷新那两步的基准是会话真实尺寸，先刷新再同步视宽，
-            // 才不会被「还原」把前端视宽又抹回去。
+            // 尺寸自适应（前端视宽 → 会话尺寸）：先 fit 一次拿到真实行列数
             safeFit();
-            if (!reattaching) {
-              // 首次握手：把当前视宽同步给 pty（容器还没铺开时 safeFit 会跳过，
-              // 这一帧是兜底）。
-              sendResize();
+            const cols = term.cols;
+            const rows = term.rows;
+            attachSent = true;
+            if (socket && socket.readyState === WebSocket.OPEN) {
+              // **attach 必须是第一个控制帧**：报自己的窗口大小，
+              // 服务端据此对齐会话尺寸，再导出屏幕快照。
+              socket.send(encodeAttach(cols, rows));
+              // 第二帧 resize：兼容旧后端（它不认 attach，只会处理 resize）。
+              socket.send(encodeResize(cols, rows));
+            }
+            return;
+          }
+          if (frame.type === 'snapshot') {
+            // 快照分片：集齐 parts 才拼（缺一片宁可不写，也不写半截画面）
+            snapshotParts.set(frame.part, frame);
+            const total = frame.parts;
+            if (snapshotParts.size < total) {
+              return;
+            }
+            const parts = [...snapshotParts.values()];
+            snapshotParts = new Map();
+            const bytes = decodeSnapshotParts(parts);
+            if (bytes === null) {
+              // 拼不出来（缺片 / 重复 / 非法 base64）：丢弃，不写
+              return;
+            }
+            // 几何必须对齐：恢复流按字面换行相对定位，尺寸不一致画面就错位
+            if (term.cols !== frame.cols || term.rows !== frame.rows) {
+              term.resize(frame.cols, frame.rows);
+            }
+            // 先 reset（清掉旧画面与旧模式），再重放恢复流
+            term.reset();
+            term.write(bytes);
+            // pwd：快照带着最近一条 OSC 1337 载荷，按既有口径校验后落库
+            if (frame.pwd) {
+              const path = parseCurrentDirPayload(frame.pwd);
+              if (path !== null) {
+                setSessionPwd(sessionId, path);
+              }
             }
             return;
           }
@@ -587,6 +582,11 @@ export function TerminalView({
             if (isSessionInvalidMessage(frame.message)) {
               finished = true;
               report('invalid', SESSION_INVALID_MESSAGE);
+              return;
+            }
+            if (isUnknownAttachMessage(frame.message)) {
+              // 旧后端不认 attach 帧（兼容探测）：**静默豁免**——
+              // 不弹提示、不改状态（那条报错不是故障）。
               return;
             }
             // 服务端报错但连接还在：单独一个警告状态，不跟「已连接」混文案。

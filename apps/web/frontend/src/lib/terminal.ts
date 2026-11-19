@@ -3,8 +3,17 @@
  *
  * 与后端 `apps/web/backend/src/sandbox_console/routes/terminal.py` 对齐：
  *
- * - 客户端 → 服务端：二进制帧 = 终端输入字节；文本帧 = `{"type":"resize","cols":..,"rows":..}`
- * - 服务端 → 客户端：二进制帧 = 终端输出字节；文本帧 = `hello` / `exit` / `error`
+ * - 客户端 → 服务端：二进制帧 = 终端输入字节；文本帧 =
+ *   `{"type":"attach","cols":..,"rows":..}`（**第一个控制帧**：报自己的窗口大小）
+ *   与 `{"type":"resize","cols":..,"rows":..}`；
+ * - 服务端 → 客户端：二进制帧 = 终端输出字节；文本帧 =
+ *   `hello` / `snapshot` / `exit` / `error`。
+ *
+ * **attach 与 snapshot 是新协议的一对**：attach 报尺寸，服务端据此把会话
+ * （伪终端 + 终端模拟器）对齐到客户端，再把「屏幕现场」导成一份 VT 恢复流
+ * 分片下发（snapshot 帧）；客户端按它恢复画面与终端模式，而不是回放历史
+ * 字节。旧后端不认 attach（回一条错误帧）与旧前端不发 attach（服务端超时
+ * 后回退到环形缓冲回放）两侧都有兼容。
  */
 
 import { normalizeBaseUrl } from './connection';
@@ -14,6 +23,18 @@ export type TerminalFrame =
   | { type: 'hello'; sessionId: string; sandbox: string; cols: number; rows: number }
   | { type: 'exit'; code: number | null; reason: string | null }
   | { type: 'error'; message: string }
+  | {
+      /** 快照分片：VT 恢复流（base64 装在 data 里），按 part/parts 拼。 */
+      type: 'snapshot';
+      part: number;
+      parts: number;
+      data: string;
+      /** 快照的几何：重放端的 rows/cols 必须与它一致。 */
+      cols: number;
+      rows: number;
+      /** 最近一条 OSC 1337 载荷（工作目录上报；可空）。 */
+      pwd: string | null;
+    }
   | { type: 'unknown'; raw: string };
 
 /** 会话失效时服务端用的关闭码（策略违规：客户端拿着一个失效的会话标识）。 */
@@ -166,12 +187,58 @@ export function parseTerminalFrame(text: string): TerminalFrame {
       message: typeof record.message === 'string' ? record.message : '终端会话异常',
     };
   }
+  if (kind === 'snapshot') {
+    const part = record.part;
+    const parts = record.parts;
+    const data = record.data;
+    const cols = record.cols;
+    const rows = record.rows;
+    // 字段缺失或类型不对一律归为未知帧：协议不对不该让终端崩掉。
+    if (
+      typeof part !== 'number' ||
+      typeof parts !== 'number' ||
+      typeof data !== 'string' ||
+      typeof cols !== 'number' ||
+      typeof rows !== 'number'
+    ) {
+      return { type: 'unknown', raw: text };
+    }
+    return {
+      type: 'snapshot',
+      part,
+      parts,
+      data,
+      cols,
+      rows,
+      pwd: typeof record.pwd === 'string' ? record.pwd : null,
+    };
+  }
   return { type: 'unknown', raw: text };
 }
 
 /** 生成窗口大小同步帧。 */
 export function encodeResize(cols: number, rows: number): string {
   return JSON.stringify({ type: 'resize', cols, rows });
+}
+
+/**
+ * 生成握手帧（**必须是第一个控制帧**）：报自己的窗口大小。
+ *
+ * 服务端拿它把会话（伪终端 + 终端模拟器）对齐到客户端，再导出屏幕快照。
+ */
+export function encodeAttach(cols: number, rows: number): string {
+  return JSON.stringify({ type: 'attach', cols, rows });
+}
+
+/**
+ * 服务端不认 attach 帧时的报错文案（旧后端）。
+ *
+ * 新前端为了兼容旧后端，发完 attach 还会补发一帧 resize；旧后端把 attach
+ * 当成未知指令，回一条「无法识别的终端指令：attach」。那**不是故障**：
+ * 静默豁免（不弹提示、不改状态）。
+ */
+export function isUnknownAttachMessage(message: string): boolean {
+  return message.includes('无法识别的终端指令') && message.includes('attach');
 }
 
 /** 判断一条错误帧是不是「会话已失效」。 */

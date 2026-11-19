@@ -113,6 +113,55 @@ function resizeCols(socket: FakeWebSocket): number[] {
     .filter((cols): cols is number => cols !== null);
 }
 
+/** 从连接上取全部文本控制帧的「类型」序列（按发出顺序）。 */
+function controlFrameTypes(socket: FakeWebSocket): string[] {
+  return socket.sent
+    .map((frame) => {
+      try {
+        const parsed = JSON.parse(frame) as { type?: string };
+        return typeof parsed.type === 'string' ? parsed.type : null;
+      } catch {
+        return null;
+      }
+    })
+    .filter((type): type is string => type !== null);
+}
+
+/** 读终端表面上渲染出来的屏幕文本（xterm 的 DOM 渲染器）。 */
+function renderedText(): string {
+  const rows = document.querySelector(
+    '[data-testid="page-sandbox-detail-terminal-surface"] .xterm-rows',
+  );
+  return rows?.textContent ?? '';
+}
+
+/** 终端表面渲染出来的行数（几何变了行数就变）。 */
+function renderedRowCount(): number {
+  return document.querySelectorAll(
+    '[data-testid="page-sandbox-detail-terminal-surface"] .xterm-rows > div',
+  ).length;
+}
+
+/** 一帧快照（base64 装在 data 里）。 */
+function snapshotFrame(options: {
+  data: string;
+  cols?: number;
+  rows?: number;
+  pwd?: string | null;
+  part?: number;
+  parts?: number;
+}): string {
+  return JSON.stringify({
+    type: 'snapshot',
+    part: options.part ?? 0,
+    parts: options.parts ?? 1,
+    data: btoa(options.data),
+    cols: options.cols ?? 80,
+    rows: options.rows ?? 24,
+    pwd: options.pwd ?? null,
+  });
+}
+
 describe('终端视图的 pwd 通道接线', () => {
   beforeEach(() => {
     FakeWebSocket.instances = [];
@@ -164,7 +213,7 @@ describe('终端视图的 pwd 通道接线', () => {
     await waitFor(() => expect(getSessionPwd('sess-pwd')).toBe('/workspace'));
   });
 
-  it('重新附着（第二次握手）：走「cols+1 → 还原」的两步 resize', async () => {
+  it('重新附着（第二次握手）：不再做「±1 两步 resize」', async () => {
     const view = render(
       <ToastProvider>
         <TerminalView sessionId="sess-pwd" onStateChange={() => {}} />
@@ -188,15 +237,12 @@ describe('终端视图的 pwd 通道接线', () => {
     second.emitOpen();
     second.emitText(HELLO_FRAME);
 
-    // **整条序列**（不只看末两帧）：
-    // ① 连接建立时同步一次当前视宽（80）；
-    // ② 重新附着 ⇒ bump 到 hello 帧带的会话真实尺寸 +1（81）；
-    // ③ 还原回真实尺寸（80）。
-    // 基准取 hello 帧的 cols（会话真实尺寸），不是前端视宽（tab 不可见时两者可能不等）。
-    expect(resizeCols(second)).toEqual([80, 81, 80]);
+    // 重新附着**只发一帧尺寸同步**（80）：不再有 bump（81）/ 还原（80）那两步。
+    // 那两步是为了「刷 pwd」；现在 pwd 由服务端快照帧带回来。
+    expect(resizeCols(second)).toEqual([80]);
   });
 
-  it('首次握手不做两步刷新（新起的 shell 自己会画带 OSC 的提示符）', async () => {
+  it('首次握手只发一帧尺寸同步（没有多余的 ±1 帧）', async () => {
     render(
       <ToastProvider>
         <TerminalView sessionId="sess-pwd" onStateChange={() => {}} />
@@ -208,9 +254,123 @@ describe('终端视图的 pwd 通道接线', () => {
     socket.emitOpen();
     socket.emitText(HELLO_FRAME);
 
-    // **整条序列**：只有连接建立时与握手时各一次尺寸同步（80、80），
-    // **没有**多出来的 ±1 帧（bump / 还原）。
-    expect(resizeCols(socket)).toEqual([80, 80]);
+    // 连接建立时**不发帧**（attach 必须是第一个控制帧），
+    // 握手后只发一帧尺寸同步（80）。
+    expect(resizeCols(socket)).toEqual([80]);
+  });
+
+  it('attach 是第一个控制帧（报自己的窗口大小），resize 跟在后面', async () => {
+    render(
+      <ToastProvider>
+        <TerminalView sessionId="sess-pwd" onStateChange={() => {}} />
+      </ToastProvider>,
+    );
+
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    socket.emitOpen();
+    // 连接建立后**还没有任何帧**：等 hello 才知道会话尺寸。
+    expect(socket.sent).toHaveLength(0);
+    socket.emitText(HELLO_FRAME);
+
+    expect(controlFrameTypes(socket)).toEqual(['attach', 'resize']);
+    const attach = JSON.parse(socket.sent[0]) as { type: string; cols: number; rows: number };
+    expect(attach.type).toBe('attach');
+    expect(attach.cols).toBe(80);
+    expect(attach.rows).toBe(24);
+  });
+
+  it('快照帧：reset 后写入恢复流，画面上出现快照内容', async () => {
+    render(
+      <ToastProvider>
+        <TerminalView sessionId="sess-pwd" onStateChange={() => {}} />
+      </ToastProvider>,
+    );
+
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    socket.emitOpen();
+    socket.emitText(HELLO_FRAME);
+    socket.emitText(snapshotFrame({ data: 'SNAPSHOT-CONTENT-MARKER' }));
+
+    await waitFor(() => expect(renderedText()).toContain('SNAPSHOT-CONTENT-MARKER'));
+  });
+
+  it('快照帧带 pwd：按既有口径校验后落进会话 pwd 缓存', async () => {
+    render(
+      <ToastProvider>
+        <TerminalView sessionId="sess-pwd" onStateChange={() => {}} />
+      </ToastProvider>,
+    );
+
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    socket.emitOpen();
+    socket.emitText(HELLO_FRAME);
+    socket.emitText(snapshotFrame({ data: 'X', pwd: 'CurrentDir=/workspace' }));
+
+    await waitFor(() => expect(getSessionPwd('sess-pwd')).toBe('/workspace'));
+  });
+
+  it('快照的几何与当前不同：先 resize 再写（恢复流按字面换行定位）', async () => {
+    render(
+      <ToastProvider>
+        <TerminalView sessionId="sess-pwd" onStateChange={() => {}} />
+      </ToastProvider>,
+    );
+
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    socket.emitOpen();
+    socket.emitText(HELLO_FRAME);
+    expect(renderedRowCount()).toBe(24);
+
+    socket.emitText(snapshotFrame({ data: 'GEOMETRY-MARKER', cols: 100, rows: 30 }));
+
+    await waitFor(() => expect(renderedRowCount()).toBe(30));
+    await waitFor(() => expect(renderedText()).toContain('GEOMETRY-MARKER'));
+  });
+
+  it('快照分片不齐时丢弃（不写半截画面）', async () => {
+    render(
+      <ToastProvider>
+        <TerminalView sessionId="sess-pwd" onStateChange={() => {}} />
+      </ToastProvider>,
+    );
+
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    socket.emitOpen();
+    socket.emitText(HELLO_FRAME);
+    // 两片只到一片：拼不出来 ⇒ 丢弃
+    socket.emitText(snapshotFrame({ data: 'PART-ONE', part: 0, parts: 2 }));
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(renderedText()).not.toContain('PART-ONE');
+  });
+
+  it('旧后端不认 attach 时的报错：静默豁免（不改状态）', async () => {
+    const states: { status: string; message: string }[] = [];
+    render(
+      <ToastProvider>
+        <TerminalView sessionId="sess-pwd" onStateChange={(state) => states.push(state)} />
+      </ToastProvider>,
+    );
+
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    socket.emitOpen();
+    socket.emitText(HELLO_FRAME);
+    const before = states.length;
+
+    socket.emitText(
+      JSON.stringify({ type: 'error', message: '无法识别的终端指令：attach' }),
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // 状态没被那条报错改掉（没有 warning / failed）
+    expect(states.length).toBe(before);
+    expect(states.some((state) => state.status === 'warning')).toBe(false);
   });
 
   it('会话真的结束（exit 帧）⇒ 这条会话的 pwd 缓存清空', async () => {

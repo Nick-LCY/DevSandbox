@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CLOSE_CODE_UNKNOWN_SESSION,
+  encodeAttach,
   encodeResize,
   isSessionInvalidMessage,
+  isUnknownAttachMessage,
   parseTerminalFrame,
   resolveTerminalSocketBase,
   terminalSocketUrl,
@@ -48,6 +50,72 @@ describe('parseTerminalFrame', () => {
 describe('encodeResize', () => {
   it('生成窗口大小同步帧', () => {
     expect(encodeResize(80, 24)).toBe('{"type":"resize","cols":80,"rows":24}');
+  });
+});
+
+describe('encodeAttach', () => {
+  it('生成握手帧（报自己的窗口大小）', () => {
+    expect(encodeAttach(132, 43)).toBe('{"type":"attach","cols":132,"rows":43}');
+  });
+});
+
+describe('isUnknownAttachMessage', () => {
+  it('认出旧后端「不认 attach」的报错', () => {
+    expect(isUnknownAttachMessage('无法识别的终端指令：attach')).toBe(true);
+  });
+
+  it('别的错误不豁免', () => {
+    expect(isUnknownAttachMessage('窗口大小参数非法')).toBe(false);
+    expect(isUnknownAttachMessage('无法识别的终端指令：resize')).toBe(false);
+  });
+});
+
+describe('parseTerminalFrame 的 snapshot 分支', () => {
+  it('解析快照帧', () => {
+    const frame = parseTerminalFrame(
+      JSON.stringify({
+        type: 'snapshot',
+        part: 1,
+        parts: 3,
+        data: btoa('hello'),
+        cols: 100,
+        rows: 30,
+        pwd: 'CurrentDir=/workspace',
+      }),
+    );
+    expect(frame).toEqual({
+      type: 'snapshot',
+      part: 1,
+      parts: 3,
+      data: btoa('hello'),
+      cols: 100,
+      rows: 30,
+      pwd: 'CurrentDir=/workspace',
+    });
+  });
+
+  it('pwd 缺失当 null', () => {
+    const frame = parseTerminalFrame(
+      JSON.stringify({ type: 'snapshot', part: 0, parts: 1, data: '', cols: 80, rows: 24 }),
+    );
+    expect(frame.type).toBe('snapshot');
+    if (frame.type === 'snapshot') {
+      expect(frame.pwd).toBeNull();
+    }
+  });
+
+  it('字段缺失或类型不对：归为未知帧（不崩）', () => {
+    expect(parseTerminalFrame(JSON.stringify({ type: 'snapshot' })).type).toBe('unknown');
+    expect(
+      parseTerminalFrame(
+        JSON.stringify({ type: 'snapshot', part: 'x', parts: 1, data: '', cols: 80, rows: 24 }),
+      ).type,
+    ).toBe('unknown');
+    expect(
+      parseTerminalFrame(
+        JSON.stringify({ type: 'snapshot', part: 0, parts: 1, data: 5, cols: 80, rows: 24 }),
+      ).type,
+    ).toBe('unknown');
   });
 });
 
