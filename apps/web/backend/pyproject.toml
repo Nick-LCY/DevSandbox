@@ -13,6 +13,13 @@ dependencies = [
     # 该模块只在 websockets 14.0 起的新 asyncio 实现里存在；
     # 版本更低会让服务在启动时直接 ImportError，网页终端根本起不来。
     "websockets>=15.0",
+    # 终端模拟器：进程内跑一份 pyghostty 的 VT 模拟器，让服务端能把「屏幕现场」
+    # 导成一份 VT 恢复流发给前端（新标签页按快照恢复，而不是回放历史字节）。
+    #
+    # **只有 wheel**（glibc Linux x86_64/aarch64 + macOS），**没有 sdist**：
+    # 装不上（缺 wheel 的平台、musl、源码编译环境）时整条「快照恢复」能力缺失，
+    # 服务端按降级路径运行（回放环形缓冲，功能不崩、少一点历史）。
+    "pyghostty==0.1.4",
 ]
 
 [tool.uv.sources]
