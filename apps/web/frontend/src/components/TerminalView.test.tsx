@@ -25,6 +25,31 @@ vi.mock('../api/client', () => ({
   fetchAuthTicket: async () => 'ticket-1',
 }));
 
+/**
+ * fit 插件的替身：**记录 fit 调用次数**。
+ *
+ * 常驻之后「变可见要补一次 fit」是必需动作（display:none 下量不到尺寸），
+ * 这条只能从插件的调用次数上验。真实的 fit 插件在 jsdom 里量不到尺寸
+ * （容器恒为 0×0），替身把调用记下来就够了。
+ */
+const fitMock = vi.hoisted(() => ({ calls: 0 }));
+
+vi.mock('@xterm/addon-fit', () => ({
+  FitAddon: class {
+    activate(): void {}
+
+    fit(): void {
+      fitMock.calls += 1;
+    }
+
+    proposeDimensions(): undefined {
+      return undefined;
+    }
+
+    dispose(): void {}
+  },
+}));
+
 /** 假 WebSocket：记录发出去的帧，并让用例手动推帧进来。 */
 class FakeWebSocket {
   /** 每个实例的 CONNECTING / OPEN / CLOSING / CLOSED。 */
@@ -165,6 +190,7 @@ function snapshotFrame(options: {
 describe('终端视图的 pwd 通道接线', () => {
   beforeEach(() => {
     FakeWebSocket.instances = [];
+    fitMock.calls = 0;
     clearSessionPwd('sess-pwd');
     // jsdom 没有 ResizeObserver（终端视图用它跟尺寸变化）。
     vi.stubGlobal(
@@ -409,5 +435,228 @@ describe('终端视图的 pwd 通道接线', () => {
     // 切标签 ⇒ 终端视图整块卸载，但**后端会话还活着** ⇒ pwd 不能跟着没。
     view.unmount();
     expect(getSessionPwd('sess-pwd')).toBe('/workspace');
+  });
+});
+
+/**
+ * 终端视图的**常驻生命周期**（标签之间）。
+ *
+ * 覆盖三件事：
+ *
+ * - **变可见要补一次 fit**（隐藏态是 `display:none`，xterm 量不到尺寸）；
+ * - **焦点回填按请求序号消费**（序号递增才回填，序号不变不重复抢）；
+ * - **卸载语义不变**（socket close / 实例 dispose / DOM 摘除）。
+ */
+describe('终端视图的常驻生命周期', () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    fitMock.calls = 0;
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe(): void {}
+
+        unobserve(): void {}
+
+        disconnect(): void {}
+      },
+    );
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }));
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  /** 给挂载盒一个尺寸（jsdom 里恒为 0×0，safeFit 会直接跳过）。 */
+  function giveMountBoxSize(): void {
+    const mount = document.querySelector(
+      '[data-testid="page-sandbox-detail-terminal-mount"]',
+    ) as HTMLElement | null;
+    expect(mount).toBeTruthy();
+    Object.defineProperty(mount, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(mount, 'clientHeight', { value: 400, configurable: true });
+  }
+
+  it('active false → true：补一次 fit（隐藏态量不到尺寸）', async () => {
+    const view = render(
+      <ToastProvider>
+        <TerminalView sessionId="sess-pwd" active={false} onStateChange={() => {}} />
+      </ToastProvider>,
+    );
+
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    giveMountBoxSize();
+    // 还没变可见：没有 fit
+    expect(fitMock.calls).toBe(0);
+
+    view.rerender(
+      <ToastProvider>
+        <TerminalView sessionId="sess-pwd" active onStateChange={() => {}} />
+      </ToastProvider>,
+    );
+
+    await waitFor(() => expect(fitMock.calls).toBe(1));
+  });
+
+  it('active true → false → true：每次变可见都补一次 fit', async () => {
+    const view = render(
+      <ToastProvider>
+        <TerminalView sessionId="sess-pwd" active onStateChange={() => {}} />
+      </ToastProvider>,
+    );
+
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    giveMountBoxSize();
+
+    view.rerender(
+      <ToastProvider>
+        <TerminalView sessionId="sess-pwd" active={false} onStateChange={() => {}} />
+      </ToastProvider>,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(fitMock.calls).toBe(0);
+
+    view.rerender(
+      <ToastProvider>
+        <TerminalView sessionId="sess-pwd" active onStateChange={() => {}} />
+      </ToastProvider>,
+    );
+    await waitFor(() => expect(fitMock.calls).toBe(1));
+  });
+
+  it('可见性切换不重建连接（切回不新开一条 WebSocket）', async () => {
+    const view = render(
+      <ToastProvider>
+        <TerminalView sessionId="sess-pwd" active onStateChange={() => {}} />
+      </ToastProvider>,
+    );
+
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    view.rerender(
+      <ToastProvider>
+        <TerminalView sessionId="sess-pwd" active={false} onStateChange={() => {}} />
+      </ToastProvider>,
+    );
+    view.rerender(
+      <ToastProvider>
+        <TerminalView sessionId="sess-pwd" active onStateChange={() => {}} />
+      </ToastProvider>,
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // 还是那一条连接
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
+  it('焦点回填请求序号递增：终端的 helper textarea 拿到焦点', async () => {
+    const view = render(
+      <ToastProvider>
+        <TerminalView sessionId="sess-pwd" focusRequestId={1} onStateChange={() => {}} />
+      </ToastProvider>,
+    );
+
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const textarea = document.querySelector('.xterm-helper-textarea');
+    expect(textarea).toBeTruthy();
+
+    await waitFor(() => expect(document.activeElement).toBe(textarea));
+    view.unmount();
+  });
+
+  it('焦点回填请求序号不变：不重复抢焦点', async () => {
+    const view = render(
+      <ToastProvider>
+        <TerminalView sessionId="sess-pwd" focusRequestId={1} onStateChange={() => {}} />
+      </ToastProvider>,
+    );
+
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const textarea = document.querySelector('.xterm-helper-textarea');
+    await waitFor(() => expect(document.activeElement).toBe(textarea));
+
+    // 把焦点挪到别处，再以**同样的序号**重渲染：不该再抢
+    const outside = document.createElement('input');
+    document.body.appendChild(outside);
+    outside.focus();
+    view.rerender(
+      <ToastProvider>
+        <TerminalView sessionId="sess-pwd" focusRequestId={1} onStateChange={() => {}} />
+      </ToastProvider>,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(document.activeElement).toBe(outside);
+
+    // 序号递增：又是一次新请求 ⇒ 再回填一次
+    view.rerender(
+      <ToastProvider>
+        <TerminalView sessionId="sess-pwd" focusRequestId={2} onStateChange={() => {}} />
+      </ToastProvider>,
+    );
+    await waitFor(() => expect(document.activeElement).toBe(textarea));
+    outside.remove();
+    view.unmount();
+  });
+
+  it('重连 / 重试不重放旧的焦点回填请求', async () => {
+    const view = render(
+      <ToastProvider>
+        <TerminalView sessionId="sess-pwd" focusRequestId={1} onStateChange={() => {}} />
+      </ToastProvider>,
+    );
+
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const textarea = document.querySelector('.xterm-helper-textarea');
+    await waitFor(() => expect(document.activeElement).toBe(textarea));
+
+    // 重试（重试令牌自增）⇒ 重建连接
+    const outside = document.createElement('input');
+    document.body.appendChild(outside);
+    outside.focus();
+    view.rerender(
+      <ToastProvider>
+        <TerminalView sessionId="sess-pwd" focusRequestId={1} retryToken={1} onStateChange={() => {}} />
+      </ToastProvider>,
+    );
+
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // 旧请求不重放：焦点没被抢回终端
+    expect(document.activeElement).toBe(outside);
+    outside.remove();
+    view.unmount();
+  });
+
+  it('卸载语义不变：连接关掉、终端 DOM 摘除', async () => {
+    const view = render(
+      <ToastProvider>
+        <TerminalView sessionId="sess-pwd" onStateChange={() => {}} />
+      </ToastProvider>,
+    );
+
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    socket.emitOpen();
+    socket.emitText(HELLO_FRAME);
+    expect(document.querySelector('.xterm-helper-textarea')).toBeTruthy();
+
+    view.unmount();
+
+    // socket 关掉
+    expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
+    // 终端 DOM 摘除
+    expect(document.querySelector('.xterm-helper-textarea')).toBeNull();
   });
 });

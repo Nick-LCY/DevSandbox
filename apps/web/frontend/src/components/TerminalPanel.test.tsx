@@ -52,12 +52,37 @@ const viewMocks = vi.hoisted(() => ({
    */
   reportTick: 0,
   /**
-   * 每次挂载时终端视图收到的 autoFocus 取值（会话标识 → 最近一次的值）。
+   * 每个会话的**挂载次数**。
+   *
+   * 终端实例常驻之后，来回切标签**不该**再挂载新的实例（挂载次数恒为 1）。
+   */
+  mounts: {} as Record<string, number>,
+  /**
+   * 每个会话最近一次收到的**焦点回填请求序号**。
    *
    * 焦点回填的口径在 `src/lib/terminal-focus.ts`（纯函数），面板这里只负责
-   * 把门控后的结论传给终端视图，所以组件测试盯的是「传下去的值」。
+   * 把门控后的结论以「请求序号」的形式发给终端视图，所以组件测试盯的是
+   * 「传下去的序号」。
    */
-  autoFocus: {} as Record<string, boolean>,
+  focusRequest: {} as Record<string, number>,
+  /** 每个会话最近一次收到的可见性（常驻之后不活跃的那份是 false）。 */
+  active: {} as Record<string, boolean>,
+  /** 每个会话最近一次收到的重试令牌。 */
+  retryToken: {} as Record<string, number>,
+  /**
+   * 每个会话当前挂载实例的上报回调：用例侧可以主动给某个会话推一次状态
+   * （模拟服务端推帧，比如隐藏会话的 exit 帧）。
+   */
+  callbacks: {} as Record<
+    string,
+    (state: {
+      status: string;
+      message: string;
+      exitCode?: number | null;
+      exitReason?: string | null;
+      retryDelaySeconds?: number;
+    }) => void
+  >,
 }));
 
 vi.mock('../api/client', async (importOriginal) => {
@@ -82,11 +107,15 @@ vi.mock('./TerminalView', async () => {
   return {
     TerminalView: ({
       sessionId,
-      autoFocus,
+      active,
+      focusRequestId,
+      retryToken,
       onStateChange,
     }: {
       sessionId: string;
-      autoFocus?: boolean;
+      active?: boolean;
+      focusRequestId?: number;
+      retryToken?: number;
       onStateChange: (state: {
         status: string;
         message: string;
@@ -97,11 +126,22 @@ vi.mock('./TerminalView', async () => {
     }) => {
       const callbackRef = useRef(onStateChange);
       callbackRef.current = onStateChange;
-      // 记下这次**挂载**时收到的焦点回填开关（重渲染不覆盖：口径看的是挂载那一刻）。
-      const autoFocusRef = useRef(autoFocus);
+      // 挂载次数：常驻之后「来回切标签」不该再挂载新的实例。
       useEffect(() => {
-        viewMocks.autoFocus[sessionId] = autoFocusRef.current ?? false;
+        viewMocks.mounts[sessionId] = (viewMocks.mounts[sessionId] ?? 0) + 1;
+        viewMocks.callbacks[sessionId] = (state) => {
+          callbackRef.current(state);
+        };
+        return () => {
+          delete viewMocks.callbacks[sessionId];
+        };
       }, [sessionId]);
+      // 最近一次收到的 props（每次渲染都记：常驻之后 props 会变，实例不会重建）。
+      useEffect(() => {
+        viewMocks.focusRequest[sessionId] = focusRequestId ?? 0;
+        viewMocks.active[sessionId] = active ?? true;
+        viewMocks.retryToken[sessionId] = retryToken ?? 0;
+      });
       useEffect(() => {
         const override = viewMocks.states[sessionId];
         if (override) {
@@ -122,6 +162,7 @@ vi.mock('./TerminalView', async () => {
         <div
           data-testid="page-sandbox-detail-terminal-surface"
           data-session-id={sessionId}
+          data-active={active ? 'true' : 'false'}
         />
       );
     },
@@ -163,6 +204,42 @@ function fileRow(name: string): HTMLElement | undefined {
   return screen
     .queryAllByTestId('page-file-browser-row')
     .find((node) => node.getAttribute('data-name') === name);
+}
+
+/**
+ * 某个会话的终端表面。
+ *
+ * 常驻之后**多个会话的表面同在 DOM 里**（不活跃的那份被藏起来），
+ * 所以取表面必须按会话标识定位。
+ */
+function surfaceOf(sessionId: string): HTMLElement {
+  const node = screen
+    .queryAllByTestId('page-sandbox-detail-terminal-surface')
+    .find((item) => item.getAttribute('data-session-id') === sessionId);
+  expect(node, `屏上应当有会话 ${sessionId} 的终端表面`).toBeTruthy();
+  return node as HTMLElement;
+}
+
+/** 终端栈里的槽位（按会话标识找）。 */
+function stackItemOf(sessionId: string): HTMLElement | undefined {
+  return screen
+    .queryAllByTestId('page-terminal-stack-item')
+    .find((item) => item.getAttribute('data-session-id') === sessionId);
+}
+
+/**
+ * 点第 n 个会话标签，并让路由跟上。
+ *
+ * 真实页面里路由变了，激活会话才真的换人（面板的激活会话来自路由）。
+ */
+function clickTab(
+  index: number,
+  sessionId: string,
+  rerender: (next: Partial<ComponentProps<typeof TerminalPanel>>) => void,
+): void {
+  const tabs = screen.getAllByTestId('page-sandbox-detail-terminal-tab');
+  fireEvent.click(within(tabs[index]).getByTestId('page-sandbox-detail-terminal-tab-select'));
+  rerender({ activeSessionId: sessionId });
 }
 
 /** 每个测试用独立的沙箱名：标签序号按沙箱登记，测试之间互不干扰。 */
@@ -240,7 +317,11 @@ afterEach(() => {
   viewMocks.status = 'connecting';
   viewMocks.bySession = {};
   viewMocks.states = {};
-  viewMocks.autoFocus = {};
+  viewMocks.mounts = {};
+  viewMocks.focusRequest = {};
+  viewMocks.active = {};
+  viewMocks.retryToken = {};
+  viewMocks.callbacks = {};
   window.localStorage.clear();
   // pwd 是模块级缓存：用例之间清掉（免得串到下一条）。
   clearSessionPwd('sess-a');
@@ -873,8 +954,8 @@ describe('终端全屏', () => {
   });
 });
 
-describe('焦点回填', () => {
-  it('点标签后重挂载的终端自动聚焦', async () => {
+describe('焦点回填（按会话请求序号）', () => {
+  it('点标签：给那个会话发一次焦点回填请求（序号 0 → 1）', async () => {
     mockSessions([
       makeRecord({ session_id: 'sess-a', created_at: '2026-10-30T01:00:00+00:00' }),
       makeRecord({ session_id: 'sess-b', created_at: '2026-10-30T01:00:05+00:00' }),
@@ -882,22 +963,22 @@ describe('焦点回填', () => {
     const { rerender } = renderPanel(vi.fn(), { activeSessionId: 'sess-a' });
 
     const tabs = await screen.findAllByTestId('page-sandbox-detail-terminal-tab');
-    // 初次挂载：没有回填意图、焦点也不在终端里 → 不回填
-    // （终端视图把收到的值记在挂载那一刻的 useEffect 里：断言等它落定，
-    //  但口径一点没放宽——仍然是「必须正好是 false」。）
-    await waitFor(() => expect(viewMocks.autoFocus['sess-a']).toBe(false));
+    // 初次挂载：没有回填意图、焦点也不在终端里 → 不发请求
+    await waitFor(() => expect(viewMocks.focusRequest['sess-a']).toBe(0));
 
-    // 点标签：这是明确的操作意图（重挂载之后要把焦点还给终端）
+    // 点标签：这是明确的操作意图（要把焦点还给那个终端）
     fireEvent.click(
       within(tabs[1]).getByTestId('page-sandbox-detail-terminal-tab-select'),
     );
-    // 路由跟上（真实页面里路由变了，终端才会整块重挂载）
+    // 路由跟上（真实页面里路由变了，激活会话才真的换人）
     rerender({ activeSessionId: 'sess-b' });
 
-    await waitFor(() => expect(viewMocks.autoFocus['sess-b']).toBe(true));
+    await waitFor(() => expect(viewMocks.focusRequest['sess-b']).toBe(1));
+    // 没被点的那个会话不受影响
+    expect(viewMocks.focusRequest['sess-a']).toBe(0);
   });
 
-  it('焦点原本就在终端表面内：重挂载后把焦点还回终端', async () => {
+  it('焦点原本就在终端表面内：切会话时也给新会话发回填请求', async () => {
     mockSessions([
       makeRecord({ session_id: 'sess-a', created_at: '2026-10-30T01:00:00+00:00' }),
       makeRecord({ session_id: 'sess-b', created_at: '2026-10-30T01:00:05+00:00' }),
@@ -907,21 +988,20 @@ describe('焦点回填', () => {
     await screen.findAllByTestId('page-sandbox-detail-terminal-tab');
 
     // 焦点落在终端表面里（用户正在终端里干活）
-    const surface = screen.getByTestId('page-sandbox-detail-terminal-surface');
     const inside = document.createElement('input');
-    surface.appendChild(inside);
+    surfaceOf('sess-a').appendChild(inside);
     inside.focus();
     inside.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
     expect(document.activeElement).toBe(inside);
 
-    // 会话切换（不是用户点的标签）：焦点原本就在终端里，重挂载后要还回来
+    // 会话切换（不是用户点的标签）：焦点原本就在终端里，要还回来
     rerender({ activeSessionId: 'sess-b' });
 
-    await waitFor(() => expect(viewMocks.autoFocus['sess-b']).toBe(true));
+    await waitFor(() => expect(viewMocks.focusRequest['sess-b']).toBe(1));
     inside.remove();
   });
 
-  it('焦点在终端表面之外时不抢：重挂载也不回填焦点', async () => {
+  it('焦点在终端表面之外时不抢：不发回填请求', async () => {
     mockSessions([
       makeRecord({ session_id: 'sess-a', created_at: '2026-10-30T01:00:00+00:00' }),
       makeRecord({ session_id: 'sess-b', created_at: '2026-10-30T01:00:05+00:00' }),
@@ -937,14 +1017,14 @@ describe('焦点回填', () => {
     outside.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
     expect(document.activeElement).toBe(outside);
 
-    // 会话切换（不是用户点的标签）：重挂载时不能把焦点从别处抢回终端
+    // 会话切换（不是用户点的标签）：不能把焦点从别处抢回终端
     rerender({ activeSessionId: 'sess-b' });
 
-    await waitFor(() => expect(viewMocks.autoFocus['sess-b']).toBe(false));
+    await waitFor(() => expect(viewMocks.focusRequest['sess-b']).toBe(0));
     outside.remove();
   });
 
-  it('重挂载把焦点复位到 body（且不派发 focusin）：没有用户意图就不回填', async () => {
+  it('焦点宿主被摘出 DOM（焦点复位到 body）且没有用户意图：不发回填请求', async () => {
     mockSessions([
       makeRecord({ session_id: 'sess-a', created_at: '2026-10-30T01:00:00+00:00' }),
       makeRecord({ session_id: 'sess-b', created_at: '2026-10-30T01:00:05+00:00' }),
@@ -954,26 +1034,24 @@ describe('焦点回填', () => {
     await screen.findAllByTestId('page-sandbox-detail-terminal-tab');
 
     // 焦点落在终端表面里（用户正在终端里干活）
-    const surface = screen.getByTestId('page-sandbox-detail-terminal-surface');
     const inside = document.createElement('input');
-    surface.appendChild(inside);
+    surfaceOf('sess-a').appendChild(inside);
     inside.focus();
     inside.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
     expect(document.activeElement).toBe(inside);
 
-    // 终端重挂载：xterm 的 helper textarea 被摘出 DOM。浏览器把焦点复位到
-    // body，且**不派发 focusin**——只靠事件跟踪记下来的标志会永远停在 true，
-    // 门控退化成「永远回填」。
+    // 焦点宿主被摘出 DOM：浏览器把焦点复位到 body，且**不派发 focusin**——
+    // 只靠事件跟踪记下来的标志会永远停在 true，门控退化成「永远回填」。
     inside.remove();
     expect(document.activeElement).toBe(document.body);
 
-    // 下一轮重挂载（不是用户点的标签，没有操作意图）：不能回填
+    // 下一轮切换（不是用户点的标签，没有操作意图）：不能回填
     rerender({ activeSessionId: 'sess-b' });
 
-    await waitFor(() => expect(viewMocks.autoFocus['sess-b']).toBe(false));
+    await waitFor(() => expect(viewMocks.focusRequest['sess-b']).toBe(0));
   });
 
-  it('新建终端会话后：新建出来的终端自动聚焦（明确的用户意图）', async () => {
+  it('新建终端会话后：给新会话发一次回填请求（明确的用户意图）', async () => {
     mocks.listTerminalSessions.mockResolvedValueOnce([]);
     mocks.listTerminalSessions.mockResolvedValue([
       makeRecord({ session_id: 'sess-new', created_at: '2026-10-30T01:00:00+00:00' }),
@@ -993,11 +1071,175 @@ describe('焦点回填', () => {
     fireEvent.click(screen.getByTestId('page-sandbox-detail-terminal-new-button'));
     await waitFor(() => expect(onActiveSessionChange).toHaveBeenCalledWith('sess-new'));
 
-    // 路由跟上（真实页面里路由变了，终端才会整块重挂载）
+    // 路由跟上（真实页面里路由变了，激活会话才真的换人）
     rerender({ activeSessionId: 'sess-new' });
 
-    // 新建会话是明确的用户操作意图：重挂载后要把焦点还给用户
-    await waitFor(() => expect(viewMocks.autoFocus['sess-new']).toBe(true));
+    // 新建会话是明确的用户操作意图：要把焦点还给用户
+    await waitFor(() => expect(viewMocks.focusRequest['sess-new']).toBe(1));
+  });
+
+  it('同一个会话第二次激活：请求序号继续自增（序号才能表达「又一次请求」）', async () => {
+    mockSessions([
+      makeRecord({ session_id: 'sess-a', created_at: '2026-10-30T01:00:00+00:00' }),
+      makeRecord({ session_id: 'sess-b', created_at: '2026-10-30T01:00:05+00:00' }),
+    ]);
+    const { rerender } = renderPanel(vi.fn(), { activeSessionId: 'sess-a' });
+    await screen.findAllByTestId('page-sandbox-detail-terminal-tab');
+
+    // a → b → a → b：每次点标签都是一次新的回填请求
+    clickTab(1, 'sess-b', rerender);
+    await waitFor(() => expect(viewMocks.focusRequest['sess-b']).toBe(1));
+
+    clickTab(0, 'sess-a', rerender);
+    await waitFor(() => expect(viewMocks.focusRequest['sess-a']).toBe(1));
+
+    clickTab(1, 'sess-b', rerender);
+    await waitFor(() => expect(viewMocks.focusRequest['sess-b']).toBe(2));
+  });
+});
+
+describe('终端实例常驻（标签之间）', () => {
+  it('两表面同在 DOM：不活跃的那份被藏起来（data-hidden=true）', async () => {
+    mockSessions([
+      makeRecord({ session_id: 'sess-a', created_at: '2026-10-30T01:00:00+00:00' }),
+      makeRecord({ session_id: 'sess-b', created_at: '2026-10-30T01:00:05+00:00' }),
+    ]);
+    const { rerender } = renderPanel(vi.fn(), { activeSessionId: 'sess-a' });
+
+    await screen.findAllByTestId('page-sandbox-detail-terminal-tab');
+    // 先访问 b（两份都挂上了），再切回 a
+    clickTab(1, 'sess-b', rerender);
+    clickTab(0, 'sess-a', rerender);
+
+    await waitFor(() =>
+      expect(screen.getAllByTestId('page-terminal-stack-item')).toHaveLength(2),
+    );
+    // 两份表面同在 DOM 里
+    expect(screen.getAllByTestId('page-sandbox-detail-terminal-surface')).toHaveLength(2);
+
+    const active = stackItemOf('sess-a');
+    const hidden = stackItemOf('sess-b');
+    expect(active?.getAttribute('data-hidden')).toBe('false');
+    expect(active?.className).not.toContain('hidden');
+    // 不活跃的那份：藏起来（display:none）
+    expect(hidden?.getAttribute('data-hidden')).toBe('true');
+    expect(hidden?.className).toContain('hidden');
+    // 可见性也传给了终端视图
+    expect(viewMocks.active['sess-a']).toBe(true);
+    expect(viewMocks.active['sess-b']).toBe(false);
+  });
+
+  it('来回切两次：挂载次数恒为 1（实例不重建 ⇒ 连接也不重建）', async () => {
+    mockSessions([
+      makeRecord({ session_id: 'sess-a', created_at: '2026-10-30T01:00:00+00:00' }),
+      makeRecord({ session_id: 'sess-b', created_at: '2026-10-30T01:00:05+00:00' }),
+    ]);
+    const { rerender } = renderPanel(vi.fn(), { activeSessionId: 'sess-a' });
+
+    await screen.findAllByTestId('page-sandbox-detail-terminal-tab');
+    clickTab(1, 'sess-b', rerender);
+    await waitFor(() => expect(viewMocks.mounts['sess-b']).toBe(1));
+    clickTab(0, 'sess-a', rerender);
+    clickTab(1, 'sess-b', rerender);
+    clickTab(0, 'sess-a', rerender);
+
+    await waitFor(() => expect(viewMocks.mounts['sess-a']).toBe(1));
+    expect(viewMocks.mounts['sess-b']).toBe(1);
+    // 重试令牌没变 ⇒ 连接没被重建过
+    expect(viewMocks.retryToken['sess-a']).toBe(0);
+    expect(viewMocks.retryToken['sess-b']).toBe(0);
+  });
+
+  it('关掉一个会话：它的实例消失，其余会话仍在', async () => {
+    mocks.listTerminalSessions.mockResolvedValueOnce([
+      makeRecord({ session_id: 'sess-a', created_at: '2026-10-30T01:00:00+00:00' }),
+      makeRecord({ session_id: 'sess-b', created_at: '2026-10-30T01:00:05+00:00' }),
+    ]);
+    mocks.listTerminalSessions.mockResolvedValue([
+      makeRecord({ session_id: 'sess-a', created_at: '2026-10-30T01:00:00+00:00' }),
+    ]);
+    mocks.deleteTerminalSession.mockResolvedValue({
+      session_id: 'sess-b',
+      state: 'running',
+      closed: true,
+      removed: true,
+    });
+    const { rerender } = renderPanel(vi.fn(), { activeSessionId: 'sess-a' });
+
+    await screen.findAllByTestId('page-sandbox-detail-terminal-tab');
+    // 先访问 b：两份都在
+    clickTab(1, 'sess-b', rerender);
+    await waitFor(() =>
+      expect(screen.getAllByTestId('page-terminal-stack-item')).toHaveLength(2),
+    );
+
+    // 关掉 b：它的实例随之消失，a 仍在
+    const tabs = screen.getAllByTestId('page-sandbox-detail-terminal-tab');
+    fireEvent.click(within(tabs[1]).getByTestId('page-sandbox-detail-terminal-tab-close'));
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-terminal-remove-confirm-button'));
+
+    await waitFor(() =>
+      expect(screen.queryAllByTestId('page-terminal-stack-item')).toHaveLength(1),
+    );
+    expect(stackItemOf('sess-b')).toBeUndefined();
+    expect(stackItemOf('sess-a')).toBeTruthy();
+    expect(viewMocks.mounts['sess-a']).toBe(1);
+  });
+
+  it('隐藏实例收到 exit 帧：toast 正常弹出，激活会话的状态不受影响', async () => {
+    viewMocks.bySession = { 'sess-a': 'connected', 'sess-b': 'connected' };
+    mockSessions([
+      makeRecord({ session_id: 'sess-a', created_at: '2026-10-30T01:00:00+00:00' }),
+      makeRecord({ session_id: 'sess-b', created_at: '2026-10-30T01:00:05+00:00' }),
+    ]);
+    const { rerender } = renderPanel(vi.fn(), { activeSessionId: 'sess-a' });
+
+    await screen.findAllByTestId('page-sandbox-detail-terminal-tab');
+    clickTab(1, 'sess-b', rerender);
+    clickTab(0, 'sess-a', rerender);
+    await waitFor(() =>
+      expect(screen.getAllByTestId('page-terminal-stack-item')).toHaveLength(2),
+    );
+
+    // 隐藏的那份（sess-b）收到 exit 帧：后台会话结束也要告知用户
+    viewMocks.callbacks['sess-b']?.({
+      status: 'closed',
+      message: '终端进程已退出（退出码 0）',
+      exitCode: 0,
+    });
+
+    const toast = await screen.findByTestId('page-toast-item');
+    expect(toast.getAttribute('data-toast-kind')).toBe('info');
+    expect(toast.textContent).toContain('终端会话已结束');
+    // 激活会话的状态不受影响
+    expect(screen.getByTestId('page-sandbox-detail-terminal-status').textContent).toContain('已连接');
+  });
+
+  it('Obsidian tab：分屏整体卸载（count 0）；切回重新挂载（挂载次数 +1）', async () => {
+    mockSessions([
+      makeRecord({ session_id: 'sess-a', created_at: '2026-10-30T01:00:00+00:00' }),
+      makeRecord({ session_id: 'sess-b', created_at: '2026-10-30T01:00:05+00:00' }),
+    ]);
+    const { rerender } = renderPanel(vi.fn(), { activeSessionId: 'sess-a' });
+
+    await screen.findAllByTestId('page-sandbox-detail-terminal-tab');
+    await waitFor(() => expect(viewMocks.mounts['sess-a']).toBe(1));
+
+    // 切到 Obsidian tab：整个分屏卸载（既有口径：不是隐藏样式）
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-obsidian-tab-select'));
+    expect(screen.queryByTestId('page-terminal-split')).toBeNull();
+    expect(screen.queryByTestId('page-terminal-stack')).toBeNull();
+    expect(screen.queryByTestId('page-sandbox-detail-terminal-surface')).toBeNull();
+
+    // 切回终端 tab：重新挂载（挂载次数 +1）
+    const tabs = screen.getAllByTestId('page-sandbox-detail-terminal-tab');
+    fireEvent.click(within(tabs[0]).getByTestId('page-sandbox-detail-terminal-tab-select'));
+    rerender({ activeSessionId: 'sess-a' });
+
+    await waitFor(() => expect(viewMocks.mounts['sess-a']).toBe(2));
+    // 「已访问」集合跟着栈一起卸载了 ⇒ 切回后只有当前激活的会话在挂载集合里，
+    // 其余会话再次被点开时按需首挂（Obsidian 往返是既有的整体卸载口径）。
+    expect(screen.getAllByTestId('page-terminal-stack-item')).toHaveLength(1);
   });
 });
 

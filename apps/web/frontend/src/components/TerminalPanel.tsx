@@ -32,7 +32,8 @@ import {
   resolveTerminalFocus,
 } from '../lib/terminal-focus';
 import { clearSessionPwd } from '../lib/terminal-pwd';
-import { TerminalView, type TerminalState, type TerminalStatus } from './TerminalView';
+import { TerminalStack } from './TerminalStack';
+import type { TerminalState, TerminalStatus } from './TerminalView';
 import { useToast } from './Toast';
 import { CloseSessionDialog } from './workbench/CloseSessionDialog';
 import { FileBrowserPanel } from './workbench/FileBrowserPanel';
@@ -147,6 +148,13 @@ export function TerminalPanel({
   /** 每个会话的重试令牌：手动点重试时自增，终端视图据此重建连接。 */
   const [retryTokens, setRetryTokens] = useState<Record<string, number>>({});
   /**
+   * 每个会话的焦点回填请求序号：自增，终端视图据此回填一次焦点。
+   *
+   * 终端实例常驻之后，「把焦点还给这个终端」不再是一次挂载事件，而是一次
+   * **请求**：序号才能表达「同一个会话第二次激活」，且一次请求只回填一次。
+   */
+  const [focusRequests, setFocusRequests] = useState<Record<string, number>>({});
+  /**
    * 当前激活的工作区 tab 类型。
    *
    * 06 轮起 tabs 条最左有一个**固定的 Obsidian tab**（与终端会话无关），
@@ -183,6 +191,17 @@ export function TerminalPanel({
    * 消费一次后清掉。
    */
   const focusIntentRef = useRef(false);
+  /**
+   * **切换那一刻**焦点是不是在终端表面内。
+   *
+   * 判定当下的焦点位置是**活读** `document.activeElement`（口径见
+   * `src/lib/terminal-focus.ts`）：判定发生在**渲染期**——此刻旧终端还在
+   * DOM 里，焦点宿主仍连着文档，读到的就是「切换之前焦点在哪」。
+   *
+   * 只在「激活会话相对上一轮真的变了」的那一轮写（别的轮次写了也没用：
+   * 没有切换就没有回填这回事）。
+   */
+  const focusInsideAtSwitchRef = useRef(false);
   /**
    * 焦点宿主：最后一次 `focusin` 的落点。
    *
@@ -363,25 +382,48 @@ export function TerminalPanel({
    * 焦点回填的结论。
    *
    * 判定当下的焦点位置是**活读** `document.activeElement`（口径见
-   * `src/lib/terminal-focus.ts`）：终端重挂载会把 helper textarea 摘出 DOM，
-   * 浏览器把焦点复位到 body 且不派发 `focusin`——只靠事件跟踪记下来的标志
-   * 会永远停在 true，门控退化成「永远回填」。
+   * `src/lib/terminal-focus.ts`）：终端实例被摘出 DOM 时，浏览器把焦点复位到
+   * body 且不派发 `focusin`——只靠事件跟踪记下来的标志会永远停在 true，
+   * 门控退化成「永远回填」。
    *
    * 活读发生在渲染期：此刻旧终端还在 DOM 里，焦点宿主仍连着文档，
-   * 读到的就是「重挂载前焦点在哪」。
+   * 读到的就是「切换之前焦点在哪」。只在激活会话真的变了的那一轮写。
    */
-  const focusInside = focusInsideTerminalSurface(
-    document.activeElement,
-    focusHostRef.current,
-  );
-  const autoFocus = resolveTerminalFocus({
-    intent: focusIntentRef.current,
-    focusInsideTerminal: focusInside,
-  });
+  if (activeId !== lastActiveIdRef.current) {
+    focusInsideAtSwitchRef.current = focusInsideTerminalSurface(
+      document.activeElement,
+      focusHostRef.current,
+    );
+  }
 
-  /** 回填意图只对下一次重挂载生效：终端挂上去之后就消费掉。 */
+  /**
+   * 激活判定：这一轮要不要给新激活的会话发一次焦点回填请求。
+   *
+   * 口径在 `src/lib/terminal-focus.ts`（纯函数）：有操作意图（用户刚点了标签 /
+   * 点了终端表面 / 新建了会话）或判定当下焦点就在终端表面内 ⇒ 回填；
+   * 焦点在别处（抽屉输入框等）且没有意图 ⇒ 不回填（绝不抢别处的焦点）。
+   *
+   * 回填以**请求序号**的形式发给那个会话（`focusRequests`）：终端实例常驻，
+   * 「把焦点还给这个终端」是一次请求，不是一次挂载。
+   */
   useEffect(() => {
+    if (!activeId) {
+      focusIntentRef.current = false;
+      return;
+    }
+    const shouldFocus = resolveTerminalFocus({
+      intent: focusIntentRef.current,
+      focusInsideTerminal: focusInsideAtSwitchRef.current,
+    });
+    // 意图只对下一次激活生效（消费掉）。
     focusIntentRef.current = false;
+    if (!shouldFocus) {
+      return;
+    }
+    setFocusRequests((previous) => ({
+      ...previous,
+      [activeId]: (previous[activeId] ?? 0) + 1,
+    }));
   }, [activeId]);
 
   /** 当前标签的连接状态：没有记录时按「连接中」算。 */
@@ -720,14 +762,19 @@ export function TerminalPanel({
                 data-testid="page-terminal-split-terminal"
               >
                 {activeId ? (
-                  <TerminalView
-                    key={activeId}
-                    sessionId={activeId}
-                    retryToken={retryTokens[activeId] ?? 0}
-                    autoFocus={autoFocus}
-                    onStateChange={(state) => {
-                      handleStateChange(activeId, state);
-                    }}
+                  /*
+                    终端栈：**标签之间的实例常驻**。
+                    - 访问过的会话保留自己的 xterm 实例，切标签只是藏起来
+                      （`display:none`），不再销毁重建；
+                    - 没访问过的会话不挂载；
+                    - 切到 Obsidian tab 时整个分屏仍然整体卸载（既有口径）。
+                  */
+                  <TerminalStack
+                    sessionIds={tabs.map((tab) => tab.id)}
+                    activeId={activeId}
+                    retryTokens={retryTokens}
+                    focusRequests={focusRequests}
+                    onStateChange={handleStateChange}
                   />
                 ) : (
                   /*

@@ -69,20 +69,33 @@ interface TerminalViewProps {
   /** 重试令牌：值变化时重建连接（用于「重连失败」后用户手动点重试）。 */
   retryToken?: number;
   /**
-   * 挂载之后要不要把焦点回填进终端。
+   * 这个实例当前**是不是可见的**（标签之间常驻：不活跃的那份被藏起来）。
    *
-   * 会话切换会让终端**整块重挂载**（`key={activeId}`），重挂载后浏览器焦点
-   * 落到 body，新终端就成了「空心光标」——看得见、敲不进（按键没进 pty）。
-   * 门控口径在 `src/lib/terminal-focus.ts`（纯函数，可单测）：
-   * 只有「用户刚点了标签 / 终端表面 / 新建了会话」或「判定当下焦点就在终端
-   * 表面内」才回填，焦点在别处（抽屉输入框等）不抢。这里只负责执行回填。
+   * 隐藏态用 `display:none`——xterm 在隐藏态下量不到尺寸（fit 会算出 0 列），
+   * 所以**变可见时要补一次 fit**（见下面 `active` 的 effect）。
    */
-  autoFocus?: boolean;
+  active?: boolean;
+  /**
+   * 焦点回填的**请求序号**。
+   *
+   * 终端实例常驻之后，「把焦点还给这个终端」不再是一次挂载事件，而是一次
+   * **请求**：序号才能表达「同一个会话第二次激活」，且**一次请求只回填一次**
+   * （序号不变就不重复抢；重连 / 重试不重放旧请求）。
+   *
+   * 门控口径在 `src/lib/terminal-focus.ts`（纯函数，可单测）：上游只在该
+   * 回填时才递增序号，这里只负责执行回填。
+   */
+  focusRequestId?: number;
   onStateChange: (state: TerminalState) => void;
 }
 
 /**
  * 单个终端视图：xterm 实例 + 一条 WebSocket。
+ *
+ * **生命周期（标签之间常驻）**：本组件**不再随标签切换销毁重建**——
+ * 同一会话的 xterm 实例在标签之间保留（不活跃的那份被 `display:none` 藏起来），
+ * 切回时补一次 fit（隐藏态量不到尺寸）并按请求序号回填焦点。
+ * **卸载语义不变**：socket close / addon dispose / term dispose / observer 断开。
  *
  * 帧协议：二进制帧是终端字节流，文本帧是 `hello` / `snapshot` / `exit` /
  * `error` / `resize` / `attach`。
@@ -112,20 +125,30 @@ interface TerminalViewProps {
 export function TerminalView({
   sessionId,
   retryToken = 0,
-  autoFocus = false,
+  active = true,
+  focusRequestId = 0,
   onStateChange,
 }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const stateCallbackRef = useRef(onStateChange);
   stateCallbackRef.current = onStateChange;
   /**
-   * 焦点回填的开关：**挂载那一刻的快照**。
+   * 当前这个 xterm 实例（连接 effect 建出来的）。
    *
-   * 这一个终端实例只回填一次：改它不重建终端连接（回填只在挂载那一刻做一次），
-   * 后续重渲染（轮询、状态变化）也不改写它；重试连接（`retryToken` 变化）走的是
-   * 同一个 effect，但不会把挂载时刻的值再拿出来用一次。
+   * 可见性切换与焦点回填都在**连接 effect 之外**发生，但都要用到实例本身：
+   * 通过它把「重新量尺寸」与「聚焦」两件事的入口暴露出去。
    */
-  const autoFocusRef = useRef(autoFocus);
+  const termRef = useRef<Terminal | null>(null);
+  /** 重新量尺寸的入口（连接 effect 闭包里的 `safeFit`）：断开后置 null。 */
+  const refitRef = useRef<(() => void) | null>(null);
+  /** 聚焦的入口（连接 effect 闭包里的 `term.focus()`）：断开后置 null。 */
+  const focusRef = useRef<(() => void) | null>(null);
+  /** 上一次生效的可见性（判断 false → true 的那一跳）。 */
+  const wasActiveRef = useRef(active);
+  /** 隐藏时记下的滚动位置（变可见时还原）。 */
+  const scrollRef = useRef<number | null>(null);
+  /** 已消费到的焦点回填请求序号（一次请求只回填一次）。 */
+  const consumedFocusRef = useRef(0);
   const { show } = useToast();
   /** 反馈接口走引用：换身份时不重建终端连接。 */
   const showRef = useRef(show);
@@ -181,6 +204,12 @@ export function TerminalView({
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     term.open(container);
+    // 实例入口：可见性切换（refit）与焦点回填（focus）都在 effect 之外发生，
+    // 通过这三个引用拿到连接闭包里的能力。
+    termRef.current = term;
+    focusRef.current = (): void => {
+      term.focus();
+    };
 
     /**
      * 接管 OSC 1337（shell integration 的 pwd 上报）。
@@ -207,22 +236,11 @@ export function TerminalView({
     );
 
     /**
-     * 焦点回填：会话切换后终端整块重挂载，浏览器焦点会落到 body，
-     * 新终端就成了看得见、敲不准的空心光标。这里把焦点抢回终端。
+     * 焦点回填：**不在这里做**。
      *
-     * - rAF：等布局落定再聚焦（xterm 的 helper 文本框此刻才在正确的位置）；
-     * - 只做一次：挂载这一次，不重复抢（值用完就清掉，重试连接不会再来一次）；
-     * - 已卸载（disposed）就不做：别把焦点塞进一个已经拆掉的终端。
+     * 实例常驻之后，焦点回填由「请求序号」驱动（见组件层的 `focusRequestId`
+     * effect）：挂载那一刻不再无条件回填。
      */
-    if (autoFocusRef.current) {
-      autoFocusRef.current = false;
-      window.requestAnimationFrame(() => {
-        if (disposed) {
-          return;
-        }
-        term.focus();
-      });
-    }
 
     /** 剪贴板操作失败：弹一条失败提示（成功路径零反馈）。 */
     const reportClipboardFailure = (text: string): void => {
@@ -378,6 +396,9 @@ export function TerminalView({
       }
       sendResize();
     };
+
+    // 重新量尺寸的入口：变可见时（display:none 下量不到尺寸）由外部调一次。
+    refitRef.current = safeFit;
 
     /**
      * 尺寸自适应的去抖入口：窗口内的多次触发只保留最后一次。
@@ -679,8 +700,88 @@ export function TerminalView({
       socket?.close();
       fitAddon.dispose();
       term.dispose();
+      // 入口随连接一起失效：别把焦点塞进一个已经拆掉的终端。
+      termRef.current = null;
+      refitRef.current = null;
+      focusRef.current = null;
     };
   }, [sessionId, retryToken]);
+
+  /**
+   * 可见性切换：变可见时补一次尺寸自适应，变隐藏时记下滚动位置。
+   *
+   * **变可见必须 refit**：隐藏态是 `display:none`，xterm 量不到尺寸
+   * （fit 会算出 0 列），不补这一次就会出现「显示出来的是旧尺寸」。
+   *
+   * **滚动位置还原**（记 viewportY → 变可见时 scrollLines 还原）：
+   * jsdom 里测不了（没有真实布局与滚动），**真机验证口径**：在一个有滚动的
+   * 会话里往上翻几页 → 切到别的标签 → 切回来 ⇒ 视口停在原来那几页
+   * （不是跳回底部）。还原失败也不影响终端可用性（位置是锦上添花）。
+   */
+  useEffect(() => {
+    const wasActive = wasActiveRef.current;
+    wasActiveRef.current = active;
+    if (wasActive === active) {
+      return;
+    }
+    if (!active) {
+      // 变隐藏：记下当前视口位置。
+      const term = termRef.current;
+      if (term) {
+        try {
+          scrollRef.current = term.buffer.active.viewportY;
+        } catch {
+          scrollRef.current = null;
+        }
+      }
+      return;
+    }
+    // 变可见：rAF 里等布局落定（display:none → block 的那一帧）再量尺寸。
+    window.requestAnimationFrame(() => {
+      const term = termRef.current;
+      refitRef.current?.();
+      if (!term) {
+        return;
+      }
+      const saved = scrollRef.current;
+      if (saved === null) {
+        return;
+      }
+      try {
+        const buffer = term.buffer.active;
+        if (saved >= buffer.baseY) {
+          // 原来停在底部：隐藏期间有新输出 ⇒ 跟着回到底部。
+          term.scrollToBottom();
+        } else {
+          term.scrollLines(saved - buffer.viewportY);
+        }
+      } catch {
+        // 还原失败就算了：终端照样能用。
+      }
+      scrollRef.current = null;
+    });
+  }, [active]);
+
+  /**
+   * 焦点回填：**按请求序号消费**。
+   *
+   * - 序号 >0 且与上次消费到的不同 ⇒ 消费一次（一次请求只回填一次）；
+   * - 只在**可见**时回填：隐藏的终端抢焦点是错的；
+   * - rAF：等布局落定再聚焦（xterm 的 helper 文本框此刻才在正确的位置）；
+   * - 重连 / 重试不重放旧请求（依赖项里没有 `retryToken`）。
+   */
+  useEffect(() => {
+    if (focusRequestId <= 0 || focusRequestId === consumedFocusRef.current) {
+      return;
+    }
+    if (!active) {
+      return;
+    }
+    consumedFocusRef.current = focusRequestId;
+    window.requestAnimationFrame(() => {
+      focusRef.current?.();
+    });
+  }, [focusRequestId, active]);
 
   return (
     /*
