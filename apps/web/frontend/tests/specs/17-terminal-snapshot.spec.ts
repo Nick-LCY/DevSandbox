@@ -21,7 +21,7 @@
  * 3. **切标签不再触发探测再应答**：屏幕上的 `1;2c` 次数**不变**（旧实现会多）；
  * 4. **切标签后画面仍在**：快照恢复屏幕内容。
  *
- * **取证的两个约定**（两条都写在用例里，别改）：
+ * **取证的三条约定**（都写在用例里，别改）：
  *
  * - **控制序列要看得见**：终端把 `ESC [ …` 当控制序列吃掉，屏幕上什么也没有。
  *   所以让容器内跑 `cat -v`（它把控制字符显示成 `^[` 记号）**并把 tty 切成
@@ -30,6 +30,11 @@
  *   让证据只剩一份。
  * - **敲命令不点表面**：鼠标上报模式开着时，一次点击会被编码成鼠标序列
  *   **注入 PTY 输入**，把命令行搞脏。所以一律「聚焦 textarea + 敲键盘」。
+ * - **模式必须由后台进程打开**（见 `startCatVWithMode`）：bash 的 readline
+ *   在**提交命令行的那一刻**会发一包 `ESC[?2004l`（把括号粘贴模式关掉，
+ *   免得命令自己的输出被裹进去）。前台 `printf '\033[?2004h'` 开出来的
+ *   模式当场就被它关掉了 ⇒ 前台开模式等于没开。模式要等 readline 退场
+ *   （前台命令跑起来）之后再开，所以只能由**后台进程**开。
  *
  * 本轮**不新增 data-testid**：沿用既有的终端表面与标签定位。
  */
@@ -49,7 +54,6 @@ import {
   pasteIntoTerminal,
   selectTerminal,
   surfaceOf,
-  terminalText,
   typeInTerminalWithoutClick,
 } from '../helpers/terminal';
 
@@ -57,6 +61,14 @@ import {
 const SANDBOX_NAME = 'acc-snapshot';
 /** 平台基础镜像（宿主已有）：本用例只关心终端现场，不依赖任何个人镜像。 */
 const IMAGE = 'sandbox-platform/base:0.3.0';
+
+/**
+ * 后台进程打出来的「模式序列已送达」记号。
+ *
+ * 它紧跟在模式序列**之后**写进 PTY：xterm 按字节顺序处理，记号出现在屏幕上
+ * 时，模式序列早已被解析 ⇒ 模式确已生效（而不是「printf 敲进去了」）。
+ */
+const MODE_MARK = 'ACC_MODE_MARK';
 
 /**
  * 两条会话（建一次就复用：每个沙箱的终端会话数有上限，5 个）。
@@ -91,6 +103,9 @@ async function prepareTwoSessions(page: Page): Promise<string> {
  * 把终端恢复到「干净起点」：回到提示符、清屏、复位全部 DEC 私有模式。
  *
  * - `Ctrl+C`：打断前台程序（上一条用例可能留了 `cat -v` 在前台）并丢掉半截命令行；
+ * - `stty icanon echo`：**把 tty 的行规程复位**。shell 跑完前台命令后
+ *   **不恢复** tty 设置，上一条用例的 `stty -icanon -echo` 会**漏给下一条**
+ *   ⇒ 命令不再回显、字节也不再按行交付。用例之间共用一条会话，必须显式复位；
  * - `printf '\033c'`（RIS）：清屏 **并** 复位终端模式（鼠标上报、括号粘贴）。
  *
  * 少了 RIS，上一条用例留下的鼠标上报模式会让本用例的**点击**往 PTY 里注入
@@ -100,8 +115,45 @@ async function resetTerminal(page: Page, sessionId: string): Promise<void> {
   await focusTerminal(page, sessionId);
   await page.keyboard.press('Control+C');
   await page.waitForTimeout(1000);
+  await typeInTerminalWithoutClick(page, sessionId, 'stty icanon echo');
+  await page.waitForTimeout(500);
   await typeInTerminalWithoutClick(page, sessionId, "printf '\\033c'");
   await page.waitForTimeout(1000);
+}
+
+/**
+ * 让容器内跑起 `cat -v`（非 canonical、不回显），并**由后台进程**打开终端模式。
+ *
+ * 为什么要后台开模式：bash 的 readline 在**提交命令行的那一刻**会发一包
+ * `ESC[?2004l`（关掉括号粘贴，免得命令自己的输出被裹进去）——前台
+ * `printf '\033[?2004h'` 开出来的模式当场就被它关掉了。后台进程等 readline
+ * 退场（前台命令已经跑起来）之后再开，才是真的开着。
+ *
+ * 这一条同时给出两个可靠的判据（**不用**「屏幕上出现命令原文」那种弱判据——
+ * 命令回显在命令执行前就有，那时 `cat -v` 还没进前台）：
+ *
+ * ① **模式序列已送达**：`ACC_MODE_MARK` 紧跟在模式序列后面写进 PTY，
+ *    xterm 按字节顺序处理 ⇒ 记号上屏时模式已生效；
+ * ② **`cat -v` 真在前台**：后台进程顺手发一包 DA1 探测（`ESC [ c`），
+ *    xterm 的应答（`ESC [ ? 1 ; 2 c`）是写进 **PTY 输入** 的，只有**前台
+ *    进程**能读到它并显示出来 ⇒ 屏幕上出现 `1;2c` 就证明前台是 `cat -v`
+ *    （canonical 模式下应答会卡在 tty 的行缓冲里，压根不会上屏）。
+ *
+ * @param modeArg 交给容器内 `printf` 的模式序列（shell 记法，如 `\033[?2004h`）。
+ */
+async function startCatVWithMode(
+  page: Page,
+  sessionId: string,
+  modeArg: string,
+): Promise<void> {
+  const command =
+    `(sleep 1; printf '${modeArg}'; printf '${MODE_MARK}'; printf '\\033[c') ` +
+    '& stty -icanon -echo; cat -v';
+  await typeInTerminalWithoutClick(page, sessionId, command);
+  // ① 模式序列已送达（记号在它后面 ⇒ 模式已生效）
+  await expectTerminalMatches(page, sessionId, new RegExp(MODE_MARK), 60_000);
+  // ② cat -v 真在前台（DA1 的应答只有前台进程读得到）
+  await expectTerminalMatches(page, sessionId, /1;2c/, 60_000);
 }
 
 /**
@@ -143,19 +195,11 @@ test.describe('网页终端的屏幕快照恢复', () => {
     const sessionId = await prepareTwoSessions(page);
     await resetTerminal(page, sessionId);
 
-    // 开括号粘贴模式（2004）
-    await typeInTerminalWithoutClick(page, sessionId, "printf '\\033[?2004h'");
-    // 非 canonical + 不回显：控制序列的字节立刻交给 cat -v，屏幕上看得见
-    await typeInTerminalWithoutClick(page, sessionId, 'stty -icanon -echo; cat -v');
-    await expect
-      .poll(async () => (await terminalText(page, sessionId)).includes('cat -v'), {
-        timeout: 30_000,
-        message: 'cat -v 没有真的在前台跑起来',
-      })
-      .toBe(true);
+    // 开括号粘贴模式（2004）：**必须由后台进程开**（readline 会当场关掉前台开的那次）
+    await startCatVWithMode(page, sessionId, '\\033[?2004h');
 
     // 切走再切回：终端整块重挂载，模式全靠快照恢复
-    await switchAwayAndBack(page, sessionId, /cat -v/);
+    await switchAwayAndBack(page, sessionId, new RegExp(MODE_MARK));
 
     // 派发一次粘贴：括号粘贴模式在 ⇒ 内容被 ^[[200~ … ^[[201~ 包裹
     await focusTerminal(page, sessionId);
@@ -175,16 +219,9 @@ test.describe('网页终端的屏幕快照恢复', () => {
     await resetTerminal(page, sessionId);
 
     // 开鼠标上报（1000 = 按键上报、1006 = SGR 编码）
-    await typeInTerminalWithoutClick(page, sessionId, "printf '\\033[?1000h\\033[?1006h'");
-    await typeInTerminalWithoutClick(page, sessionId, 'stty -icanon -echo; cat -v');
-    await expect
-      .poll(async () => (await terminalText(page, sessionId)).includes('cat -v'), {
-        timeout: 30_000,
-        message: 'cat -v 没有真的在前台跑起来',
-      })
-      .toBe(true);
+    await startCatVWithMode(page, sessionId, '\\033[?1000h\\033[?1006h');
 
-    await switchAwayAndBack(page, sessionId, /cat -v/);
+    await switchAwayAndBack(page, sessionId, new RegExp(MODE_MARK));
 
     // 点终端表面：鼠标上报模式在 ⇒ 容器里能收到 SGR 序列
     await surfaceOf(page, sessionId).click();
@@ -203,6 +240,7 @@ test.describe('网页终端的屏幕快照恢复', () => {
       "(sleep 1; printf '\\033[>7u\\033[c') & stty -icanon -echo; cat -v",
     );
     // 应答被写进 PTY 输入，cat -v 显示出来（屏幕上能看到 1;2c）
+    // ——它出现在屏幕上还顺带证明了 cat -v 真的在前台。
     await expect
       .poll(async () => await countTerminalMatches(page, sessionId, '1;2c'), {
         timeout: 30_000,
