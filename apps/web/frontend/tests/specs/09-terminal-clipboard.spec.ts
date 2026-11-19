@@ -113,11 +113,15 @@ async function attachOrCreateTerminal(page: Page): Promise<string> {
   const records = (await response.json()) as { session_id: string }[];
   await gotoDetail(page, SANDBOX_NAME);
   if (records.length > 0) {
-    const surface = page.locator('[data-testid="page-sandbox-detail-terminal-surface"]');
-    await expect(surface).toHaveCount(1, { timeout: 60_000 });
-    const sessionId = await surface.getAttribute('data-session-id');
+    // **终端实例常驻之后，屏上可能有多个终端表面**（每个常驻会话一份，
+    // 不活跃的那份被藏起来）⇒ 按**激活标签**定位会话，不再按表面数。
+    const activeTab = page.locator(
+      '[data-testid="page-sandbox-detail-terminal-tab"][data-active="true"]',
+    );
+    await expect(activeTab).toHaveCount(1, { timeout: 60_000 });
+    const sessionId = await activeTab.getAttribute('data-session-id');
     if (!sessionId) {
-      throw new Error('终端表面上没有会话标识');
+      throw new Error('激活标签上没有会话标识');
     }
     return sessionId;
   }
