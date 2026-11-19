@@ -10,6 +10,7 @@
 - **尺寸同步**：resize 之后状态与快照都按新几何；
 - **不外发应答**：模拟器自己产生的探测应答必须静默丢弃（红线 2），
   恢复流里也不该含那些查询序列；
+- **kitty 键盘协议**：恢复流里带对应的恢复序列（前端据此续上协议状态）；
 - **降级**：pyghostty 装不上时 ``create_emulator`` 返回 ``None``。
 
 pyghostty 装不上（没有对应平台的 wheel）时整组用例跳过——那正是降级路径。
@@ -164,6 +165,28 @@ def test_resize_moves_state_and_snapshot_geometry() -> None:
     reference = _emulator(100, 30)
     reference.feed(b"hello")
     assert emu.snapshot() == reference.snapshot()
+
+
+def test_snapshot_restores_kitty_keyboard_flags() -> None:
+    """kitty 键盘协议：恢复流里带对应的恢复序列（前端据此续上协议状态）。
+
+    喂 ``CSI > 5 u``（flags=5）⇒ 恢复流含 ``CSI = 5 ; 1 u``；
+    flags=1 ⇒ ``CSI = 1 ; 1 u``（实测口径：靠 formatter 的
+    ``extra.screen.kitty_keyboard`` 开关产出）。
+
+    **这条承重**：常驻改造后前端按快照恢复现场，kitty 键盘协议状态靠这串
+    恢复序列续上（不靠历史回放——回放里的 kitty 探测会被再应答）。
+    """
+    emu = _emulator()
+    emu.feed(CSI_KITTY_SET)
+    assert emu.state().kitty_keyboard_flags == 5
+    restore = emu.snapshot()
+    assert b"\x1b[=5;1u" in restore
+
+    simple = _emulator()
+    simple.feed(b"\x1b[>1u")
+    assert simple.state().kitty_keyboard_flags == 1
+    assert b"\x1b[=1;1u" in simple.snapshot()
 
 
 def test_emulator_never_answers_probes(monkeypatch: pytest.MonkeyPatch) -> None:
