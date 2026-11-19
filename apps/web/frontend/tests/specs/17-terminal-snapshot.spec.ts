@@ -41,7 +41,7 @@
 
 import { expect, test, type Page } from '@playwright/test';
 
-import { createSandbox, listSandboxes } from '../helpers/api';
+import { clearTerminalSessions, createSandbox, listSandboxes } from '../helpers/api';
 import { gotoDetail } from '../helpers/console';
 import { readFixtures } from '../helpers/sandbox';
 import {
@@ -189,6 +189,10 @@ test.describe('网页终端的屏幕快照恢复', () => {
         command: 'sleep infinity',
       });
     }
+    // **清场**：会话记录是宿主侧持久资源，同一沙箱的会话数有上限（5 条），
+    // 满了再新建就建不出来。worker 重启（浏览器崩过）后模块级变量会丢，
+    // 再新建两条就撞上限 ⇒ 先把上一轮留下的会话清干净（14/15/16 同一口径）。
+    await clearTerminalSessions(SANDBOX_NAME);
   });
 
   test('切标签后括号粘贴仍在（快照恢复了 2004 模式）', async ({ page }) => {
