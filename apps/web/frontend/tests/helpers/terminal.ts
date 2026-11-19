@@ -284,6 +284,100 @@ export async function terminalScrollbarRules(page: Page, sessionId: string): Pro
 }
 
 /**
+ * 把焦点放进终端（**不点**：点一下会在鼠标上报模式开着时注入鼠标序列）。
+ *
+ * xterm 的按键都走它的 helper textarea，聚焦它就等于「终端在收键盘」。
+ */
+export async function focusTerminal(page: Page, sessionId: string): Promise<void> {
+  const textarea = surfaceOf(page, sessionId).locator('textarea');
+  await expect(textarea.first()).toHaveCount(1, { timeout: 30_000 });
+  await textarea.first().focus();
+}
+
+/**
+ * 往终端里敲一条命令并回车，**全程不点终端表面**。
+ *
+ * 与 `typeInTerminal` 的区别只在「不点」：鼠标上报模式（DEC 1000/1006）开着
+ * 时，一次点击会被终端编码成鼠标序列**注入 PTY 输入**，把命令行搞脏。
+ */
+export async function typeInTerminalWithoutClick(
+  page: Page,
+  sessionId: string,
+  command: string,
+): Promise<void> {
+  await focusTerminal(page, sessionId);
+  await page.keyboard.type(command);
+  await page.keyboard.press('Enter');
+}
+
+/**
+ * 往终端里派发一次**粘贴事件**（不走系统剪贴板）。
+ *
+ * 走 xterm 自己的 paste 通道：括号粘贴模式的包裹（`ESC [ 200 ~` / `ESC [ 201 ~`）
+ * 由 xterm 按**当前模式**决定——这正是「切标签后括号粘贴还在不在」的判据。
+ *
+ * 事件派发在 xterm 的 helper textarea 上（xterm 在 textarea 与根元素上各挂一个
+ * paste 监听器）。
+ */
+export async function pasteIntoTerminal(
+  page: Page,
+  sessionId: string,
+  text: string,
+): Promise<void> {
+  const textarea = surfaceOf(page, sessionId).locator('textarea');
+  await expect(textarea.first()).toHaveCount(1, { timeout: 30_000 });
+  await textarea.first().evaluate((element, value) => {
+    const transfer = new DataTransfer();
+    transfer.setData('text/plain', value);
+    element.dispatchEvent(
+      new ClipboardEvent('paste', {
+        clipboardData: transfer,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  }, text);
+}
+
+/**
+ * 断言终端屏幕上出现匹配某个正则的内容。
+ *
+ * 比 `expectTerminalText` 更宽：控制序列在屏幕上是若干字符拼出来的
+ * （`cat -v` 看到的 `^[[200~` 就是四个字符），正则更贴合「这一段长这样」的判据。
+ */
+export async function expectTerminalMatches(
+  page: Page,
+  sessionId: string,
+  pattern: RegExp,
+  timeoutMs = 30_000,
+): Promise<void> {
+  await expect
+    .poll(async () => pattern.test(await terminalText(page, sessionId)), {
+      timeout: timeoutMs,
+      message: `终端 ${sessionId.slice(0, 8)} 的屏幕上没有匹配 ${pattern} 的内容`,
+    })
+    .toBe(true);
+}
+
+/**
+ * 数终端屏幕上某个子串出现了多少次。
+ *
+ * 「切标签不再触发探测再应答」要用它：DA1 的应答（`1;2c`）在切标签前后
+ * 出现的次数必须**不变**（旧实现回放历史，会再答一遍 ⇒ +1）。
+ */
+export async function countTerminalMatches(
+  page: Page,
+  sessionId: string,
+  needle: string,
+): Promise<number> {
+  const text = await terminalText(page, sessionId);
+  if (needle === '') {
+    return 0;
+  }
+  return text.split(needle).length - 1;
+}
+
+/**
  * 断言终端屏幕上出现某段文本。
  */
 export async function expectTerminalText(
