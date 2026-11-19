@@ -50,7 +50,7 @@
 - **可搜索选择器统一走 Base UI Combobox 原语封装**（`src/components/ui/combobox.tsx`）：**不得手搓 Popover + 自建列表**，也**不得引入其他组件库**。选中值语义、键盘导航（↑↓ / Enter）、列表的 ARIA 语义与本地筛选都由原语接管；页面只传候选集（`items`）、取值文案（`itemToStringLabel`）、相等比较（`isItemEqualToValue`）与筛选规则（`filter`），不自己维护命中列表。原生 `<select>` 不再用于候选多的场景（新建沙箱的镜像选择器已改）。
 - **可搜索选择器的展开箭头贴在输入框内部**：绝对定位在输入框右侧、垂直居中，是**纯指示器**（`pointer-events-none`、对辅助技术隐藏、不进 Tab 序列），点击穿透到输入框、开合仍由输入框触发（原语默认点输入框即展开）；弹层展开时输入组带 `data-popup-open`，箭头据此旋转 180°（带过渡）。**候选项逐项给指针光标**（`cursor-pointer`，写在组件层）；**候选为空时列表去掉内边距**（`data-[empty]:p-0`），弹层高度贴合内容，底部不留空白带。
 - **多 tab 面板统一走 Base UI Tabs 原语封装**（`src/components/ui/tabs.tsx`）：**不得手搓 tab 条，也不引入其他组件库**；**Panel keepMounted**——面板内容挂载一次常驻（外层容器打开即全量加载、切 tab 不重发请求），需要「切到才加载」的场景必须显式偏离并说明；激活态标识由原语的 `data-active` 承载。落地实例：设置抽屉的三个 tab（见「设置抽屉的三个 tab 与缓存镜像清单」一节）。
-- 纯数据转换逻辑（路由解析、挂载声明、环境变量、格式化、终端帧协议、终端状态提示口径与去重、终端选中会话解析、终端焦点回填门控、终端尺寸自适应去抖、代理文案、主题存取、侧栏折叠存取、抽屉宽度的存取与换算、会话定序、轮询失败计数、文件窗格宽度换算与折叠态存取、终端 pwd 解析（OSC 1337）、wikilink 解析、大文件预览判定与进度换算、tooltip 视口定位、缓存镜像清单展示换算（`cache-images.ts`，与服务端 `cache_images.py` 逐值对拍对齐））收敛在 `src/lib/`，并有单元测试。
+- 纯数据转换逻辑（路由解析、挂载声明、环境变量、格式化、终端帧协议、终端**快照分片解码**（`terminal-snapshot.ts`）、终端状态提示口径与去重、终端选中会话解析、终端焦点回填门控、**终端实例常驻的挂载集合**（`terminal-residency.ts`）、终端尺寸自适应去抖、代理文案、主题存取、侧栏折叠存取、抽屉宽度的存取与换算、会话定序、轮询失败计数、文件窗格宽度换算与折叠态存取、终端 pwd 解析（OSC 1337）、wikilink 解析、大文件预览判定与进度换算、tooltip 视口定位、缓存镜像清单展示换算（`cache-images.ts`，与服务端 `cache_images.py` 逐值对拍对齐））收敛在 `src/lib/`，并有单元测试。
 - **交互组件的 pointer 光标由 `src/styles/globals.css` 的 base 层统一兜底**（Tailwind v4 的 preflight 把 button 等元素的默认光标改成了 `default`，v3 时代是 `pointer`）：新增交互原语不必逐个补 `cursor-pointer`；要别的光标语义就用工具类覆盖（工具类层级高于 base）。**兜底清单里的 `[role=option]` 会被组件层的工具类盖住**：可搜索选择器的候选项渲染成 `role="option"` 的 div，组件层自己写了 `cursor-pointer`（工具类层级更高，与 base 层那条不冲突，只是它不决定最终光标）。
 
 ## 界面文案与操作语义
@@ -102,6 +102,7 @@
 - **剪贴板 API 需要安全上下文**：`navigator.clipboard` 只在安全上下文可用（`127.0.0.1` 或后续反代 TLS）；非安全上下文下接口不存在，走失败路径弹提示，不做降级。
 - **首用读取可能弹一次浏览器授权**：`readText` 首次调用时浏览器可能弹权限确认，属预期行为，不是失败，不要为此加绕行逻辑。
 - **快捷键分类是语义锁**：分类规则收敛在纯函数 `src/lib/terminal-shortcuts.ts`（`classifyTerminalShortcut`），单元测试逐条钉死——`Ctrl+C` 仍是 SIGINT、`Ctrl+V` 仍是 0x16、保留键仍放行、只有 `Ctrl+Shift+C` / `Ctrl+Shift+V` 走剪贴板。改这段分类必须同步改测试。
+- **键盘协议协商标记不在快照里**：kitty 键盘协议等「键盘能力协商」标志不随快照恢复（前端 xterm.js 5.5.0 不支持该协议），所以 `Shift+Enter` 这类「需要独立编码」的按键仍要靠前端自定义映射（待办 ③，未立项）。**不得按「快照已解决」写文档或写代码。**
 
 ## 终端全屏与焦点回填
 
@@ -113,7 +114,28 @@
 - **全屏按钮的 ARIA 语义是「动作名随状态变化的普通按钮」**：可访问名与 `title` 在「全屏终端 / 退出全屏」之间切换，**不带 `aria-pressed`**；侧栏折叠按钮同理，**不带 `aria-expanded`**（两者都是两个动作，不是开关）。
 - **焦点回填只在两种情况下发生**：① 用户刚点了标签 / 点了终端表面 / 新建了会话（明确的操作意图）；② 判定当下焦点就在终端表面内（重挂载把焦点弄丢了，要恢复）。**焦点在别处（抽屉输入框等）一律不回填**——绝不抢别处的焦点。
 - **焦点位置判定要活读 `document.activeElement`**（口径在 `src/lib/terminal-focus.ts`）：终端重挂载会把 xterm 的 helper textarea 从 DOM 摘掉，浏览器把焦点复位到 `body` 且**不派发 `focusin`**；只靠事件跟踪记下来的标志会永远停在 true，门控退化成「什么场合都往终端里塞焦点」。
-- **一个终端实例只回填一次**：回填的开关取挂载时刻的快照，重试连接（重建 WebSocket）不把挂载时刻的值再拿出来用一次。
+- **一次回填请求只回填一次**（2026-11-19 改写）：终端实例已**常驻**，回填不再是一次挂载事件——面板按会话发「回填请求序号」（`focusRequestId`），终端视图**消费一次**即记住该序号。序号不变不重复抢焦点；重试连接（重建 WebSocket）**不重放旧请求**。原口径「回填开关取挂载时刻的快照」随实例常驻作废。
+
+## 终端实例常驻（标签之间）
+
+- **常驻范围只限终端标签之间**：终端栈（`src/components/TerminalStack.tsx`）给每个常驻会话一个槽位，切标签**不销毁重建** xterm 实例。**切到 Obsidian tab 时分屏整体卸载**是既有口径（e2e 按 count 0 断言），本轮不改。
+- **只有访问过的会话才挂载**：挂载集合 = 已访问 ∩ 仍在会话表 ∪ 当前激活，顺序按会话表；口径在纯函数 `src/lib/terminal-residency.ts`。**没点过的会话不自动附着**。
+- **隐藏用 `display:none`**（Tailwind `hidden`）：不用 `visibility` / `opacity` / `z-index` 叠加；槽位带 `data-hidden="true|false"`。
+- **变可见必须补一次 fit**：隐藏态 xterm 量不到尺寸（fit 会算出 0 列）。
+- **滚动位置按「距底部」还原**：隐藏时记视口位置，可见时还原。这段**没有自动化断言**（jsdom 量不到视口），改动时需真机看一眼。
+- **隐藏会话的状态提示照弹**：后台会话断线 / 退出仍进会话状态表并照既有去重规则弹 toast——这是有意的行为变化，不是回归。
+- **不要按「切标签即重连」写断言**：快照路径只有**强制重挂载**（`page.reload()`、Obsidian 往返、连接配置变更）才走到，e2e 取证一律用 reload。
+
+## 终端接入与快照恢复
+
+- **接入 = `attach` + `snapshot` 恢复流**，不是历史回放：连上后**不发任何帧**，等 `hello` 拿到会话尺寸，再发 `{"type":"attach","cols","rows"}`；服务端对齐几何（先模拟器后 PTY、失败回滚）、等静默窗口（0.12 s / 上限 0.8 s）、下发 `snapshot` 分片，之后才续实时流。帧表与兼容矩阵以 `apps/web/backend/API.md` 12.3 为准。
+- **恢复顺序固定**：`term.resize(快照 geometry)` → `term.reset()` → `term.write(恢复流)`。先对齐几何（恢复流按字面换行相对定位）、再清旧画面与旧模式、再写。
+- **分片拼不拢就丢弃**：缺片 / 序号重复 / 非法 base64 一律不写（`src/lib/terminal-snapshot.ts`，纯函数可单测）；宁可不写，也不写半截画面。
+- **`reset` 之后 OSC 1337 处理器必须仍在**：pwd 通道靠它，恢复流的 reset 不能把它摘掉（有承重单测钉住）。
+- **pwd 随快照恢复**：帧里的 `pwd` 是最近一条 OSC 1337 载荷，按既有校验口径落**前端内存缓存**（后端会话记录仍不加字段）；走快照路径时不再靠提示符刷新拿 pwd。
+- **降级路径保留两步 resize**：attach 后窗口内一个分片都没收到（旧后端 / `SANDBOX_TERMINAL_EMULATOR` 关停）⇒ 补一次「尺寸真变化」的两步 resize 逼 readline 重画提示符，重新拿到 pwd；正常路径不做，避免多余 SIGWINCH。
+- **旧后端要静默豁免**：旧后端回「无法识别的终端指令（attach）」错误帧**不是故障**——不弹提示、不改状态，并补发一帧 `resize` 让它照常同步尺寸。识别靠文案匹配（错误帧暂无机器可读 `code`，见 [[tasks/console-terminal-emulator/RESULTS.md|全轮留档]] 的评审遗留）。
+- **快照只恢复活动屏**：主屏滚动历史（pi 全屏期间）不回放；服务端回滚 1000 行 vs 前端 5000 行，差异是刻意的（见 [[architecture/decisions/0020-控制台终端采用后端模拟器与快照接入.md|ADR 0020]]）。
 
 ## 文件窗格与 Obsidian 阅读器
 
@@ -182,6 +204,7 @@
 
 - 命名 `page-<页面>-<元素>`，字符集只允许小写字母、数字与连字符。
 - 同页重复出现的元素**标识本身保持一致**，另挂属性区分：沙箱列表项带 `data-sandbox-name` 与 `data-sandbox-state`，终端标签与终端表面带 `data-session-id`（标签另带 `data-active`）。
+- **终端实例常驻后同页可能有多个终端表面**（每个常驻会话一份）：终端栈槽位（`page-terminal-stack-item`）同时带 `data-session-id` 与 `data-hidden="true|false"`，验收脚本先定位激活槽位再取其内的终端表面，**不得假定页面上只有一个终端表面**。
 - 同页双挂载的标识（侧栏与空态引导块各有一个「新建沙箱」按钮）按「取第一个」处理，不另造名字。
 - 端到端脚本只使用 `apps/web/frontend/README.md` 标识表里的名字，不另造；helper 里的标识必须与实现一致。
 - 旧四页与「后端保留会话」列表下线后，相关标识已退役，不得复用。抽屉改造后下线的标识（新建沙箱成功面板、删除武装提示与回收清单明细）同样不得复用。完整标识表与已退役清单见 `apps/web/frontend/README.md`。
@@ -202,3 +225,7 @@
 - [[tasks/file-pane-obsidian/05-file-preview.md|05 文件窗格文本预览]] — 预览第二视图与只读端点、大文件预览统一口径的落地任务。
 - [[tasks/file-pane-obsidian/07-markdown-wikilink.md|07 markdown 渲染与 wikilink]] — Obsidian 渲染与 wikilink、`PreviewConfirmDialog` / `PreviewLoading` 共用组件抽取的落地任务。
 - [[tasks/registry-cache-manifest/05-console-cache-images-view.md|05 console 缓存镜像清单视图]] — 设置抽屉缓存镜像清单视图的首次落地；三 tab 化、清单表格化与本地搜索的改造口径见 [[tasks/registry-cache-manifest/RESULTS.md|RESULTS]] 第十节。
+- [[architecture/decisions/0020-控制台终端采用后端模拟器与快照接入.md|0020 控制台终端采用后端模拟器与快照接入]] — 「终端接入与快照恢复」「终端实例常驻（标签之间）」「终端全屏与焦点回填」三节的主要依据。
+- [[tasks/console-terminal-emulator/02-attach-snapshot-protocol.md|02 接入协议换代]] — 快照恢复流与旧客户端 / 旧后端兼容的落地任务。
+- [[tasks/console-terminal-emulator/03-terminal-residency.md|03 前端实例常驻]] — 标签之间常驻、已访问集合、变可见 refit、焦点请求序号的落地任务。
+- [[tasks/console-terminal-emulator/RESULTS.md|控制台终端轮全轮留档]] — 门禁数字、已知限制与评审遗留（含「错误帧无 `code` 字段」等）。

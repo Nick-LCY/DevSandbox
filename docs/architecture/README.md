@@ -28,6 +28,8 @@
 | 0016 | [[architecture/decisions/0016-控制台默认运行用户改为非root.md\|控制台默认运行用户改为非 root]] | 已接受 |
 | 0017 | [[architecture/decisions/0017-移除终端空闲回收.md\|移除终端空闲回收]] | 已接受 |
 | 0018 | [[architecture/decisions/0018-运行期文件传输机制选型.md\|运行期文件传输机制选型]] | 已接受 |
+| 0019 | [[architecture/decisions/0019-控制台前端托管到CloudflareWorkers.md\|控制台前端托管到 Cloudflare Workers]] | 已接受 |
+| 0020 | [[architecture/decisions/0020-控制台终端采用后端模拟器与快照接入.md\|控制台终端采用后端模拟器与快照接入]] | 已接受 |
 
 结论摘要见 [[architecture/overview.md#关键决策]]，决策背景与代价见 [[architecture/decisions/README.md|ADR 清单]]。
 
