@@ -579,6 +579,37 @@ def test_resize_with_same_size_does_not_touch_pty(
         session.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
 
 
+@pytest.mark.usefixtures("emulator_available")
+def test_resize_rolls_back_emulator_when_pty_resize_fails(
+    manager: TerminalSessionManager, loop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """伪终端 resize 失败：模拟器尺寸回滚（或整个作废），记录不变。
+
+    **几何必须三者一致**（模拟器 / 伪终端 / 会话记录）：改到一半失败时，
+    留着新几何的模拟器配上旧几何的伪终端 ⇒ 恢复流错位；而记录若停在旧值，
+    下次同尺寸 resize 会被「同尺寸早退」短路，偏差就此固化。
+    """
+    session = create_session(manager, loop, cols=80, rows=24)
+    try:
+        def refuse(cols: int, rows: int) -> None:
+            raise OSError("伪终端窗口大小改不动")
+
+        monkeypatch.setattr(session.pty, "resize", refuse)
+        session.resize(132, 43)
+
+        # 记录不变
+        assert session.record.cols == 80
+        assert session.record.rows == 24
+        # 伪终端窗口大小也没变
+        assert pty_winsize(session) == (24, 80)
+        # 模拟器要么回滚到旧尺寸，要么整个作废（降级）——不留半套几何
+        if session._emulator is not None:
+            assert session._emulator.cols == 80
+            assert session._emulator.rows == 24
+    finally:
+        session.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
+
+
 def test_osc_1337_pwd_is_scanned_across_chunks(
     manager: TerminalSessionManager, loop
 ) -> None:

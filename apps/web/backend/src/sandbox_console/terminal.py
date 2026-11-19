@@ -18,7 +18,8 @@
   合并窗口内只写一次，事件循环线程不做文件 I/O。
 - **模拟器的几何必须与伪终端一致**：恢复流是「按字面换行相对定位」的，两边
   尺寸不一致画面就错位。所以 resize 时模拟器与伪终端一起改；模拟器改不动就
-  **两边都不改**（宁可尺寸不变，也不让几何打架）。
+  **两边都不改**（宁可尺寸不变，也不让几何打架）；伪终端改不动就**回滚模拟器**
+  （三者要么一起新、要么一起旧，不留半套几何）。
 """
 
 from __future__ import annotations
@@ -448,16 +449,24 @@ class TerminalSession:
         **同尺寸直接返回**：同尺寸的 resize 实测不产生任何输出（readline 只在
         尺寸真的变了时才重绘），发过去只是白白让容器内的程序重绘一次。
 
+        **几何三者同进同退**：模拟器、伪终端、会话记录要么一起是新尺寸，
+        要么一起是旧尺寸。改到一半失败（伪终端 resize 抛错）时**回滚模拟器**
+        ——留着新几何的模拟器配上旧几何的伪终端，恢复流直接错位；而记录若
+        停在旧值，下次同尺寸 resize 会被「同尺寸早退」短路，偏差就此固化。
+
         模拟器改不动时**两边都不改**：几何必须一致（恢复流按字面换行相对
         定位，两边不一致画面就错位），宁可尺寸不变。
         """
         with self._lock:
             current = (self.record.cols, self.record.rows)
+            # 模拟器引用在锁内取：喂入异常时它可能已被作废（None ⇒ 降级路径，
+            # 按正常降级处理，不告警）。
+            emulator = self._emulator
         if current == (cols, rows):
             return
-        if self._emulator is not None:
+        if emulator is not None:
             try:
-                self._emulator.resize(cols, rows)
+                emulator.resize(cols, rows)
             except Exception as exc:
                 logger.warning(
                     "终端会话 %s 的模拟器改尺寸失败，尺寸保持不变：%s",
@@ -470,6 +479,8 @@ class TerminalSession:
             self.pty.resize(cols, rows)
         except OSError as exc:
             logger.debug("同步终端会话 %s 的窗口大小失败：%s", self.session_id, exc)
+            # 伪终端没改成 ⇒ 模拟器必须跟着回滚（几何必须一致）
+            self._rollback_emulator_size(current)
             return
         with self._lock:
             self.record.cols = cols
@@ -482,8 +493,12 @@ class TerminalSession:
 
         回滚也失败就把模拟器作废（降级为环形缓冲回放）：宁可少一份快照，
         也不能让快照的几何与实际不符。
+
+        模拟器**已被作废**（喂入异常等，引用为 None）时直接返回：那是正常
+        的降级路径，没什么可回滚的。
         """
-        emulator = self._emulator
+        with self._lock:
+            emulator = self._emulator
         if emulator is None:
             return
         try:
@@ -494,7 +509,8 @@ class TerminalSession:
                 self.session_id,
                 exc,
             )
-            self._emulator = None
+            with self._lock:
+                self._emulator = None
 
     # ---------------------------------------------------------------- 现场
     def idle_seconds(self) -> float:
