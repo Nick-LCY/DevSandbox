@@ -1,25 +1,31 @@
 /**
  * 网页终端的「屏幕快照恢复」验收。
  *
- * 背景：控制台网页终端的 xterm 实例**不是常驻的**（切标签就整块重挂载）。
- * 旧实现靠「回放服务端的历史字节」恢复现场，两个后果：
+ * 背景：服务端常驻一份终端模拟器，附着时下发**屏幕快照**（VT 恢复流），
+ * 前端按它恢复画面与终端模式——快照里没有探测，不会再有应答。旧实现靠
+ * 「回放服务端的历史字节」恢复现场，两个后果：
  *
  * - **终端模式丢失**：pi 全屏时开的 DEC 私有模式（鼠标 1000/1002/1003/1006、
- *   焦点上报 1004、括号粘贴 2004、备用屏 1049）挂在 xterm 实例上，重挂载即
+ *   焦点上报 1004、括号粘贴 2004、备用屏 1049）挂在 xterm 实例上，实例重建即
  *   归零，pi 侧不知情也不重发 ⇒ 鼠标、焦点事件、括号粘贴全部失效；
  * - **历史里的探测被再应答**：pi 启动时发过两包终端探测，历史回放时新 xterm
  *   实例把探测当新请求**再答一遍**，应答经 WS 写进 PTY 输入 ⇒ pi 退出后
  *   bash 把应答当键盘输入回显成乱码。
  *
- * 新实现：服务端常驻一份终端模拟器，附着时下发**屏幕快照**（VT 恢复流），
- * 前端按它恢复画面与终端模式——快照里没有探测，不会再有应答。
+ * **为什么用例必须强制重挂载**：终端实例自 6379e7e 起**常驻**——切标签只是把
+ * 旧实例 `display:none` 藏起来，被验的那份实例全程存活，模式 / 画面 / 应答计数
+ * 天然不变。若用例还按「切走再切回」取证，快照恢复路径一次都不会执行（假绿）。
+ * 所以取证动作换成真正销毁旧实例、重新走 attach → snapshot 链路的操作：
+ * **page.reload()**（旧 xterm 连同 DOM 全销毁，页面按路由重新附着，是最强的
+ * 重挂载动作）。切到 Obsidian tab 再切回也能整块卸载分屏（既有约定），本轮
+ * 统一用 reload。
  *
- * 四条口径：
+ * 四条口径（动作都是「重新附着后」）：
  *
- * 1. **切标签后括号粘贴仍在**：`^[[200~…^[[201~` 包裹；
- * 2. **切标签后鼠标上报仍在**：SGR 序列 `^[[<0;…`；
- * 3. **切标签不再触发探测再应答**：屏幕上的 `1;2c` 次数**不变**（旧实现会多）；
- * 4. **切标签后画面仍在**：快照恢复屏幕内容。
+ * 1. **重新附着后括号粘贴仍在**：`^[[200~…^[[201~` 包裹；
+ * 2. **重新附着后鼠标上报仍在**：SGR 序列 `^[[<0;…`；
+ * 3. **重新附着不再触发探测再应答**：屏幕上的 `1;2c` 次数**不变**（旧实现会多）；
+ * 4. **重新附着后画面仍在**：快照恢复屏幕内容。
  *
  * **取证的三条约定**（都写在用例里，别改）：
  *
@@ -71,28 +77,23 @@ const IMAGE = 'sandbox-platform/base:0.3.0';
 const MODE_MARK = 'ACC_MODE_MARK';
 
 /**
- * 两条会话（建一次就复用：每个沙箱的终端会话数有上限，5 个）。
- *
- * - `mainSessionId`：被验的那条；
- * - `otherSessionId`：切走时切过去的那条（切标签 = 换一条会话）。
+ * 被验的那条会话（建一次就复用：每个沙箱的终端会话数有上限，5 个）。
  */
 let mainSessionId = '';
-let otherSessionId = '';
 
 /**
- * 准备两条会话（建一次就复用），并附着到主会话。
+ * 准备一条会话（建一次就复用），并附着到它。
  *
- * 每个沙箱的终端会话数有上限（5 个）：两条会话建一次就够，测试之间不再新建。
+ * 每个沙箱的终端会话数有上限（5 个）：会话建一次就够，测试之间不再新建。
  */
-async function prepareTwoSessions(page: Page): Promise<string> {
+async function prepareSession(page: Page): Promise<string> {
   await gotoDetail(page, SANDBOX_NAME);
-  if (!mainSessionId || !otherSessionId) {
-    const first = await openTerminal(page);
+  if (!mainSessionId) {
+    // 首次建会话：新建后它已经是激活态（路由也带上了标识）——不能再「点一次」
+    // （单会话时点击前的空操作检查要求地址栏还没带这个标识，见 selectTerminal）。
+    mainSessionId = await openTerminal(page);
     await expectTerminalConnected(page);
-    const second = await openTerminal(page);
-    await expectTerminalConnected(page);
-    mainSessionId = first;
-    otherSessionId = second;
+    return mainSessionId;
   }
   await selectTerminal(page, mainSessionId);
   await expectTerminalConnected(page);
@@ -157,23 +158,24 @@ async function startCatVWithMode(
 }
 
 /**
- * 切走再切回（终端整块重挂载 ⇒ 新建一个 xterm 实例）。
+ * 强制重挂载终端实例（page.reload）并等快照恢复落定。
  *
- * 切走前后的画面、终端模式能不能恢复，就是这一轮要验的东西。
+ * 依赖重挂载动作：**page.reload()**。原因：实例常驻之后「切标签」只是
+ * `display:none`，被验实例全程存活，模式 / 画面 / 应答计数天然不变——快照恢复
+ * 路径一次都不会执行。reload 会把旧 xterm 连同 DOM 一起销毁，页面按路由重新
+ * 附着，走完整 attach → snapshot 链路，这才是要验的路径。
  *
- * @param marker 切回来后屏幕上**必须重新出现**的内容（快照落定的证据）：
- * 新实例的屏幕在快照到达前是空的，marker 出现才说明快照已经应用。
+ * @param marker 重挂载后屏幕上**必须重新出现**的内容（快照落定的证据）：
+ *   新实例的屏幕在快照到达前是空的，marker 出现才说明快照已经应用。
  */
-async function switchAwayAndBack(
+async function reloadAndWaitSnapshot(
   page: Page,
   sessionId: string,
   marker: RegExp,
 ): Promise<void> {
-  await selectTerminal(page, otherSessionId);
+  await page.reload();
   await expectTerminalConnected(page);
-  await selectTerminal(page, sessionId);
-  await expectTerminalConnected(page);
-  // **等快照落定**：屏幕上重新出现切走前的内容 = 快照已应用
+  // **等快照落定**：屏幕上重新出现重挂载前的内容 = 快照已应用
   await expectTerminalMatches(page, sessionId, marker, 60_000);
 }
 
@@ -191,19 +193,20 @@ test.describe('网页终端的屏幕快照恢复', () => {
     }
     // **清场**：会话记录是宿主侧持久资源，同一沙箱的会话数有上限（5 条），
     // 满了再新建就建不出来。worker 重启（浏览器崩过）后模块级变量会丢，
-    // 再新建两条就撞上限 ⇒ 先把上一轮留下的会话清干净（14/15/16 同一口径）。
+    // 再新建就撞上限 ⇒ 先把上一轮留下的会话清干净（14/15/16 同一口径）。
     await clearTerminalSessions(SANDBOX_NAME);
   });
 
-  test('切标签后括号粘贴仍在（快照恢复了 2004 模式）', async ({ page }) => {
-    const sessionId = await prepareTwoSessions(page);
+  test('重新附着后括号粘贴仍在（reload → 快照恢复了 2004 模式）', async ({ page }) => {
+    const sessionId = await prepareSession(page);
     await resetTerminal(page, sessionId);
 
     // 开括号粘贴模式（2004）：**必须由后台进程开**（readline 会当场关掉前台开的那次）
     await startCatVWithMode(page, sessionId, '\\033[?2004h');
 
-    // 切走再切回：终端整块重挂载，模式全靠快照恢复
-    await switchAwayAndBack(page, sessionId, new RegExp(MODE_MARK));
+    // 依赖重挂载动作：page.reload()（切标签不销毁实例，快照路径不会执行）。
+    // 重挂载后模式全靠快照恢复。
+    await reloadAndWaitSnapshot(page, sessionId, new RegExp(MODE_MARK));
 
     // 派发一次粘贴：括号粘贴模式在 ⇒ 内容被 ^[[200~ … ^[[201~ 包裹
     await focusTerminal(page, sessionId);
@@ -218,22 +221,23 @@ test.describe('网页终端的屏幕快照恢复', () => {
     );
   });
 
-  test('切标签后鼠标上报仍在（快照恢复了 1000/1006 模式）', async ({ page }) => {
-    const sessionId = await prepareTwoSessions(page);
+  test('重新附着后鼠标上报仍在（reload → 快照恢复了 1000/1006 模式）', async ({ page }) => {
+    const sessionId = await prepareSession(page);
     await resetTerminal(page, sessionId);
 
     // 开鼠标上报（1000 = 按键上报、1006 = SGR 编码）
     await startCatVWithMode(page, sessionId, '\\033[?1000h\\033[?1006h');
 
-    await switchAwayAndBack(page, sessionId, new RegExp(MODE_MARK));
+    // 依赖重挂载动作：page.reload()（切标签不销毁实例，快照路径不会执行）。
+    await reloadAndWaitSnapshot(page, sessionId, new RegExp(MODE_MARK));
 
     // 点终端表面：鼠标上报模式在 ⇒ 容器里能收到 SGR 序列
     await surfaceOf(page, sessionId).click();
     await expectTerminalMatches(page, sessionId, /\^\[\[<0;/, 60_000);
   });
 
-  test('切标签不再触发探测再应答（DA1 的应答次数不变）', async ({ page }) => {
-    const sessionId = await prepareTwoSessions(page);
+  test('重新附着不再触发探测再应答（reload → DA1 的应答次数不变）', async ({ page }) => {
+    const sessionId = await prepareSession(page);
     await resetTerminal(page, sessionId);
 
     // 起一个后台子进程：1 秒后吐出终端探测（kitty 键盘查询 + DA1）。
@@ -253,25 +257,28 @@ test.describe('网页终端的屏幕快照恢复', () => {
       .toBeGreaterThan(0);
     const before = await countTerminalMatches(page, sessionId, '1;2c');
 
-    // 切走再切回：旧实现回放历史字节 ⇒ 探测被再答一遍（次数变多）
-    await switchAwayAndBack(page, sessionId, /1;2c/);
+    // 依赖重挂载动作：page.reload()（切标签不销毁实例，快照路径不会执行）。
+    // 旧实现回放历史字节 ⇒ 探测被再答一遍（次数变多）；快照只恢复画面，不再应答。
+    await reloadAndWaitSnapshot(page, sessionId, /1;2c/);
+    // 给迟到应答留观察窗口：新实例若把探测当新请求，应答会在这段时间内上屏。
     await page.waitForTimeout(2000);
 
     const after = await countTerminalMatches(page, sessionId, '1;2c');
     expect(
       after,
-      `切标签后 DA1 的应答次数变了（切前 ${before}、切后 ${after}）：历史里的探测被再应答了`,
+      `重新附着后 DA1 的应答次数变了（重挂载前 ${before}、重挂载后 ${after}）：历史里的探测被再应答了`,
     ).toBe(before);
   });
 
-  test('切标签后画面仍在（快照恢复屏幕内容）', async ({ page }) => {
-    const sessionId = await prepareTwoSessions(page);
+  test('重新附着后画面仍在（reload → 快照恢复屏幕内容）', async ({ page }) => {
+    const sessionId = await prepareSession(page);
     await resetTerminal(page, sessionId);
 
     await typeInTerminalWithoutClick(page, sessionId, 'seq 1 200');
     await expectTerminalText(page, sessionId, '200', 60_000);
 
-    await switchAwayAndBack(page, sessionId, /200/);
+    // 依赖重挂载动作：page.reload()（切标签不销毁实例，快照路径不会执行）。
+    await reloadAndWaitSnapshot(page, sessionId, /200/);
 
     // 快照恢复的是「当前屏幕」：末尾的序号仍然看得见
     await expectTerminalText(page, sessionId, '200', 60_000);
