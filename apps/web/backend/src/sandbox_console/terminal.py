@@ -1,19 +1,24 @@
-"""终端会话管理：伪终端承载、输出环形缓冲与断线重连。
+"""终端会话管理：伪终端承载、输出环形缓冲、终端模拟器与断线重连。
 
-一个终端会话 = 容器内一个带真实 TTY 的交互式进程 + 宿主侧一个伪终端。
-浏览器断开时进程不退出，输出继续写进环形缓冲；重连同一会话标识时先回放缓冲
-再接实时流，终端现场不丢。
+一个终端会话 = 容器内一个带真实 TTY 的交互式进程 + 宿主侧一个伪终端
++ **一份进程内的终端模拟器**（见 `sandbox_console/emulator.py`）。
+浏览器断开时进程不退出，输出继续写进环形缓冲**并**继续喂给模拟器；
+重连同一会话标识时，服务端把模拟器的现场导成一份 VT 恢复流发给前端
+（新前端按快照恢复画面与终端模式），旧前端仍走环形缓冲回放。
 
 会话的宿主侧资源（伪终端、容器内进程）活在服务进程内存里，伪终端本身由核心包
-的伪终端入口分配；本模块只做编排：起会话、收字节、喂缓冲、登记会话表。
+的伪终端入口分配；本模块只做编排：起会话、收字节、喂缓冲、喂模拟器、登记会话表。
 
-两条贯穿全局的约束：
+三条贯穿全局的约束：
 
 - **写侧永不阻塞**：伪终端主端是非阻塞的，I/O 线程只在「可写事件」里写，写不
   进去就留着字节下次再写。阻塞式写入会造出双向死锁——用户粘贴大文本时写入侧
   卡住不再读输出，输出写满后容器内的 shell 卡在写 stdout，两边互等。
 - **落盘走合并写**：会话表的写入集中在后台线程，窗口大小抖动这类高频变更在
   合并窗口内只写一次，事件循环线程不做文件 I/O。
+- **模拟器的几何必须与伪终端一致**：恢复流是「按字面换行相对定位」的，两边
+  尺寸不一致画面就错位。所以 resize 时模拟器与伪终端一起改；模拟器改不动就
+  **两边都不改**（宁可尺寸不变，也不让几何打架）。
 """
 
 from __future__ import annotations
@@ -40,6 +45,7 @@ from sandbox_platform import (
 from sandbox_platform.metadata import utc_now
 from starlette.concurrency import run_in_threadpool
 
+from .emulator import TerminalEmulator, create_emulator
 from .sessions import (
     SESSION_EXIT_REASON_CLOSED_BY_USER,
     SESSION_EXIT_REASON_EXITED,
@@ -71,6 +77,21 @@ WAKE_TOKEN = b"\x01"
 # 回放快照的单帧上限（字节）：一帧太长会被中间代理截断
 SNAPSHOT_CHUNK = 64 * 1024
 
+# ---------------------------------------------------------------- 终端模拟器
+# 模拟器开关的环境变量：置 0 / off / false 关掉模拟器（退回环形缓冲回放路径）。
+ENV_EMULATOR = "SANDBOX_TERMINAL_EMULATOR"
+
+# 客户端 attach 帧的等待上限（秒）：超时判定为「旧客户端」，走回放路径。
+ATTACH_SIZE_TIMEOUT = 3.0
+# 改尺寸后等输出落定的静默窗口（秒）：容器内的程序重绘完才取快照。
+QUIET_WINDOW_SECONDS = 0.12
+# 等输出落定的上限（秒）：到点强制继续（不让快照被卡住）。
+QUIET_MAX_WAIT_SECONDS = 0.8
+# OSC 1337（pwd 上报）跨块截断时的尾缓冲上限（字节）。
+OSC_PWD_TAIL_BYTES = 512
+# OSC 1337 的序列头：ESC ] 1337 ;
+OSC_1337_MARKER = b"\x1b]1337;"
+
 # ---------------------------------------------------------------- 会话数量
 # 全部会话的总数上限
 DEFAULT_MAX_SESSIONS = 20
@@ -90,6 +111,63 @@ FRAME_DATA = "data"
 FRAME_ERROR = "error"
 # 结束标记（容器内进程已退出）
 FRAME_EXIT = "exit"
+# 快照帧（VT 恢复流，新前端据此恢复现场）
+FRAME_SNAPSHOT = "snapshot"
+
+
+def _env_flag(name: str, *, default: bool = True) -> bool:
+    """读一个布尔环境变量。
+
+    口径：``0`` / ``off`` / ``false`` / ``no``（大小写不敏感、两端空白不计）
+    算**关**，其余一律算**开**；变量没设或设成空串用 ``default``。
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    text = raw.strip().lower()
+    if not text:
+        return default
+    return text not in ("0", "off", "false", "no")
+
+
+def _find_osc_terminator(buf: bytes, start: int) -> int:
+    """找 OSC 序列的终结符，返回**载荷结束**的下标；没闭合返回 ``-1``。
+
+    两种终结符都认：BEL（``0x07``）与 ST（``ESC \\``）。
+    """
+    index = start
+    length = len(buf)
+    while index < length:
+        byte = buf[index]
+        if byte == 0x07:
+            return index
+        if byte == 0x1B and index + 1 < length and buf[index + 1] == 0x5C:
+            return index
+        index += 1
+    return -1
+
+
+def _scan_osc_pwd(buf: bytes) -> str | None:
+    """从一段字节里扫出**最后一条完整的** OSC 1337 载荷。
+
+    载荷就是 OSC 1337 序列头与终结符之间的原文（例：
+    ``CurrentDir=/workspace``）——前端按自己的解析口径校验后落库。
+    没闭合的序列（跨块截断）不认，交给尾缓冲等下一块补齐。
+    """
+    payload: str | None = None
+    start = 0
+    while True:
+        index = buf.find(OSC_1337_MARKER, start)
+        if index < 0:
+            break
+        body_start = index + len(OSC_1337_MARKER)
+        end = _find_osc_terminator(buf, body_start)
+        if end < 0:
+            # 未闭合：等下一块（尾缓冲里留着）
+            break
+        payload = buf[body_start:end].decode("utf-8", "replace")
+        start = end + 1
+    return payload
 
 
 def new_session_id() -> str:
@@ -161,6 +239,26 @@ class TerminalSessionRemoval:
     removed: bool
 
 
+@dataclass(frozen=True)
+class TerminalSnapshot:
+    """一次附着的现场快照。
+
+    - ``kind="emulator"``：模拟器导出的 **VT 恢复流**（画面 + 光标 + 模式）。
+      新前端按它恢复现场——不是历史回放，历史里的探测序列不在其中，
+      不会被前端再应答；
+    - ``kind="ring"``：环形缓冲里的历史字节（旧前端路径：直接回放二进制）。
+
+    ``cols`` / ``rows`` 是这份快照的**几何**：恢复流按字面换行相对定位，
+    重放端的尺寸必须与它一致。``pwd`` 是最近一条 OSC 1337 载荷（可空）。
+    """
+
+    payload: bytes
+    kind: str
+    cols: int
+    rows: int
+    pwd: str | None = None
+
+
 class TerminalStream:
     """一个浏览器连接对应的输出流。"""
 
@@ -202,6 +300,17 @@ class TerminalSession:
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._closed = False
+        # 终端模拟器：与 PTY 输出并行喂进去，附着时导出「现场快照」。
+        # 建不出来（pyghostty 装不上）时为 None ⇒ 降级为环形缓冲回放。
+        self._emulator: TerminalEmulator | None = None
+        if _env_flag(ENV_EMULATOR):
+            self._emulator = create_emulator(record.cols, record.rows)
+        # 最近一次容器内输出的时刻（附着前等输出落定用）
+        self._last_output_at = time.monotonic()
+        # 最近一条 OSC 1337 载荷（工作目录上报）
+        self._last_pwd: str | None = None
+        # OSC 1337 的尾缓冲：跨块截断的序列能被接上
+        self._osc_tail = b""
         self._wake_r, self._wake_w = os.pipe()
         os.set_blocking(self._wake_w, False)
         self._thread = threading.Thread(
@@ -238,21 +347,61 @@ class TerminalSession:
         return self.record.state == SESSION_STATE_EXITED
 
     # ---------------------------------------------------------------- 输出流
-    def open_stream(self) -> tuple[TerminalStream, bytes]:
-        """登记一个输出流，并取回当前缓冲快照。
+    def open_stream(
+        self, *, force_ring: bool = False
+    ) -> tuple[TerminalStream, TerminalSnapshot]:
+        """登记一个输出流，并取回当前快照。
 
         登记与取快照在同一把锁内完成：输出要么落在快照里，要么走实时流，
         不会重复也不会漏。
+
+        ``force_ring=True``：强制走**环形缓冲**快照（旧客户端路径——它不认
+        快照帧，只能收二进制字节）。
         """
         queue: asyncio.Queue = asyncio.Queue(maxsize=DEFAULT_QUEUE_SIZE)
         with self._lock:
             stream = TerminalStream(queue, self._seq)
             self._streams.append(stream)
-            snapshot = bytes(self._ring)
+            payload: bytes
+            kind: str
+            cols: int
+            rows: int
+            emulator = None if force_ring else self._emulator
+            if emulator is not None:
+                try:
+                    payload = emulator.snapshot()
+                except Exception as exc:
+                    # 快照导不出来：模拟器就此作废，退回环形缓冲回放
+                    logger.warning(
+                        "终端会话 %s 的模拟器快照导出失败，降级为环形缓冲回放：%s",
+                        self.session_id,
+                        exc,
+                    )
+                    self._emulator = None
+                    payload = bytes(self._ring)
+                    kind = "ring"
+                    cols = self.record.cols
+                    rows = self.record.rows
+                else:
+                    kind = "emulator"
+                    cols = emulator.cols
+                    rows = emulator.rows
+            else:
+                payload = bytes(self._ring)
+                kind = "ring"
+                cols = self.record.cols
+                rows = self.record.rows
+            pwd = self._last_pwd
             exited = self.record.state == SESSION_STATE_EXITED
         if exited:
             queue.put_nowait(TerminalFrame(kind=FRAME_EXIT))
-        return stream, snapshot
+        return stream, TerminalSnapshot(
+            payload=payload,
+            kind=kind,
+            cols=cols,
+            rows=rows,
+            pwd=pwd,
+        )
 
     def close_stream(self, stream: TerminalStream) -> None:
         """注销一个输出流（浏览器断开时调用）。"""
@@ -294,7 +443,29 @@ class TerminalSession:
         self._wake()
 
     def resize(self, cols: int, rows: int) -> None:
-        """同步窗口大小到伪终端（容器内 TTY 随之更新）。"""
+        """同步窗口大小：模拟器与伪终端一起改。
+
+        **同尺寸直接返回**：同尺寸的 resize 实测不产生任何输出（readline 只在
+        尺寸真的变了时才重绘），发过去只是白白让容器内的程序重绘一次。
+
+        模拟器改不动时**两边都不改**：几何必须一致（恢复流按字面换行相对
+        定位，两边不一致画面就错位），宁可尺寸不变。
+        """
+        with self._lock:
+            current = (self.record.cols, self.record.rows)
+        if current == (cols, rows):
+            return
+        if self._emulator is not None:
+            try:
+                self._emulator.resize(cols, rows)
+            except Exception as exc:
+                logger.warning(
+                    "终端会话 %s 的模拟器改尺寸失败，尺寸保持不变：%s",
+                    self.session_id,
+                    exc,
+                )
+                self._rollback_emulator_size(current)
+                return
         try:
             self.pty.resize(cols, rows)
         except OSError as exc:
@@ -305,6 +476,35 @@ class TerminalSession:
             self.record.rows = rows
         # 窗口大小也落盘：浏览器拖窗口会连发 resize，合并窗口内只写一次
         self._mark_dirty(immediate=False)
+
+    def _rollback_emulator_size(self, size: tuple[int, int]) -> None:
+        """模拟器改尺寸失败后尽力回滚（几何必须与伪终端一致）。
+
+        回滚也失败就把模拟器作废（降级为环形缓冲回放）：宁可少一份快照，
+        也不能让快照的几何与实际不符。
+        """
+        emulator = self._emulator
+        if emulator is None:
+            return
+        try:
+            emulator.resize(size[0], size[1])
+        except Exception as exc:
+            logger.warning(
+                "终端会话 %s 的模拟器尺寸回滚失败，降级为环形缓冲回放：%s",
+                self.session_id,
+                exc,
+            )
+            self._emulator = None
+
+    # ---------------------------------------------------------------- 现场
+    def idle_seconds(self) -> float:
+        """距上次容器内输出过去了多少秒（取快照前等输出落定用）。"""
+        return max(0.0, time.monotonic() - self._last_output_at)
+
+    def last_pwd(self) -> str | None:
+        """最近一条 OSC 1337 载荷（工作目录上报；没有则为空）。"""
+        with self._lock:
+            return self._last_pwd
 
     # ---------------------------------------------------------------- 附着
     def attach(self) -> None:
@@ -371,6 +571,8 @@ class TerminalSession:
             failure = failure or cleanup_failure
         reclaim_failure = self._run_close_step("伪终端回收", self._reclaim_pty)
         failure = failure or reclaim_failure
+        emulator_failure = self._run_close_step("释放终端模拟器", self._close_emulator)
+        failure = failure or emulator_failure
         dirty_failure = self._run_close_step("终态落盘", self._mark_dirty)
         failure = failure or dirty_failure
         if failure is not None:
@@ -402,6 +604,13 @@ class TerminalSession:
         """
         self._thread.join(timeout=5)
         self.pty.close()
+
+    def _close_emulator(self) -> None:
+        """释放终端模拟器（失败只记日志，不影响其余收尾）。"""
+        emulator = self._emulator
+        self._emulator = None
+        if emulator is not None:
+            emulator.close()
 
     # ---------------------------------------------------------------- I/O 线程
     def _io_loop(self) -> None:
@@ -455,13 +664,18 @@ class TerminalSession:
             return b""
 
     def _publish(self, data: bytes) -> None:
-        """把输出写进环形缓冲，并投递给各浏览器连接。"""
+        """把输出写进环形缓冲、喂给终端模拟器，并投递给各浏览器连接。"""
         with self._lock:
             self._seq += 1
             seq = self._seq
             self._ring.extend(data)
             if len(self._ring) > self._ring_size:
                 del self._ring[: len(self._ring) - self._ring_size]
+            # 喂模拟器：它与伪终端并行跑，附着时才能导出「现场快照」。
+            # 喂失败只降级（模拟器作废），**绝不让 I/O 线程死掉**。
+            self._feed_emulator(data)
+            self._last_output_at = time.monotonic()
+            self._scan_pwd(data)
             streams = list(self._streams)
         frame = TerminalFrame(kind=FRAME_DATA, payload=data)
         for stream in streams:
@@ -471,6 +685,33 @@ class TerminalSession:
                 # 事件循环已关闭（服务正在退出）：实时流无处可投，缓冲仍在
                 logger.debug("终端会话 %s 的事件循环已关闭，实时输出不再投递", self.session_id)
                 return
+
+    def _feed_emulator(self, data: bytes) -> None:
+        """把输出喂给终端模拟器（失败就降级：模拟器作废，退回环形缓冲回放）。"""
+        emulator = self._emulator
+        if emulator is None:
+            return
+        try:
+            emulator.feed(data)
+        except Exception as exc:
+            logger.warning(
+                "终端会话 %s 的模拟器喂入失败，降级为环形缓冲回放：%s",
+                self.session_id,
+                exc,
+            )
+            self._emulator = None
+
+    def _scan_pwd(self, data: bytes) -> None:
+        """扫 OSC 1337（工作目录上报），记住最后一条载荷。
+
+        跨块截断靠尾缓冲接上：一条 OSC 1337 可能被切成两块，尾缓冲留着上一块
+        的尾巴，下一块补齐后才认。
+        """
+        buf = self._osc_tail + data
+        payload = _scan_osc_pwd(buf)
+        if payload is not None:
+            self._last_pwd = payload
+        self._osc_tail = buf[-OSC_PWD_TAIL_BYTES:]
 
     def _publish_error(self, message: str) -> None:
         """给所有浏览器连接发一条提示帧。"""

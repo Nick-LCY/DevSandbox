@@ -2,15 +2,34 @@
 
 协议固定（与前端约定一致）：
 
-- 客户端二进制帧 = 终端输入字节；客户端文本帧 = ``{"type":"resize","cols":..,"rows":..}``；
-- 服务端二进制帧 = 终端输出字节；服务端文本帧 = ``hello`` / ``exit`` / ``error``。
+- 客户端二进制帧 = 终端输入字节；
+- 客户端文本帧 = ``{"type":"attach","cols":..,"rows":..}``（**第一个控制帧**，
+  报自己的窗口大小）/ ``{"type":"resize","cols":..,"rows":..}``；
+- 服务端二进制帧 = 终端输出字节；
+- 服务端文本帧 = ``hello`` / ``snapshot`` / ``exit`` / ``error``。
+
+**附着时序（新协议）**：
+
+1. 服务端登记附着 → 回 ``hello``（带当前会话尺寸）；
+2. 服务端起输入泵，**等客户端的 attach 帧**（带客户端自己的窗口大小）；
+3. 客户端尺寸 ≠ 会话尺寸 ⇒ 服务端先把会话（伪终端 + 终端模拟器）改成
+   客户端的尺寸，再等输出静默一小会儿（容器内的程序重绘完）；
+4. 服务端取**现场快照**：有终端模拟器时是一份 VT 恢复流（画面 + 光标 +
+   模式），按 64 KiB 分片、base64 装在 ``snapshot`` 文本帧里下发；
+5. 之后接实时流（二进制帧）。
+
+**旧客户端兼容**：不发 attach 帧 ⇒ 服务端等 ``ATTACH_SIZE_TIMEOUT`` 秒后
+判定为旧客户端，照旧按环形缓冲把历史输出当二进制帧分片下发（不发 snapshot
+帧）。旧前端因此只是「少一份现场快照」，功能不崩。
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
+import time
 
 from fastapi import APIRouter, Depends, WebSocket
 from sandbox_platform import NotFoundError
@@ -26,11 +45,16 @@ from ..schemas import (
     TerminalSessionResponse,
 )
 from ..terminal import (
+    ATTACH_SIZE_TIMEOUT,
     FRAME_DATA,
     FRAME_ERROR,
     FRAME_EXIT,
+    FRAME_SNAPSHOT,
+    QUIET_MAX_WAIT_SECONDS,
+    QUIET_WINDOW_SECONDS,
     SNAPSHOT_CHUNK,
     TerminalSession,
+    TerminalSnapshot,
     TerminalStream,
     is_valid_session_id,
 )
@@ -44,6 +68,77 @@ CLOSE_CODE_UNKNOWN_SESSION = 1008
 
 # 会话不存在时的固定文案：不回显用户输入的会话标识（那是任意文本）
 SESSION_NOT_FOUND_DETAIL = "终端会话不存在或已失效"
+
+# 窗口大小的取值范围（attach 与 resize 共用一套校验）
+MIN_TERMINAL_SIZE = 1
+MAX_TERMINAL_SIZE = 1000
+
+
+def _valid_size(cols: object, rows: object) -> bool:
+    """窗口大小参数是否合法（1~1000 的整数；``bool`` 不算整数）。"""
+    return (
+        isinstance(cols, int)
+        and isinstance(rows, int)
+        and not isinstance(cols, bool)
+        and not isinstance(rows, bool)
+        and MIN_TERMINAL_SIZE <= cols <= MAX_TERMINAL_SIZE
+        and MIN_TERMINAL_SIZE <= rows <= MAX_TERMINAL_SIZE
+    )
+
+
+class _AttachHandshake:
+    """attach 帧的等待器：客户端报来的窗口尺寸（或超时 / 断开）。
+
+    **只认第一帧**：后来的 attach 帧不改判定（客户端重连后重发 attach 是
+    正常现象，但尺寸判定以握手期间的第一帧为准）。
+    """
+
+    def __init__(self) -> None:
+        self._event = asyncio.Event()
+        self._finished = asyncio.Event()
+        self._received = False
+        self._disconnected = False
+        self.cols: int | None = None
+        self.rows: int | None = None
+
+    def accept(self, cols: int, rows: int) -> None:
+        """登记客户端尺寸。"""
+        if self._received:
+            return
+        self._received = True
+        self.cols = cols
+        self.rows = rows
+        self._event.set()
+
+    def mark_disconnected(self) -> None:
+        """客户端在握手期间就走了。"""
+        self._disconnected = True
+        self._finished.set()
+
+    @property
+    def received(self) -> bool:
+        """有没有收到 attach 帧。"""
+        return self._received
+
+    @property
+    def disconnected(self) -> bool:
+        """客户端是不是在握手期间断了。"""
+        return self._disconnected
+
+    async def wait(self, timeout: float) -> bool:
+        """等 attach 帧；等到返回 ``True``，超时或断开返回 ``False``。"""
+        waiter = asyncio.ensure_future(self._event.wait())
+        finisher = asyncio.ensure_future(self._finished.wait())
+        try:
+            await asyncio.wait(
+                {waiter, finisher},
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            waiter.cancel()
+            finisher.cancel()
+        return self._received
 
 
 @router.post(
@@ -88,7 +183,7 @@ async def delete_terminal_session(
 ) -> TerminalSessionDeleteResponse:
     """删除一个终端会话。
 
-    运行中的会话先走完整关闭流程（终止宿主伪终端、按会话标识收掉容器内残留
+    运行中的会话先走完整关闭流程（终止宿主伪终端、按会话标识清掉容器内残留
     进程、状态落盘），再删掉记录；已退出的会话不重复终止进程，但仍走一次收尾
     （回收伪终端文件描述符、顺带清一次容器内可能残留的进程树），再删记录。
 
@@ -112,7 +207,7 @@ async def attach_terminal_session(
     manager=Depends(get_terminal_manager_ws),
     tickets: TicketStore = Depends(get_ticket_store_ws),
 ) -> None:
-    """附着到已有终端会话：先回放缓冲再接实时流。
+    """附着到已有终端会话：先回放现场快照再接实时流。
 
     握手先过一道闸：``?ticket=`` 是一次性票据（浏览器 WebSocket 不能带自定义头，
     票据是用 Bearer 换来的短期凭据；校验即作废）。不过就拒握手（**不 accept**，
@@ -145,7 +240,7 @@ async def attach_terminal_session(
 # ---------------------------------------------------------------- 会话桥接
 async def _serve_session(websocket: WebSocket, session: TerminalSession) -> None:
     """一个浏览器连接在会话上的完整桥接过程。"""
-    stream, snapshot = session.open_stream()
+    stream: TerminalStream | None = None
     # 先登记附着再发首帧：登记在前，断开时才有对称的「减一次」可做。
     # 反过来（先发首帧后登记）时，首帧发送失败会走 finally 里的断开流程，
     # 把没登记过的连接数减掉，后续连接的计数就全错位了。
@@ -165,11 +260,34 @@ async def _serve_session(websocket: WebSocket, session: TerminalSession) -> None
                 ensure_ascii=False,
             )
         )
-        # 回放按块切：整段历史一次发出可能超过中间代理的单帧上限
-        for offset in range(0, len(snapshot), SNAPSHOT_CHUNK):
-            await websocket.send_bytes(snapshot[offset : offset + SNAPSHOT_CHUNK])
+        # 握手：等客户端的 attach 帧（它报自己的窗口大小）。
+        # **输入泵必须先起**：attach 帧就是从输入泵里进来的。
+        handshake = _AttachHandshake()
+        input_task = asyncio.create_task(_pump_input(websocket, session, handshake))
+        await handshake.wait(ATTACH_SIZE_TIMEOUT)
+        if handshake.disconnected and not handshake.received:
+            # 客户端在握手期间就走了：没什么可发的，直接收尾
+            return
+        # 旧客户端（不发 attach）：走环形缓冲回放路径，不发 snapshot 帧
+        legacy = not handshake.received
+        if not legacy:
+            cols = handshake.cols
+            rows = handshake.rows
+            if cols is not None and rows is not None:
+                if (cols, rows) != (session.record.cols, session.record.rows):
+                    # 先把会话（伪终端 + 终端模拟器）改成客户端的尺寸
+                    session.resize(cols, rows)
+                    # 再等输出落定：容器内的程序重绘完，快照才是完整画面
+                    await _wait_until_quiet(session)
+        stream, snapshot = session.open_stream(force_ring=legacy)
+        if snapshot.kind == "emulator":
+            await _send_snapshot(websocket, snapshot)
+        else:
+            # 回放按块切：整段历史一次发出可能超过中间代理的单帧上限
+            payload = snapshot.payload
+            for offset in range(0, len(payload), SNAPSHOT_CHUNK):
+                await websocket.send_bytes(payload[offset : offset + SNAPSHOT_CHUNK])
         output_task = asyncio.create_task(_pump_output(websocket, stream))
-        input_task = asyncio.create_task(_pump_input(websocket, session))
         done, pending = await asyncio.wait(
             {output_task, input_task}, return_when=asyncio.FIRST_COMPLETED
         )
@@ -198,7 +316,8 @@ async def _serve_session(websocket: WebSocket, session: TerminalSession) -> None
             "终端会话 %s 的桥接异常：%s", session.session_id, exc, exc_info=True
         )
     finally:
-        session.close_stream(stream)
+        if stream is not None:
+            session.close_stream(stream)
         if attached:
             session.detach()
         try:
@@ -206,6 +325,49 @@ async def _serve_session(websocket: WebSocket, session: TerminalSession) -> None
         except Exception:
             # 关闭失败（连接已断、事件循环在关）不影响会话收尾
             pass
+
+
+async def _wait_until_quiet(session: TerminalSession) -> None:
+    """等容器内输出的静默窗口落定（改尺寸后的重绘完再取快照）。
+
+    轮询 ``idle_seconds()``：连续 ``QUIET_WINDOW_SECONDS`` 秒没有新输出就
+    认为重绘完了。**上限 ``QUIET_MAX_WAIT_SECONDS``**：到点强制继续（程序一直
+    在吐输出时不能把快照卡住）。
+    """
+    deadline = time.monotonic() + QUIET_MAX_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        if session.idle_seconds() >= QUIET_WINDOW_SECONDS:
+            return
+        await asyncio.sleep(0.02)
+
+
+async def _send_snapshot(websocket: WebSocket, snapshot: TerminalSnapshot) -> None:
+    """把模拟器导出的 VT 恢复流分片发给客户端。
+
+    分片按 64 KiB 切（与回放路径同一上限），每片 base64 后装进一个文本帧：
+    ``{"type":"snapshot","part":i,"parts":n,"data":"<base64>","cols":..,"rows":..,"pwd":..}``。
+
+    ``cols`` / ``rows`` 是这份快照的几何（客户端据此把终端调成同尺寸再重放），
+    ``pwd`` 是最近一条 OSC 1337 载荷（可空）。
+    """
+    payload = snapshot.payload
+    total = max(1, (len(payload) + SNAPSHOT_CHUNK - 1) // SNAPSHOT_CHUNK)
+    for index in range(total):
+        piece = payload[index * SNAPSHOT_CHUNK : (index + 1) * SNAPSHOT_CHUNK]
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "type": FRAME_SNAPSHOT,
+                    "part": index,
+                    "parts": total,
+                    "data": base64.b64encode(piece).decode("ascii"),
+                    "cols": snapshot.cols,
+                    "rows": snapshot.rows,
+                    "pwd": snapshot.pwd,
+                },
+                ensure_ascii=False,
+            )
+        )
 
 
 async def _pump_output(websocket: WebSocket, stream: TerminalStream) -> None:
@@ -224,11 +386,16 @@ async def _pump_output(websocket: WebSocket, stream: TerminalStream) -> None:
             await websocket.send_bytes(frame.payload)
 
 
-async def _pump_input(websocket: WebSocket, session: TerminalSession) -> None:
-    """接收浏览器输入：二进制帧是终端输入，文本帧是窗口大小等控制指令。"""
+async def _pump_input(
+    websocket: WebSocket,
+    session: TerminalSession,
+    handshake: _AttachHandshake,
+) -> None:
+    """接收浏览器输入：二进制帧是终端输入，文本帧是握手与控制指令。"""
     while True:
         message = await websocket.receive()
         if message["type"] == "websocket.disconnect":
+            handshake.mark_disconnected()
             return
         data = message.get("bytes")
         if data:
@@ -237,10 +404,15 @@ async def _pump_input(websocket: WebSocket, session: TerminalSession) -> None:
         text = message.get("text")
         if text is None:
             continue
-        await _handle_control(websocket, session, text)
+        await _handle_control(websocket, session, text, handshake)
 
 
-async def _handle_control(websocket: WebSocket, session: TerminalSession, text: str) -> None:
+async def _handle_control(
+    websocket: WebSocket,
+    session: TerminalSession,
+    text: str,
+    handshake: _AttachHandshake | None = None,
+) -> None:
     """处理浏览器发来的文本控制帧。"""
     try:
         payload = json.loads(text)
@@ -251,19 +423,20 @@ async def _handle_control(websocket: WebSocket, session: TerminalSession, text: 
         await _send_error(websocket, "终端指令格式非法")
         return
     kind = payload.get("type")
+    if kind == "attach":
+        # 握手帧：客户端报自己的窗口大小（**必须是第一个控制帧**）。
+        cols = payload.get("cols")
+        rows = payload.get("rows")
+        if not _valid_size(cols, rows):
+            await _send_error(websocket, "窗口大小参数非法")
+            return
+        if handshake is not None:
+            handshake.accept(cols, rows)
+        return
     if kind == "resize":
         cols = payload.get("cols")
         rows = payload.get("rows")
-        if (
-            not isinstance(cols, int)
-            or not isinstance(rows, int)
-            or isinstance(cols, bool)
-            or isinstance(rows, bool)
-            or cols <= 0
-            or rows <= 0
-            or cols > 1000
-            or rows > 1000
-        ):
+        if not _valid_size(cols, rows):
             await _send_error(websocket, "窗口大小参数非法")
             return
         session.resize(cols, rows)

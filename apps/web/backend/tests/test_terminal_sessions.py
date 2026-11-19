@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import fcntl
 import json
 import os
@@ -457,11 +458,16 @@ def test_sessions_are_independent(manager: TerminalSessionManager, loop) -> None
 def test_disconnect_keeps_session_and_replays_buffer(
     manager: TerminalSessionManager, config: PlatformConfig, loop
 ) -> None:
-    """断线后进程不退出、输出继续进缓冲；重连先回放再接实时流。"""
+    """断线后进程不退出、输出继续进缓冲；重连先拿现场快照再接实时流。
+
+    **新语义**：有终端模拟器时，重连拿到的不是历史字节，而是模拟器导出的
+    **VT 恢复流**（画面 + 光标 + 模式）——历史里的探测序列不在其中，
+    前端拿到它不会再产生任何应答。
+    """
     session = create_session(manager, loop)
     try:
         stream, snapshot = session.open_stream()
-        assert snapshot == b""
+        assert snapshot.kind == "emulator"
         session.attach()
 
         # 断线：浏览器断开，容器内进程继续跑
@@ -475,16 +481,125 @@ def test_disconnect_keeps_session_and_replays_buffer(
         assert stored.state == SESSION_STATE_RUNNING
         assert stored.attached_count == 0
 
-        # 重连：回放缓冲
+        # 重连：拿现场快照（恢复流里能看到断线期间渲染出来的文字）
         stream2, snapshot2 = session.open_stream()
-        assert b"while-offline" in snapshot2
+        assert snapshot2.kind == "emulator"
+        assert b"while-offline" in snapshot2.payload
 
         # 回放之后的新输出走实时流，不重复
         session.write(b"live-now\n")
         received = collect(stream2, loop, timeout=3.0)
         assert b"live-now" in received
-        assert snapshot2.count(b"while-offline") == 1
+        assert snapshot2.payload.count(b"while-offline") == 1
         session.close_stream(stream2)
+    finally:
+        session.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
+
+
+def test_ring_snapshot_is_forced_for_legacy_clients(
+    manager: TerminalSessionManager, loop
+) -> None:
+    """旧客户端路径：强制走环形缓冲快照（历史字节，不是恢复流）。"""
+    session = create_session(manager, loop)
+    try:
+        session.write(b"legacy-bytes\n")
+        time.sleep(0.3)
+        _, snapshot = session.open_stream(force_ring=True)
+        assert snapshot.kind == "ring"
+        assert b"legacy-bytes" in snapshot.payload
+    finally:
+        session.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
+
+
+def test_open_stream_cut_point_does_not_lose_or_repeat(
+    manager: TerminalSessionManager, loop
+) -> None:
+    """开流切点：快照之后的新输出只走实时流（不重不漏）。"""
+    session = create_session(manager, loop)
+    try:
+        session.write(b"before-cut\n")
+        time.sleep(0.3)
+        stream, snapshot = session.open_stream()
+        assert b"before-cut" in snapshot.payload
+
+        # 快照之后才产生的输出：只在实时流里出现一次
+        session.write(b"after-cut\n")
+        received = collect(stream, loop, timeout=3.0)
+        assert b"after-cut" in received
+        assert b"after-cut" not in snapshot.payload
+        session.close_stream(stream)
+    finally:
+        session.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
+
+
+def test_resize_syncs_emulator_with_record(
+    manager: TerminalSessionManager, loop
+) -> None:
+    """resize：模拟器尺寸与会话记录一致（几何必须与伪终端同步）。"""
+    session = create_session(manager, loop, cols=80, rows=24)
+    try:
+        assert session._emulator is not None
+        assert session._emulator.cols == 80
+        assert session._emulator.rows == 24
+
+        session.resize(132, 43)
+        assert session._emulator.cols == 132
+        assert session._emulator.rows == 43
+        assert session.record.cols == 132
+        assert session.record.rows == 43
+        assert pty_winsize(session) == (43, 132)
+    finally:
+        session.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
+
+
+def test_resize_with_same_size_does_not_touch_pty(
+    manager: TerminalSessionManager, loop
+) -> None:
+    """同尺寸 resize：不动伪终端窗口大小（不发 SIGWINCH）。"""
+    session = create_session(manager, loop, cols=80, rows=24)
+    try:
+        before = pty_winsize(session)
+        session.resize(80, 24)
+        assert pty_winsize(session) == before
+    finally:
+        session.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
+
+
+def test_osc_1337_pwd_is_scanned_across_chunks(
+    manager: TerminalSessionManager, loop
+) -> None:
+    """OSC 1337 跨块截断：一条 pwd 上报被切成两块也能扫出来。"""
+    session = create_session(manager, loop)
+    try:
+        payload = b"\x1b]1337;CurrentDir=/workspace/some-long-path\x07"
+        cut = len(payload) // 2
+        session._publish(payload[:cut])
+        assert session.last_pwd() is None
+        session._publish(payload[cut:])
+        assert session.last_pwd() == "CurrentDir=/workspace/some-long-path"
+    finally:
+        session.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
+
+
+def test_osc_1337_pwd_absent_stays_none(
+    manager: TerminalSessionManager, loop
+) -> None:
+    """没有 OSC 1337 上报时 pwd 保持为空。"""
+    session = create_session(manager, loop)
+    try:
+        session._publish(b"plain output without osc\n")
+        assert session.last_pwd() is None
+    finally:
+        session.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
+
+
+def test_idle_seconds_tracks_output(manager: TerminalSessionManager, loop) -> None:
+    """idle_seconds：距上次输出的秒数（取快照前等输出落定用）。"""
+    session = create_session(manager, loop)
+    try:
+        assert session.idle_seconds() >= 0.0
+        session._publish(b"tick\n")
+        assert session.idle_seconds() < 1.0
     finally:
         session.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
 
@@ -716,7 +831,11 @@ def test_websocket_bridges_input_and_output(
 def test_websocket_replays_buffer_after_reconnect(
     client: TestClient, manager: TerminalSessionManager
 ) -> None:
-    """断线重连：先回放缓冲再接实时流。"""
+    """断线重连（旧客户端路径）：不发 attach ⇒ 服务端回退到环形缓冲回放。
+
+    旧前端不认快照帧，只能收二进制字节：服务端等满 attach 超时后按历史
+    字节分片下发，**不发 snapshot 帧**。
+    """
     created = client.post("/api/terminal/sessions", json={"sandbox": "demo"}).json()
     session = manager.get(created["session_id"])
     assert session is not None
@@ -735,9 +854,131 @@ def test_websocket_replays_buffer_after_reconnect(
         with client.websocket_connect(
             ticket_url(client, f"/api/terminal/sessions/{created['session_id']}")
         ) as ws:
-            ws.receive_json()
-            replayed = ws.receive_bytes()
-            assert b"while-offline" in replayed
+            assert ws.receive_json()["type"] == "hello"
+            # 不发 attach：等超时后收二进制分块（不是 snapshot 帧）
+            message = ws.receive()
+            assert message["type"] == "websocket.send"
+            assert message.get("text") is None, "旧客户端路径不该发文本帧"
+            assert b"while-offline" in message["bytes"]
+    finally:
+        manager.close_all()
+
+
+def test_websocket_new_client_gets_snapshot_then_live_stream(
+    client: TestClient, manager: TerminalSessionManager
+) -> None:
+    """新客户端路径：hello → attach → **先快照帧**后实时二进制流。"""
+    created = client.post("/api/terminal/sessions", json={"sandbox": "demo"}).json()
+    try:
+        with client.websocket_connect(
+            ticket_url(client, f"/api/terminal/sessions/{created['session_id']}")
+        ) as ws:
+            hello = ws.receive_json()
+            assert hello["type"] == "hello"
+            ws.send_json({"type": "attach", "cols": 80, "rows": 24})
+
+            snapshot = ws.receive_json()
+            assert snapshot["type"] == "snapshot"
+            assert snapshot["parts"] >= 1
+            assert snapshot["part"] == 0
+            assert snapshot["cols"] == 80
+            assert snapshot["rows"] == 24
+
+            # 快照之后是实时流
+            ws.send_bytes(b"live-marker\n")
+            message = ws.receive()
+            assert message.get("bytes") is not None
+            assert b"live-marker" in message["bytes"]
+    finally:
+        manager.close_all()
+
+
+def test_websocket_attach_resizes_session_before_snapshot(
+    client: TestClient, manager: TerminalSessionManager
+) -> None:
+    """attach 的尺寸与会话不同时：服务端先 resize，再出快照（几何是新值）。"""
+    created = client.post("/api/terminal/sessions", json={"sandbox": "demo"}).json()
+    session = manager.get(created["session_id"])
+    assert session is not None
+    try:
+        with client.websocket_connect(
+            ticket_url(client, f"/api/terminal/sessions/{created['session_id']}")
+        ) as ws:
+            hello = ws.receive_json()
+            assert hello["cols"] == 80
+            assert hello["rows"] == 24
+            ws.send_json({"type": "attach", "cols": 132, "rows": 43})
+
+            snapshot = ws.receive_json()
+            assert snapshot["type"] == "snapshot"
+            # 快照的几何是客户端报的新尺寸
+            assert snapshot["cols"] == 132
+            assert snapshot["rows"] == 43
+            # 伪终端也已经改到新尺寸（快照发出之前就改完了）
+            assert pty_winsize(session) == (43, 132)
+    finally:
+        manager.close_all()
+
+
+def test_websocket_attach_rejects_bad_size(
+    client: TestClient, manager: TerminalSessionManager
+) -> None:
+    """attach 的尺寸非法：回一条错误帧（不崩）。"""
+    created = client.post("/api/terminal/sessions", json={"sandbox": "demo"}).json()
+    try:
+        with client.websocket_connect(
+            ticket_url(client, f"/api/terminal/sessions/{created['session_id']}")
+        ) as ws:
+            assert ws.receive_json()["type"] == "hello"
+            ws.send_json({"type": "attach", "cols": 0, "rows": 24})
+            error = ws.receive_json()
+            assert error["type"] == "error"
+            assert "窗口大小参数非法" in error["message"]
+    finally:
+        manager.close_all()
+
+
+def test_websocket_snapshot_is_chunked(
+    client: TestClient, manager: TerminalSessionManager
+) -> None:
+    """快照分片：每片 ≤ 64 KiB、序号连续、拼起来就是完整恢复流。"""
+    created = client.post("/api/terminal/sessions", json={"sandbox": "demo"}).json()
+    session = manager.get(created["session_id"])
+    assert session is not None
+    try:
+        # 造一个大画面（远超单帧上限：1000 行 × 79 字符 ≈ 81 KB）
+        for index in range(1000):
+            session._publish((f"line-{index:05d}-" + "x" * 68 + "\r\n").encode())
+
+        with client.websocket_connect(
+            ticket_url(client, f"/api/terminal/sessions/{created['session_id']}")
+        ) as ws:
+            assert ws.receive_json()["type"] == "hello"
+            ws.send_json({"type": "attach", "cols": 80, "rows": 24})
+
+            parts: list[dict[str, Any]] = []
+            total = 0
+            while len(parts) < total or not parts:
+                message = ws.receive_json()
+                if message.get("type") != "snapshot":
+                    break
+                total = message["parts"]
+                parts.append(message)
+                if len(parts) >= total:
+                    break
+
+            assert parts, "服务端没有下发快照帧"
+            assert len(parts) == total
+            for index, part in enumerate(parts):
+                assert part["part"] == index
+                assert part["parts"] == total
+                assert len(base64.b64decode(part["data"])) <= 64 * 1024
+            joined = b"".join(
+                base64.b64decode(part["data"]) for part in parts
+            )
+            # 画面够大 ⇒ 真的分了片；片数与「按 64 KiB 切」的算法一致
+            assert len(joined) > 64 * 1024
+            assert total == (len(joined) + 64 * 1024 - 1) // (64 * 1024)
     finally:
         manager.close_all()
 
@@ -1082,7 +1323,9 @@ def test_concurrent_attaches_do_not_duplicate_output(
     try:
         first, first_snapshot = session.open_stream()
         second, second_snapshot = session.open_stream()
-        assert first_snapshot == second_snapshot == b""
+        # 两份快照是同一份现场（逐字相同）
+        assert first_snapshot.kind == second_snapshot.kind == "emulator"
+        assert first_snapshot.payload == second_snapshot.payload
 
         session.write(b"shared-line\n")
         first_data = collect(first, loop, timeout=3.0)
@@ -1092,7 +1335,7 @@ def test_concurrent_attaches_do_not_duplicate_output(
 
         # 重连：快照已经覆盖刚才那块，实时流不再重复投递（序号去重）
         third, third_snapshot = session.open_stream()
-        assert b"shared-line" in third_snapshot
+        assert b"shared-line" in third_snapshot.payload
         assert collect(third, loop, timeout=0.5) == b""
     finally:
         session.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
