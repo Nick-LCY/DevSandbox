@@ -75,15 +75,23 @@ MAX_PENDING_INPUT = 1024 * 1024
 # 唤醒管道：写入侧通知 I/O 线程有活干（管道满时忽略，不阻塞调用方）
 WAKE_TOKEN = b"\x01"
 
-# 回放快照的单帧上限（字节）：一帧太长会被中间代理截断
-SNAPSHOT_CHUNK = 64 * 1024
+# 快照帧（VT 恢复流）的分片粒度（**原文**字节）：分片要 base64 装进文本帧，
+# base64 之后约放大 4/3 ⇒ 原文切 48 KiB，编码后约 64 KiB，不越中间代理的单帧上限。
+SNAPSHOT_CHUNK = 48 * 1024
+# 环形缓冲回放的单帧上限（**原文**二进制字节）：回放走二进制帧、不经 base64，
+# 上限就是原文大小（64 KiB）。
+RING_REPLAY_CHUNK = 64 * 1024
 
 # ---------------------------------------------------------------- 终端模拟器
 # 模拟器开关的环境变量：置 0 / off / false 关掉模拟器（退回环形缓冲回放路径）。
 ENV_EMULATOR = "SANDBOX_TERMINAL_EMULATOR"
 
 # 客户端 attach 帧的等待上限（秒）：超时判定为「旧客户端」，走回放路径。
-ATTACH_SIZE_TIMEOUT = 3.0
+#
+# **1 秒**：新前端收到 hello 后**立刻**发 attach（不等任何东西），1 秒是富余的；
+# 旧前端慢等 3 秒只是白等（旧前端根本不发 attach，等多久都一样）。
+# 窗口短 ⇒ 迟到的 attach 更常见 ⇒ 迟到的那一帧走「补发快照」分支（见路由层）。
+ATTACH_SIZE_TIMEOUT = 1.0
 # 改尺寸后等输出落定的静默窗口（秒）：容器内的程序重绘完才取快照。
 QUIET_WINDOW_SECONDS = 0.12
 # 等输出落定的上限（秒）：到点强制继续（不让快照被卡住）。
@@ -251,6 +259,9 @@ class TerminalSnapshot:
 
     ``cols`` / ``rows`` 是这份快照的**几何**：恢复流按字面换行相对定位，
     重放端的尺寸必须与它一致。``pwd`` 是最近一条 OSC 1337 载荷（可空）。
+
+    ``format_ms`` 是导出恢复流的耗时（毫秒，**只打点用**）：快照格式化是
+    CPU 活儿，耗时记下来才知道它有没有拖慢附着流程。
     """
 
     payload: bytes
@@ -258,6 +269,7 @@ class TerminalSnapshot:
     cols: int
     rows: int
     pwd: str | None = None
+    format_ms: float = 0.0
 
 
 class TerminalStream:
@@ -367,8 +379,10 @@ class TerminalSession:
             kind: str
             cols: int
             rows: int
+            format_ms = 0.0
             emulator = None if force_ring else self._emulator
             if emulator is not None:
+                started = time.monotonic()
                 try:
                     payload = emulator.snapshot()
                 except Exception as exc:
@@ -387,6 +401,7 @@ class TerminalSession:
                     kind = "emulator"
                     cols = emulator.cols
                     rows = emulator.rows
+                    format_ms = (time.monotonic() - started) * 1000
             else:
                 payload = bytes(self._ring)
                 kind = "ring"
@@ -402,6 +417,44 @@ class TerminalSession:
             cols=cols,
             rows=rows,
             pwd=pwd,
+            format_ms=format_ms,
+        )
+
+    def snapshot(self) -> TerminalSnapshot | None:
+        """取一份当前现场的快照（**不登记输出流**）。
+
+        迟到 attach 的补发路径用：主流程已经按旧客户端起了流，不能再开
+        一条（两条流会把同一块输出投递两遍）。
+
+        模拟器不可用（降级 / 已作废）时返回 ``None``——没有可补发的恢复流。
+        """
+        with self._lock:
+            emulator = self._emulator
+            if emulator is None:
+                return None
+            started = time.monotonic()
+            try:
+                payload = emulator.snapshot()
+            except Exception as exc:
+                # 快照导不出来：模拟器就此作废，退回环形缓冲回放
+                logger.warning(
+                    "终端会话 %s 的模拟器快照导出失败，降级为环形缓冲回放：%s",
+                    self.session_id,
+                    exc,
+                )
+                self._emulator = None
+                return None
+            format_ms = (time.monotonic() - started) * 1000
+            cols = emulator.cols
+            rows = emulator.rows
+            pwd = self._last_pwd
+        return TerminalSnapshot(
+            payload=payload,
+            kind="emulator",
+            cols=cols,
+            rows=rows,
+            pwd=pwd,
+            format_ms=format_ms,
         )
 
     def close_stream(self, stream: TerminalStream) -> None:

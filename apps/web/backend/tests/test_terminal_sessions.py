@@ -40,6 +40,7 @@ from sandbox_platform import (
     terminate_pty_process,
 )
 from sandbox_console import create_app
+from sandbox_console.routes import terminal as terminal_routes
 
 from conftest import auth_headers
 from sandbox_console.deps import get_terminal_manager, get_terminal_manager_ws
@@ -58,6 +59,7 @@ from sandbox_console.terminal import (
     FRAME_ERROR,
     FRAME_EXIT,
     MAX_PENDING_INPUT,
+    SNAPSHOT_CHUNK,
     TerminalFrame,
     TerminalSession,
     TerminalSessionManager,
@@ -911,9 +913,12 @@ def test_websocket_replays_buffer_after_reconnect(
 
 @pytest.mark.usefixtures("emulator_available")
 def test_websocket_new_client_gets_snapshot_then_live_stream(
-    client: TestClient, manager: TerminalSessionManager
+    client: TestClient, manager: TerminalSessionManager, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """新客户端路径：hello → attach → **先快照帧**后实时二进制流。"""
+    # 静默窗口置零：万一（错误地）起了「迟到 attach」分支，它的补发也会
+    # 立刻发出——不必等 0.8 秒就能在本用例里发现重复快照。
+    monkeypatch.setattr(terminal_routes, "QUIET_WINDOW_SECONDS", 0.0)
     created = client.post("/api/terminal/sessions", json={"sandbox": "demo"}).json()
     try:
         with client.websocket_connect(
@@ -929,12 +934,31 @@ def test_websocket_new_client_gets_snapshot_then_live_stream(
             assert snapshot["part"] == 0
             assert snapshot["cols"] == 80
             assert snapshot["rows"] == 24
+            total = snapshot["parts"]
+            for index in range(1, total):
+                part = ws.receive_json()
+                assert part["type"] == "snapshot"
+                assert part["part"] == index
+                assert part["parts"] == total
 
-            # 快照之后是实时流
+            # 快照之后是实时流。**同一份现场只能发一遍**：新客户端在握手期
+            # 就发了 attach，不走「迟到 attach」分支，不能收到重复快照帧
+            # （重复快照会让前端把现场重放两遍）。
             ws.send_bytes(b"live-marker\n")
-            message = ws.receive()
-            assert message.get("bytes") is not None
-            assert b"live-marker" in message["bytes"]
+            echoed = bytearray()
+            for _ in range(10):
+                message = ws.receive()
+                text = message.get("text")
+                if text is not None:
+                    frame = json.loads(text)
+                    assert frame["type"] != "snapshot", "新客户端收到了重复的快照帧"
+                    continue
+                echoed.extend(message.get("bytes") or b"")
+                if b"live-marker" in echoed:
+                    break
+            else:
+                pytest.fail("快照之后没有收到实时输出（连接被提前拆掉了？）")
+            assert b"live-marker" in echoed
     finally:
         manager.close_all()
 
@@ -989,7 +1013,10 @@ def test_websocket_attach_rejects_bad_size(
 def test_websocket_snapshot_is_chunked(
     client: TestClient, manager: TerminalSessionManager
 ) -> None:
-    """快照分片：每片 ≤ 64 KiB、序号连续、拼起来就是完整恢复流。"""
+    """快照分片：每片 ≤ 48 KiB **原文**、序号连续、拼起来就是完整恢复流。
+
+    分片粒度按**原文**算（base64 之后约 64 KiB）：不越中间代理的单帧上限。
+    """
     created = client.post("/api/terminal/sessions", json={"sandbox": "demo"}).json()
     session = manager.get(created["session_id"])
     assert session is not None
@@ -1020,13 +1047,82 @@ def test_websocket_snapshot_is_chunked(
             for index, part in enumerate(parts):
                 assert part["part"] == index
                 assert part["parts"] == total
-                assert len(base64.b64decode(part["data"])) <= 64 * 1024
+                assert len(base64.b64decode(part["data"])) <= SNAPSHOT_CHUNK
             joined = b"".join(
                 base64.b64decode(part["data"]) for part in parts
             )
-            # 画面够大 ⇒ 真的分了片；片数与「按 64 KiB 切」的算法一致
-            assert len(joined) > 64 * 1024
-            assert total == (len(joined) + 64 * 1024 - 1) // (64 * 1024)
+            # 画面够大 ⇒ 真的分了片；片数与「按 48 KiB 原文切」的算法一致
+            assert len(joined) > SNAPSHOT_CHUNK
+            assert total == (len(joined) + SNAPSHOT_CHUNK - 1) // SNAPSHOT_CHUNK
+    finally:
+        manager.close_all()
+
+
+@pytest.mark.usefixtures("emulator_available")
+def test_websocket_late_attach_gets_snapshot(
+    client: TestClient, manager: TerminalSessionManager
+) -> None:
+    """迟到的 attach：主流程已按旧客户端起了流之后才发 attach ⇒ 补发快照帧。
+
+    **不能静默丢弃迟到的 attach**：丢了的话新前端拿到的是历史回放（探测被
+    新实例再答一遍，乱码复发），且前端毫不知情。
+    """
+    created = client.post("/api/terminal/sessions", json={"sandbox": "demo"}).json()
+    session = manager.get(created["session_id"])
+    assert session is not None
+    try:
+        # 先造点历史输出：旧客户端路径要回放它（没有输出就没有回放帧可等）
+        session.write(b"legacy-bytes\n")
+        time.sleep(0.3)
+
+        with client.websocket_connect(
+            ticket_url(client, f"/api/terminal/sessions/{created['session_id']}")
+        ) as ws:
+            assert ws.receive_json()["type"] == "hello"
+            # 不发 attach：等服务端按旧客户端起流（环形缓冲回放）
+            message = ws.receive()
+            assert message.get("bytes") is not None
+            assert b"legacy-bytes" in message["bytes"]
+
+            # 现在补发 attach（迟到了）：服务端应当补发一份快照
+            ws.send_json({"type": "attach", "cols": 80, "rows": 24})
+            snapshot = None
+            for _ in range(10):
+                frame = ws.receive()
+                if frame.get("text") is None:
+                    # 二进制帧（实时输出）：跳过，继续等快照帧
+                    continue
+                snapshot = json.loads(frame["text"])
+                break
+            assert snapshot is not None, "迟到的 attach 没有补发快照帧"
+            assert snapshot["type"] == "snapshot"
+            assert snapshot["cols"] == 80
+            assert snapshot["rows"] == 24
+            # 补发完剩下的分片
+            for index in range(1, snapshot["parts"]):
+                part = ws.receive_json()
+                assert part["type"] == "snapshot"
+                assert part["part"] == index
+
+            # **补发是中途事件，连接不能就此拆掉**：补发完还挂在会话上
+            # （attached_count 还是 1；拆掉的话这里会归零）。
+            time.sleep(0.2)
+            assert session.record.attached_count == 1, "补发快照之后连接被拆掉了"
+
+            # 实时流照旧继续
+            ws.send_bytes(b"late-marker\n")
+            echoed = bytearray()
+            for _ in range(10):
+                frame = ws.receive()
+                if frame.get("text") is not None:
+                    assert json.loads(frame["text"])["type"] != "snapshot"
+                    continue
+                echoed.extend(frame.get("bytes") or b"")
+                if b"late-marker" in echoed:
+                    break
+            else:
+                pytest.fail("补发快照之后实时流断了（连接被提前拆掉了？）")
+            assert b"late-marker" in echoed
     finally:
         manager.close_all()
 
