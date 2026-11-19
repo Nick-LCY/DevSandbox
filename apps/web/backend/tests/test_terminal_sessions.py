@@ -209,6 +209,17 @@ def manager(config: PlatformConfig, fake_service: FakeService) -> TerminalSessio
     )
 
 
+@pytest.fixture
+def emulator_available() -> None:
+    """终端模拟器（pyghostty）可用：用例据此决定要不要跑。
+
+    pyghostty **只有 wheel**（没有 sdist）：装不上（缺 wheel 的平台、musl、
+    源码编译环境）的机器上整条「快照恢复」能力缺失——那些用例应当**跳过**，
+    而不是假红（降级路径另有用例覆盖）。
+    """
+    pytest.importorskip("pyghostty")
+
+
 def create_session(manager: TerminalSessionManager, loop, **kwargs: Any) -> TerminalSession:
     """在后台事件循环上新建一个终端会话。"""
     future = asyncio.run_coroutine_threadsafe(manager.create("demo", **kwargs), loop)
@@ -455,6 +466,7 @@ def test_sessions_are_independent(manager: TerminalSessionManager, loop) -> None
 
 
 # ---------------------------------------------------------------- 断线与回放
+@pytest.mark.usefixtures("emulator_available")
 def test_disconnect_keeps_session_and_replays_buffer(
     manager: TerminalSessionManager, config: PlatformConfig, loop
 ) -> None:
@@ -511,6 +523,7 @@ def test_ring_snapshot_is_forced_for_legacy_clients(
         session.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
 
 
+@pytest.mark.usefixtures("emulator_available")
 def test_open_stream_cut_point_does_not_lose_or_repeat(
     manager: TerminalSessionManager, loop
 ) -> None:
@@ -532,6 +545,7 @@ def test_open_stream_cut_point_does_not_lose_or_repeat(
         session.close(SESSION_EXIT_REASON_CLOSED_BY_USER)
 
 
+@pytest.mark.usefixtures("emulator_available")
 def test_resize_syncs_emulator_with_record(
     manager: TerminalSessionManager, loop
 ) -> None:
@@ -864,6 +878,7 @@ def test_websocket_replays_buffer_after_reconnect(
         manager.close_all()
 
 
+@pytest.mark.usefixtures("emulator_available")
 def test_websocket_new_client_gets_snapshot_then_live_stream(
     client: TestClient, manager: TerminalSessionManager
 ) -> None:
@@ -893,6 +908,7 @@ def test_websocket_new_client_gets_snapshot_then_live_stream(
         manager.close_all()
 
 
+@pytest.mark.usefixtures("emulator_available")
 def test_websocket_attach_resizes_session_before_snapshot(
     client: TestClient, manager: TerminalSessionManager
 ) -> None:
@@ -938,6 +954,7 @@ def test_websocket_attach_rejects_bad_size(
         manager.close_all()
 
 
+@pytest.mark.usefixtures("emulator_available")
 def test_websocket_snapshot_is_chunked(
     client: TestClient, manager: TerminalSessionManager
 ) -> None:
@@ -1315,6 +1332,7 @@ def test_input_over_limit_drops_newest_and_warns(
         manager.close_all()
 
 
+@pytest.mark.usefixtures("emulator_available")
 def test_concurrent_attaches_do_not_duplicate_output(
     manager: TerminalSessionManager, loop
 ) -> None:
