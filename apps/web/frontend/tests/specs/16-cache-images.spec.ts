@@ -86,8 +86,6 @@ const TEXT_NOTE_TOTAL = '说明：total_size_bytes';
 const TEXT_NOTE_DUP = '注记：同一镜像可能出现';
 /** tag-only 表格的列头行关键词（0.4.1 轮新增视图，契约副本）。 */
 const TABLE_COLUMN_HEADER = 'IMAGE';
-/** tag-only 表格首条数据行的 repo:tag 钉（真缓存按 repo 排序后的首行，契约副本）。 */
-const TABLE_FIRST_DATA_ROW = 'astral-sh/uv:0.13.7';
 /** tag-only 表格的轻表头关键词（0.4.2 起退役——否定钉用）。 */
 const TABLE_LIGHT_HEADER_RETIRED = '已缓存镜像';
 /** tag-only 表格尾注整行（0.4.2 起退役——否定钉用）。 */
@@ -163,6 +161,34 @@ async function fetchCacheImages(
     contentType: response.headers.get('content-type') ?? '',
     wwwAuthenticate: response.headers.get('www-authenticate'),
   };
+}
+
+/**
+ * 从 tag-only 表格正文（manifest text）里取**首条合法数据行**的 IMAGE 列
+ * （`{repo}:{tag}`）。
+ *
+ * 为什么不钉死某个镜像：缓存是**共享**的（本机代理缓存被各沙箱共用），镜像
+ * 集合随别的沙箱拉镜像而变——2026-11-23 的全量验收就撞上过：共享缓存里多
+ * 了一条字典序更靠前的 `alpine/socat:latest`，把原先钉死的首行
+ * `astral-sh/uv:0.13.7` 顶到了第二行。钉死首行 = 把断言绑在缓存内容上，
+ * 缓存一变就假红（功能没变，红的是断言）。
+ *
+ * 口径（服务端预渲染的 tag-only 表格契约）：输出 = 列头行 + 数据行，行按
+ * `(repo, tag)` 排序，首列是 `{repo}:{tag}`。首列正是命令输出里**稳定可见**
+ * 的那一格——同行的 ID / SIZE / CACHED TIME 随扫描漂移，整行相等不可用。
+ */
+function firstDataRowImage(manifestText: string): string {
+  for (const line of manifestText.split('\n')) {
+    const cell = line.trim().split(/\s+/)[0] ?? '';
+    // 形如 `repo:tag`（repo 可含 `/`；tag 不含空白与冒号）。列头行（IMAGE …）
+    // 没有冒号，天然被跳过。
+    if (/^[^\s:]+(?:\/[^\s:]+)*:[^\s:]+$/.test(cell)) {
+      return cell;
+    }
+  }
+  throw new Error(
+    `manifest text 里没有找到形如 repo:tag 的首条数据行（正文前 200 字：${manifestText.slice(0, 200)}）`,
+  );
 }
 
 /**
@@ -282,10 +308,14 @@ test.describe('镜像缓存清单（端点 / 注入 / cached-images）', () => {
 
     // ── ⑦ 可见旁证：网页终端里直接跑（不重定向），列头行与首条数据行在屏幕上
     //    （数据行的 ID/时间是动态值，整行相等不可用；用整屏包含钉关键词）
+    //    首条数据行的镜像标签**由本次已取证的 manifest text 动态推导**（④ 取到的
+    //    端点 `?format=text&tags=only` 正文；⑥ 已钉命令输出与它逐字全等）：共享
+    //    缓存的镜像集合是活的，钉死某个镜像名会随缓存内容漂移而假红。
+    const firstRowImage = firstDataRowImage(expected.body);
     await typeInTerminal(page, sessionId, 'cached-images | head -n 2');
     await expectTerminalText(page, sessionId, TABLE_COLUMN_HEADER);
-    // head -n 2 的第二行即首条数据行（真缓存按 repo 排序，astral-sh/uv 首行）。
-    await expectTerminalText(page, sessionId, TABLE_FIRST_DATA_ROW);
+    // head -n 2 的第二行即首条数据行（表格按 (repo, tag) 排序，首行随缓存内容变）。
+    await expectTerminalText(page, sessionId, firstRowImage);
   });
 
   test('端点两格式：json（缺省同）字段齐全、text 预渲染表头尾注（PRD 9/10）', async () => {
