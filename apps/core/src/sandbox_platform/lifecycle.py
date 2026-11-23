@@ -83,6 +83,7 @@ from .refresh import (
     InjectionRefresher,
     RefreshResult,
     helper_path,
+    remove_spool_root,
     wait_for_helper_writers,
 )
 from .userspace import Privilege, SystemUser, UserSpaceManager
@@ -1333,19 +1334,41 @@ class SandboxService:
                     return self.refreshes.refresh(metadata, entry_id)
                 except RefreshError as exc:
                     if exc.hold_lock:
-                        self._settle_helper_writers(lock)
+                        self._settle_helper_writers(
+                            lock, exc.writer_token, exc.spool_root
+                        )
                     raise
         except SandboxConflictError as exc:
             raise RefreshError(MSG_CONFLICT, reason=REASON_CONFLICT) from exc
 
-    def _settle_helper_writers(self, lock: NameLockHandle) -> None:
-        """helper 异常退出后：等它的写入子进程收工，再决定放不放锁。
+    def _settle_helper_writers(
+        self, lock: NameLockHandle, token: str, spool_root: str = ""
+    ) -> None:
+        """helper 异常退出后：等**本次执行**的写者收工，再决定放不放锁。
 
-        收不干净就**放弃**这把锁（不解锁、不关 fd）：锁被释放就可能与
-        仍在写入的副本并发。宁可把锁攥住（同名操作被拒），也不能放并发写。
+        只按本次刷新的操作令牌找写者（见 ``refresh.live_helper_pids``）：
+        别的沙箱的并发刷新与本次无关，不让本次为它阻塞，也不因它把本次
+        的锁永久放弃。
+
+        - 收干净 ⇒ 正常释放锁（外层 ``finally`` 会做），并删本次专属暂存；
+        - 收不干净 ⇒ **放弃**这把锁（不解锁、不关 fd）：锁被释放就可能
+          与仍在写入的副本并发。暂存目录也保留（写者可能仍在读）。这是
+          **真实未知**的保底：锁保持到进程退出，暂存留待人工清理，
+          绝不猜测写者已经结束。
+        - 没有令牌（理论上不该发生）⇒ 同样保守放弃，不退回全局匹配。
         """
-        if wait_for_helper_writers(helper_path()):
+        if not token:
+            logger.error(
+                "刷新失败但没有本次执行令牌：无法判定写者是否收工，锁保持到进程退出"
+            )
+            lock.abandon()
             return
+        if wait_for_helper_writers(helper_path(), token):
+            remove_spool_root(spool_root)
+            return
+        logger.error(
+            "本次刷新的写者在等待上限内未收工：锁保持到进程退出，暂存目录保留"
+        )
         lock.abandon()
 
     # ---------------------------------------------------------------- 删除

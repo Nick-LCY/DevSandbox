@@ -144,13 +144,31 @@ class RefreshError(SandboxError):
     hold_lock : 失败发生时**可能仍有写者在跑**（helper 超时 / 异常退出，
         它 fork 出来的写入子进程可能还活着）。调用方据此**不释放**同名锁——
         锁被释放就可能与仍在写入的副本并发。
+    writer_token : 本次刷新的**操作令牌**（32 hex）：写了 ``hold_lock`` 时，
+        调用方只凭它在 ``/proc`` 里等**本次执行**的写者收工，不会为别的
+        沙箱的并发刷新阻塞，也不因它们把锁永久放弃。
+    spool_root : 本次刷新专属的暂存目录（只在本次写者收工后清理）。
+
+    这两个标记都是非敏感数据：令牌是随机串，暂存路径只在平台侧流转。
+    锁一旦因写者长期不收工而放弃，就是**真实未知**的保底：锁保持到进程
+    退出，暂存目录保留（写者可能仍在读）。
 
     分类码与固定文案的对应关系见 ``refresh`` 模块顶部的表格。
     """
 
-    def __init__(self, message: str, *, reason: str = "", hold_lock: bool = False) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: str = "",
+        hold_lock: bool = False,
+        writer_token: str = "",
+        spool_root: str = "",
+    ) -> None:
         self.reason = reason
         self.hold_lock = hold_lock
+        self.writer_token = writer_token
+        self.spool_root = spool_root
         super().__init__(message)
 
 

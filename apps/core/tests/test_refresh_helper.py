@@ -59,15 +59,21 @@ def _invoke(
     request: dict,
     *,
     transport: str = "stdin",
+    extra_argv: list[str] | None = None,
 ) -> tuple[int, dict]:
     """调用 helper，返回 ``(退出码, 结果 JSON)``。
 
     ``transport`` 决定 JSON 怎么投递：``stdin`` 走管道（既有 ``run`` 的
     ``stdin_text`` 口径）；``argv`` 作为**单个** argv 元素传入——**只用于
     断言 argv 载荷被拒绝**（helper 只认 stdin）。
+
+    ``extra_argv`` 用于验证**唯一允许**的 argv：可选的 ``--job-id <32hex>``
+    操作令牌（非敏感，仅供 ``/proc`` 识别本次执行）。
     """
     payload = json.dumps(request)
     argv = [sys.executable, "-I", str(HELPER_PATH)]
+    if extra_argv is not None:
+        argv.extend(extra_argv)
     if transport == "argv":
         argv.append(payload)
         result = subprocess.run(argv, capture_output=True, text=True, timeout=120)
@@ -879,3 +885,51 @@ def test_non_private_spool_root_rejected(tmp_path: Path) -> None:
     # helper 不 chmod 调用方的路径
     assert stat.S_IMODE(os.stat(spool_root).st_mode) == 0o755
     assert staged.read_text(encoding="utf-8") == "旧\n"
+
+
+# ---------------------------------------------------------------- 操作令牌
+
+
+def test_job_id_flag_is_optional_and_keeps_stdin_contract(tmp_path: Path) -> None:
+    """可选的 ``--job-id <32hex>`` 不改变请求语义：载荷仍只走 stdin。"""
+    source = tmp_path / "source.txt"
+    staged = tmp_path / "staged.txt"
+    source.write_text("新\n", encoding="utf-8")
+    staged.write_text("旧\n", encoding="utf-8")
+    token = "0123456789abcdef0123456789abcdef"
+    request = _request(source, staged, "file", spool_root=tmp_path / "spool")
+
+    code, body = _invoke(request, extra_argv=["--job-id", token])
+    assert (code, body) == (EXIT_BY_CODE["OK"], {"code": "OK"})
+    assert staged.read_text(encoding="utf-8") == "新\n"
+    # 令牌只做进程识别，不从结果行外泄
+    assert token not in json.dumps(body)
+
+
+@pytest.mark.parametrize(
+    "extra_argv",
+    [
+        ["--job-id", "/tmp/not-a-token"],  # 任何路径 / 非令牌参数都拒绝
+        ["--job-id", "0123456789ABCDEF0123456789ABCDEF"],  # 大写不合契约
+        ["--job-id", "0123456789abcdef"],  # 长度不对
+        ["--job-id"],  # 缺令牌值
+        ["--job-id", "0123456789abcdef0123456789abcdef", "--other"],  # 多余参数
+        ["--source", "/tmp/x"],  # 未知标志（路径不入 argv）
+    ],
+)
+def test_job_id_rejects_paths_and_malformed_flags(
+    tmp_path: Path, extra_argv: list[str]
+) -> None:
+    """argv 只允许一个合法令牌：路径 / 畸形标志一律 ``bad_arguments``。"""
+    source = tmp_path / "source.txt"
+    staged = tmp_path / "staged.txt"
+    source.write_text("新\n", encoding="utf-8")
+    staged.write_text("旧\n", encoding="utf-8")
+    request = _request(source, staged, "file", spool_root=tmp_path / "spool")
+
+    code, body = _invoke(request, extra_argv=extra_argv)
+    assert code == EXIT_BY_CODE["INTERNAL"]
+    assert body["reason"] == "bad_arguments"
+    assert staged.read_text(encoding="utf-8") == "旧\n"
+    # 错误行同样不含路径
+    assert str(source) not in json.dumps(body)

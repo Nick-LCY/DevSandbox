@@ -723,7 +723,7 @@ def test_helper_timeout_is_partial_and_keeps_lock(
     # 写者收尾等待：直接判「已收干净」，避免测试等满 60 秒
     monkeypatch.setattr(
         "sandbox_platform.lifecycle.wait_for_helper_writers",
-        lambda helper, timeout=60: True,
+        lambda helper, token, timeout=None: True,
     )
 
     with pytest.raises(RefreshError) as excinfo:
@@ -940,3 +940,191 @@ def test_refresh_does_not_wait_for_conflicting_operation(
         assert time.monotonic() - started < 5
     finally:
         holder.__exit__(None, None, None)
+
+
+# ---------------------------------------------------------------- 写者收尾的作用域
+#: 伪造「本次执行的写者」：cmdline 与原 helper 完全同形（脚本实参 + 令牌），
+#: 但只睡觉不写盘——用来钉住 /proc 识别的作用域，不碰真实沙箱。
+_FAKE_WRITER_SCRIPT = "import time; time.sleep(60)"
+
+
+def _spawn_fake_writer(helper_path_obj: Path, token: str) -> subprocess.Popen:
+    """起一个 cmdline 形如 ``python -I <helper> --job-id <token>`` 的假写者。"""
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            _FAKE_WRITER_SCRIPT,
+            str(helper_path_obj),
+            refresh_module.JOB_ID_FLAG,
+            token,
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _stop(process: subprocess.Popen) -> None:
+    process.kill()
+    process.wait(timeout=10)
+
+
+def test_live_helper_pids_is_scoped_to_this_execution() -> None:
+    """A / B 两个并发刷新各认各的写者：不串、不误认「只带令牌」的进程。"""
+    helper = refresh_module.helper_path()
+    token_a = refresh_module.new_job_id()
+    token_b = refresh_module.new_job_id()
+    writer_a = _spawn_fake_writer(helper, token_a)
+    writer_b = _spawn_fake_writer(helper, token_b)
+    # 只带令牌、不带 helper 脚本实参：不是本次 helper 的写者，不得误认
+    impostor = subprocess.Popen(
+        [sys.executable, "-c", _FAKE_WRITER_SCRIPT, refresh_module.JOB_ID_FLAG, token_a],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        pids_a = refresh_module.live_helper_pids(helper, token_a)
+        pids_b = refresh_module.live_helper_pids(helper, token_b)
+        assert writer_a.pid in pids_a
+        assert writer_a.pid not in pids_b
+        assert writer_b.pid in pids_b
+        assert writer_b.pid not in pids_a
+        assert impostor.pid not in pids_a
+        assert impostor.pid not in pids_b
+    finally:
+        _stop(writer_a)
+        _stop(writer_b)
+        _stop(impostor)
+
+
+def test_wait_tracks_only_own_writer() -> None:
+    """B 的写者还在，不阻塞 A；A 自己的写者还在，A 一定判「未收工」。"""
+    helper = refresh_module.helper_path()
+    token_a = refresh_module.new_job_id()
+    token_b = refresh_module.new_job_id()
+    writer_b = _spawn_fake_writer(helper, token_b)
+    try:
+        started = time.monotonic()
+        assert refresh_module.wait_for_helper_writers(helper, token_a, timeout=2) is True
+        assert time.monotonic() - started < 1.5
+    finally:
+        _stop(writer_b)
+
+    writer_a = _spawn_fake_writer(helper, token_a)
+    try:
+        assert refresh_module.wait_for_helper_writers(helper, token_a, timeout=0.3) is False
+    finally:
+        _stop(writer_a)
+
+
+def _timeout_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    from sandbox_platform.errors import CommandError
+
+    def fake_run(argv, **kwargs):
+        raise CommandError(tuple(argv), 124, "", "超时", message="命令超时（900 秒）")
+
+    monkeypatch.setattr(refresh_module, "run", fake_run)
+
+
+def test_settle_ignores_other_sandbox_writer_and_cleans_spool(
+    service: SandboxService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B 的写者仍在：A 只等自己的令牌 ⇒ 正常放锁，并清理 A 的暂存。"""
+    _plain_privilege(service)
+    _fake_running_container(monkeypatch)
+    _timeout_run(monkeypatch)
+    token_a = refresh_module.new_job_id()
+    monkeypatch.setattr(refresh_module, "new_job_id", lambda: token_a)
+    writer_b = _spawn_fake_writer(refresh_module.helper_path(), refresh_module.new_job_id())
+    source = tmp_path / "src.txt"
+    staged = tmp_path / "staged.txt"
+    source.write_text("x", encoding="utf-8")
+    staged.write_text("y", encoding="utf-8")
+    metadata = _write_metadata(
+        service, "scopea", source=source, staged=staged, home=tmp_path
+    )
+    try:
+        with pytest.raises(RefreshError) as excinfo:
+            service.refresh_injection("scopea", metadata.injections[0].entry_id)
+        error = excinfo.value
+        assert error.hold_lock is True
+        assert error.writer_token == token_a
+        # 本次没有真实写者：锁已释放（能再次拿到），暂存已清理
+        assert not Path(error.spool_root).exists()
+        with service.locker.acquire("scopea"):
+            pass
+    finally:
+        _stop(writer_b)
+
+
+def test_settle_keeps_lock_and_spool_while_own_writer_alive(
+    service: SandboxService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """自己的写者仍在：锁被放弃（不放并发写），暂存保留（写者可能仍在读）。"""
+    _plain_privilege(service)
+    _fake_running_container(monkeypatch)
+    _timeout_run(monkeypatch)
+    token_a = refresh_module.new_job_id()
+    monkeypatch.setattr(refresh_module, "new_job_id", lambda: token_a)
+    monkeypatch.setattr(refresh_module, "HELPER_WRITER_SETTLE_TIMEOUT", 0.3)
+    writer_a = _spawn_fake_writer(refresh_module.helper_path(), token_a)
+    source = tmp_path / "src.txt"
+    staged = tmp_path / "staged.txt"
+    source.write_text("x", encoding="utf-8")
+    staged.write_text("y", encoding="utf-8")
+    metadata = _write_metadata(
+        service, "scopeb", source=source, staged=staged, home=tmp_path
+    )
+    try:
+        with pytest.raises(RefreshError) as excinfo:
+            service.refresh_injection("scopeb", metadata.injections[0].entry_id)
+        error = excinfo.value
+        assert error.hold_lock is True
+        assert Path(error.spool_root).is_dir()
+        with pytest.raises(SandboxConflictError):
+            with service.locker.acquire("scopeb"):
+                pass
+    finally:
+        _stop(writer_a)
+
+
+def test_helper_argv_carries_only_job_id_and_payload_stays_stdin(
+    service: SandboxService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """helper argv 只有令牌：没有源 / 副本路径；载荷（含路径）只在 stdin。"""
+    _plain_privilege(service)
+    _fake_running_container(monkeypatch)
+    source = tmp_path / "src.txt"
+    staged = tmp_path / "staged.txt"
+    source.write_text("x", encoding="utf-8")
+    staged.write_text("y", encoding="utf-8")
+    metadata = _write_metadata(
+        service, "argvscope", source=source, staged=staged, home=tmp_path
+    )
+    seen: dict[str, object] = {}
+
+    def capture_run(argv, **kwargs):
+        seen["argv"] = [str(item) for item in argv]
+        seen["stdin"] = kwargs.get("stdin_text", "")
+        return CommandResult(tuple(argv), 0, '{"code":"OK"}\n', "")
+
+    monkeypatch.setattr(refresh_module, "run", capture_run)
+    service.refresh_injection("argvscope", metadata.injections[0].entry_id)
+
+    argv = seen["argv"]
+    assert argv[:3] == [
+        sys.executable,
+        "-I",
+        str(refresh_module.helper_path()),
+    ]
+    assert argv[3] == refresh_module.JOB_ID_FLAG
+    token = argv[4]
+    assert len(token) == 32
+    assert all(char in "0123456789abcdef" for char in token)
+    assert len(argv) == 5, f"argv 只应带一个令牌：{argv!r}"
+    # 路径一概不进命令行，只在 stdin 的 JSON 里
+    assert str(source) not in " ".join(argv)
+    assert str(staged) not in " ".join(argv)
+    payload = json.loads(seen["stdin"])
+    assert payload["source_path"] == str(source)
+    assert payload["staged_path"] == str(staged)

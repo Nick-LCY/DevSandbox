@@ -3,7 +3,7 @@
 **它是什么**：一个自包含的可信脚本，由核心包经**既有 ``Privilege`` 通道**
 （root 直跑，否则 ``sudo -n``）以「**受信绝对路径 + ``python -I``**」调用：
 
-    <sys.executable> -I <包目录>/_refresh_helper.py '<JSON 元数据>'
+    <sys.executable> -I <包目录>/_refresh_helper.py [--job-id <32hex>]
 
 ``python -I`` 是隔离模式：``PYTHONPATH`` 与用户 site 目录都不生效，而且
 **脚本所在目录不会进 ``sys.path``**（``-I`` 隐含 ``-P``）——因此本文件
@@ -51,6 +51,11 @@ stdout 形如 ``{"code":"OK"}``；失败时附带一个**不含路径、不含�
 
 JSON 的投递方式：**只认 stdin**（既有 ``run`` 走 ``stdin_text``，管道干净、
 不进 ``ps`` 命令行）；**argv 载荷一律拒绝**（载荷不进命令行、不进 ``ps``）。
+argv 唯一允许的是可选的 ``--job-id <32hex>`` **操作令牌**：一个随机短
+令牌，只用于让调用方在 ``/proc`` 里**按本次执行**精确认出自己 fork 出来的
+写者（不同沙箱的并发刷新互不牵连）。它不含路径、不含正文，也不改变请求
+语义；不带该标志时行为完全一样（单测入口）。任何**路径参数**、第二个
+标志或长度 / 字符集不对的令牌一律拒绝。
 
 **为什么写在这个包里**：它随 ``sandbox-platform-core`` 发布包分发，调用方用
 ``Path(sandbox_platform.__file__).with_name("_refresh_helper.py")`` 取到绝对
@@ -94,6 +99,11 @@ CHUNK_SIZE = 1 << 20
 
 #: 请求 JSON 的字节上限（只含元数据，正常远小于此）
 MAX_PAYLOAD_BYTES = 1 << 20
+
+#: 操作令牌标志（唯一允许的 argv；令牌是非敏感随机串，仅用于 /proc 识别）
+JOB_ID_FLAG = "--job-id"
+#: 操作令牌长度（32 个小写十六进制字符）
+JOB_ID_LENGTH = 32
 
 #: 副本里的普通文件权限
 FILE_MODE = 0o600
@@ -209,14 +219,32 @@ def _open_dir_chain(path: str) -> int:
 # ---------------------------------------------------------------- 请求解析
 
 
+def _parse_job_id(argv: list[str]) -> str | None:
+    """校验 argv：只允许**可选**的 ``--job-id <32hex>``。
+
+    令牌只用于让调用方按**本次执行**在 ``/proc`` 里认出写者；它不是载荷，
+    不接受任何路径或其它参数（argv 载荷一律拒绝）。
+    """
+    if not argv:
+        return None
+    if len(argv) != 2 or argv[0] != JOB_ID_FLAG:
+        raise HelperError(CODE_INTERNAL, "bad_arguments")
+    token = argv[1]
+    if len(token) != JOB_ID_LENGTH or any(
+        char not in "0123456789abcdef" for char in token
+    ):
+        raise HelperError(CODE_INTERNAL, "bad_arguments")
+    return token
+
+
 def _read_payload(argv: list[str]) -> dict:
     """读取请求 JSON（只含元数据）。
 
     **只认 stdin**（管道）：既有 ``run`` 走 ``stdin_text``，载荷不进命令行、
-    不进 ``ps``。**argv 载荷一律拒绝**（避免把元数据摆到命令行上）。
+    不进 ``ps``。argv 只允许可选的 ``--job-id <32hex>``（见
+    :func:`_parse_job_id`）；**argv 载荷一律拒绝**（避免把元数据摆到命令行上）。
     """
-    if argv:
-        raise HelperError(CODE_INTERNAL, "bad_arguments")
+    _parse_job_id(argv)
     if sys.stdin is None or sys.stdin.isatty():
         raise HelperError(CODE_INTERNAL, "bad_arguments")
     raw = sys.stdin.read(MAX_PAYLOAD_BYTES + 1)

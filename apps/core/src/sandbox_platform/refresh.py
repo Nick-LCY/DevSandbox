@@ -27,6 +27,10 @@
   用户修正后**手动重试**；
 - **helper 超时 / 异常退出** ⇒ 保守按「可能部分更新」处理（helper fork 出来
   的写入子进程可能还活着），并且**不释放同名锁**（见 ``namelock``）。
+  每次刷新生成一个随机**操作令牌**，以 helper argv 里唯一的
+  ``--job-id <32hex>`` 进入（JSON 载荷仍**只走 stdin**）：等待只追踪
+  **本次执行**的写者（脚本实参 + 令牌精确匹配 ``/proc``），不同沙箱的
+  并行刷新互不牵连；本次专属暂存目录**留到本次写者收工后**再清理。
 
 **错误分类码**（服务端按分类码映射状态码，不解析文案）：
 
@@ -51,6 +55,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import secrets
 import shutil
 import sys
 import tempfile
@@ -109,6 +114,8 @@ __all__ = [
     "RefreshRuntime",
     "helper_path",
     "live_helper_pids",
+    "new_job_id",
+    "remove_spool_root",
     "wait_for_helper_writers",
 ]
 #: 预校验未通过（源不安全 / 目的不安全 / 根类型改变）：副本零改动
@@ -139,6 +146,22 @@ HELPER_TIMEOUT = 900
 
 #: helper 超时后，等它 fork 出来的写入子进程收工的等待上限（秒）
 HELPER_WRITER_SETTLE_TIMEOUT = 60
+
+#: 操作令牌标志（helper 唯一允许的 argv；令牌非敏感，只用于 /proc 识别）
+JOB_ID_FLAG = "--job-id"
+
+#: 本次刷新自己的暂存目录前缀（``mkdtemp`` 生成，删之前按它核对）
+SPOOL_PREFIXES = ("refresh-spool-", "sandbox-refresh-spool-")
+
+
+def new_job_id() -> str:
+    """生成一次刷新的**操作令牌**（32 个小写十六进制字符）。
+
+    令牌只做一件事：让 ``/proc`` 里的写者能按**本次执行**认出来（不同
+    沙箱的并发刷新互不牵连）。它不含路径、不含正文，也不进 JSON 载荷——
+    所有载荷仍然**只走 stdin**。
+    """
+    return secrets.token_hex(16)
 
 
 def helper_path() -> Path:
@@ -328,7 +351,45 @@ class InjectionRefresher:
         user: SystemUser,
         home_scope: SandboxHomeScope,
     ) -> None:
-        """调用 helper 刷新副本，并把它的分类码收口成结构化错误。"""
+        """调用 helper 刷新副本，并把它的分类码收口成结构化错误。
+
+        每次刷新生成一个随机**操作令牌**（只进 helper argv，不进载荷），
+        失败且可能仍有写者时把它与本次专属暂存目录挂到 ``RefreshError`` 上：
+        生命周期侧据此只等**本次执行**的写者（不同沙箱的并发刷新互不牵连）。
+        暂存目录也留到写者收工后再删——写者还可能从里面读新内容。
+        """
+        spool_root = self._make_spool_root()
+        job_id = new_job_id()
+        try:
+            self._invoke_helper(
+                metadata, record, user, home_scope, spool_root, job_id
+            )
+        except RefreshError as exc:
+            if exc.hold_lock:
+                # 可能仍有**本次执行**的写者在跑：标记本次执行 + 暂存路径，
+                # 由生命周期侧在本次写者收工后再解锁 / 清理。
+                exc.writer_token = job_id
+                exc.spool_root = str(spool_root)
+            else:
+                remove_spool_root(spool_root)
+            raise
+        except BaseException:
+            # 意外异常：没进入「可能仍有写者」的判定，按旧口径清掉暂存
+            remove_spool_root(spool_root)
+            raise
+        else:
+            remove_spool_root(spool_root)
+
+    def _invoke_helper(
+        self,
+        metadata: SandboxMetadata,
+        record: InjectionRecord,
+        user: SystemUser,
+        home_scope: SandboxHomeScope,
+        spool_root: Path,
+        job_id: str,
+    ) -> None:
+        """真正跑 helper：载荷（含暂存根）**只走 stdin**，argv 只带令牌。"""
         try:
             forbidden = self._forbidden_roots(home_scope)
         except ValidationError as exc:
@@ -345,31 +406,32 @@ class InjectionRefresher:
             "forbidden_roots": list(forbidden),
             "spool_root": "",
         }
-        spool_root = self._make_spool_root()
-        payload["spool_root"] = str(spool_root)
+        spool_root_text = str(spool_root)
+        payload["spool_root"] = spool_root_text
         helper = helper_path()
-        argv = self.privilege.wrap([sys.executable, "-I", str(helper)])
+        # argv 里**只有**可选的 ``--job-id <32hex>`` 操作令牌（非敏感），
+        # 载荷（源 / 副本 / 身份 / 受限根）一律只走 stdin。
+        argv = self.privilege.wrap(
+            [sys.executable, "-I", str(helper), JOB_ID_FLAG, job_id]
+        )
         try:
-            try:
-                result = run(
-                    argv,
-                    stdin_text=json.dumps(payload, ensure_ascii=False),
-                    check=False,
-                    timeout=HELPER_TIMEOUT,
-                )
-            except CommandError as exc:
-                self._raise_for_command_error(exc)
-                raise  # pragma: no cover - _raise_for_command_error 一定抛
-            except OSError as exc:
-                # 宿主侧异常（起不来 / 管道断了）：helper 是否已经跑起来说不准
-                # ⇒ 保守按可能部分更新报，并且**不释放同名锁**。
-                logger.error("调用刷新 helper 失败：%s", exc)
-                raise RefreshError(
-                    MSG_INTERNAL, reason=REASON_INTERNAL, hold_lock=True
-                ) from exc
-            self._raise_for_helper_result(metadata, record, result)
-        finally:
-            shutil.rmtree(spool_root, ignore_errors=True)
+            result = run(
+                argv,
+                stdin_text=json.dumps(payload, ensure_ascii=False),
+                check=False,
+                timeout=HELPER_TIMEOUT,
+            )
+        except CommandError as exc:
+            self._raise_for_command_error(exc)
+            raise  # pragma: no cover - _raise_for_command_error 一定抛
+        except OSError as exc:
+            # 宿主侧异常（起不来 / 管道断了）：helper 是否已经跑起来说不准
+            # ⇒ 保守按可能部分更新报，并且**不释放同名锁**。
+            logger.error("调用刷新 helper 失败：%s", exc)
+            raise RefreshError(
+                MSG_INTERNAL, reason=REASON_INTERNAL, hold_lock=True
+            ) from exc
+        self._raise_for_helper_result(metadata, record, result)
 
     def _raise_for_command_error(self, exc: CommandError) -> None:
         """``run`` 抛异常时（命令不存在 / 超时）收口成结构化错误。"""
@@ -461,13 +523,56 @@ class InjectionRefresher:
 
 
 # ---------------------------------------------------------------- 写者收尾
-def live_helper_pids(helper: Path | str) -> list[int]:
-    """当前还活着的 helper 进程（含它 fork 出来的写入子进程）。
+def remove_spool_root(spool_root: Path | str) -> bool:
+    """删掉**本次刷新专属**的暂存目录；返回是否删掉了。
 
-    helper 的写入子进程是 ``fork`` 出来的：``/proc/<pid>/cmdline`` 与父进程
-    一样（fork 不改 cmdline），所以按 helper 路径就能把两者一起认出来。
+    只删「自己 ``mkdtemp`` 出来的那一份」：末段名字必须带刷新专用前缀、
+    实际路径的末段与传入末段一致（末段不是符号链接 / 不指向别处）、并且
+    确实是个目录。任何一条不满足就**不删**——宁可留下残留，也不误删
+    与别的刷新 / 别的路径**共享**的目录。
+    """
+    path = Path(spool_root)
+    if not path.name.startswith(SPOOL_PREFIXES):
+        return False
+    try:
+        if Path(os.path.realpath(path)).name != path.name:
+            return False
+        if path.is_symlink() or not path.is_dir():
+            return False
+        shutil.rmtree(path, ignore_errors=True)
+        return True
+    except OSError:  # pragma: no cover - 极少数宿主侧竞态
+        return False
+
+
+def _cmdline_has_helper_job(
+    cmdline: bytes, helper: bytes, token: bytes
+) -> bool:
+    """cmdline 是否是**本次执行**的 helper（脚本实参 + ``--job-id`` 令牌）。
+
+    按 NUL 切成实参数组：脚本路径必须是**独立的一个实参**，紧跟着
+    ``--job-id`` + 本次令牌。``fork`` 出来的写子进程继承同一份 cmdline，
+    所以父 / 子一起被认出来；不同沙箱的刷新令牌不同，互不牵连。
+    """
+    args = [item for item in cmdline.split(b"\x00") if item]
+    if helper not in args:
+        return False
+    flag = JOB_ID_FLAG.encode("utf-8")
+    return any(
+        args[index] == flag and args[index + 1] == token
+        for index in range(len(args) - 1)
+    )
+
+
+def live_helper_pids(helper: Path | str, token: str) -> list[int]:
+    """**本次执行**还活着的 helper 进程（含它 fork 出来的写入子进程）。
+
+    精确匹配「脚本路径实参 + ``--job-id <token>``」：只看脚本路径会把
+    **别的沙箱**正在跑的刷新（甚至别的进程）也算进来，导致本次刷新替
+    别人等、甚至替别人把锁永远放弃。
     """
     marker = str(helper).encode("utf-8")
+    wanted = token.encode("utf-8")
     pids: list[int] = []
     try:
         entries = os.listdir("/proc")
@@ -484,22 +589,25 @@ def live_helper_pids(helper: Path | str) -> list[int]:
                 cmdline = handle.read()
         except OSError:
             continue
-        if marker in cmdline:
+        if _cmdline_has_helper_job(cmdline, marker, wanted):
             pids.append(pid)
     return pids
 
 
 def wait_for_helper_writers(
-    helper: Path | str, timeout: int = HELPER_WRITER_SETTLE_TIMEOUT
+    helper: Path | str, token: str, timeout: float | None = None
 ) -> bool:
-    """等 helper 的写入子进程收工；返回是否已收干净。
+    """等**本次执行**的写者收工；返回是否已收干净。
 
     收不干净就不能释放同名锁：锁一放，另一个进程就能进来与仍在写入的
-    副本并发。
+    副本并发。只等本次令牌——别的沙箱的写者与本次无关，绝不让本次刷新
+    为它阻塞、更不能因它把本次的锁永远放弃。
     """
+    if timeout is None:
+        timeout = HELPER_WRITER_SETTLE_TIMEOUT
     deadline = time.monotonic() + timeout
     while True:
-        pids = live_helper_pids(helper)
+        pids = live_helper_pids(helper, token)
         if not pids:
             return True
         if time.monotonic() >= deadline:
