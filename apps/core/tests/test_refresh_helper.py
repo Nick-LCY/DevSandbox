@@ -1,12 +1,14 @@
 """文件注入副本刷新 helper 的定向单元测试。
 
 被测对象是**随包分发的窄用途脚本** ``sandbox_platform/_refresh_helper.py``：
-以「``sys.executable -I <绝对路径>``」调用（一项 JSON 元数据；投递方式
-stdin / argv 各一条），断言它的分类码、退出码与**落盘结果**。
+以「``sys.executable -I <绝对路径>``」调用（一项 JSON 元数据；**只认 stdin**
+投递，argv 载荷一律拒绝），断言它的分类码、退出码与**落盘结果**。
 
 覆盖口径（与 01 任务逐条对应）：
 
 - **对象身份**：单文件原位覆盖保持 inode（挂载身份不变）；目录保留根；
+- **成员不原位截断**：目录成员**换新 inode**（同目录排他临时文件 + 原子替换），
+  共享 inode 的另一份副本**一个字节不动**；
 - **增改删**：目录镜像的新增 / 更新 / 删除过时项；
 - **空目录**：源里真实存在的空目录保留（本身不被删）；
 - **源缺失 / 读失败**：分类为 ``SOURCE_UNSAFE``，**目标一个字节都不动**；
@@ -16,7 +18,9 @@ stdin / argv 各一条），断言它的分类码、退出码与**落盘结果**
 - **目的校验**：根身份 / 种类不符、目标是符号链接、目标是冒名硬链接 ⇒
   ``DESTINATION_UNSAFE``，目标零改动；
 - **部分失败重试**：写入阶段失败报 ``PARTIAL``（可能部分更新），修正后
-  **手动重试**可收敛。
+  **手动重试**可收敛；
+- **协议收紧**：只认 stdin（argv 载荷拒绝）、uid / gid 不得为 0、受限根必须
+  是绝对路径、暂存根由调用方建且必须私有。
 
 测试全部落在 ``tmp_path`` 里，不碰真实沙箱、不碰宿主真实数据。
 """
@@ -25,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import stat
 import subprocess
 import sys
@@ -58,7 +63,8 @@ def _invoke(
     """调用 helper，返回 ``(退出码, 结果 JSON)``。
 
     ``transport`` 决定 JSON 怎么投递：``stdin`` 走管道（既有 ``run`` 的
-    ``stdin_text`` 口径），``argv`` 作为**单个** argv 元素传入。
+    ``stdin_text`` 口径）；``argv`` 作为**单个** argv 元素传入——**只用于
+    断言 argv 载荷被拒绝**（helper 只认 stdin）。
     """
     payload = json.dumps(request)
     argv = [sys.executable, "-I", str(HELPER_PATH)]
@@ -84,10 +90,17 @@ def _request(
     *,
     spool_root: Path,
     forbidden_roots: list[str] | None = None,
+    create_spool: bool = True,
     **overrides: object,
 ) -> dict:
-    """按目标当前身份构造一份请求。"""
+    """按目标当前身份构造一份请求。
+
+    **暂存根由调用方创建**（helper 只验「私有实际目录」，不 mkdir、不 chmod）。
+    """
     target_stat = os.stat(staged)
+    if create_spool:
+        spool_root.mkdir(parents=True, exist_ok=True)
+        spool_root.chmod(0o700)
     payload: dict[str, object] = {
         "source_path": str(source),
         "staged_path": str(staged),
@@ -570,40 +583,51 @@ def test_incomplete_enumeration_does_not_delete_members(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root 不受文件权限位限制")
 def test_partial_failure_reports_partial_and_retry_succeeds(tmp_path: Path) -> None:
-    """写入阶段失败：报 ``PARTIAL``（可能部分更新），修正后重试可收敛。"""
+    """写入阶段失败：报 ``PARTIAL``（可能部分更新），修正后重试可收敛。
+
+    失败点：托管副本的**根目录**只读（0500）⇒ 轮到根目录里的成员时建不出
+    临时文件（成员不原位截断，**只读文件本身挡不住写入**，挡路的是目录）。
+    """
     source = tmp_path / "src"
     staged = tmp_path / "staged"
     source.mkdir()
-    (source / "a-ok.txt").write_text("新 a\n", encoding="utf-8")
-    (source / "b-locked.txt").write_text("新 b\n", encoding="utf-8")
-    (source / "c-new.txt").write_text("新 c\n", encoding="utf-8")
+    (source / "a-sub").mkdir()
+    (source / "a-sub" / "x.txt").write_text("新 x\n", encoding="utf-8")
+    (source / "z-root.txt").write_text("新 z\n", encoding="utf-8")
     staged.mkdir()
-    (staged / "a-ok.txt").write_text("旧 a\n", encoding="utf-8")
-    (staged / "b-locked.txt").write_text("旧 b\n", encoding="utf-8")
-    (staged / "b-locked.txt").chmod(0o400)
+    (staged / "a-sub").mkdir()
+    (staged / "a-sub" / "x.txt").write_text("旧 x\n", encoding="utf-8")
+    (staged / "z-root.txt").write_text("旧 z\n", encoding="utf-8")
     (staged / "stale.txt").write_text("不该被删\n", encoding="utf-8")
+    staged.chmod(0o500)
 
-    code, body = _invoke(
-        _request(source, staged, "directory", spool_root=tmp_path / "spool")
-    )
+    try:
+        code, body = _invoke(
+            _request(source, staged, "directory", spool_root=tmp_path / "spool")
+        )
+    finally:
+        staged.chmod(0o700)
     assert code == EXIT_BY_CODE["PARTIAL"]
     assert body["code"] == "PARTIAL"
-    # 部分更新：排在前面的成员已写新内容，后面的没动
-    assert (staged / "a-ok.txt").read_text(encoding="utf-8") == "新 a\n"
-    assert (staged / "b-locked.txt").read_text(encoding="utf-8") == "旧 b\n"
-    assert not (staged / "c-new.txt").exists()
+    # 部分更新：排在前面的成员已写新内容（子目录可写）
+    assert (staged / "a-sub" / "x.txt").read_text(encoding="utf-8") == "新 x\n"
+    # 失败的成员**没被截断**（不原位写）：旧内容完好
+    assert (staged / "z-root.txt").read_text(encoding="utf-8") == "旧 z\n"
     # 失败后不续跑：镜像删除阶段根本没开始
     assert (staged / "stale.txt").exists()
+    # 临时产物不留残留（临时产物不是备份）
+    leftovers = [
+        item.name for item in staged.iterdir() if item.name.startswith(".refresh")
+    ]
+    assert leftovers == []
 
     # 修正后由用户手动重试：收敛到源的样子
-    (staged / "b-locked.txt").chmod(0o600)
     code, body = _invoke(
         _request(source, staged, "directory", spool_root=tmp_path / "spool")
     )
     assert code == EXIT_BY_CODE["OK"]
-    assert (staged / "a-ok.txt").read_text(encoding="utf-8") == "新 a\n"
-    assert (staged / "b-locked.txt").read_text(encoding="utf-8") == "新 b\n"
-    assert (staged / "c-new.txt").read_text(encoding="utf-8") == "新 c\n"
+    assert (staged / "a-sub" / "x.txt").read_text(encoding="utf-8") == "新 x\n"
+    assert (staged / "z-root.txt").read_text(encoding="utf-8") == "新 z\n"
     assert not (staged / "stale.txt").exists()
 
 
@@ -626,18 +650,22 @@ def test_no_spool_residue_after_refresh(tmp_path: Path) -> None:
     assert list(spool_root.iterdir()) == []
 
 
-def test_argv_and_stdin_transports_agree(tmp_path: Path) -> None:
-    """两种投递方式（stdin / 单个 argv 元素）结果一致。"""
+def test_argv_payload_rejected(tmp_path: Path) -> None:
+    """argv 载荷一律拒绝（载荷不进命令行）：内部错误，目标零改动。"""
     source = tmp_path / "source.txt"
     staged = tmp_path / "staged.txt"
     source.write_text("新\n", encoding="utf-8")
     staged.write_text("旧\n", encoding="utf-8")
     request = _request(source, staged, "file", spool_root=tmp_path / "spool")
 
+    code, body = _invoke(request, transport="argv")
+    assert code == EXIT_BY_CODE["INTERNAL"]
+    assert body["reason"] == "bad_arguments"
+    assert staged.read_text(encoding="utf-8") == "旧\n"
+
+    # stdin 是唯一入口：同一份请求走 stdin 就能成
     stdin_code, stdin_body = _invoke(request, transport="stdin")
-    argv_code, argv_body = _invoke(request, transport="argv")
-    assert (stdin_code, stdin_body) == (argv_code, argv_body)
-    assert stdin_code == EXIT_BY_CODE["OK"]
+    assert (stdin_code, stdin_body) == (EXIT_BY_CODE["OK"], {"code": "OK"})
 
 
 def test_invalid_payload_rejected(tmp_path: Path) -> None:
@@ -682,3 +710,172 @@ def test_result_line_never_leaks_paths_or_content(tmp_path: Path) -> None:
     assert body == {"code": "OK"}
     assert "secret-name" not in json.dumps(body)
     assert "机密内容" not in json.dumps(body)
+
+
+# ---------------------------------------------------------------- 成员不原位截断
+
+
+def test_directory_member_refresh_replaces_inode_and_spares_twin(
+    tmp_path: Path,
+) -> None:
+    """目录成员**不原位截断**：成员换新 inode，共享 inode 的另一份不动。"""
+    source = tmp_path / "src"
+    staged = tmp_path / "staged"
+    source.mkdir()
+    (source / "a.txt").write_text("新内容\n", encoding="utf-8")
+    staged.mkdir()
+    (staged / "a.txt").write_text("旧内容\n", encoding="utf-8")
+    # 副本之外的另一份硬链接（共享 inode）：刷新**不许**改到它
+    twin = tmp_path / "twin.txt"
+    os.link(staged / "a.txt", twin)
+    before = os.stat(staged / "a.txt")
+    assert before.st_nlink == 2
+
+    code, body = _invoke(
+        _request(source, staged, "directory", spool_root=tmp_path / "spool")
+    )
+    assert code == EXIT_BY_CODE["OK"]
+    assert body == {"code": "OK"}
+    after = os.stat(staged / "a.txt")
+    assert (staged / "a.txt").read_text(encoding="utf-8") == "新内容\n"
+    # 成员拿到的是**新 inode**（原位截断共享 inode 的路已经堵死）
+    assert after.st_ino != before.st_ino
+    assert after.st_nlink == 1
+    # 共享 inode 的另一份**一个字节都没动**
+    assert twin.read_text(encoding="utf-8") == "旧内容\n"
+    assert os.stat(twin).st_nlink == 1
+
+
+def test_special_members_do_not_block_probe(tmp_path: Path) -> None:
+    """非常规成员（套接字 / FIFO）：探测只 ``stat`` 不打开 ⇒ 不卡住。"""
+    source = tmp_path / "src"
+    staged = tmp_path / "staged"
+    source.mkdir()
+    (source / "a.txt").write_text("新\n", encoding="utf-8")
+    staged.mkdir()
+    (staged / "a.txt").write_text("旧\n", encoding="utf-8")
+    sock_path = staged / "sock"
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.bind(str(sock_path))
+    os.mkfifo(staged / "pipe")
+
+    code, body = _invoke(
+        _request(source, staged, "directory", spool_root=tmp_path / "spool")
+    )
+    assert code == EXIT_BY_CODE["OK"]
+    assert body == {"code": "OK"}
+    assert (staged / "a.txt").read_text(encoding="utf-8") == "新\n"
+    assert not sock_path.exists()
+    assert not (staged / "pipe").exists()
+
+
+# ---------------------------------------------------------------- 协议收紧
+
+
+def test_uid_zero_rejected(tmp_path: Path) -> None:
+    """uid=0（等于没降权）：拒绝，目标零改动。"""
+    source = tmp_path / "source.txt"
+    staged = tmp_path / "staged.txt"
+    source.write_text("新\n", encoding="utf-8")
+    staged.write_text("旧\n", encoding="utf-8")
+    code, body = _invoke(
+        _request(source, staged, "file", spool_root=tmp_path / "spool", uid=0)
+    )
+    assert code == EXIT_BY_CODE["INTERNAL"]
+    assert body["reason"] == "bad_payload"
+    assert staged.read_text(encoding="utf-8") == "旧\n"
+
+
+def test_gid_zero_rejected(tmp_path: Path) -> None:
+    """gid=0：拒绝，目标零改动。"""
+    source = tmp_path / "source.txt"
+    staged = tmp_path / "staged.txt"
+    source.write_text("新\n", encoding="utf-8")
+    staged.write_text("旧\n", encoding="utf-8")
+    code, body = _invoke(
+        _request(source, staged, "file", spool_root=tmp_path / "spool", gid=0)
+    )
+    assert code == EXIT_BY_CODE["INTERNAL"]
+    assert body["reason"] == "bad_payload"
+    assert staged.read_text(encoding="utf-8") == "旧\n"
+
+
+def test_relative_forbidden_root_rejected(tmp_path: Path) -> None:
+    """受限根是相对路径：拒绝（会随工作目录漂移）。"""
+    source = tmp_path / "source.txt"
+    staged = tmp_path / "staged.txt"
+    source.write_text("新\n", encoding="utf-8")
+    staged.write_text("旧\n", encoding="utf-8")
+    code, body = _invoke(
+        _request(
+            source,
+            staged,
+            "file",
+            spool_root=tmp_path / "spool",
+            forbidden_roots=["relative/root"],
+        )
+    )
+    assert code == EXIT_BY_CODE["INTERNAL"]
+    assert body["reason"] == "bad_payload"
+    assert staged.read_text(encoding="utf-8") == "旧\n"
+
+
+def test_forbidden_root_alias_symlink_rejected(tmp_path: Path) -> None:
+    """受限根给的是符号链接别名：**实际根**对照 ⇒ 照样拒绝。"""
+    real = tmp_path / "real"
+    (real / "secret").mkdir(parents=True)
+    source = real / "secret" / "s.txt"
+    source.write_text("机密\n", encoding="utf-8")
+    alias = tmp_path / "alias"
+    alias.symlink_to(real)
+    staged = tmp_path / "staged.txt"
+    staged.write_text("旧\n", encoding="utf-8")
+
+    code, body = _invoke(
+        _request(
+            source,
+            staged,
+            "file",
+            spool_root=tmp_path / "spool",
+            forbidden_roots=[str(alias)],
+        )
+    )
+    assert code == EXIT_BY_CODE["SOURCE_UNSAFE"]
+    assert body["reason"] == "restricted"
+    assert staged.read_text(encoding="utf-8") == "旧\n"
+
+
+def test_spool_root_missing_is_not_created_by_helper(tmp_path: Path) -> None:
+    """暂存根**由调用方创建**：helper 不 mkdir，缺了就报内部错误。"""
+    source = tmp_path / "source.txt"
+    staged = tmp_path / "staged.txt"
+    source.write_text("新\n", encoding="utf-8")
+    staged.write_text("旧\n", encoding="utf-8")
+    spool_root = tmp_path / "spool"
+    request = _request(
+        source, staged, "file", spool_root=spool_root, create_spool=False
+    )
+    code, body = _invoke(request)
+    assert code == EXIT_BY_CODE["INTERNAL"]
+    assert body["reason"] == "spool_missing"
+    # helper 没有替调用方把暂存根建出来
+    assert not spool_root.exists()
+    assert staged.read_text(encoding="utf-8") == "旧\n"
+
+
+def test_non_private_spool_root_rejected(tmp_path: Path) -> None:
+    """暂存根不私有（组 / 其它用户可进）：拒绝，不碰调用方的路径。"""
+    source = tmp_path / "source.txt"
+    staged = tmp_path / "staged.txt"
+    source.write_text("新\n", encoding="utf-8")
+    staged.write_text("旧\n", encoding="utf-8")
+    spool_root = tmp_path / "spool"
+    request = _request(source, staged, "file", spool_root=spool_root)
+    spool_root.chmod(0o755)
+
+    code, body = _invoke(request)
+    assert code == EXIT_BY_CODE["INTERNAL"]
+    assert body["reason"] == "spool_not_private"
+    # helper 不 chmod 调用方的路径
+    assert stat.S_IMODE(os.stat(spool_root).st_mode) == 0o755
+    assert staged.read_text(encoding="utf-8") == "旧\n"

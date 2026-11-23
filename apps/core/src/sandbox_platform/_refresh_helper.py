@@ -10,7 +10,8 @@
 **不得 import 包内任何模块**，必须自包含（只用标准库）。
 
 **它做什么**：把宿主源的新内容读进平台私有的匿名暂存（spool），再**降到沙箱
-用户身份**把新内容写回托管副本（单文件原位覆盖 / 目录递归镜像）。
+用户身份**把新内容写回托管副本（**单文件挂载根原位覆盖** / 目录递归镜像：
+目录成员**不原位截断**，同目录排他新建临时普通文件再原子替换）。
 
 **它不做什么**：不装系统组件、不读配置、不动宿主原件（只读）、不备份、不回滚、
 不承诺原子性。
@@ -40,14 +41,16 @@ stdout 形如 ``{"code":"OK"}``；失败时附带一个**不含路径、不含�
 - ``kind``：``file`` 或 ``directory``；
 - ``staged_dev`` / ``staged_ino``：托管副本根的 ``st_dev`` / ``st_ino``
   （写入时逐一核对，防止写到冒名副本）；
-- ``uid`` / ``gid``：写入要降到的沙箱用户身份；
+- ``uid`` / ``gid``：写入要降到的沙箱用户身份；**两者都不得为 0**（降到 root
+  等于没降权）；
 - ``forbidden_roots``：**已解析**的受限根清单（宿主敏感清单 + 任何已存在的
-  沙箱用户家目录 + 平台数据根；核心侧 fail-closed 取齐后传入）；
-- ``spool_root``：平台私有暂存目录（匿名 spool 落在这里）。
+  沙箱用户家目录 + 平台数据根；核心侧 fail-closed 取齐后传入）；**必须是绝对
+  路径**，helper 拿**词法根与实际根（``realpath``）两份**对照；
+- ``spool_root``：平台私有暂存目录（匿名 spool 落在这里）；**由调用方创建**，
+  helper 只**验**它是「私有实际目录」，**不 mkdir、不 chmod** 调用方的路径。
 
-JSON 的投递方式：**优先 stdin**（既有 ``run`` 走 ``stdin_text``，管道干净、
-不进 ``ps`` 命令行）；**既有 ``run`` 没有可用 stdin 时退到 argv**，作为
-**单个** argv 元素传入。两种方式本文件都接受，且**只认一个来源**。
+JSON 的投递方式：**只认 stdin**（既有 ``run`` 走 ``stdin_text``，管道干净、
+不进 ``ps`` 命令行）；**argv 载荷一律拒绝**（载荷不进命令行、不进 ``ps``）。
 
 **为什么写在这个包里**：它随 ``sandbox-platform-core`` 发布包分发，调用方用
 ``Path(sandbox_platform.__file__).with_name("_refresh_helper.py")`` 取到绝对
@@ -118,7 +121,10 @@ class Request:
     staged_ino: int
     uid: int
     gid: int
+    #: 受限根的**词法**形态（归一化后的绝对路径）
     forbidden_roots: tuple[str, ...]
+    #: 受限根的**实际**形态（``realpath`` 解析后）——与词法根一起对照
+    forbidden_roots_actual: tuple[str, ...]
     spool_root: str
 
 
@@ -158,9 +164,19 @@ def _is_under(path: str, base: str) -> bool:
     return path.startswith(base.rstrip("/") + "/")
 
 
-def _hits_forbidden(path: str, roots: tuple[str, ...]) -> bool:
-    """路径是否命中受限根清单。"""
-    return any(_is_under(path, root) for root in roots)
+def _hits_forbidden(
+    path: str,
+    roots: tuple[str, ...],
+    actual_roots: tuple[str, ...] = (),
+) -> bool:
+    """路径是否命中受限根清单。
+
+    **词法根与实际根都对照**：调用方给的是词法形态的根（可能本身是符号链接
+    或经过符号链接），只拿词法根比对会漏掉「实际落在受限目录里」的情形。
+    """
+    if any(_is_under(path, root) for root in roots):
+        return True
+    return any(_is_under(path, root) for root in actual_roots)
 
 
 def _open_dir_chain(path: str) -> int:
@@ -196,21 +212,16 @@ def _open_dir_chain(path: str) -> int:
 def _read_payload(argv: list[str]) -> dict:
     """读取请求 JSON（只含元数据）。
 
-    - ``argv`` 有一个元素 ⇒ **argv 模式**（整份 JSON 作为单个 argv 元素）；
-    - ``argv`` 为空 ⇒ **stdin 模式**（读管道）。
-
-    两种方式**只认一个**；都拿不到就是参数错误。
+    **只认 stdin**（管道）：既有 ``run`` 走 ``stdin_text``，载荷不进命令行、
+    不进 ``ps``。**argv 载荷一律拒绝**（避免把元数据摆到命令行上）。
     """
-    if len(argv) == 1:
-        raw = argv[0]
-    elif not argv:
-        if sys.stdin is None or sys.stdin.isatty():
-            raise HelperError(CODE_INTERNAL, "bad_arguments")
-        raw = sys.stdin.read(MAX_PAYLOAD_BYTES + 1)
-        if len(raw) > MAX_PAYLOAD_BYTES:
-            raise HelperError(CODE_INTERNAL, "payload_too_large")
-    else:
+    if argv:
         raise HelperError(CODE_INTERNAL, "bad_arguments")
+    if sys.stdin is None or sys.stdin.isatty():
+        raise HelperError(CODE_INTERNAL, "bad_arguments")
+    raw = sys.stdin.read(MAX_PAYLOAD_BYTES + 1)
+    if len(raw) > MAX_PAYLOAD_BYTES:
+        raise HelperError(CODE_INTERNAL, "payload_too_large")
     try:
         payload = json.loads(raw)
     except ValueError:
@@ -240,7 +251,7 @@ def _parse_request(payload: dict) -> Request:
         raise HelperError(CODE_INTERNAL, "bad_payload")
     uid = need_int("uid")
     gid = need_int("gid")
-    if uid == 0:
+    if uid == 0 or gid == 0:
         # 沙箱用户永远不是 root：把写入降到 root 等于没降权
         raise HelperError(CODE_INTERNAL, "bad_payload")
     raw_roots = payload.get("forbidden_roots", [])
@@ -251,8 +262,16 @@ def _parse_request(payload: dict) -> Request:
         if not isinstance(item, str) or not item:
             raise HelperError(CODE_INTERNAL, "bad_payload")
         normalized = _normalize(item)
+        if not normalized.startswith("/"):
+            # 受限根必须是绝对路径：相对路径会随进程工作目录漂移
+            raise HelperError(CODE_INTERNAL, "bad_payload")
         if normalized not in roots:
             roots.append(normalized)
+    actual_roots: list[str] = []
+    for root in roots:
+        actual = _normalize(os.path.realpath(root))
+        if actual not in actual_roots:
+            actual_roots.append(actual)
     source_path = need_str("source_path")
     staged_path = need_str("staged_path")
     spool_root = need_str("spool_root")
@@ -270,6 +289,7 @@ def _parse_request(payload: dict) -> Request:
         uid=uid,
         gid=gid,
         forbidden_roots=tuple(roots),
+        forbidden_roots_actual=tuple(actual_roots),
         spool_root=spool_root,
     )
 
@@ -290,13 +310,15 @@ def _resolve_source(request: Request) -> tuple[str, str, os.stat_result]:
     name = os.path.basename(source)
     if not name:
         raise HelperError(CODE_SOURCE_UNSAFE, "bad_path")
-    if _hits_forbidden(source, request.forbidden_roots):
+    if _hits_forbidden(source, request.forbidden_roots, request.forbidden_roots_actual):
         raise HelperError(CODE_SOURCE_UNSAFE, "restricted")
     real_parent = os.path.realpath(parent)
     if not real_parent.startswith("/"):
         raise HelperError(CODE_SOURCE_UNSAFE, "bad_path")
     real_source = f"{real_parent}/{name}"
-    if _hits_forbidden(real_source, request.forbidden_roots):
+    if _hits_forbidden(
+        real_source, request.forbidden_roots, request.forbidden_roots_actual
+    ):
         raise HelperError(CODE_SOURCE_UNSAFE, "restricted")
     try:
         source_stat = os.lstat(real_source)
@@ -366,6 +388,7 @@ def _scan_directory(
     dir_fd: int,
     dir_stat: os.stat_result,
     real_dir: str,
+    lex_dir: str,
     rel_prefix: str,
     entries: list[Entry],
 ) -> None:
@@ -390,7 +413,12 @@ def _scan_directory(
     for name, kind, item_stat in items:
         rel = f"{rel_prefix}/{name}" if rel_prefix else name
         member_real = f"{real_dir}/{name}"
-        if _hits_forbidden(member_real, request.forbidden_roots):
+        member_lex = f"{lex_dir}/{name}"
+        if _hits_forbidden(
+            member_real, request.forbidden_roots, request.forbidden_roots_actual
+        ) or _hits_forbidden(
+            member_lex, request.forbidden_roots, request.forbidden_roots_actual
+        ):
             raise HelperError(CODE_SOURCE_UNSAFE, "restricted")
         if kind == KIND_DIRECTORY:
             try:
@@ -415,6 +443,7 @@ def _scan_directory(
                     child_fd,
                     child_stat,
                     member_real,
+                    member_lex,
                     rel,
                     entries,
                 )
@@ -479,6 +508,7 @@ def _read_source(request: Request, spool) -> list[Entry]:
                 source_fd,
                 opened,
                 f"{real_parent}/{name}",
+                os.path.dirname(_normalize(request.source_path)),
                 "",
                 entries,
             )
@@ -493,27 +523,24 @@ def _read_source(request: Request, spool) -> list[Entry]:
 
 
 def _probe_child(dir_fd: int, name: str) -> str:
-    """探测子项类型：``missing`` / ``regular`` / ``other``。
+    """探测子项类型：``missing`` / ``directory`` / ``regular`` / ``other``。
 
-    只读、不跟随符号链接；FIFO 之类靠 ``O_NONBLOCK`` 不会阻塞。
+    用**不跟随的 ``stat``**（只看 inode 的类型位）：**不打开**子项——
+    打开套接字 / FIFO 会失败或卡住，``stat`` 不会。
     """
     try:
-        fd = os.open(
-            name,
-            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-            dir_fd=dir_fd,
-        )
+        child_stat = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
     except FileNotFoundError:
         return "missing"
     except OSError as exc:
         if exc.errno in (errno.ELOOP, errno.ENOTDIR, errno.EACCES, errno.EPERM):
             return "other"
         raise
-    try:
-        child_stat = os.fstat(fd)
-    finally:
-        os.close(fd)
-    return "regular" if stat.S_ISREG(child_stat.st_mode) else "other"
+    if stat.S_ISDIR(child_stat.st_mode):
+        return "directory"
+    if stat.S_ISREG(child_stat.st_mode):
+        return "regular"
+    return "other"
 
 
 def _list_names(dir_fd: int) -> list[str]:
@@ -611,6 +638,37 @@ def _ensure_child_dir(dir_fd: int, name: str) -> int:
     )
 
 
+def _unlink_quiet(dir_fd: int, name: str) -> None:
+    """删掉一个临时产物（删不掉也不声张——它只是临时产物，**不是备份**）。"""
+    try:
+        os.unlink(name, dir_fd=dir_fd)
+    except OSError:
+        pass
+
+
+def _create_temp_member(dir_fd: int) -> tuple[str, int]:
+    """在目标目录里**排他**新建一个临时普通文件，返回 ``(名字, fd)``。
+
+    名字带 pid 与随机后缀，且用 ``O_CREAT | O_EXCL``：**绝不覆盖**任何
+    已存在的东西（万一撞名就换名字重试）。
+    """
+    for _ in range(64):
+        name = f".refresh-tmp-{os.getpid()}-{os.urandom(4).hex()}"
+        try:
+            fd = os.open(
+                name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK,
+                FILE_MODE,
+                dir_fd=dir_fd,
+            )
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            raise HelperError(CODE_PARTIAL, "target_write_failed") from exc
+        return name, fd
+    raise HelperError(CODE_PARTIAL, "target_write_failed")
+
+
 def _write_member_file(
     request: Request,
     dir_fd: int,
@@ -618,34 +676,37 @@ def _write_member_file(
     entry: Entry,
     spool_fd: int,
 ) -> None:
-    """写一个成员文件：类型不对的旧物先删，常规文件**原位**覆盖。"""
+    """写一个成员文件：**不原位截断**——同目录建临时新文件再原子替换。
+
+    原位截断会写到**共享 inode**（同目录里另一份硬链接副本会跟着变），
+    而且失败时留下半截内容。这里改成：同目录**排他**新建一个普通文件
+    （``O_CREAT | O_EXCL``）、写新字节、``chmod 0600``，再 ``os.replace``
+    原子换到成员名上——成员拿到的是**新 inode**，共享 inode 一个字节没动。
+    失败时删掉临时产物（临时产物**不是备份**）。
+    """
     status = _probe_child(dir_fd, name)
-    if status == "other":
+    if status in ("directory", "other"):
+        # 类型不符的旧物（目录 / 符号链接 / 非常规文件）：先删掉再写
         _remove_child(dir_fd, name)
-        status = "missing"
-    if status == "missing":
-        fd = os.open(
-            name,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK,
-            FILE_MODE,
-            dir_fd=dir_fd,
-        )
-    else:
-        fd = os.open(
-            name,
-            os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-            dir_fd=dir_fd,
-        )
+    tmp_name, fd = _create_temp_member(dir_fd)
     try:
-        child_stat = os.fstat(fd)
-        if not stat.S_ISREG(child_stat.st_mode):
-            raise HelperError(CODE_PARTIAL, "target_kind_mismatch")
-        os.ftruncate(fd, 0)
-        _copy_from_spool(fd, spool_fd, entry)
-        os.fchown(fd, request.uid, request.gid)
-        os.fchmod(fd, FILE_MODE)
-    finally:
-        os.close(fd)
+        try:
+            child_stat = os.fstat(fd)
+            if not stat.S_ISREG(child_stat.st_mode):
+                raise HelperError(CODE_PARTIAL, "target_kind_mismatch")
+            _copy_from_spool(fd, spool_fd, entry)
+            os.fchown(fd, request.uid, request.gid)
+            os.fchmod(fd, FILE_MODE)
+        finally:
+            os.close(fd)
+    except BaseException:
+        _unlink_quiet(dir_fd, tmp_name)
+        raise
+    try:
+        os.replace(tmp_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    except OSError:
+        _unlink_quiet(dir_fd, tmp_name)
+        raise HelperError(CODE_PARTIAL, "target_write_failed") from None
 
 
 def _delete_extras(
@@ -728,12 +789,17 @@ def _write_single_file(
     manifest: list[Entry],
     spool_fd: int,
 ) -> None:
-    """单文件目标：**原位覆盖**，保持挂载身份（同一 inode）。"""
+    """单文件目标：**原位覆盖**，保持挂载身份（同一 inode）。
+
+    挂载身份靠 inode，所以这一路**只能原位写**；代价是要防「共享 inode」
+    （冒名硬链接）——因此**在同一个已打开的 fd 上**、**截断之前**就把
+    种类 / 身份 / 链接数一次性复查完。
+    """
     entry = manifest[0]
     try:
-        probe_fd = os.open(
+        fd = os.open(
             name,
-            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+            os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
             dir_fd=parent_fd,
         )
     except FileNotFoundError:
@@ -741,34 +807,22 @@ def _write_single_file(
     except OSError as exc:
         if exc.errno in (errno.ELOOP, errno.ENOTDIR):
             raise HelperError(CODE_DESTINATION_UNSAFE, "target_symlink") from None
-        raise HelperError(CODE_DESTINATION_UNSAFE, "target_unreadable") from None
-    try:
-        probe_stat = os.fstat(probe_fd)
-    finally:
-        os.close(probe_fd)
-    if not stat.S_ISREG(probe_stat.st_mode):
-        raise HelperError(CODE_DESTINATION_UNSAFE, "target_kind_mismatch")
-    if (probe_stat.st_dev, probe_stat.st_ino) != (request.staged_dev, request.staged_ino):
-        raise HelperError(CODE_DESTINATION_UNSAFE, "target_identity_mismatch")
-    if probe_stat.st_nlink != 1:
-        # 冒名硬链接：原位写会同时改到另一份副本
-        raise HelperError(CODE_DESTINATION_UNSAFE, "target_hardlinked")
-    try:
-        fd = os.open(
-            name,
-            os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-            dir_fd=parent_fd,
-        )
-    except OSError as exc:
-        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
-            raise HelperError(CODE_DESTINATION_UNSAFE, "target_symlink") from None
+        if exc.errno == errno.EISDIR:
+            raise HelperError(CODE_DESTINATION_UNSAFE, "target_kind_mismatch") from None
         raise HelperError(CODE_DESTINATION_UNSAFE, "target_unreadable") from None
     try:
         opened = os.fstat(fd)
+        # 截断前的三项复查：种类 / 身份 / 链接数（都在**同一个 fd** 上）
         if not stat.S_ISREG(opened.st_mode):
             raise HelperError(CODE_DESTINATION_UNSAFE, "target_kind_mismatch")
-        if (opened.st_dev, opened.st_ino) != (request.staged_dev, request.staged_ino):
+        if (opened.st_dev, opened.st_ino) != (
+            request.staged_dev,
+            request.staged_ino,
+        ):
             raise HelperError(CODE_DESTINATION_UNSAFE, "target_identity_mismatch")
+        if opened.st_nlink != 1:
+            # 冒名硬链接：原位写会同时改到另一份副本
+            raise HelperError(CODE_DESTINATION_UNSAFE, "target_hardlinked")
         os.ftruncate(fd, 0)
         _copy_from_spool(fd, spool_fd, entry)
         os.fchown(fd, request.uid, request.gid)
@@ -924,16 +978,31 @@ def _write_phase(request: Request, spool, manifest: list[Entry]) -> tuple[str, s
 # ---------------------------------------------------------------- 入口
 
 
+def _check_spool_root(spool_root: str) -> None:
+    """验「**私有实际目录**」：暂存根**由调用方创建**，helper 只验不建。
+
+    - **不 mkdir、不 chmod**：不碰调用方的路径（属主、权限都是调用方的）；
+    - 实际目录（``realpath`` 解析后的那一个）必须是目录；
+    - 必须**私有**：组 / 其它用户无任何权限位（暂存里暂的是新内容）。
+    """
+    real = os.path.realpath(spool_root)
+    try:
+        info = os.stat(real)
+    except OSError:
+        raise HelperError(CODE_INTERNAL, "spool_missing") from None
+    if not stat.S_ISDIR(info.st_mode):
+        raise HelperError(CODE_INTERNAL, "spool_not_dir")
+    if stat.S_IMODE(info.st_mode) & 0o077:
+        raise HelperError(CODE_INTERNAL, "spool_not_private")
+
+
 def _open_spool(spool_root: str):
     """打开平台私有的匿名暂存文件（``tempfile.TemporaryFile``）。
 
     **只存新内容，不是备份**：文件用完即随句柄关闭而消失，磁盘上不留名字。
+    暂存根由**调用方**建好，这里只验「私有实际目录」。
     """
-    try:
-        os.makedirs(spool_root, mode=DIR_MODE, exist_ok=True)
-        os.chmod(spool_root, DIR_MODE)
-    except OSError:
-        pass
+    _check_spool_root(spool_root)
     return tempfile.TemporaryFile(dir=spool_root)
 
 
@@ -973,6 +1042,8 @@ def _run(argv: list[str]) -> int:
         return _emit(CODE_INTERNAL, "bad_payload")
     try:
         spool = _open_spool(request.spool_root)
+    except HelperError as exc:
+        return _emit(exc.code, exc.reason)
     except Exception:
         return _emit(CODE_INTERNAL, "spool_failed")
     try:
