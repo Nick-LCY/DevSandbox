@@ -4,9 +4,9 @@
 
 这一轮在**创建时快照**之上加一条**用户显式触发**的刷新通道：运行中的沙箱可以对**单文件**或**整目录**已保存注入手动刷新托管副本，**不停机**（不中断容器 / 终端 / agent 会话）；目录按镜像同步，宿主源里**已不存在的成员一并删除**。创建时的复制语义**不改**（仍是快照），本轮只加刷新。
 
-**状态：01~05 全部 todo（2026-11-23 立项）——尚无完成项。** PRD 已落但功能尚未实现，PRD 验收标准全部未勾选。看板见 [[current-state.md|当前状态]]。
+**状态：01~05 全部 done（2026-11-23 收口）。** 归档前 **10 个提交均留本地**（**未 push**；本归档另起提交），**零部署**（**绝不 Cloudflare 部署**）；PRD 验收标准 **23 / 23 逐条挂证据核销**。**全量 E2E 只跑过一次**（77 = 76 通过 / 1 失败，退出码 1；唯一失败为 spec16 把共享缓存首行写死的脆化断言，与本轮代码无关，已由独立 test-only 提交 `ee7d970` 定向修复通过，**未跑第二次全量**）。**用户手工验收尚未执行**——本机走查方式见 [[tasks/file-injection-refresh/RESULTS.md|全轮收口留档]]第六节。看板见 [[current-state.md|当前状态]]。
 
-**本轮不做**：不部署（**绝不 Cloudflare 部署**）、**不 push**；01~04 **不得**跑全量 E2E，全量只在 05 单独跑一次（**不自动二刷**）。
+**本轮不做**：不部署（**绝不 Cloudflare 部署**）、**不 push**；01~04 **不得**跑全量 E2E，全量只在 05 单独跑一次（**不自动二刷**）——**三条均已遵守**（全量只跑了那一次，见 [[tasks/file-injection-refresh/RESULTS.md|全轮留档]]第四节）。
 
 ## 关键口径（贯穿全轮）
 
@@ -29,11 +29,11 @@
 
 | 编号 | 任务 | 状态 | 交付内容 |
 |---|---|---|---|
-| [[tasks/file-injection-refresh/01-refresh-mechanism-and-probe.md\|01]] | 安全刷新机制与真机探针 | todo | 当前发布包内置仅标准库 helper（`Privilege` + 受信绝对路径 + `python -I`）；受限路径重查 / 完整枚举 / 私有暂存（只存新内容）/ 拒绝异常类型与不完整读取；验证过的目标 inode / 目录句柄 + 写入降到沙箱用户身份；单文件原位、目录递归镜像（含删过时项与真实空目录）；临时目录与临时容器单测 + 真机探针 |
-| [[tasks/file-injection-refresh/02-core-persistence-and-mutex.md\|02]] | 核心实例持久化与互斥 / 真沙箱 | todo | 元数据 **additive** 注入声明记录（来源 / 托管副本 / 容器目标 / 类型 / 目标文件身份），原 `files` 语义保留、旧实例无刷新条目；创建路径写入已校验源路径（实例事实，不反查模板）；复用生命周期 name lock，与 start / stop / delete 互斥，兼顾同平台数据根多进程；只处理运行中沙箱，不停机 |
-| [[tasks/file-injection-refresh/03-admin-api.md\|03]] | 管理 API | todo | 沙箱详情 `injections` 元数据（additive）；按沙箱与条目标识的 **POST** 刷新端点、**204 无内容**；错误分类（预检类 vs **可能部分更新**）；拒绝非空 body / 查询参数 / 任意路径；沿用既有管理鉴权；`API.md` 同步 |
-| [[tasks/file-injection-refresh/04-detail-drawer.md\|04]] | 详情抽屉「注入文件」清单 | todo | 现有沙箱详情抽屉内、与既有「挂载」区同级的「注入文件」清单：每条一行（宿主源 → 容器目标，只读）+「刷新副本」按钮；不读正文；刷新详情保持只读；遵循 [[conventions/console-frontend.md\|控制台前端约定]]（主题令牌 / toast / 按钮加载态 / 中文字体子集） |
-| [[tasks/file-injection-refresh/05-acceptance-and-delivery.md\|05]] | 定向验收与交付 | todo | 一份定向 Playwright（建议 `18-file-injection-refresh`）：真实运行容器 / 终端不重启、页面刷新后单文件与目录可见且只读；逐层定向测试；**全部交付 + 定向全绿 + 无待修**三条前置满足后**单独跑一次**全量 `pnpm run test:acceptance`（**不自动二刷**）；全轮留档与文档同步 |
+| [[tasks/file-injection-refresh/01-refresh-mechanism-and-probe.md\|01]] | 安全刷新机制与真机探针 | done | 当前发布包内置仅标准库 helper（`Privilege` + 受信绝对路径 + `python -I`）；受限路径重查 / 完整枚举 / 私有暂存（只存新内容）/ 拒绝异常类型与不完整读取；验证过的目标 inode / 目录句柄 + 写入降到沙箱用户身份；单文件原位、目录递归镜像（含删过时项与真实空目录）；临时目录与临时容器单测 + 真机探针（**探针 22 / 22，同容器 id / StartedAt**） |
+| [[tasks/file-injection-refresh/02-core-persistence-and-mutex.md\|02]] | 核心实例持久化与互斥 / 真沙箱 | done | 元数据 **additive** 注入声明记录（来源 / 托管副本 / 容器目标 / 类型 / 目标文件身份），原 `files` 语义保留、旧实例无刷新条目；创建路径写入已校验源路径（实例事实，不反查模板）；复用生命周期 name lock，与 start / stop / delete 互斥，兼顾同平台数据根多进程（**第二进程锁抢占 409**）；只处理运行中沙箱，不停机（**core 578 / 578**） |
+| [[tasks/file-injection-refresh/03-admin-api.md\|03]] | 管理 API | done | 沙箱详情 `injections` 元数据（additive）；按沙箱与条目标识的 **POST** 刷新端点、**204 无内容**；错误分类（预检类 vs **可能部分更新**）；拒绝非空 body / 查询参数 / 任意路径；沿用既有管理鉴权；`API.md` 第 18 章（**服务端 482 / 482**） |
+| [[tasks/file-injection-refresh/04-detail-drawer.md\|04]] | 详情抽屉「注入文件」清单 | done | 现有沙箱详情抽屉内、与既有「挂载」区同级的「注入文件」清单：每条一行（宿主源 → 容器目标，只读）+「刷新副本」按钮；不读正文；刷新详情保持只读；遵循 [[conventions/console-frontend.md\|控制台前端约定]]（主题令牌 / toast / 按钮加载态 / 中文字体子集）（**vitest 1058 / 1058、typecheck 双零错、build 过**） |
+| [[tasks/file-injection-refresh/05-acceptance-and-delivery.md\|05]] | 定向验收与交付 | done | 一份定向 Playwright（`18-file-injection-refresh`，**真沙箱 2 / 2**）；逐层定向测试；**全部交付 + 定向全绿 + 无待修**三条前置满足后**单独跑一次**全量 `pnpm run test:acceptance`（**不自动二刷**）；全轮留档与文档同步（[[tasks/file-injection-refresh/RESULTS.md\|全轮收口留档]]） |
 
 ## 依赖顺序
 
@@ -61,9 +61,9 @@
 
 ## 提交与交付约定
 
-- **每阶段一个独立本地提交**（由 worker 负责 commit）；**全程不 push**。
-- **计划文档与原 PRD 分开提交**：PRD 已单独提交（`badd2d9`），任务计划与看板更新另起提交。
-- **不预先新增 ADR**：机制落点、信任边界与偏离登记等**实现证据**出来后再评估是否立 ADR（编号待定，当前轮不占位）。
+- **每阶段一个独立本地提交**（由 worker 负责 commit）；**全程不 push**——**归档前 10 个提交全部未 push**（本归档另起提交）。
+- **计划文档与原 PRD 分开提交**：PRD 已单独提交（`badd2d9`），任务计划与看板更新另起提交（`af88b84`）。
+- **ADR 在实现证据出来后才立**：本轮未预先占号，机制落点与信任边界取证后才立 [[architecture/decisions/0021-文件注入副本刷新采用显式触发与原位写.md|ADR 0021]]（**只延伸 0012，不重写 0012**）。
 - 文档只改 `docs/` 下的文件；代码改动由 worker 负责。
 
 ## 任务文件
@@ -73,6 +73,8 @@
 - [[tasks/file-injection-refresh/03-admin-api.md]] — 管理 API（详情新字段 + 刷新端点 204 + 错误分类 + 负例）。
 - [[tasks/file-injection-refresh/04-detail-drawer.md]] — 详情抽屉「注入文件」清单（每条一行 + 刷新副本按钮 + 只读展示）。
 - [[tasks/file-injection-refresh/05-acceptance-and-delivery.md]] — 定向验收与交付（定向 Playwright + 单次全量 + 留档）。
-- [[prds/file-injection-refresh.md]] — 需求（**2026-11-23 已落**，验收标准全部未勾选）。
+- [[tasks/file-injection-refresh/RESULTS.md]] — **全轮收口留档**（提交链 / 门禁数字 / e2e 证据 / 已知边界与留白 / 本机人工验收方式）。
+- [[prds/file-injection-refresh.md]] — 需求（**2026-11-23 已落**，验收标准 **23 / 23** 已逐条挂证据核销，**待用户手工验收**）。
+- [[architecture/decisions/0021-文件注入副本刷新采用显式触发与原位写.md]] — 本轮决策（创建快照之上加显式刷新通道、单文件原位写、目录镜像、特权通道不放宽）。
 - [[architecture/decisions/0012-文件注入采用复制加改属主而非改造挂载预检.md]] — 注入机制的复制 + 改属主 + 只读挂载、原件零接触与校验口径依据。
 - [[conventions/console-frontend.md]] — 前端约定（抽屉外壳、toast 口径、按钮加载态、中文字体子集）。

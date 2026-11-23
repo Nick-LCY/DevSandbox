@@ -101,7 +101,13 @@ status: todo        # todo | doing | done | blocked
 - [[tasks/console-terminal-emulator/03-terminal-residency.md]] — 前端实例常驻（**施工单步骤 8 的增量任务页**：`TerminalStack.tsx` + `terminal-residency.ts`——标签间常驻、只挂载已访问会话、`display:none`、变可见 refit、滚动位置还原、焦点请求序号、隐藏会话状态提示；前端常驻 15 条新用例）（**done：2026-11-19**）
 - [[tasks/console-terminal-emulator/04-acceptance-and-docs.md]] — 验收与文档收口（e2e `17-terminal-snapshot` 四条 **reload 强制重挂载取证**：括号粘贴 / 鼠标上报 / 无再应答 / 画面恢复 + 门禁全量 + ADR / 约定 / 看板 / 索引同步）（**done：2026-11-19**）
 - [[tasks/console-terminal-emulator/RESULTS.md]] — 控制台终端轮**全轮收口留档**（2026-11-19）：轮次总表与提交链（`8954025..da45bda`，17 提交未 push）、门禁数字表、**根因 → 根治对照（①②）**、测试与取证要点、**已知限制 6 条**（快照只恢复活动屏 / 回滚 1000 vs 5000 / 键盘协议标志不可恢复 / Obsidian 往返 visited 清零 / 隐藏会话持 WS / e2e 单次 75/75 受宿主内存制约）、偏离登记 5 条、**评审遗留 4 条**
-- [[tasks/file-injection-refresh/README.md]] — 文件注入副本手动刷新轮（运行中沙箱对**单文件 / 整目录**已保存注入手动刷新托管副本，**不停机**；目录镜像同步含删除）任务集索引，含 5 个任务、依赖顺序与关键前置风险（**2026-11-23 立项**，**01~05 全部 todo、尚无完成项**——PRD 已落、功能未实现；依赖 `01 → 02 → 03 → 04 → 05`，**01~04 不得跑全量 E2E**，全量只在 05 单独跑一次、**不自动二刷**；**绝不 Cloudflare 部署、不 push**）
+- [[tasks/file-injection-refresh/README.md]] — 文件注入副本手动刷新轮（运行中沙箱对**单文件 / 整目录**已保存注入手动刷新托管副本，**不停机**；目录镜像同步含删除）任务集索引，含 5 个任务、依赖顺序与关键前置风险（**2026-11-23 立项、同日收口：01~05 全部 done**——PRD 验收 **23 / 23** 逐条挂证据；门禁 core **578 / 578**、服务端 **482 / 482**、前端 vitest **1058 / 1058**、定向 e2e spec 18 **2 / 2**；**单次**全量 **77 = 76 通过 / 1 失败**（唯一失败为 spec16 首行写死的脆化断言，与本轮代码无关，已由独立 test-only 提交定向修复、**未跑第二次全量**）；**零部署、零 push**，归档前 10 个提交均留本地（本归档另起提交）；**用户手工验收待执行**；决策见 [[architecture/decisions/0021-文件注入副本刷新采用显式触发与原位写.md|ADR 0021]]）
+- [[tasks/file-injection-refresh/01-refresh-mechanism-and-probe.md]] — 安全刷新机制与真机探针（随包分发的仅标准库 helper + 预检 / 写入口径 + 单文件原位与目录镜像 + 真机探针 **22 / 22**）（**done：2026-11-23**）
+- [[tasks/file-injection-refresh/02-core-persistence-and-mutex.md]] — 核心实例持久化与互斥 / 真沙箱（additive 元数据 + 生命周期 name lock 复用 + 跨进程互斥 **409** + 运行中不停机）（**done：2026-11-23**）
+- [[tasks/file-injection-refresh/03-admin-api.md]] — 管理 API（详情 `injections` 新字段 + 按条目标识的刷新端点 **204** + 错误分类 + 三类负例 + `API.md` 第 18 章）（**done：2026-11-23**）
+- [[tasks/file-injection-refresh/04-detail-drawer.md]] — 详情抽屉「注入文件」清单（每条一行 + 「刷新副本」按钮 + 读 / 写分离 + 字体子集重生成）（**done：2026-11-23**）
+- [[tasks/file-injection-refresh/05-acceptance-and-delivery.md]] — 定向验收与交付（定向 Playwright `18-file-injection-refresh` **2 / 2** + 单次全量 + 留档与文档同步）（**done：2026-11-23**）
+- [[tasks/file-injection-refresh/RESULTS.md]] — 文件注入副本手动刷新**全轮收口留档**（提交链 10 提交未 push、门禁数字表、**单次全量** 77 = 76 / 1 与那一条失败的归因、已知边界与留白 7 条、本机人工验收方式）
 
 ## 看板
 任务状态汇总见 [[current-state.md]]，由人维护。

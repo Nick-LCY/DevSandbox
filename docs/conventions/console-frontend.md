@@ -200,6 +200,15 @@
 - **纯逻辑收敛**：端口校验、状态文案、圆点配色、tooltip 文案、地址推导在 `src/lib/port-forward.ts`；桌面 IPC 桥在 `src/lib/desktop-forward.ts`（走 `window.__TAURI_INTERNALS__.invoke`，**不引 `@tauri-apps/api`**，web 形态的构建产物与依赖树不被 Tauri 污染）。
 - **转发记录由工作台持有**：面板**不拉**转发记录——工作台按 10 秒一拍**并行刷详情 + 转发记录**（合并轮询，失败连续 3 次才弹一条，来源 `sandbox-detail`），经 props 传给抽屉与面板；面板的写操作完成后回调工作台立即重拉。**转发记录的读取仅桌面形态执行**（web 形态只刷详情）。
 
+## 注入文件清单与刷新副本
+
+- **清单在沙箱详情抽屉内、与「挂载」区同级**：**不新增抽屉**；每条一行——宿主源 → 容器目标（标「只读」）+ 一个「刷新副本」按钮；**不展开目录树**、**不展示正文**。
+- **写动作只有一处**：每条一个「刷新副本」按钮 → `POST /api/sandboxes/{name}/injections/{entry_id}/refresh`（**只按条目标识定位**：宿主源 / 副本 / 容器目标一律由服务端从实例元数据查得，前端**不传路径、不传查询参数、不发请求体**）。
+- **读 / 写必须分离**：既有「刷新详情」是**读操作**，**不得**触发刷新副本；两个按钮的文案与位置分开，验收脚本断言「刷新详情」期间刷新端点**零 POST**。
+- **加载态禁重复触发**：进行中按钮保留文字 + 旋转图标（lucide `Loader2`、`size-3.5` + `animate-spin`、`aria-hidden`），禁用重复点击。
+- **结果一律走右上角 toast**：来源标识固定 `injection-refresh`；成功「副本已刷新」；失败**直出后端 `detail` 原文**（含「可能部分更新」语义，不另造说法）。
+- **无条目即整区不渲染**：旧实例（详情里没有 `injections`）与空清单 ⇒ **不出现刷新入口**（旧实例仍可正常查看 / 管理 / 删除）。
+
 ## data-testid 规范
 
 - 命名 `page-<页面>-<元素>`，字符集只允许小写字母、数字与连字符。
@@ -226,6 +235,8 @@
 - [[tasks/file-pane-obsidian/07-markdown-wikilink.md|07 markdown 渲染与 wikilink]] — Obsidian 渲染与 wikilink、`PreviewConfirmDialog` / `PreviewLoading` 共用组件抽取的落地任务。
 - [[tasks/registry-cache-manifest/05-console-cache-images-view.md|05 console 缓存镜像清单视图]] — 设置抽屉缓存镜像清单视图的首次落地；三 tab 化、清单表格化与本地搜索的改造口径见 [[tasks/registry-cache-manifest/RESULTS.md|RESULTS]] 第十节。
 - [[architecture/decisions/0020-控制台终端采用后端模拟器与快照接入.md|0020 控制台终端采用后端模拟器与快照接入]] — 「终端接入与快照恢复」「终端实例常驻（标签之间）」「终端全屏与焦点回填」三节的主要依据。
+- [[architecture/decisions/0021-文件注入副本刷新采用显式触发与原位写.md|0021 文件注入副本刷新采用显式触发与原位写]] — 「注入文件清单与刷新副本」一节的口径依据（显式触发、单文件原位写、目录镜像、无备份无回滚）。
 - [[tasks/console-terminal-emulator/02-attach-snapshot-protocol.md|02 接入协议换代]] — 快照恢复流与旧客户端 / 旧后端兼容的落地任务。
 - [[tasks/console-terminal-emulator/03-terminal-residency.md|03 前端实例常驻]] — 标签之间常驻、已访问集合、变可见 refit、焦点请求序号的落地任务。
 - [[tasks/console-terminal-emulator/RESULTS.md|控制台终端轮全轮留档]] — 门禁数字、已知限制与评审遗留（含「错误帧无 `code` 字段」等）。
+- [[tasks/file-injection-refresh/RESULTS.md|文件注入副本手动刷新全轮留档]] — 刷新轮的提交链、门禁数字、单次全量结果与本机人工验收方式。
