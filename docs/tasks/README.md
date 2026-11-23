@@ -101,6 +101,7 @@ status: todo        # todo | doing | done | blocked
 - [[tasks/console-terminal-emulator/03-terminal-residency.md]] — 前端实例常驻（**施工单步骤 8 的增量任务页**：`TerminalStack.tsx` + `terminal-residency.ts`——标签间常驻、只挂载已访问会话、`display:none`、变可见 refit、滚动位置还原、焦点请求序号、隐藏会话状态提示；前端常驻 15 条新用例）（**done：2026-11-19**）
 - [[tasks/console-terminal-emulator/04-acceptance-and-docs.md]] — 验收与文档收口（e2e `17-terminal-snapshot` 四条 **reload 强制重挂载取证**：括号粘贴 / 鼠标上报 / 无再应答 / 画面恢复 + 门禁全量 + ADR / 约定 / 看板 / 索引同步）（**done：2026-11-19**）
 - [[tasks/console-terminal-emulator/RESULTS.md]] — 控制台终端轮**全轮收口留档**（2026-11-19）：轮次总表与提交链（`8954025..da45bda`，17 提交未 push）、门禁数字表、**根因 → 根治对照（①②）**、测试与取证要点、**已知限制 6 条**（快照只恢复活动屏 / 回滚 1000 vs 5000 / 键盘协议标志不可恢复 / Obsidian 往返 visited 清零 / 隐藏会话持 WS / e2e 单次 75/75 受宿主内存制约）、偏离登记 5 条、**评审遗留 4 条**
+- [[tasks/file-injection-refresh/README.md]] — 文件注入副本手动刷新轮（运行中沙箱对**单文件 / 整目录**已保存注入手动刷新托管副本，**不停机**；目录镜像同步含删除）任务集索引，含 5 个任务、依赖顺序与关键前置风险（**2026-11-23 立项**，**01~05 全部 todo、尚无完成项**——PRD 已落、功能未实现；依赖 `01 → 02 → 03 → 04 → 05`，**01~04 不得跑全量 E2E**，全量只在 05 单独跑一次、**不自动二刷**；**绝不 Cloudflare 部署、不 push**）
 
 ## 看板
 任务状态汇总见 [[current-state.md]]，由人维护。
