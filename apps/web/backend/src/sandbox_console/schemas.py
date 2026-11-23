@@ -13,11 +13,13 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from sandbox_platform import (
     IMAGE_SOURCE_AUTO,
+    STATE_RUNNING,
     ConnectionInfo,
     CreateRequest,
     CreateResult,
     DeleteResult,
     HostImage,
+    InjectionRecord,
     ProxyRestartResult,
     ProxyStatus,
     ReclaimPlan,
@@ -169,6 +171,46 @@ class MountInfo(BaseModel):
     role: str
 
 
+def _injection_read_only(metadata: SandboxMetadata, record: InjectionRecord) -> bool:
+    """注入副本在容器内是否只读。
+
+    以 ``files`` 清单里对应的那一份挂载为准（注入通道**恒为只读挂载**）；
+    清单里对不上时**按只读报**（保守：宁可贵不可刷，不给「可写」的错误暗示）。
+    """
+    for mount in metadata.files or []:
+        if (
+            mount.host_path == record.staged_path
+            and mount.container_path == record.container_path
+        ):
+            return bool(mount.read_only)
+    return True
+
+
+class InjectionInfo(BaseModel):
+    """一条注入声明（**只暴露元数据**：无正文、无托管副本内部路径、无 inode）。
+
+    字段口径：
+
+    - ``entry_id``：条目标识（**刷新端点的唯一入参**）；
+    - ``source_path``：已校验的宿主源绝对路径；
+    - ``container_path``：容器内目标路径（**只读挂载**）；
+    - ``kind``：``file`` / ``directory``；
+    - ``read_only``：容器内是否只读（注入通道**恒为只读**）；
+    - ``can_refresh``：当前沙箱状态下这条**能否刷新**（沙箱运行中才可刷）。
+
+    **不暴露**：托管副本的宿主路径（``staged_path``）、副本的文件身份
+    （``dev`` / ``ino``）、源文件的正文——刷新请求**只按 ``entry_id`` 定位**，
+    路径一律由服务端从实例元数据查得。
+    """
+
+    entry_id: str
+    source_path: str
+    container_path: str
+    kind: str
+    read_only: bool
+    can_refresh: bool
+
+
 class SandboxSummary(BaseModel):
     """列表项：名字 / 状态 / 镜像 / 创建时间。"""
 
@@ -219,6 +261,8 @@ class SandboxDetail(BaseModel):
     unit_path: str
     mounts: list[MountInfo]
     files: list[MountInfo]
+    #: 注入声明（**additive**：旧实例缺省为空列表，既有字段零回归）
+    injections: list[InjectionInfo]
     dependency_containers: list[str]
     command: list[str]
     env: dict[str, str]
@@ -265,6 +309,17 @@ class SandboxDetail(BaseModel):
                     role=mount.role,
                 )
                 for mount in metadata.files
+            ],
+            injections=[
+                InjectionInfo(
+                    entry_id=item.entry_id,
+                    source_path=item.source_path,
+                    container_path=item.container_path,
+                    kind=item.kind,
+                    read_only=_injection_read_only(metadata, item),
+                    can_refresh=metadata.state == STATE_RUNNING,
+                )
+                for item in (metadata.injections or [])
             ],
             dependency_containers=list(metadata.dependency_containers),
             command=list(metadata.command),

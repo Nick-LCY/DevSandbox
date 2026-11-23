@@ -2,7 +2,9 @@
 
 映射固定：入参非法 400、缺必填镜像字段 422、沙箱不存在 404、沙箱已存在 409、
 镜像不存在 400、转发链路异常 409 / 502 / 503、**文件传输失败按分类码 400 / 404 /
-409 / 502 / 500**、其余平台异常 500。
+409 / 502 / 500**、**注入副本刷新失败按分类码 400 / 404 / 409 / 500**（500 回
+「可能部分更新」的固定文案，不回「平台内部错误」）、**同名沙箱互斥冲突 409**、
+其余平台异常 500。
 
 消息策略：
 
@@ -16,6 +18,11 @@
   （``TransferError.reason``）映射状态码，回核心包的**固定中文文案**
   （常量 + 用户自己给的容器内路径）。**容器内的 stderr 原文只进日志**，
   绝不进 HTTP 响应。
+- **注入副本刷新链路（400 / 404 / 409 / 500）**：按核心包的**失败分类码**
+  （``RefreshError.reason``）映射状态码，回核心包的**固定中文文案常量**
+  （白名单内原样回显，白名单外换该分类的兜底文案）；异常原文只进日志，
+  **不外泄宿主路径与文件正文**。**500 分支例外**：回「可能部分更新」的固定
+  文案而不是「平台内部错误」——PRD 要求该语义对调用方可见。
 
 **入日志前单行化**：传输链路的异常原文带**用户给的容器内路径**（路径里可以
 塞换行）⇒ 原样入日志就是**日志伪造**（调用方能往服务端日志里塞任意行）。
@@ -33,8 +40,19 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sandbox_platform import (
+    MSG_CONFLICT,
+    MSG_ENTRY_MISMATCH,
+    MSG_ENTRY_NOT_FOUND,
+    MSG_INTERNAL,
+    MSG_INTERNAL_UNSTARTED,
+    MSG_KIND_MISMATCH,
+    MSG_PARTIAL,
+    MSG_PRECHECK,
+    MSG_SANDBOX_NOT_RUNNING,
+    REASON_CONFLICT,
     REASON_DAEMON_UNREACHABLE,
     REASON_EXEC_FAILED,
+    REASON_INTERNAL,
     REASON_INVALID_PATH,
     REASON_INVALID_SIZE,
     REASON_NOT_FOUND,
@@ -43,6 +61,8 @@ from sandbox_platform import (
     REASON_PARENT_MISSING,
     REASON_PARENT_NOT_DIRECTORY,
     REASON_PARENT_NOT_WRITABLE,
+    REASON_PARTIAL,
+    REASON_PRECHECK,
     REASON_READONLY,
     REASON_SANDBOX_STOPPED,
     REASON_SIZE_MISMATCH,
@@ -53,10 +73,13 @@ from sandbox_platform import (
     ForwardError,
     ImageNotFoundError,
     NotFoundError,
+    RefreshError,
+    SandboxConflictError,
     SandboxError,
     TransferError,
 )
 from sandbox_platform import ValidationError as PlatformValidationError
+from sandbox_platform.refresh import REASON_NOT_FOUND as REFRESH_REASON_NOT_FOUND
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 logger = logging.getLogger(__name__)
@@ -173,6 +196,82 @@ def classify_transfer_error(exc: TransferError) -> tuple[int, str]:
         # 500 分支：只给固定文案（异常原文可能带宿主细节），原文只进日志
         return status_code, INTERNAL_ERROR_MESSAGE
     return status_code, str(exc)
+
+
+# ---------------------------------------------------------------- 刷新链路错误
+# 注入副本刷新（``POST /api/sandboxes/{name}/injections/{entry_id}/refresh``）：
+# 核心包用**结构化失败分类码**（``RefreshError.reason``）表达失败，服务端**只按
+# 分类码判状态码**，不解析异常文案（措辞会变，分类码不会）。
+#
+# | 分类码 | 状态码 | 语义 |
+# |---|---|---|
+# | ``not_found`` | 404 | 条目不存在 / 沙箱不存在（旧实例没有注入条目） |
+# | ``conflict`` | 409 | 同名沙箱的并发操作冲突（刷新与启停删互斥，被拒不排队） |
+# | ``precheck`` | 400 | 预校验未通过（源不安全 / 目的不安全 / 容器未运行 / 根类型改变）：**副本零改动** |
+# | ``partial`` | 500 | 进入写入阶段后失败：**可能部分更新**（不回滚、不续跑） |
+# | ``internal`` | 500 | 平台内部异常：副本状态未知（保守按可能部分更新报） |
+#
+# **文案口径（与其它链路的两点差异）**：
+#
+# 1. 响应只回核心包的**固定中文文案常量**（白名单：``ALLOWED_FIXED_DETAILS``）——
+#    白名单外的异常原文**一律换成该分类的兜底固定文案**，原文**只进日志**
+#    （不外泄宿主路径与文件正文）；
+# 2. **500 分支回固定文案而不是「平台内部错误」**：PRD 要求「**可能部分更新**」
+#    的语义必须让调用方看见（前端直出后端 ``detail`` 原文）——回的是核心包的
+#    固定常量（不含宿主路径与正文），**不是**异常原文。
+REFRESH_STATUS_BY_REASON: dict[str, int] = {
+    # 条目不存在（含旧实例无条目）：不是用户能改的参数错误
+    REFRESH_REASON_NOT_FOUND: STATUS_NOT_FOUND,
+    # 同名沙箱的并发操作冲突：被拒不排队
+    REASON_CONFLICT: STATUS_CONFLICT,
+    # 预校验未通过：副本零改动
+    REASON_PRECHECK: STATUS_BAD_REQUEST,
+    # 进入写入阶段后失败：可能部分更新
+    REASON_PARTIAL: STATUS_SERVER_ERROR,
+    # 平台内部异常：副本状态未知
+    REASON_INTERNAL: STATUS_SERVER_ERROR,
+}
+
+#: 各分类的**兜底**固定文案（异常原文不在白名单里时用它）
+REFRESH_DETAIL_BY_REASON: dict[str, str] = {
+    REFRESH_REASON_NOT_FOUND: MSG_ENTRY_NOT_FOUND,
+    REASON_CONFLICT: MSG_CONFLICT,
+    REASON_PRECHECK: MSG_PRECHECK,
+    REASON_PARTIAL: MSG_PARTIAL,
+    REASON_INTERNAL: MSG_INTERNAL,
+}
+
+#: 允许**原样回显**的固定文案白名单（全部是核心包的中文文案常量：刷新链路与
+#: 同名锁冲突链路共用）。
+#: 白名单外一律换兜底文案 ⇒ 响应里**不会出现**宿主绝对路径或文件正文。
+ALLOWED_FIXED_DETAILS = frozenset(
+    {
+        MSG_ENTRY_NOT_FOUND,
+        MSG_ENTRY_MISMATCH,
+        MSG_CONFLICT,
+        MSG_PRECHECK,
+        MSG_SANDBOX_NOT_RUNNING,
+        MSG_KIND_MISMATCH,
+        MSG_PARTIAL,
+        MSG_INTERNAL,
+        MSG_INTERNAL_UNSTARTED,
+    }
+)
+
+
+def classify_refresh_error(exc: RefreshError) -> tuple[int, str]:
+    """把刷新失败映射成（状态码, 固定文案）。
+
+    **只按分类码**（``RefreshError.reason``）判状态码；文案取核心包的固定
+    中文常量（白名单内原样回显，白名单外换兜底文案）——**不外泄正文**。
+    分类码不在表里 → 500 + 固定文案（**不猜**：认不出来就不是用户侧问题）。
+    """
+    reason = getattr(exc, "reason", "") or ""
+    status_code = REFRESH_STATUS_BY_REASON.get(reason, STATUS_SERVER_ERROR)
+    fallback = REFRESH_DETAIL_BY_REASON.get(reason, INTERNAL_ERROR_MESSAGE)
+    text = str(exc)
+    detail = text if text in ALLOWED_FIXED_DETAILS else fallback
+    return status_code, detail
 
 
 def single_line(text: str) -> str:
@@ -438,6 +537,54 @@ def install_exception_handlers(app: FastAPI) -> None:
                 message,
             )
         return error_response(status_code, detail)
+
+    @app.exception_handler(RefreshError)
+    async def _handle_refresh_error(request: Request, exc: RefreshError) -> JSONResponse:
+        """注入副本刷新失败：按**失败分类码**映射状态码（见上表）。
+
+        响应只回核心包的**固定中文文案**（白名单内原样回显，白名单外换兜底
+        文案）；异常原文只进日志（**不外泄宿主路径与文件正文**）。
+
+        **500 分支回固定文案而不是「平台内部错误」**：PRD 要求「可能部分更新」
+        的语义必须让调用方看见。
+        """
+        status_code, detail = classify_refresh_error(exc)
+        message = single_line(str(exc))
+        if status_code >= STATUS_SERVER_ERROR:
+            logger.error(
+                "注入副本刷新失败[refresh-error]：%s %s：%s",
+                request.method,
+                request.url.path,
+                message,
+                exc_info=exc,
+            )
+        else:
+            logger.info(
+                "注入副本刷新失败：%s %s：%s",
+                request.method,
+                request.url.path,
+                message,
+            )
+        return error_response(status_code, detail)
+
+    @app.exception_handler(SandboxConflictError)
+    async def _handle_conflict(
+        request: Request, exc: SandboxConflictError
+    ) -> JSONResponse:
+        """同名沙箱的互斥操作冲突：**409**（既有管理面口径：冲突即 409）。
+
+        刷新与该沙箱的启动 / 停止 / 删除互斥：撞上的一方**立即被拒**（不排队）。
+        文案只回核心包的固定常量（白名单内原样回显，否则回兜底冲突文案）。
+        """
+        message = single_line(str(exc))
+        detail = message if message in ALLOWED_FIXED_DETAILS else MSG_CONFLICT
+        logger.info(
+            "沙箱操作冲突：%s %s：%s",
+            request.method,
+            request.url.path,
+            message,
+        )
+        return error_response(STATUS_CONFLICT, detail)
 
     @app.exception_handler(SandboxError)
     async def _handle_platform_error(request: Request, exc: SandboxError) -> JSONResponse:

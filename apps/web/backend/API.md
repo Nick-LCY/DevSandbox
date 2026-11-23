@@ -474,13 +474,14 @@ docker exec -i <转发容器> socat - TCP:<沙箱容器名>:<容器端口>
 | 关闭 | `stop(name: str, stop_dependencies: bool = True) -> SandboxMetadata` | 依赖容器是否一并停止由显式参数控制，默认停；**该沙箱的转发容器也一并停止**（转发记录保留） |
 | 回收清单 | `reclaim_plan(name: str) -> ReclaimPlan` | 删除前展示用 |
 | 删除 | `delete(name: str) -> DeleteResult` | 按固定回收清单回收，幂等 |
+| 刷新 | `refresh_injection(name: str, entry_id: str) -> RefreshResult` | 刷新一条注入的托管副本（运行中沙箱，**不停机**）；**只认本实例元数据里已保存的条目标识**（源 / 副本 / 容器目标一律从元数据查得，不接受调用方给路径）；与该沙箱的 `start` / `stop` / `delete` **互斥**（冲突即拒，不排队）；失败抛 `RefreshError`（带 `reason` 分类码，见第 18 章） |
 | 宿主镜像 | `list_host_images() -> list[HostImage]` | 实时枚举宿主本地镜像（创建页下拉用）；悬空镜像不进列表 |
 | 代理状态 | `proxy_status() -> ProxyStatus` | 代理的容器状态、健康状态、缓存占用、证书就绪与访问地址 |
 | 代理重启 | `restart_proxy(timeout: int = 120) -> ProxyRestartResult` | 重启代理并等健康；重启后比对代理 CA 指纹，变了就为已有沙箱用户重装合并 CA 束；`ca_changed` 的口径与 `ca_reinstalled` / `failed_users` 的含义见 11.5 |
 
 ### 同名沙箱的互斥与名字占用
 
-同名沙箱的 `create` / `start` / `stop` / `delete` 在进程内**按名串行化**：
+同名沙箱的 `create` / `start` / `stop` / `delete` / `refresh_injection` 在进程内**按名串行化**：
 并发创建同名沙箱会并行建同一套用户、子 ID 段与容器，后到者的回滚会删掉先到者
 已跑起来的沙箱。串行化在核心包内完成（进程内互斥锁字典），命令行与服务端共用。
 
@@ -669,6 +670,7 @@ docker exec -i <转发容器> socat - TCP:<沙箱容器名>:<容器端口>
 | POST | `/api/sandboxes/{name}/stop` | `StopSandboxRequest`（可省略） | `SandboxDetail` | `SandboxService.stop` |
 | GET | `/api/sandboxes/{name}/reclaim` | — | `ReclaimPlanModel`（沙箱不存在 → 404） | `SandboxService.reclaim_plan` |
 | DELETE | `/api/sandboxes/{name}` | — | `DeleteSandboxResponse` | `SandboxService.delete` |
+| POST | `/api/sandboxes/{name}/injections/{entry_id}/refresh` | **只有条目标识**（路径参数）；**不接受查询参数、不接受请求体** | **204 无内容** | 注入副本刷新（见第 18 章） |
 | GET | `/api/images` | — | `HostImageModel[]` | `SandboxService.list_host_images` |
 | GET | `/api/proxy/status` | — | `ProxyStatusModel` | `SandboxService.proxy_status` |
 | POST | `/api/proxy/restart` | — | `ProxyRestartModel` | `SandboxService.restart_proxy` |
@@ -684,6 +686,7 @@ docker exec -i <转发容器> socat - TCP:<沙箱容器名>:<容器端口>
 | GET | `/api/proxy/cache/images` | 查询参数 `format`（`json` \| `text`，缺省 `json`）、`tags=only`（tag-only 过滤，选填） | `CacheScanResult` 载荷（json）/ 预渲染文本（text；tags=only 时为 docker images 风格表格） | 镜像缓存清单（见第 17 章） |
 
 > 三期新增的**端口转发接口**（三条 REST + 隧道 WebSocket）见**第 15 章**；
+> **注入副本刷新端点**（`POST …/injections/{entry_id}/refresh`）见**第 18 章**；
 > 运行期文件传输的**四个端点**（上传 / 下载 / 只读读取 / 目录列表）见**第 16 章**；
 > **镜像缓存清单端点**（json / text 两格式 + 双凭据鉴权矩阵）见**第 17 章**。
 
@@ -716,7 +719,8 @@ docker exec -i <转发容器> socat - TCP:<沙箱容器名>:<容器端口>
 | 模型 | 字段 | 说明 |
 |---|---|---|
 | `SandboxSummary` | `name`、`state`、`state_label`、`image`、`created_at` | 列表项：名字 / 状态 / 镜像 / 创建时间 |
-| `SandboxDetail` | `name`、`state`、`state_label`、`image`、`image_source`、`created_at`、`updated_at`、`system_user`、`uid`、`gid`、`home`、`subid_start`、`subid_length`、`socket_path`、`socket_mount_path`、`container_name`、`container_id`、`network_name`、`network_owned`、`unit_path`、`mounts`、`files`、`dependency_containers`、`command`、`env`、`workdir` | 单个沙箱的完整信息（取自 `SandboxMetadata`）；**`env` 只回键名，值固定 `***`**（环境变量里常有凭据）；**`files` 是注入文件的只读副本挂载**（结构同 `mounts`，单列不进 `mounts`），没有注入声明时返回空列表 |
+| `SandboxDetail` | `name`、`state`、`state_label`、`image`、`image_source`、`created_at`、`updated_at`、`system_user`、`uid`、`gid`、`home`、`subid_start`、`subid_length`、`socket_path`、`socket_mount_path`、`container_name`、`container_id`、`network_name`、`network_owned`、`unit_path`、`mounts`、`files`、`injections`、`dependency_containers`、`command`、`env`、`workdir` | 单个沙箱的完整信息（取自 `SandboxMetadata`）；**`env` 只回键名，值固定 `***`**（环境变量里常有凭据）；**`files` 是注入文件的只读副本挂载**（结构同 `mounts`，单列不进 `mounts`），没有注入声明时返回空列表；**`injections` 是注入声明清单**（**additive**，见 18.3；旧实例为空列表） |
+| `InjectionInfo` | `entry_id`、`source_path`、`container_path`、`kind`、`read_only`、`can_refresh` | 注入声明清单里的一条（**只暴露元数据**：无托管副本内部路径、无 inode、无正文）；`can_refresh` 表示当前沙箱状态下这条**能否刷新**（见 18.3） |
 | `CreateSandboxResponse` | `metadata`、`connection`、`steps` | 创建结果：`steps` 是固定 7 步名称，`connection` 含套接字路径与进入沙箱的命令提示 |
 | `ReclaimPlanModel` | `sandbox_name`、`items`、`untouched_note`、`user_mounts`、`incomplete` | 删除前的回收清单；`untouched_note` 固定为「用户挂载的宿主机目录不受影响」；`incomplete` 表示依赖容器清单可能不完整 |
 | `DeleteSandboxResponse` | `name`、`existed`、`removed`、`failed`、`plan` | 删除结果；`removed` 是确实回收掉的资源，`failed` 是尝试过但没成功的条目 |
@@ -1867,5 +1871,129 @@ curl -s -H 'Authorization: Bearer <令牌>' \
 
 # 无凭据 / 错误令牌 / 受限令牌越界 → 401（同一句固定文案）
 curl -s 'http://127.0.0.1:8000/api/proxy/cache/images'
+# → {"detail": "访问令牌无效或缺失"}
+```
+
+
+---
+
+## 18. 注入副本刷新接口（`POST /api/sandboxes/{name}/injections/{entry_id}/refresh`）
+
+在**创建时快照**之上加一条**显式刷新**通道：运行中的沙箱可以对**单文件**或
+**整目录**已保存注入手动刷新托管副本，**不停机**（不中断容器 / 终端 / agent）。
+
+**能力本体在核心包**（`sandbox_platform.refresh` 与
+`SandboxService.refresh_injection(name, entry_id)`）：条目定位、源重校验、
+helper 调用与失败分类都在核心包里；服务端只做**入参闸门 + 编排 + 转译**
+（与其它轮同款）。
+
+**入参只有条目标识**：宿主源路径 / 托管副本路径 / 容器目标路径**一律不接受**
+——路径一律由服务端从该沙箱的**实例元数据**里查得（不查模板、不反查模板），
+因此本接口**不构成越权写入**。
+
+### 18.1 路由表
+
+| 方法 | 路径 | 入参 | 出参 | 说明 |
+|---|---|---|---|---|
+| POST | `/api/sandboxes/{name}/injections/{entry_id}/refresh` | **只有条目标识**（路径参数）；**不接受查询参数、不接受请求体** | **204 无内容** | 刷新一条注入的托管副本（运行中沙箱，不停机） |
+
+### 18.2 入参与闸门
+
+| 项 | 位置 | 必填 | 说明 |
+|---|---|---|---|
+| `name` | 路径参数 | 是 | 沙箱名 |
+| `entry_id` | 路径参数 | 是 | **已保存**的注入条目标识（`inj-<序号>-<摘要>`，稳定）；服务端据此从**实例元数据**查得源 / 副本 / 容器目标 / 种类 |
+
+**一律不接受的入参**（杜绝「借 query / body 夹带路径」）：
+
+| 情形 | 状态码 | 响应 `detail` |
+|---|---|---|
+| 带**任何**查询参数（如 `?source_path=…` / `?container_path=…`） | 400 | `{"detail": "刷新接口不接受查询参数：只按条目标识定位，路径一律由服务端查得"}` |
+| 请求体**非空**（任意 JSON、任意路径字段、乃至只有空白字符） | 400 | `{"detail": "刷新接口不接受请求体：只按条目标识定位，路径一律由服务端查得"}` |
+
+**请求体是流式读的**：**首个非空块即拒**——不把整个 body 缓冲进内存（上传通道
+踩过「200 MiB body 让进程 RSS 涨十倍」的坑），也不无界读。**空请求体放行**
+（只有**非空** body 才被拒）。
+
+### 18.3 详情回显：`SandboxDetail.injections`（additive）
+
+沙箱详情**新增** `injections` 字段（列表），**既有字段一字不改**：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `entry_id` | `str` | 条目标识（**刷新端点的唯一入参**） |
+| `source_path` | `str` | 已校验的宿主源绝对路径 |
+| `container_path` | `str` | 容器内目标路径（只读挂载点） |
+| `kind` | `"file" \| "directory"` | 条目种类 |
+| `read_only` | `bool` | 容器内是否只读（注入通道**恒为只读**） |
+| `can_refresh` | `bool` | 当前沙箱状态下这条**能否刷新**（沙箱**运行中**才为 `true`；停机沙箱为 `false`） |
+
+- **旧实例**：该字段为**空列表**（无刷新条目）——**不迁移、不补录、不反查模板**，
+  旧沙箱仍可正常查看 / 管理 / 删除；
+- **不暴露**：托管副本的宿主路径、副本的 `st_dev` / `st_ino`、源文件的正文；
+- **既有 `files` 字段零回归**：那份副本挂载仍在 `files` 里（既有语义），
+  `injections` **不重复暴露**它。
+
+### 18.4 错误码映射与失败语义
+
+服务端**只按核心包的失败分类码**（`RefreshError.reason`）判状态码，**不解析
+异常文案**（措辞会变，分类码不会）：
+
+| 分类码 | 状态码 | 响应 `detail` | 语义 |
+|---|---|---|---|
+| `not_found` | 404 | 注入条目不存在：该沙箱没有可刷新的注入记录 | 条目不存在 / 沙箱不存在 / 旧实例无条目 |
+| `conflict` | 409 | 该沙箱正在执行其它操作，请稍后重试 | 同名沙箱的并发操作冲突（**被拒不排队**） |
+| `precheck` | 400 | 刷新前置校验未通过，副本未改动 / 沙箱未运行，无法刷新副本 / 注入源的类型已改变，无法刷新副本 | 预校验类失败：**副本一个字节都没动** |
+| `partial` | 500 | 刷新写入阶段失败，副本可能部分更新，请修正后重试 | 进入写入阶段后失败：**可能部分更新**（不回滚、不续跑） |
+| `internal` | 500 | 刷新执行异常，副本可能部分更新，请稍后重试 | 平台内部异常：副本状态未知（保守按可能部分更新报） |
+
+- **500 分支回固定文案而不是「平台内部错误」**：PRD 要求「**可能部分更新**」的
+  语义必须让调用方看见（前端直出后端 `detail` 原文）——回的是核心包的**固定中文
+  常量**，**不是**异常原文；
+- **文案不泄正文**：响应只回核心包的中文文案常量（白名单外的异常原文一律换成
+  该分类的兜底固定文案），**宿主绝对路径与文件正文一律不进响应**（只进日志）；
+- **未知分类码** → 500 + 固定文案（**不猜**：认不出来就不是用户侧问题）；
+- **失败不动副本**：预校验失败或目录枚举失败 ⇒ **副本零改动**（不写、不删）；
+- **不回滚、不续跑**：进入写入阶段后失败即停止后续的副本更新与镜像删除，
+  **不恢复到旧副本**；修正后**由用户手动重试**（平台不自动重试）。
+
+### 18.5 状态、互斥与鉴权
+
+| 项 | 口径 |
+|---|---|
+| 停机沙箱 | **直接拒绝**（400「沙箱未运行，无法刷新副本」）——刷新**不做自动启动**（那会重建容器、违背「不停机」） |
+| 互斥 | 同一沙箱内**刷新之间**互斥，且刷新与该沙箱的**启动 / 停止 / 删除**互斥；冲突**立即被拒**（409，**不排队**）——生命周期操作撞上刷新时同样回 **409**（既有管理面口径） |
+| 鉴权 | 端点挂在 `/api` 前缀下 ⇒ **被 Bearer 令牌中间件自动保护**（**不另写鉴权分支**）：无令牌 / 错令牌 / **只读缓存令牌（`sbxr_`）**一律 **401** |
+| 跨源 | **CORS 白名单零改动**（本轮只用 POST，既有白名单已含） |
+| 阻塞动作 | 刷新要跑特权 helper（可能分钟级）⇒ 走**既有线程池**，**不进事件循环**（async 路由里绝不直接调） |
+| 原件 | 宿主原件全程**只读**（不 chmod / chown / 写 / 删），内容与 mtime 不变 |
+| 正文 | 刷新读取源字节**只为复制**；详情、刷新响应与日志**都不含正文**（私钥、凭证一律不外泄） |
+
+### 18.6 示例
+
+```bash
+# 刷新一条已保存的注入（成功：204 无内容）
+curl -i -X POST -H 'Authorization: Bearer <令牌>' \
+    'http://127.0.0.1:8000/api/sandboxes/demo/injections/inj-0-0123456789ab/refresh'
+# → HTTP/1.1 204 No Content
+
+# 带查询参数 → 400（夹带路径一律拒）
+curl -i -X POST -H 'Authorization: Bearer <令牌>' \
+    'http://127.0.0.1:8000/api/sandboxes/demo/injections/inj-0-0123456789ab/refresh?source_path=/etc/passwd'
+# → {"detail": "刷新接口不接受查询参数：只按条目标识定位，路径一律由服务端查得"}
+
+# 带请求体 → 400（同上）
+curl -i -X POST -H 'Authorization: Bearer <令牌>' -H 'Content-Type: application/json' \
+    -d '{"source_path":"/etc/passwd"}' \
+    'http://127.0.0.1:8000/api/sandboxes/demo/injections/inj-0-0123456789ab/refresh'
+# → {"detail": "刷新接口不接受请求体：只按条目标识定位，路径一律由服务端查得"}
+
+# 条目不存在（旧实例无条目）→ 404
+# → {"detail": "注入条目不存在：该沙箱没有可刷新的注入记录"}
+
+# 互斥冲突 → 409
+# → {"detail": "该沙箱正在执行其它操作，请稍后重试"}
+
+# 无令牌 / 错令牌 / 只读缓存令牌 → 401
 # → {"detail": "访问令牌无效或缺失"}
 ```

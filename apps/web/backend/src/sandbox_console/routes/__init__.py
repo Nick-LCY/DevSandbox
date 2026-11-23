@@ -9,6 +9,7 @@ from .files import router as files_router
 from .forwards import router as forwards_router
 from .health import router as health_router
 from .images import router as images_router
+from .injections import router as injections_router
 from .proxy import router as proxy_router
 from .sandboxes import router as sandboxes_router
 from .templates import router as templates_router
@@ -24,5 +25,6 @@ api_router.include_router(templates_router)
 api_router.include_router(terminal_router)
 api_router.include_router(forwards_router)
 api_router.include_router(files_router)
+api_router.include_router(injections_router)
 
 __all__ = ["api_router"]
