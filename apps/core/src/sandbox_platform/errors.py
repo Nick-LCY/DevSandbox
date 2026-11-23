@@ -117,6 +117,43 @@ class TransferError(SandboxError):
         super().__init__(message)
 
 
+class SandboxConflictError(SandboxError):
+    """同名沙箱的互斥操作冲突（被拒）。
+
+    同一沙箱的 **refresh 与 start / stop / delete** 互斥（进程内 name lock
+    + 同平台数据根的 per-name ``flock``）。冲突方**立即被拒**（非阻塞），
+    不排队等待——等到了再执行会把「冲突」悄悄变成「串行」，用户看到的
+    语义就错了。
+
+    与 :class:`RefreshError` 分开：生命周期操作（启动 / 停止 / 删除）撞上
+    并发时抛本类，刷新路径把它转译成 ``RefreshError``（``reason="conflict"``），
+    这样服务端按刷新接口的分类码映射状态码即可。
+    """
+
+    #: 失败分类码（服务端按它映射状态码）
+    reason = "conflict"
+
+
+class RefreshError(SandboxError):
+    """文件注入副本刷新失败（结构化分类码）。
+
+    属性
+    ----
+    reason : 失败分类码（见 ``refresh.REASON_*``）。服务端按它映射 HTTP 状态码，
+        不必去解析异常文案。
+    hold_lock : 失败发生时**可能仍有写者在跑**（helper 超时 / 异常退出，
+        它 fork 出来的写入子进程可能还活着）。调用方据此**不释放**同名锁——
+        锁被释放就可能与仍在写入的副本并发。
+
+    分类码与固定文案的对应关系见 ``refresh`` 模块顶部的表格。
+    """
+
+    def __init__(self, message: str, *, reason: str = "", hold_lock: bool = False) -> None:
+        self.reason = reason
+        self.hold_lock = hold_lock
+        super().__init__(message)
+
+
 class ForwardError(SandboxError):
     """端口转发操作失败。
 

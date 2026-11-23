@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import os
 import tempfile
 from dataclasses import asdict, dataclass, field
@@ -19,6 +21,8 @@ from .errors import ConfigError, ValidationError
 from .images import IMAGE_SOURCE_AUTO
 from .mounts import MountSpec
 
+logger = logging.getLogger(__name__)
+
 STATE_RUNNING = "running"
 STATE_STOPPED = "stopped"
 STATE_DELETED = "deleted"
@@ -28,6 +32,87 @@ STATE_LABELS = {
     STATE_STOPPED: "已停止",
     STATE_DELETED: "已删除",
 }
+
+#: 注入条目的种类（与 ``files._refresh_helper`` 的 ``KIND_*`` 同款取值）
+INJECTION_KIND_FILE = "file"
+INJECTION_KIND_DIRECTORY = "directory"
+
+#: 注入条目的合法种类集合
+INJECTION_KINDS = (INJECTION_KIND_FILE, INJECTION_KIND_DIRECTORY)
+
+
+@dataclass(frozen=True)
+class InjectionRecord:
+    """一条注入声明记录（**实例事实**，additive 元数据）。
+
+    这是「文件注入副本手动刷新」轮新增的**可选**元数据块：创建沙箱时把
+    **已校验的**宿主源路径与托管副本的**文件身份**一并记下，刷新时据此
+    定位「这一条」的源与副本。
+
+    字段：
+
+    - ``entry_id``：条目标识（**稳定**：同一组输入恒等，落盘后不再变）；
+    - ``source_path``：已校验的宿主源绝对路径（**实例事实**，不反查模板）；
+    - ``staged_path``：托管副本绝对路径（落在沙箱用户家目录里）；
+    - ``container_path``：容器内目标路径（只读挂载点）；
+    - ``kind``：``file`` / ``directory``；
+    - ``dev`` / ``ino``：托管副本根的 ``st_dev`` / ``st_ino``（**目标文件
+      身份**：刷新时核对，防写穿到冒名副本）。
+
+    **旧实例没有这块记录**：缺这条记录的沙箱**不迁移、不补录**，仍可正常
+    查看 / 管理 / 删除，只是没有可刷新的条目。
+    """
+
+    entry_id: str
+    source_path: str
+    staged_path: str
+    container_path: str
+    kind: str
+    dev: int = 0
+    ino: int = 0
+
+
+def injection_entry_id(
+    index: int,
+    source_path: str,
+    staged_path: str,
+    container_path: str,
+) -> str:
+    """生成**稳定**的注入条目标识。
+
+    稳定性口径：同一组（序号, 源路径, 副本路径, 容器路径）**恒等**——
+    重启、重启平台服务、重新读出元数据都拿到同一个 id；不同条目必不同
+    （含序号与四条路径的摘要）。
+    """
+    payload = "\x00".join(
+        [str(index), source_path, staged_path, container_path]
+    ).encode("utf-8")
+    digest = hashlib.sha256(payload).hexdigest()[:12]
+    return f"inj-{index}-{digest}"
+
+
+def _injection_from_dict(item: Any) -> InjectionRecord | None:
+    """从字典还原一条注入记录；**字段缺失或类型不对一律跳过**。
+
+    宽容口径与元数据整体一致（未知 / 缺失字段不炸）：一条坏记录不该让
+    整个沙箱读不出来。跳过的记录会在日志里留痕。
+    """
+    if not isinstance(item, dict):
+        return None
+    values: dict[str, Any] = {}
+    for key in ("entry_id", "source_path", "staged_path", "container_path", "kind"):
+        raw = item.get(key)
+        if not isinstance(raw, str) or not raw:
+            return None
+        values[key] = raw
+    if values["kind"] not in INJECTION_KINDS:
+        return None
+    for key in ("dev", "ino"):
+        raw = item.get(key, 0)
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+            raw = 0
+        values[key] = raw
+    return InjectionRecord(**values)
 
 
 def utc_now() -> str:
@@ -60,6 +145,8 @@ class SandboxMetadata:
     updated_at: str = field(default_factory=utc_now)
     mounts: list[MountSpec] = field(default_factory=list)
     files: list[MountSpec] = field(default_factory=list)
+    #: 注入声明记录（**additive**：旧实例缺省为空列表，既有读取零回归）
+    injections: list[InjectionRecord] = field(default_factory=list)
     dependency_containers: list[str] = field(default_factory=list)
     labels: dict[str, str] = field(default_factory=dict)
     command: list[str] = field(default_factory=list)
@@ -88,6 +175,18 @@ class SandboxMetadata:
             }
             for mount in self.files
         ]
+        data["injections"] = [
+            {
+                "entry_id": item.entry_id,
+                "source_path": item.source_path,
+                "staged_path": item.staged_path,
+                "container_path": item.container_path,
+                "kind": item.kind,
+                "dev": item.dev,
+                "ino": item.ino,
+            }
+            for item in self.injections
+        ]
         return data
 
     @classmethod
@@ -115,6 +214,14 @@ class SandboxMetadata:
         payload = {key: value for key, value in data.items() if key in known}
         payload["mounts"] = mounts
         payload["files"] = files
+        injections: list[InjectionRecord] = []
+        for item in data.get("injections") or []:
+            record = _injection_from_dict(item)
+            if record is None:
+                logger.warning("注入声明记录字段不合法，已跳过：%r", item)
+                continue
+            injections.append(record)
+        payload["injections"] = injections
         return cls(**payload)
 
     # ---------------------------------------------------------------- 便捷属性

@@ -43,15 +43,18 @@ from .errors import (
     LifecycleError,
     NotFoundError,
     ProxyError,
+    RefreshError,
+    SandboxConflictError,
     SandboxError,
     ValidationError,
 )
 from .files import (
     FileSpec,
     SandboxHomeScope,
+    StagedInjection,
     parse_file_declarations,
     probe_host_path,
-    stage_file_copies,
+    stage_file_copies_detailed,
     staging_root,
 )
 from .forwarding import LABEL_FORWARD_ROLE, ROLE_FORWARD, PortForwardManager
@@ -65,11 +68,23 @@ from .metadata import (
     STATE_DELETED,
     STATE_RUNNING,
     STATE_STOPPED,
+    InjectionRecord,
     MetadataStore,
     SandboxMetadata,
+    injection_entry_id,
 )
 from .mounts import MountSpec, parse_mounts, socket_mount
+from .namelock import MSG_CONFLICT, NameLockHandle, NameLocker
 from .proxy import ProxyStatus, RegistryProxyManager
+from .refresh import (
+    MSG_ENTRY_NOT_FOUND,
+    REASON_CONFLICT,
+    REASON_NOT_FOUND,
+    InjectionRefresher,
+    RefreshResult,
+    helper_path,
+    wait_for_helper_writers,
+)
 from .userspace import Privilege, SystemUser, UserSpaceManager
 
 logger = logging.getLogger(__name__)
@@ -315,6 +330,12 @@ class SandboxService:
         # 端口转发编排（能力本体在 forwarding 模块）：删除沙箱时要一并回收
         # 转发容器与转发记录，所以生命周期服务持有转发编排入口。
         self.forwards = PortForwardManager(self.config, self.privilege, self)
+        # 注入副本刷新编排（能力本体在 refresh 模块）
+        self.refreshes = InjectionRefresher(self.config, self.privilege, self)
+        # 同名沙箱的**跨进程**互斥锁（平台数据根的 per-name flock）：
+        # 控制台服务与命令行是两个进程，各有一把自己的进程内锁，
+        # 进程内锁挡不住「控制台在刷新、命令行在删除同一个沙箱」。
+        self.locker = NameLocker(self.config, self.privilege)
         # 按沙箱名的进程内互斥锁：同名沙箱的操作必须串行
         self._name_locks: dict[str, threading.RLock] = {}
         self._name_locks_guard = threading.Lock()
@@ -335,6 +356,29 @@ class SandboxService:
     def _name_claim_path(self, name: str) -> Path:
         """沙箱名的占位文件路径（``<平台数据根>/locks/<name>.lock``）。"""
         return self.config.lock_root / f"{name}.lock"
+
+    @contextmanager
+    def _sandbox_lock(self, name: str) -> Iterator[NameLockHandle]:
+        """同名沙箱的互斥锁：**跨进程 flock** + 进程内 name lock。
+
+        顺序：**先抢跨进程锁（非阻塞）**，再拿进程内锁。反过来会让冲突被
+        掩盖：第二个请求先在进程内锁上排队，等第一个做完才拿到跨进程锁——
+        那时已经不冲突了，冲突就被悄悄吃掉了（用户看到的是「等了一会儿
+        然后成功」，而不是「被拒」）。
+
+        **冲突立即被拒**（非阻塞）：抛 :class:`SandboxConflictError`，
+        不排队。同名沙箱的 refresh 与 start / stop / delete 互斥。
+
+        **未知 name 不落锁文件**：锁目录不能随任意名字无界增长；名字不
+        对应任何沙箱时只走进程内锁（后续流程自己报「不存在」）。
+        """
+        if not self.store.exists(name):
+            with self._name_lock(name):
+                yield NameLockHandle()
+            return
+        with self.locker.acquire(name) as handle:
+            with self._name_lock(name):
+                yield handle
 
     @contextmanager
     def _name_claim(self, name: str) -> Iterator[Path]:
@@ -769,13 +813,20 @@ class SandboxService:
             # 家目录范围快照：此时专属用户已建好，它自己的家目录也在受限集合里
             home_scope = self._file_home_scope()
             file_specs = self._parse_file_declarations(request.files, home_scope=home_scope)
-            file_mounts = stage_file_copies(
+            staged_files = stage_file_copies_detailed(
                 file_specs,
                 user=system_user,
                 privilege=self.privilege,
                 extra_forbidden=[self.config.home],
                 home_scope=home_scope,
             )
+            file_mounts = [item.mount for item in staged_files]
+            # 注入声明记录（**实例事实**）：已校验的源路径 + 托管副本 + 容器
+            # 目标 + 种类 + 副本身份。刷新轮靠它定位「这一条」，不反查模板。
+            injections = [
+                self._injection_record(index, item)
+                for index, item in enumerate(staged_files)
+            ]
             if file_specs:
                 # 只有真复制了副本才登记回滚：没有副本时删暂存目录会误伤
                 # 同一账号上上一轮留下的东西
@@ -837,6 +888,7 @@ class SandboxService:
                 network_owned=network_owned,
                 mounts=user_mounts,
                 files=file_mounts,
+                injections=injections,
                 command=list(request.command or ()),
                 env=dict(request.env),
                 workdir=request.workdir or "",
@@ -1018,6 +1070,28 @@ class SandboxService:
             privilege=self.privilege,
         )
 
+    def _injection_record(self, index: int, item: StagedInjection) -> InjectionRecord:
+        """把一条已落盘的注入副本记成**实例事实**。
+
+        记的是**已校验**的宿主源路径（创建时的口径：归一化 + 真实路径双重
+        比对 + 敏感清单 + 家目录范围），不是模板里的配置，也不是运行时
+        反查出来的。条目标识由输入**确定性**算出 ⇒ 稳定。
+        """
+        return InjectionRecord(
+            entry_id=injection_entry_id(
+                index,
+                item.spec.host_path,
+                item.mount.host_path,
+                item.spec.container_path,
+            ),
+            source_path=item.spec.host_path,
+            staged_path=item.mount.host_path,
+            container_path=item.spec.container_path,
+            kind=item.kind,
+            dev=item.dev,
+            ino=item.ino,
+        )
+
     def _precheck(self, request: CreateRequest) -> None:
         """创建前的干跑校验：只解析不落地，避免非法输入留下宿主副作用。"""
         require_image_name(request.image)
@@ -1092,7 +1166,7 @@ class SandboxService:
         一次即补上注入（自愈口径），令牌轮换后重启一次即换新值。
         """
         name = validate_sandbox_name(name)
-        with self._name_lock(name):
+        with self._sandbox_lock(name):
             return self._start_locked(
                 name,
                 image_cache_url=image_cache_url,
@@ -1195,7 +1269,7 @@ class SandboxService:
     def stop(self, name: str, stop_dependencies: bool = True) -> SandboxMetadata:
         """关闭沙箱：停止沙箱容器（依赖容器是否一并停止由显式参数控制，默认停）。"""
         name = validate_sandbox_name(name)
-        with self._name_lock(name):
+        with self._sandbox_lock(name):
             return self._stop_locked(name, stop_dependencies)
 
     def _stop_locked(self, name: str, stop_dependencies: bool) -> SandboxMetadata:
@@ -1225,6 +1299,54 @@ class SandboxService:
         metadata.state = STATE_STOPPED
         self.store.save(metadata)
         return metadata
+
+    # ---------------------------------------------------------------- 刷新
+    def refresh_injection(self, name: str, entry_id: str) -> RefreshResult:
+        """刷新某一条注入的**托管副本**（运行中沙箱，**不停机**）。
+
+        口径：
+
+        - **只认已保存的条目标识**：宿主源 / 托管副本 / 容器目标一律从
+          **本实例的元数据**里查（不查模板、不接受调用方给路径）；
+        - **旧实例没有条目** ⇒ 无可刷对象（不迁移、不补录）；
+        - **只处理运行中沙箱**：停机的沙箱直接拒绝（不做自动启动）；
+        - **互斥**：与该沙箱的 start / stop / delete 互斥（同名锁，
+          跨进程 + 进程内），冲突**立即被拒**（不排队）；
+        - **不 exec、不 restart、不重挂载、不 ``docker cp``**：容器与
+          终端会话不受影响。
+
+        失败抛 :class:`RefreshError`（带 ``reason`` 分类码与固定中文文案，
+        服务端按分类码映射状态码）。
+        """
+        name = validate_sandbox_name(name)
+        if not entry_id or not entry_id.strip():
+            raise RefreshError(MSG_ENTRY_NOT_FOUND, reason=REASON_NOT_FOUND)
+        try:
+            with self._sandbox_lock(name) as lock:
+                try:
+                    metadata = self.get(name)
+                except NotFoundError as exc:
+                    raise RefreshError(
+                        MSG_ENTRY_NOT_FOUND, reason=REASON_NOT_FOUND
+                    ) from exc
+                try:
+                    return self.refreshes.refresh(metadata, entry_id)
+                except RefreshError as exc:
+                    if exc.hold_lock:
+                        self._settle_helper_writers(lock)
+                    raise
+        except SandboxConflictError as exc:
+            raise RefreshError(MSG_CONFLICT, reason=REASON_CONFLICT) from exc
+
+    def _settle_helper_writers(self, lock: NameLockHandle) -> None:
+        """helper 异常退出后：等它的写入子进程收工，再决定放不放锁。
+
+        收不干净就**放弃**这把锁（不解锁、不关 fd）：锁被释放就可能与
+        仍在写入的副本并发。宁可把锁攥住（同名操作被拒），也不能放并发写。
+        """
+        if wait_for_helper_writers(helper_path()):
+            return
+        lock.abandon()
 
     # ---------------------------------------------------------------- 删除
     def reclaim_plan(self, name: str) -> ReclaimPlan:
@@ -1311,7 +1433,7 @@ class SandboxService:
     def delete(self, name: str) -> DeleteResult:
         """删除沙箱：按固定回收清单回收平台资源，用户声明挂载的宿主机目录一律不触碰。"""
         name = validate_sandbox_name(name)
-        with self._name_lock(name):
+        with self._sandbox_lock(name):
             return self._delete_locked(name)
 
     def _delete_locked(self, name: str) -> DeleteResult:

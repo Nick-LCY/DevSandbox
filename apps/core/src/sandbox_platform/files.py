@@ -45,6 +45,7 @@ from .mounts import (
     reject_sensitive_host_path,
     sensitive_host_paths,
 )
+from .metadata import INJECTION_KIND_DIRECTORY, INJECTION_KIND_FILE
 from .userspace import Privilege, SystemUser
 
 logger = logging.getLogger(__name__)
@@ -76,7 +77,12 @@ class SandboxHomeScope:
 
     - ``user_prefix``：平台沙箱用户名前缀（取自配置的 ``user_prefix``），
       沙箱用户的家目录名形如 ``<前缀>-<沙箱名>``；
-    - ``privilege``：宿主命令通道（读系统用户表用；``None`` 表示普通通道）。
+    - ``privilege``：宿主命令通道（读系统用户表用；``None`` 表示普通通道）；
+    - ``strict``：**fail-closed** 开关。``True`` 时，任何探测失败（读不到
+      系统用户表、家目录存在性判不出来）都**直接拒绝**，而不是「拿不全的
+      受限清单继续走」。创建路径保持原有口径（``False``：探测失败只记日志
+      并放行），**刷新路径用 ``True``**——刷新是显式动作，宁可拒绝也不
+      在受限清单不全的情况下动副本。
 
     家目录集合每次现查：沙箱会被创建也会被删，集合不能是启动时的快照。
     同一个 scope 实例内取一次快照（同一次声明解析里不重复查系统用户表）。
@@ -84,6 +90,7 @@ class SandboxHomeScope:
 
     user_prefix: str
     privilege: Privilege | None = None
+    strict: bool = False
 
     def homes(self) -> tuple[Path, ...]:
         """宿主上属于平台沙箱用户的家目录。"""
@@ -92,13 +99,16 @@ class SandboxHomeScope:
     @cached_property
     def _homes(self) -> tuple[Path, ...]:
         """家目录快照（同一个 scope 实例内只查一次系统用户表）。"""
-        return sandbox_user_homes(self.user_prefix, privilege=self.privilege)
+        return sandbox_user_homes(
+            self.user_prefix, privilege=self.privilege, strict=self.strict
+        )
 
 
 def sandbox_user_homes(
     user_prefix: str,
     *,
     privilege: Privilege | None = None,
+    strict: bool = False,
 ) -> tuple[Path, ...]:
     """枚举宿主上平台沙箱用户的家目录（经 ``getent passwd``）。
 
@@ -107,10 +117,18 @@ def sandbox_user_homes(
     - 家目录取系统用户表里的家目录字段，**不猜固定家目录根**：宿主把沙箱
       用户的家放在别处（``/srv/homes`` 等）同样覆盖得到；
     - 家目录必须真实存在：用户条目残留但目录已删的不算。
+
+    ``strict=True``（刷新路径用）：**探测失败即拒绝**——读不到系统用户表、
+    或家目录存在性判不出来（``test -d`` 报的是错误而不是「不存在」）时抛
+    :class:`ValidationError`，不返回「可能不全」的清单。
     """
     prefix = f"{user_prefix}-"
     result = run(_host_argv(privilege, ["getent", "passwd"]), check=False)
     if not result.ok:
+        if strict:
+            raise ValidationError(
+                "读取系统用户表失败，无法确认沙箱用户家目录范围（拒绝继续）"
+            )
         logger.warning(
             "读取系统用户表失败，沙箱用户家目录范围限制暂时失效：%s",
             result.output.strip(),
@@ -129,7 +147,7 @@ def sandbox_user_homes(
         if key in seen:
             continue
         seen.add(key)
-        if not _home_dir_exists(Path(key), privilege):
+        if not _home_dir_exists(Path(key), privilege, strict=strict):
             continue
         homes.append(Path(key))
     return tuple(homes)
@@ -142,15 +160,29 @@ def _host_argv(privilege: Privilege | None, argv: list[str]) -> list[str]:
     return privilege.wrap(argv)
 
 
-def _home_dir_exists(home: Path, privilege: Privilege | None) -> bool:
+def _home_dir_exists(
+    home: Path, privilege: Privilege | None, *, strict: bool = False
+) -> bool:
     """家目录是否存在。
 
     走宿主命令判定而不是 ``Path.is_dir()``：沙箱用户的家目录权限是 0700
     且属主是那个沙箱用户，服务身份（普通用户）根本 stat 不了，会把真实存在
     的家目录误判成不存在。
+
+    ``strict=True``（刷新路径用）：``test -d`` 的退出码 **0 = 存在**、
+    **1 = 不存在**、**≥2 = 判不出来**（命令本身失败、``sudo`` 拒绝等）。
+    判不出来时**拒绝**（fail closed）——把「判不出来」当成「不存在」会
+    让受限清单少一条，等于把那条家目录放开了。
     """
     result = run(_host_argv(privilege, ["test", "-d", str(home)]), check=False)
-    return result.ok
+    if result.ok:
+        return True
+    if strict and (result.returncode != 1 or result.stderr.strip()):
+        raise ValidationError(
+            "无法确认沙箱用户家目录是否存在（拒绝继续）："
+            f"{home}（探测退出码 {result.returncode}）"
+        )
+    return False
 
 
 def reject_sandbox_user_home(path: str | Path, scope: SandboxHomeScope) -> None:
@@ -387,7 +419,174 @@ def _reject_directory_content(privilege: Privilege, path: str) -> None:
         )
 
 
+# ---------------------------------------------------------------- 刷新：源的严格复核
+def probe_refresh_source(
+    privilege: Privilege,
+    path: str,
+    *,
+    extra_forbidden: Iterable[str | Path] = (),
+    home_scope: SandboxHomeScope | None = None,
+) -> str:
+    """刷新前对**实际源**做一次严格复核，返回当前种类（``f`` / ``d``）。
+
+    与创建时的 :func:`probe_host_path` 同档（敏感清单、家目录范围、符号
+    链接、非常规文件），但**两处口径刻意不同**：
+
+    - **探测失败即拒绝（fail closed）**：创建路径上「读不到系统用户表」
+      「解析不出真实路径」只记日志并放行（那是老口径，本轮**不改**）；
+      刷新是显式写动作，判不出来就**拒绝**——在受限清单不全的情况下动
+      副本不行；
+    - 返回**当前**的种类：调用方拿它与元数据里记的种类比对，根类型改变
+      （文件 ↔ 目录）时拒绝刷新（副本形态与挂载形态不可变）。
+
+    任一判定失败抛 :class:`ValidationError`（调用方转成刷新前置校验失败）。
+    """
+    raw = str(path).strip()
+    if not raw.startswith("/"):
+        raise ValidationError(f"注入的宿主路径必须是绝对路径：{raw}")
+    normalized = normalize_host_path(raw)
+    forbidden = sensitive_host_paths(extra_forbidden)
+    reject_sensitive_host_path(Path(normalized), forbidden, action="注入文件")
+    if home_scope is not None:
+        reject_sandbox_user_home(normalized, home_scope)
+
+    kind = run(
+        privilege.wrap(["find", normalized, "-maxdepth", "0", "-printf", "%y\n"]),
+        check=False,
+    )
+    if not kind.ok:
+        raise ValidationError(
+            f"无法探测注入的宿主路径类型（拒绝刷新）：{normalized}"
+            f"（探测未成功：{kind.output.strip() or kind.returncode}）"
+        )
+    detected = kind.stdout.strip()
+    if detected == "l":
+        raise ValidationError(
+            f"注入的宿主路径是符号链接，文件注入不支持符号链接：{normalized}"
+        )
+    if detected == "d":
+        _reject_directory_content_strict(privilege, normalized)
+        detected = "d"
+    elif detected != "f":
+        raise ValidationError(
+            f"注入的宿主路径不存在或不是普通文件或目录：{normalized}"
+        )
+
+    # 真实路径复核：解析不出来就是**判不出来** ⇒ 拒绝（不拿不全的结论放行）
+    real = _resolve_real_path_strict(privilege, normalized)
+    if real is not None:
+        try:
+            reject_sensitive_host_path(Path(real), forbidden, action="注入文件")
+        except ValidationError:
+            raise ValidationError(
+                f"注入的宿主路径经符号链接解析后落在受限范围：{real}"
+                f"（声明路径 {normalized}）"
+            ) from None
+        if home_scope is not None:
+            try:
+                reject_sandbox_user_home(real, home_scope)
+            except ValidationError:
+                raise ValidationError(
+                    f"注入的宿主路径经符号链接解析后落在受限范围：{real}"
+                    f"（声明路径 {normalized}）"
+                ) from None
+    return detected
+
+
+def _reject_directory_content_strict(privilege: Privilege, path: str) -> None:
+    """目录内容探测（严格版）：探测命令失败即拒绝。"""
+    links = run(
+        privilege.wrap(["find", path, "-type", "l", "-print", "-quit"]),
+        check=False,
+    )
+    if not links.ok:
+        raise ValidationError(f"无法探测注入目录里的符号链接（拒绝刷新）：{path}")
+    found = links.stdout.strip()
+    if found:
+        raise ValidationError(
+            f"注入的宿主路径里有符号链接，文件注入不支持符号链接：{found}"
+        )
+    irregular = run(
+        privilege.wrap(
+            ["find", path, "!", "-type", "f", "!", "-type", "d", "-print", "-quit"]
+        ),
+        check=False,
+    )
+    if not irregular.ok:
+        raise ValidationError(f"无法探测注入目录里的非常规文件（拒绝刷新）：{path}")
+    entry = irregular.stdout.strip()
+    if entry:
+        raise ValidationError(
+            f"注入的宿主目录里含非常规文件（FIFO/设备/套接字），不支持注入：{entry}"
+        )
+
+
+def _resolve_real_path_strict(privilege: Privilege, path: str) -> str | None:
+    """解析宿主路径的真实位置；**解析不出来即拒绝**。
+
+    与 :func:`_resolve_real_path` 的差别只在失败语义：老路径解析不出来时
+    返回 ``None``（不判定），严格路径直接拒绝。
+    """
+    result = run(privilege.wrap(["readlink", "-f", "--", path]), check=False)
+    if not result.ok:
+        raise ValidationError(
+            f"无法解析注入的宿主路径真实位置（拒绝刷新）：{path}"
+        )
+    real = result.stdout.strip()
+    if not real:
+        raise ValidationError(
+            f"无法解析注入的宿主路径真实位置（拒绝刷新）：{path}"
+        )
+    return normalize_host_path(real)
+
+
 # ---------------------------------------------------------------- 副本准备
+@dataclass(frozen=True)
+class StagedInjection:
+    """一条已落盘的注入副本（含副本的**文件身份**）。
+
+    ``mount`` 是既有 ``files`` 清单里的那一条（语义不变）；``kind`` /
+    ``dev`` / ``ino`` 是刷新轮新增的**实例事实**（副本的种类与身份），
+    供元数据记录、供刷新时核对目标。
+    """
+
+    spec: FileSpec
+    mount: MountSpec
+    kind: str
+    dev: int
+    ino: int
+
+
+#: 探测结果（``find -printf %y``）→ 注入条目的种类
+_KIND_BY_PROBE = {"f": INJECTION_KIND_FILE, "d": INJECTION_KIND_DIRECTORY}
+
+
+def injection_kind_of(probe: str) -> str:
+    """探测结果（``f`` / ``d``）→ 注入条目的种类（``file`` / ``directory``）。"""
+    return _KIND_BY_PROBE.get(probe, "file")
+
+
+def staged_identity(privilege: Privilege, path: str | Path) -> tuple[int, int]:
+    """取托管副本根的 ``(st_dev, st_ino)``。
+
+    走特权通道的 ``stat``：副本目录是 0700 且属主是沙箱用户，普通服务
+    身份根本 stat 不了。``stat -c '%d %i'`` 的两个值与 Python 的
+    ``os.stat().st_dev`` / ``st_ino`` 同源同值（同一个 ``stat`` 结构体），
+    刷新时 helper 用 ``fstat`` 核对的就是这两个值。
+    """
+    target = str(path)
+    result = run(privilege.wrap(["stat", "-c", "%d %i", "--", target]), check=False)
+    if not result.ok:
+        raise ValidationError(f"无法读取注入副本的文件身份：{target}")
+    parts = result.stdout.split()
+    if len(parts) != 2:
+        raise ValidationError(f"无法读取注入副本的文件身份：{target}")
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError as exc:
+        raise ValidationError(f"无法读取注入副本的文件身份：{target}") from exc
+
+
 def stage_file_copies(
     specs: list[FileSpec],
     *,
@@ -398,6 +597,31 @@ def stage_file_copies(
 ) -> list[MountSpec]:
     """把宿主文件复制成沙箱用户拥有的副本，并生成只读挂载声明。
 
+    薄封装：真正的动作在 :func:`stage_file_copies_detailed`（那份还带上
+    副本的种类与文件身份）。既有调用方拿挂载声明即可，语义不变。
+    """
+    return [
+        item.mount
+        for item in stage_file_copies_detailed(
+            specs,
+            user=user,
+            privilege=privilege,
+            extra_forbidden=extra_forbidden,
+            home_scope=home_scope,
+        )
+    ]
+
+
+def stage_file_copies_detailed(
+    specs: list[FileSpec],
+    *,
+    user: SystemUser,
+    privilege: Privilege,
+    extra_forbidden: Iterable[str | Path] = (),
+    home_scope: SandboxHomeScope | None = None,
+) -> list[StagedInjection]:
+    """把宿主文件复制成沙箱用户拥有的副本，并生成只读挂载声明与副本身份。
+
     六步：清掉既有暂存目录 → 建暂存目录 → 逐条复探类型并复制 → 改属主
     → 目录 0700 → 文件 0600。属主与主组都设成沙箱用户（用 uid / gid 数值，
     不依赖「主组与用户同名」的假设），免 root 守护进程以该用户身份运行，
@@ -406,11 +630,16 @@ def stage_file_copies(
     每条复制前**就地复探一次**类型：预检与复制之间的时间窗里宿主文件
     可能被换掉，不信任早期探测结果。
 
+    **副本身份在收尾之后取**（chown / chmod 做完再 ``stat``）：写进元数据的
+    ``st_dev`` / ``st_ino`` 必须是**最终落盘**的那份副本——刷新时 helper 会
+    拿它核对目标，防写穿到冒名副本。
+
     任一步失败先删掉整个暂存目录再抛原异常：不留半截副本在宿主上。
     """
     if not specs:
         return []
     staging = staging_root(user.home)
+    kinds: list[str] = []
     try:
         # 复用旧账号时先清掉既有暂存目录：不留上一轮的孤儿副本
         run(privilege.wrap(["rm", "-rf", str(staging)]), check=False)
@@ -432,7 +661,7 @@ def stage_file_copies(
         )
         for index, spec in enumerate(specs):
             # 复制前就地复探一次：预检与复制之间宿主文件可能被换掉
-            probe_host_path(
+            probed = probe_host_path(
                 privilege,
                 spec.host_path,
                 extra_forbidden=extra_forbidden,
@@ -445,6 +674,7 @@ def stage_file_copies(
                 privilege.wrap(["cp", "-r", "--", spec.host_path, str(target)]),
                 check=True,
             )
+            kinds.append(_KIND_BY_PROBE.get(probed, "file"))
         run(
             privilege.wrap(["chown", "-R", f"{user.uid}:{user.gid}", str(staging)]),
             check=True,
@@ -468,12 +698,22 @@ def stage_file_copies(
                 "删除注入文件暂存目录失败：%s（%s）", staging, cleanup.output.strip()
             )
         raise
-    return [
-        MountSpec(
+    result: list[StagedInjection] = []
+    for index, spec in enumerate(specs):
+        mount = MountSpec(
             host_path=str(staged_path(user.home, index, spec.host_path)),
             container_path=spec.container_path,
             read_only=True,
             role=FILE_MOUNT_ROLE,
         )
-        for index, spec in enumerate(specs)
-    ]
+        dev, ino = staged_identity(privilege, mount.host_path)
+        result.append(
+            StagedInjection(
+                spec=spec,
+                mount=mount,
+                kind=kinds[index] if index < len(kinds) else INJECTION_KIND_FILE,
+                dev=dev,
+                ino=ino,
+            )
+        )
+    return result
