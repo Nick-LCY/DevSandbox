@@ -620,3 +620,70 @@ describe('镜像缓存清单接口', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe('注入副本刷新接口', () => {
+  /**
+   * 204 响应：**故意不带 `json`**。
+   *
+   * 接口层若试图解析正文就会抛异常——成功路径必须**不碰响应体**。
+   */
+  function noContentResponse(): Response {
+    return { ok: true, status: 204 } as unknown as Response;
+  }
+
+  it('POST 到刷新端点：路径带条目标识，不带查询参数', async () => {
+    fetchMock.mockResolvedValue(noContentResponse());
+
+    await api.refreshInjection('demo-01', 'inj-0-0123456789ab');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(
+      `${DEFAULT_BACKEND_BASE_URL}/api/sandboxes/demo-01/injections/inj-0-0123456789ab/refresh`,
+    );
+    expect(init.method).toBe('POST');
+    expect((init.headers as Headers).get('Authorization')).toBe('Bearer sbx_test');
+  });
+
+  it('空请求体：路径里的沙箱名与条目标识都做百分号编码', async () => {
+    fetchMock.mockResolvedValue(noContentResponse());
+
+    await api.refreshInjection('demo 01', 'inj 0/abc');
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(
+      `${DEFAULT_BACKEND_BASE_URL}/api/sandboxes/demo%2001/injections/inj%200%2Fabc/refresh`,
+    );
+    // **不发请求体**（服务端对非空 body 一律 400），也不带任何查询参数。
+    expect(init.body).toBeUndefined();
+    expect(url).not.toContain('?');
+    expect((init.headers as Headers).get('Content-Type')).toBeNull();
+  });
+
+  it('成功 204：不解析正文（响应体压根没给 json）', async () => {
+    fetchMock.mockResolvedValue(noContentResponse());
+
+    await expect(api.refreshInjection('demo-01', 'inj-0-0123456789ab')).resolves.toBeUndefined();
+  });
+
+  it('失败：取后端 detail 原文与状态码（含「可能部分更新」）', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ detail: '刷新写入阶段失败，副本可能部分更新，请修正后重试' }, 500),
+    );
+
+    await expect(api.refreshInjection('demo-01', 'inj-0-0123456789ab')).rejects.toMatchObject({
+      name: 'ApiError',
+      message: '刷新写入阶段失败，副本可能部分更新，请修正后重试',
+      status: 500,
+    });
+  });
+
+  it('令牌缺失：一个请求都不发', async () => {
+    setConnectionConfig({ backendBaseUrl: DEFAULT_BACKEND_BASE_URL, token: '' });
+
+    await expect(api.refreshInjection('demo-01', 'inj-0-0123456789ab')).rejects.toBeInstanceOf(
+      ConnectionNotConfiguredError,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

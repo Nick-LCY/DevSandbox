@@ -2,6 +2,7 @@ import type { ForwardModel, SandboxDetail } from '../../api/types';
 import type { ConnectionConfig } from '../../lib/connection';
 import { formatBoolean, formatTimestamp, orPlaceholder } from '../../lib/format';
 import { DrawerShell } from './DrawerShell';
+import { InjectionList } from './InjectionList';
 import { PortForwardPanel } from './PortForwardPanel';
 
 interface SandboxDetailDialogProps {
@@ -182,6 +183,22 @@ export function SandboxDetailDialog({
               </ul>
             )}
           </div>
+
+          {/* 注入文件：与「挂载」区**同级**（不新增抽屉）。
+              **只在有条目时渲染**：旧实例 / 无注入声明 ⇒ 没有可刷新的条目，
+              也就没有刷新入口（旧实例仍可正常查看 / 管理 / 删除）。 */}
+          {detail.injections && detail.injections.length > 0 ? (
+            <div>
+              <h3 className="text-[13px] font-medium">注入文件</h3>
+              <div className="mt-2">
+                <InjectionList
+                  key={detail.name}
+                  sandbox={detail.name}
+                  injections={detail.injections}
+                />
+              </div>
+            </div>
+          ) : null}
 
           <div>
             <h3 className="text-[13px] font-medium">依赖容器</h3>

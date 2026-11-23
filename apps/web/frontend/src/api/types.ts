@@ -22,6 +22,28 @@ export interface MountInfo {
   role: string;
 }
 
+/**
+ * 一条注入声明（`InjectionInfo`）。
+ *
+ * **只暴露元数据**：没有托管副本的宿主路径、没有 inode、没有正文。
+ * 刷新端点只按 `entry_id` 定位（宿主源 / 副本 / 容器目标一律由服务端从
+ * 实例元数据查得，前端不许指定路径）。
+ */
+export interface InjectionInfo {
+  /** 条目标识（刷新端点的唯一入参；稳定，不随路径变化）。 */
+  entry_id: string;
+  /** 已校验的宿主源绝对路径。 */
+  source_path: string;
+  /** 容器内目标路径（只读挂载点）。 */
+  container_path: string;
+  /** 条目种类：file（普通文件）/ directory（目录）。 */
+  kind: 'file' | 'directory';
+  /** 容器内是否只读（注入通道恒为只读）。 */
+  read_only: boolean;
+  /** 当前沙箱状态下这条**能否刷新**（沙箱运行中才为 true）。 */
+  can_refresh: boolean;
+}
+
 /** 单个沙箱的完整信息。`env` 只回键名，值固定为 `***`。 */
 export interface SandboxDetail {
   name: string;
@@ -45,6 +67,12 @@ export interface SandboxDetail {
   network_owned: boolean;
   unit_path: string;
   mounts: MountInfo[];
+  /**
+   * 注入声明清单（**additive**：旧后端不返回这个字段）。
+   *
+   * 字段缺失与空列表同义：都没有可刷新的条目，界面不出现刷新入口。
+   */
+  injections?: InjectionInfo[];
   dependency_containers: string[];
   command: string[];
   env: Record<string, string>;

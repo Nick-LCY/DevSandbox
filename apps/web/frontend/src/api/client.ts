@@ -661,6 +661,19 @@ export const api = {
   deleteSandbox: (name: string) =>
     request<DeleteSandboxResponse>(pathOf(name), { method: 'DELETE' }),
 
+  /**
+   * 刷新一条注入的托管副本（**运行中沙箱，不停机**：不重建容器、不重挂载）。
+   *
+   * - **入参只有条目标识**：宿主源 / 托管副本 / 容器目标一律由服务端从
+   *   实例元数据查得——前端**不传路径、不传查询参数**；
+   * - **无请求体**：服务端对非空请求体一律 400，这里压根不发 body；
+   * - **成功 204 无内容**：`request()` 对 204 直接返回 undefined（**不解析正文**）。
+   */
+  refreshInjection: (name: string, entryId: string) =>
+    request<void>(`${pathOf(name)}/injections/${encodeURIComponent(entryId)}/refresh`, {
+      method: 'POST',
+    }),
+
   /** 宿主本地镜像实时枚举。后端返回裸数组。 */
   listImages: () => request<HostImage[]>('/api/images'),
 

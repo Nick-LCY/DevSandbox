@@ -45,6 +45,7 @@ const mocks = vi.hoisted(() => ({
   stopSandbox: vi.fn(),
   reclaimSandbox: vi.fn(),
   deleteSandbox: vi.fn(),
+  refreshInjection: vi.fn(),
 }));
 
 vi.mock('../../api/client', async (importOriginal) => {
@@ -63,6 +64,7 @@ vi.mock('../../api/client', async (importOriginal) => {
       stopSandbox: mocks.stopSandbox,
       reclaimSandbox: mocks.reclaimSandbox,
       deleteSandbox: mocks.deleteSandbox,
+      refreshInjection: mocks.refreshInjection,
     },
   };
 });
@@ -108,6 +110,7 @@ afterEach(() => {
   mocks.stopSandbox.mockReset();
   mocks.reclaimSandbox.mockReset();
   mocks.deleteSandbox.mockReset();
+  mocks.refreshInjection.mockReset();
   window.location.hash = '';
   window.localStorage.clear();
   // 桌面同步的去重缓存是模块级的：每个用例之间清掉。
@@ -827,5 +830,50 @@ describe('健康自检的展示态', () => {
     // 降级文案一律不出现（没有 degraded 这条分支）。
     expect(document.body.textContent).not.toContain('降级');
     expect(document.body.textContent).not.toContain('未挂载');
+  });
+});
+
+describe('详情读取与注入副本刷新（读 / 写分离）', () => {
+  /** 一条注入声明。 */
+  const injection = {
+    entry_id: 'inj-0-0123456789ab',
+    source_path: '/home/user/notes.md',
+    container_path: '/home/sandbox/notes.md',
+    kind: 'file' as const,
+    read_only: true,
+    can_refresh: true,
+  };
+
+  it('「刷新详情」是读操作：只刷详情，不触发刷新副本', async () => {
+    mockRunningSandbox();
+    mocks.getSandbox.mockResolvedValue({ ...makeDetail(), injections: [injection] });
+
+    renderWorkbench();
+
+    await waitFor(() => expect(mocks.getSandbox).toHaveBeenCalledTimes(1));
+
+    // 点工作区头部的「刷新沙箱详情」。
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-refresh-button'));
+
+    await waitFor(() => expect(mocks.getSandbox).toHaveBeenCalledTimes(2));
+    // 写动作一个都不发：读操作不碰刷新副本。
+    expect(mocks.refreshInjection).not.toHaveBeenCalled();
+  });
+
+  it('详情抽屉里的「刷新副本」：发写请求（只按条目标识定位）', async () => {
+    mockRunningSandbox();
+    mocks.getSandbox.mockResolvedValue({ ...makeDetail(), injections: [injection] });
+
+    renderWorkbench();
+
+    await waitFor(() => expect(mocks.getSandbox).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-detail-button'));
+
+    const button = await screen.findByTestId('page-sandbox-detail-injection-refresh');
+    fireEvent.click(button);
+
+    await waitFor(() =>
+      expect(mocks.refreshInjection).toHaveBeenCalledWith('acc-demo', 'inj-0-0123456789ab'),
+    );
   });
 });
