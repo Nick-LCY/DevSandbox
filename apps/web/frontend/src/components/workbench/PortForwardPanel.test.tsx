@@ -3,8 +3,8 @@
  * 端口转发区（沙箱详情抽屉里）的两种形态。
  *
  * 覆盖本轮重排后的口径：
- * - **web 形态**：**只渲染说明卡 + 「安装桌面端」按钮**（点击开 ModalShell
- *   安装指引弹窗），**不渲染表格 / 新建 / 同步 / 编辑 / 删除等任何管理操作**，
+ * - **web 形态**：**只渲染说明卡 + 「安装桌面端」链接**（新标签打开 GitHub
+ *   Releases），**不渲染表格 / 新建 / 同步 / 编辑 / 删除等任何管理操作**，
  *   也不读任何数据；
  * - **桌面形态**：五列表格（本地端口 / 容器端口 / 本地状态 / 容器状态 / 操作），
  *   **行集合 = 后端记录 ∪ 本机监听的并集**（正常行 / 无监听行 / 孤儿行），
@@ -131,7 +131,7 @@ afterEach(() => {
 });
 
 describe('web 形态的端口转发区', () => {
-  it('只渲染说明卡与「安装桌面端」按钮，不渲染任何管理操作', async () => {
+  it('只渲染说明卡与「安装桌面端」链接，不渲染任何管理操作', async () => {
     renderPanel({ desktop: false });
 
     expect(screen.getByTestId('page-forward-notice')).toBeTruthy();
@@ -150,17 +150,14 @@ describe('web 形态的端口转发区', () => {
     expect(mocks.listForwardListeners).not.toHaveBeenCalled();
   });
 
-  it('点「安装桌面端」开 ModalShell 安装指引弹窗', async () => {
+  it('「安装桌面端」是打开 GitHub Releases 的新标签链接', () => {
     renderPanel({ desktop: false });
 
-    fireEvent.click(screen.getByTestId('page-forward-install-button'));
-
-    const dialog = await screen.findByTestId('page-forward-install-dialog');
-    expect(dialog).toBeTruthy();
-    // 三个要点：安装包来源、装完填后端地址与令牌、开启后访问 127.0.0.1:<端口>。
-    expect(screen.getByTestId('page-forward-install-step-package')).toBeTruthy();
-    expect(screen.getByTestId('page-forward-install-step-config')).toBeTruthy();
-    expect(screen.getByTestId('page-forward-install-step-access')).toBeTruthy();
+    const link = screen.getByTestId('page-forward-install-button');
+    expect(link.tagName).toBe('A');
+    expect(link.getAttribute('href')).toBe('https://github.com/Nick-LCY/DevSandbox/releases');
+    expect(link.getAttribute('target')).toBe('_blank');
+    expect(link.getAttribute('rel')).toBe('noopener noreferrer');
   });
 
   it('说明卡文案：网页形态无法管理端口转发（不说「只能查看转发记录」）', async () => {

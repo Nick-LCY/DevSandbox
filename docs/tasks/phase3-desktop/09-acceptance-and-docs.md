@@ -55,7 +55,7 @@ status: done
 ## 收口（2026-11-04）
 
 - **全量验收回归**：`pnpm run test:acceptance`（Playwright，串行，含前端构建 + 真机沙箱 + 固定测试令牌）——**48 passed / 0 failed / 0 flaky，约 9.3 分钟**，**连续两轮全绿**；此前基线 46 条（07 轮）**无回归**。
-- **新增用例**：`tests/specs/11-forward-web-notice.spec.ts` **2 条**，钉死 web 形态端口转发区的行为——① 端口转发区**只有说明卡 + 「安装桌面端」入口**（文案写明「网页形态无法管理端口转发」），**零管理元素**（表格 / 行 / 新建表单 / 「转发」按钮一个都不渲染），且**不发 `/api/forwards` 请求**（跨过一个合并轮询周期仍为零）；② 安装指引弹窗**三步齐全**（拿安装包 / 填后端地址与令牌 / 开启转发后访问）且能关闭。
+- **新增用例**：`tests/specs/11-forward-web-notice.spec.ts` **2 条**，钉死 web 形态端口转发区的行为——① 端口转发区**只有说明卡 + 「安装桌面端」入口**（文案写明「网页形态无法管理端口转发」），**零管理元素**（表格 / 行 / 新建表单 / 「转发」按钮一个都不渲染），且**不发 `/api/forwards` 请求**（跨过一个合并轮询周期仍为零）；② 「安装桌面端」是 GitHub Releases 的新标签入口，安装说明弹窗已退役。
 - **端口转发用例的覆盖口径**：**桌面形态的完整管理 Playwright 覆盖不到**（要 Tauri IPC），**已由 Windows 真机验收替代**（[[tasks/phase3-desktop/06-port-forward-desktop.md|06 真机连通]] + [[tasks/phase3-desktop/08-windows-package.md|08 冒烟]]）；web 形态的「零管理 + 不发转发请求」由上述 2 条钉死。
 - **三篇 ADR**：[[architecture/decisions/0013-三期定位改定与认证重启.md|0013]]、[[architecture/decisions/0014-端口转发机制选型.md|0014]]、[[architecture/decisions/0015-桌面壳与连接配置抽象.md|0015]] **期中随决策产生即已落档**（非本任务新写），六段齐全，已登记进两张清单表。
 - **文档核对结论**：
@@ -66,7 +66,7 @@ status: done
 | [[architecture/overview.md\|架构总览]] | 三期三条核心模块（连接层与认证 / 端口转发 / 桌面端）+ 0001~0015 关键决策表齐备；0009 的认证裁剪已标注被 0013 推翻 |
 | [[conventions/console-frontend.md\|前端约定]] | 「端口转发」一节已同步到五列表格口径；「**连接配置与请求基址**」一节**本轮补写** |
 | `apps/web/backend/API.md` | 第 14 章（认证）+ 第 15 章（端口转发接口）均在，无需补写 |
-| [[current-state.md\|看板]] / [[tasks/phase3-desktop/README.md\|任务集]] / [[tasks/phase3-desktop/RESULTS.md\|留档]] / [[tasks/README.md\|任务索引]] | 同步到 48 / 0 failed 与「三期整体 done（2026-11-04）」 |
+| [[current-state.md\|看板]] / [[tasks/phase3-desktop/README.md\|任务集]] / [[tasks/phase3-desktop/RESULTS.md\|留档]] / [[tasks/README.md\|任务索引]] | 同步到 48 / 0 failed 与「三期主体 done（2026-11-04）」 |
 
 - **三期整体闭合声明**：**三期（桌面端打包 + 端口转发 + 连接层认证）全部交付**——01~09 九个任务全部 done（打样 / 后端认证 / 前端连接层 / 转发核心包 / 转发服务端 / 转发桌面侧 / 验收套件 token 化 / Windows 打包冒烟 / 收口），**三期任务集整体状态 done（2026-11-04）**。三期之后未立项的方向见 [[current-state.md|看板]] 的「规划」段。
 - **状态**：todo → done。

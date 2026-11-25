@@ -1,0 +1,188 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        # v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Setup pnpm
+        # v4.1.0
+        uses: pnpm/action-setup@7088e561eb65bb68695d245aa206f005ef30921d
+        with:
+          version: 10.32.1
+
+      - name: Setup Node.js
+        # v4.4.0
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+
+      - name: Setup Rust MSVC
+        # Explicit stable release; the project requires rustc >= 1.90.
+        uses: dtolnay/rust-toolchain@547f64eaa184fd62768e02b77019e5408713ca53
+        with:
+          toolchain: 1.90.0
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install desktop dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: apps/desktop
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: apps/web/frontend
+
+      - name: Verify release version
+        run: node scripts/verify-release-version.mjs "$env:GITHUB_REF_NAME"
+
+      - name: Check frontend types
+        run: pnpm run typecheck
+        working-directory: apps/web/frontend
+
+      - name: Check frontend test types
+        run: pnpm run typecheck:tests
+        working-directory: apps/web/frontend
+
+      - name: Run frontend tests
+        run: pnpm run test
+        working-directory: apps/web/frontend
+
+      - name: Run desktop Rust tests
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+      # tauri build invokes the configured beforeBuildCommand, which builds the
+      # tested frontend into apps/web/frontend/dist before packaging the installer.
+      - name: Build Windows NSIS installer
+        run: pnpm run build
+        working-directory: apps/desktop
+
+      - name: Verify built frontend dist
+        shell: pwsh
+        run: |
+          $distDirectory = Join-Path $env:GITHUB_WORKSPACE 'apps/web/frontend/dist'
+          $indexFile = Join-Path $distDirectory 'index.html'
+          if (-not (Test-Path -LiteralPath $indexFile -PathType Leaf)) {
+            throw "Expected frontend build output at $indexFile"
+          }
+          $distFiles = @(Get-ChildItem -LiteralPath $distDirectory -File -Recurse)
+          if ($distFiles.Count -eq 0) {
+            throw "Frontend build output directory is empty: $distDirectory"
+          }
+
+      - name: Stage x64 NSIS installer
+        shell: pwsh
+        run: |
+          $nsisDirectory = Join-Path $env:GITHUB_WORKSPACE 'apps/desktop/src-tauri/target/release/bundle/nsis'
+          $installers = @(Get-ChildItem -Path $nsisDirectory -Filter '*_x64-setup.exe' -File)
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one x64 NSIS installer, found $($installers.Count)"
+          }
+          if ($installers[0].Length -le 0) {
+            throw "The x64 NSIS installer is empty"
+          }
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          $staged = Join-Path $env:GITHUB_WORKSPACE "DevSandbox-$version-windows-x64-setup.exe"
+          Copy-Item -LiteralPath $installers[0].FullName -Destination $staged
+
+      - name: Upload Windows installer artifact
+        # v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-x64-installer
+          path: DevSandbox-*-windows-x64-setup.exe
+          if-no-files-found: error
+
+      - name: Upload verified frontend dist artifact
+        # v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: web-frontend-dist
+          path: apps/web/frontend/dist
+          if-no-files-found: error
+
+  deploy-worker:
+    needs: build-windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Serialize production Worker deployments from different version tags.
+    concurrency:
+      group: production-worker-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        # v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Download verified frontend dist artifact
+        # v4.3.0
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: web-frontend-dist
+          path: apps/web/frontend/dist
+
+      - name: Verify downloaded frontend dist
+        shell: bash
+        run: |
+          test -s apps/web/frontend/dist/index.html
+          test -n "$(find apps/web/frontend/dist -type f -print -quit)"
+
+      - name: Setup pnpm
+        # v4.1.0
+        uses: pnpm/action-setup@7088e561eb65bb68695d245aa206f005ef30921d
+        with:
+          version: 10.32.1
+
+      - name: Setup Node.js
+        # v4.4.0
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+
+      - name: Install worker dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: infra/worker
+
+      # Keep the token out of the artifact and all earlier steps. This is the
+      # only step that needs the protected production credential, and it deploys
+      # the already-built dist without invoking the frontend build script.
+      - name: Deploy Cloudflare Worker
+        run: pnpm exec wrangler deploy
+        working-directory: infra/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+  create-release:
+    needs: deploy-worker
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Windows installer artifact
+        # v4.3.0
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: windows-x64-installer
+          path: release-assets
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" \
+            "release-assets/DevSandbox-${version}-windows-x64-setup.exe" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag

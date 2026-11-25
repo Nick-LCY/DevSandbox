@@ -5,7 +5,7 @@ status: done
 # 任务：端口转发桌面侧（Rust 本机 TCP 监听 + 隧道桥接 + 界面）
 
 > **修订注（2026-11-03，用户拍板 · 决策 C）**：本任务的**界面部分按已确认的前端设计重写**：
-> ① **web 形态只渲染说明卡 + 「安装桌面端」按钮**（点击开 ModalShell 安装指引弹窗），**无列表 / 新建 / 停止等任何管理操作**（原口径「web 形态下该区只做管理与说明」作废——管理动作只在桌面形态出现）；
+> ① **web 形态只渲染说明卡 + 「安装桌面端」入口**；入口新标签打开 GitHub Releases（`https://github.com/Nick-LCY/DevSandbox/releases`），**不再打开 ModalShell 安装指引弹窗**；无列表 / 新建 / 停止等任何管理操作（原口径「web 形态下该区只做管理与说明」作废——管理动作只在桌面形态出现）；
 > ② **桌面形态完整管理**：新建**只填容器端口**、列表按「容器端口 → 本机端口」呈现、开启 / 关闭本机监听、停止转发、开启后显示 `http://127.0.0.1:<port>` 与复制按钮；
 > ③ **本机端口规则**：默认 = 容器端口、可编辑、**不可为空**、被占自动换空闲端口并**显示实际值**、**允许 <1024**（OS 差异见 ADR 0014 第 4 节）。
 > **Rust 部分与 CSP 闸门条款保留不变**；本机端口由**桌面端**持有（后端不感知），与「宿主零端口」口径一致。
@@ -18,7 +18,7 @@ status: done
 
 ## 目标
 
-桌面端把后端的转发能力变成「本机回环上的一个可用端口」：Rust 核心在 `127.0.0.1` 起监听，每来一条连接就开一条隧道 WS 并做字节桥接；前端提供端口转发的管理界面（**完整管理只在桌面形态**；web 形态只渲染说明卡与「安装桌面端」指引）。**端口选择权与冲突处理全部在桌面端**——默认取容器端口、用户可改、被占自动换。
+桌面端把后端的转发能力变成「本机回环上的一个可用端口」：Rust 核心在 `127.0.0.1` 起监听，每来一条连接就开一条隧道 WS 并做字节桥接；前端提供端口转发的管理界面（**完整管理只在桌面形态**；web 形态只渲染说明卡与 Releases 新标签入口）。**端口选择权与冲突处理全部在桌面端**——默认取容器端口、用户可改、被占自动换。
 
 ## 涉及文件
 
@@ -28,7 +28,7 @@ status: done
 - 改 `apps/desktop/src-tauri/Cargo.toml` — 引入 `tokio-tungstenite` / `tokio-util` / `futures-util` 等依赖
 - 改 `apps/web/frontend/src/components/workbench/SandboxDetailDialog.tsx` — 抽屉底部的「端口转发」区
 - 新增 `apps/web/frontend/src/components/workbench/PortForwardPanel.tsx` + `.test.tsx` — 转发区组件（桌面形态完整管理 / web 形态说明卡）
-- 新增 `apps/web/frontend/src/components/workbench/PortForwardInstallDialog.tsx` — 「安装桌面端」指引弹窗（ModalShell）
+- web 形态的安装入口：历史实现曾使用 `PortForwardInstallDialog.tsx` / ModalShell 安装说明弹窗；当前实现已删除该弹窗，改为新标签打开 GitHub Releases：`https://github.com/Nick-LCY/DevSandbox/releases`。
 - 改 `apps/web/frontend/src/api/client.ts` + `api/types.ts` — 三条转发 REST 与 `ForwardModel`（**无本机端口字段**）
 - 新增 `apps/web/frontend/src/lib/port-forward.ts` + `.test.ts` — 转发纯逻辑（地址推导、状态文案、本机端口校验）
 - 新增 `apps/web/frontend/src/lib/desktop-forward.ts` — 桌面 IPC 桥（`invoke` 三个命令 + 订阅两个状态事件）
@@ -54,7 +54,7 @@ status: done
    - **显示实际值**：界面展示的必须是**实际监听端口**，不得显示用户输入值；
    - **允许 <1024**：不做端口范围限制（Windows 可绑、macOS 现代版可绑、Linux 非 root 不可绑；目标平台 Windows 为主；若在 Linux 上绑定低端口失败须**明确报错**，不静默失败）。
 5. **前端界面**：入口是**沙箱详情抽屉的「端口转发」区**。
-   - **web 形态**：**只渲染一张说明卡 + 一个「安装桌面端」按钮**；点击打开 **ModalShell** 安装指引弹窗。**不渲染列表 / 新建 / 停止等任何管理操作**（管理动作需要桌面端，直接在网页上做会给出「建了却连不上」的半截功能）。说明卡写明「访问沙箱端口需要桌面应用」（与已退役的 URL 代理明确区分）。
+   - **web 形态**：**只渲染一张说明卡 + 一个「安装桌面端」入口**；入口新标签打开 GitHub Releases（`https://github.com/Nick-LCY/DevSandbox/releases`），**不再打开安装说明弹窗**。**不渲染列表 / 新建 / 停止等任何管理操作**（管理动作需要桌面端，直接在网页上做会给出「建了却连不上」的半截功能）。说明卡写明「访问沙箱端口需要桌面应用」（与已退役的 URL 代理明确区分）。
    - **桌面形态**：**完整管理**——新建转发**只填容器端口**（本机端口默认等于容器端口，可改）；列表按「**容器端口 → 本机端口**」呈现；每条支持**开启 / 关闭本机监听**、**停止转发**；开启后显示 `http://127.0.0.1:<port>` 与**复制**按钮。
    - 结果反馈走 toast（来源标识 `port-forward`）；本地校验红字留在抽屉内就地展示。
 6. **纯逻辑收敛**：`src/lib/port-forward.ts` 负责转发地址推导、状态文案与本机端口校验（空值 / 非法值 / 展示实际端口），配单元测试。
@@ -68,7 +68,7 @@ status: done
 - [x] **监听生命周期**：**单条隧道断开只关那一条本机连接**，**本机监听保留到用户显式停止**（`stop_forward` / 「停止转发」）才关，不留僵尸监听。（**原口径「隧道断开 → 关本机监听」已按实现修订**——见文首修订注与文末「进展」。）
 - [x] 同一沙箱的多个端口可同时转发、互不串扰；同一转发的多条并发连接互不串扰（**每条连接各开一条隧道 WS**）。
 - [x] 端口转发界面落在沙箱详情抽屉，遵守 [[conventions/console-frontend.md|网页控制台前端约定]]（Base UI、令牌色、toast、`data-testid`、抽屉外壳复用）。
-- [x] **web 形态下只渲染说明卡 + 「安装桌面端」按钮**（点击开 ModalShell 安装指引弹窗），**不渲染列表 / 新建 / 停止任何管理操作**。
+- [x] **web 形态下只渲染说明卡 + Releases 新标签入口**（`https://github.com/Nick-LCY/DevSandbox/releases`），**不再打开安装说明弹窗**，**不渲染列表 / 新建 / 停止任何管理操作**。
 - [x] **桌面形态下管理能力完整**：新建只填容器端口、列表按「容器端口 → 本机端口」呈现、开启 / 关闭本机监听、停止转发、开启后显示 `http://127.0.0.1:<port>` 与复制按钮。
 - [x] `src/lib/port-forward.ts` 有单元测试；前端 `vitest` / `typecheck` / `typecheck:tests` / `build` 全绿（vitest **527 条** / typecheck **双零错** / build **成功**）。
 - [x] **（本轮文档环节完成，2026-11-03）** `docs/conventions/console-frontend.md` 新增「端口转发」小节，写清界面位置、**web / 桌面两形态的差异**、本机端口规则、toast 来源标识与标识命名。
@@ -98,8 +98,8 @@ status: done
 - 改 `apps/desktop/src-tauri/Cargo.toml`——引入 `tokio-tungstenite`（隧道 WS 客户端，`rustls-tls-webpki-roots` 走纯 Rust TLS，Windows 出包不依赖系统 OpenSSL）/ `tokio-util`（`CancellationToken`）/ `futures-util`。
 - 新增 `apps/web/frontend/src/lib/port-forward.ts`（+ `.test.ts`）——端口校验（**不拦低端口**）、「容器端口 → 本机端口」映射文案、本机地址拼接、监听状态四色语义、开启成功文案（**被占换端口时要说清实际值**）。
 - 新增 `apps/web/frontend/src/lib/desktop-forward.ts`——桌面 IPC 桥：`window.__TAURI_INTERNALS__.invoke`（**不引 `@tauri-apps/api`**，web 形态的构建产物与依赖树不被 Tauri 污染）+ 两个事件订阅（订阅失败静默降级，不把界面带崩）。
-- 新增 `apps/web/frontend/src/components/workbench/PortForwardPanel.tsx`（+ `.test.tsx`）——端口转发区：**web 形态只渲染说明卡 + 「安装桌面端」按钮**（不读转发记录、不渲染任何管理操作）；**桌面形态完整管理**（新建 / 列表 / 开启·关闭本机监听 / 停止转发 / 本机地址 + 复制）。
-- 新增 `apps/web/frontend/src/components/workbench/PortForwardInstallDialog.tsx`——「安装桌面端」指引弹窗（**ModalShell**，三步：拿安装包 / 填后端地址与令牌 / 开启转发后访问）。
+- 新增 `apps/web/frontend/src/components/workbench/PortForwardPanel.tsx`（+ `.test.tsx`）——端口转发区：**web 形态只渲染说明卡 + Releases 新标签入口**（不读转发记录、不渲染任何管理操作）；**桌面形态完整管理**（新建 / 列表 / 开启·关闭本机监听 / 停止转发 / 本机地址 + 复制）。
+- **历史实现（已废弃）**：曾新增 `apps/web/frontend/src/components/workbench/PortForwardInstallDialog.tsx`——「安装桌面端」指引弹窗（**ModalShell**，三步：拿安装包 / 填后端地址与令牌 / 开启转发后访问）；该文件与弹窗行为已删除。当前「安装桌面端」入口新标签打开 GitHub Releases：`https://github.com/Nick-LCY/DevSandbox/releases`。
 - 改 `apps/web/frontend/src/components/workbench/SandboxDetailDialog.tsx`——抽屉**底部**挂「端口转发」区。
 - 改 `apps/web/frontend/src/api/client.ts` + `api/types.ts`——三条转发 REST（`GET /api/forwards` / `POST /api/forwards` / `DELETE /api/forwards/{id}`）与 `ForwardModel`（**无本机端口字段**——本机端口只在桌面端存在）。
 - 改 `apps/web/frontend/README.md`——标识表新增「端口转发」一行（`page-forward-*`）。

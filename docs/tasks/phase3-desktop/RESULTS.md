@@ -562,3 +562,15 @@ wss 建连时，`rustls` 0.23.46 在 **`ClientConfig::builder()`** 处 panic（`
 - **绿灯语义**：界面上的**监听绿灯只表示「本机监听已建立」，不表示「隧道可用」**——隧道可用性要等首条连接真正打通才知道；叠加 VS Code 端口抢占（绑定不报错、连接被抢走）后，界面上分不出「已就绪 / 端口被抢 / 隧道不通」。候选方案：**监听开启后做自连探测**，在 UI 上区分这三种状态。
 
 两条的登记与状态见 [[current-state.md|当前状态]] 的「TODO / 阻塞」区；操作层面的坑（端口抢占、公共根证书、scheme 前缀）见 `apps/desktop/README.md` 的「环境注意」与「已知边界」小节。
+
+## 十一、发布工作流交付（首次真实 tag 待执行）
+
+- **工作流已交付**：同一个 `vX.Y.Z` tag 触发 `.github/workflows/release.yml`，按 `build-windows → deploy-worker → create-release` 串行执行；Windows job 包含五字段版本校验、前端 typecheck/tests、Rust tests 与 x64 NSIS artifact。
+- **无 Cloudflare 密钥构建**：`build-windows` 不注入 `CLOUDFLARE_API_TOKEN`；Tauri build 生成并校验前端 `apps/web/frontend/dist`（`index.html` 存在且文件集非空），随后上传 `web-frontend-dist` artifact。`deploy-worker` 下载并校验该 artifact 后直接用于 Worker 部署，不重新构建 frontend dist。
+- **最小 token 暴露面**：`CLOUDFLARE_API_TOKEN` 只作为最终 `pnpm exec wrangler deploy` 步骤的环境变量；checkout、artifact 下载 / 校验、pnpm / Node 安装和 Worker 依赖安装步骤均不注入该 token。Cloudflare job 不运行 Terraform。
+- **部署记录分类**：`deploy-worker` 可声明 GitHub Environment `production`，仅作为 Worker 部署记录分类（若仓库保留该 Environment），不作为审批或安全门禁。按单人维护仓库的策略，不配置 required reviewers，也不配置 `v*.*.*` tag 保护 / 部署规则；推送匹配版本的 `vX.Y.Z` tag 即为正式发布触发动作。
+- **Worker 串行**：`deploy-worker` 使用并发组 `production-worker-deploy`，`cancel-in-progress: false`，不同 tag 的 Worker 发布排队串行；`needs` 继续保证发布阶段按构建 → Worker → Release 顺序推进。
+- **供应链与工具链固定**：checkout `11bd71901bbe5b1630ceea73d27597364c9af683`、pnpm/action-setup `7088e561eb65bb68695d245aa206f005ef30921d`、setup-node `49933ea5288caeca8642d1e84afbd3f7d6820020`、upload-artifact `ea165f8d65b6e75b540449e92b4886f43607fa02`、download-artifact `d3f86a106a0bac45b974a628896c90dbdf5c8093` 均固定 commit SHA；Rust 使用显式 `1.90.0`，目标为 `x86_64-pc-windows-msvc`。
+- **前端入口已更新**：web 形态的「安装桌面端」改为新标签打开 GitHub Releases，不再打开旧安装说明弹窗。
+- **验证边界**：前端 typecheck/tests 与 Rust tests 已通过，未执行真实 `vX.Y.Z` tag、未 push tag，未据此声称 Cloudflare Worker 线上部署成功或 GitHub 正式 Release 已创建。目标仓库 secret 已由本机写入，仍需由单人维护者 push 真实 tag 触发 workflow，才能验证线上链路。
+- **发布口径**：Windows 安装包未签名可接受；SmartScreen 告警属于已知限制，不作为 workflow 失败条件。后续执行见 [[tasks/phase3-desktop/11-first-tag-release.md|首次真实 tag 发布]]。

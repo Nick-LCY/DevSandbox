@@ -26,7 +26,6 @@ import { cn } from '../../lib/cn';
 import { useToast } from '../Toast';
 import { Input } from '../ui/input';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip';
-import { PortForwardInstallDialog } from './PortForwardInstallDialog';
 
 interface PortForwardPanelProps {
   /** 转发挂在哪个沙箱上。 */
@@ -93,6 +92,8 @@ const STOP_LISTENER_FAILED_NOTICE =
 const MIGRATE_LISTENER_FAILED_NOTICE =
   '本机监听仍指向旧的转发标识，请删除该行后重新同步';
 
+const DESKTOP_RELEASES_URL = 'https://github.com/Nick-LCY/DevSandbox/releases';
+
 /**
  * 失败原因：**只取 `exc.message`**。
  *
@@ -109,7 +110,7 @@ function errorMessage(exc: unknown): string {
  * 端口转发区（沙箱详情抽屉里）。
  *
  * **两种形态的差异**（决策 C）：
- * - **web 形态**：**只渲染说明卡 + 「安装桌面端」按钮**，**没有任何管理操作**
+ * - **web 形态**：**只渲染说明卡 + 「安装桌面端」链接**，**没有任何管理操作**
  *   （表格 / 新建都不渲染）——本机端口的监听由桌面端持有，
  *   在网页上建转发只会给出「建了却连不上」的半截功能。
  * - **桌面形态**：**完整管理**——新建转发、表格（记录 ∪ 监听并集）、
@@ -159,9 +160,6 @@ export function PortForwardPanel({
   const [localPortTouched, setLocalPortTouched] = useState(false);
   /** 本地表单校验红字（就地展示，不走 toast）。 */
   const [error, setError] = useState('');
-  /** 「安装桌面端」指引弹窗是否打开（仅 web 形态用）。 */
-  const [installOpen, setInstallOpen] = useState(false);
-
   /** 本机端口输入框的实际取值：没手动改过时跟随容器端口。 */
   const effectiveLocalPort = localPortTouched ? localPort : containerPort;
 
@@ -618,16 +616,16 @@ export function PortForwardPanel({
         <p className="text-[12.5px] leading-relaxed text-muted-foreground">
           访问沙箱端口需要桌面应用：网页形态无法管理端口转发，请使用桌面端。
         </p>
-        <button
-          type="button"
-          onClick={() => setInstallOpen(true)}
+        <a
+          href={DESKTOP_RELEASES_URL}
+          target="_blank"
+          rel="noopener noreferrer"
           data-testid="page-forward-install-button"
           className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-border bg-card px-3 text-[13px] text-foreground transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
         >
           <Download className="size-4" aria-hidden="true" />
           安装桌面端
-        </button>
-        <PortForwardInstallDialog open={installOpen} onOpenChange={setInstallOpen} />
+        </a>
       </div>
     );
   }

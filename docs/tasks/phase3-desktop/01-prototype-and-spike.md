@@ -40,7 +40,7 @@ status: done
 - [x] P1 有明确裁决：主路径（`-p`）成立，或 Fallback B 成立并被采纳。**（2026-11-03 决策 C 后：`-p` 主路径成立但**不采用**，Fallback B 升为唯一路径；本条仍视为已闭合。）**
 - [x] P2 三项冒烟（`oklch` / xterm.js / `navigator.clipboard`）逐项有结论，且**在真机 Windows + WebView2 上**完成，不接受「在桌面版 Chromium 里过了就算过」。**（2026-11-04 真机通过：① `oklch` 配色正常；② xterm 渲染 / fit / 表面不溢出正常；③ `window.isSecureContext === true`、`navigator.clipboard` 读写双向成功。详见 [[tasks/phase3-desktop/RESULTS.md|留档]] 第五节。）**
 - [x] P3 记录转发镜像的拉取方式与代理命中情况，digest 已钉死。
-- [x] P4 给出至少一条可执行的 Windows 出包路径（含所需环境、耗时、产物形态），并明确是否需要用户提供机器或远端仓库。**（2026-11-04：路径②（用户自有 Windows 机器本地构建）正式可交付——Windows 11，产出 NSIS `setup.exe` 约 3.7 MB；环境（Windows 版本已记，Rust / Node / pnpm / Build Tools / WebView2 版本号未给）与产物形态已正式记录，**构建耗时未统计**（如实留档，待补）；路径①（GitHub Actions）本轮未验，仓库仍无远端、无 `.github`。）**
+- [x] P4 给出至少一条可执行的 Windows 出包路径（含所需环境、耗时、产物形态），并明确是否需要用户提供机器或远端仓库。**（2026-11-04：路径②（用户自有 Windows 机器本地构建）正式可交付——Windows 11，产出 NSIS `setup.exe` 约 3.7 MB；环境（Windows 版本已记，Rust / Node / pnpm / Build Tools / WebView2 版本号未给）与产物形态已正式记录，**构建耗时未统计**（如实留档，待补）；路径①（GitHub Actions）本轮未验，仓库仍无远端、无 `.github`。这是当轮历史记录；当前同版本 tag workflow 已由 [[tasks/phase3-desktop/10-release-workflow.md|任务 10]] 交付，首次真实 tag 仍待执行。**）**
 - [x] Tauri 工程骨架可启动，`frontendDist` 指向 `apps/web/frontend/dist`（同一份产物，无第二份前端）。**（2026-11-04：真机启动通过——桌面壳按连接配置连上真后端，终端、转发等功能实际使用无问题。）**
 - [x] 打样过程中的临时资源（测试沙箱、探针容器、探针用户）清理干净，不留残留。
 

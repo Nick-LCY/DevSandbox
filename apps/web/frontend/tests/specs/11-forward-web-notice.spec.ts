@@ -8,10 +8,9 @@
  * 验到的形态：桌面形态的完整管理要 Tauri IPC，网页上验不了）。
  *
  * 钉的行为（决策 C，口径见 `apps/web/frontend/README.md`「端口转发」节）：
- * 一、端口转发区**只有一张说明卡 + 一个「安装桌面端」按钮**；
+ * 一、端口转发区**只有一张说明卡 + 一个「安装桌面端」链接**；
  * 二、说明卡写明「网页形态无法管理端口转发，请使用桌面端」；
- * 三、点「安装桌面端」弹出三步指引（拿安装包 / 填后端地址与令牌 /
- *    开启转发后访问），弹窗能关；
+ * 三、「安装桌面端」是指向 GitHub Releases 的新标签链接；
  * 四、**零管理元素**：表格 / 行 / 新建表单 / 「转发」按钮一个都不渲染
  *    （web 形态给了管理能力就等于给出「建了却连不上」的半截功能——
  *    本机端口的监听由桌面端持有）；
@@ -74,7 +73,7 @@ test.describe('web 形态的端口转发区', () => {
     await expect(notice).toContainText('网页形态无法管理端口转发');
     await expect(notice).toContainText('桌面端');
 
-    // ── ② 「安装桌面端」按钮在（唯一的入口）
+    // ── ② 「安装桌面端」链接在（唯一的入口）
     await expect(page.getByTestId('page-forward-install-button')).toBeVisible();
 
     // ── ③ 零管理元素：桌面形态的整块管理区不渲染
@@ -92,29 +91,18 @@ test.describe('web 形态的端口转发区', () => {
     expect(forwardRequests, 'web 形态不该请求转发记录').toEqual([]);
   });
 
-  test('「安装桌面端」指引弹窗：三步指引齐全，关闭按钮能关', async ({ page }) => {
+  test('「安装桌面端」是 GitHub Releases 的新标签链接', async ({ page }) => {
     await gotoDetail(page, SANDBOX_NAME);
     await openDetailDialog(page);
     await expect(page.getByTestId('page-forward-notice')).toBeVisible();
 
-    await page.getByTestId('page-forward-install-button').click();
-    const dialog = page.getByTestId('page-forward-install-dialog');
-    await expect(dialog).toBeVisible();
-
-    // 三步指引逐条可见，且各说各的事（拿包 / 填配置 / 怎么访问）。
-    const packageStep = page.getByTestId('page-forward-install-step-package');
-    const configStep = page.getByTestId('page-forward-install-step-config');
-    const accessStep = page.getByTestId('page-forward-install-step-access');
-    await expect(packageStep).toBeVisible();
-    await expect(configStep).toBeVisible();
-    await expect(accessStep).toBeVisible();
-    await expect(packageStep).toContainText('拿安装包');
-    await expect(configStep).toContainText('填后端地址与令牌');
-    await expect(accessStep).toContainText('开启转发后访问');
-
-    // 关闭按钮能关（弹窗是叠在说明卡上的，关掉后说明卡还在）。
-    await page.getByTestId('page-forward-install-close-button').click();
-    await expect(dialog).toBeHidden();
-    await expect(page.getByTestId('page-forward-notice')).toBeVisible();
+    const link = page.getByTestId('page-forward-install-button');
+    await expect(link).toHaveRole('link');
+    await expect(link).toHaveAttribute(
+      'href',
+      'https://github.com/Nick-LCY/DevSandbox/releases',
+    );
+    await expect(link).toHaveAttribute('target', '_blank');
+    await expect(link).toHaveAttribute('rel', 'noopener noreferrer');
   });
 });
