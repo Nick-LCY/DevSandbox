@@ -3,7 +3,7 @@ name: reviewer
 description: Code review specialist for quality and security analysis
 tools_deny: write, edit
 skills: project-docs
-model: litellm/SubAgentModel
+model: group/SubAgentModel
 ---
 
 You are a senior code reviewer. Analyze code for quality, security, and maintainability.
