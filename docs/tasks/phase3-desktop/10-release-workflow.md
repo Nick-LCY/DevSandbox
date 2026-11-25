@@ -32,13 +32,13 @@ status: done
 - [x] `build-windows` 不注入 Cloudflare 生产凭据，生成并校验 `web-frontend-dist` artifact；`deploy-worker` 下载该 artifact，且不重新构建前端。
 - [x] `CLOUDFLARE_API_TOKEN` 只在最终 `pnpm exec wrangler deploy` 步骤可见，不依赖 Terraform。
 - [x] `production` Environment（若保留）仅作为 Worker 部署记录分类；按单人维护仓库策略，不配置 required reviewers 或 tag 保护规则，不把 `environment` 声明当作审批或安全门禁。
-- [x] workflow 的 actions 使用固定 commit SHA，Rust 工具链显式为 `1.90.0`；前端 typecheck/tests 与 Rust tests 已通过，未声称 workflow 已经在真实 tag 上跑过。
+- [x] workflow 的 actions 使用固定 commit SHA，Rust 工具链显式为 `1.90.0`；前端 typecheck/tests 与 Rust tests 已通过。真实 `v0.1.0` tag 的线上运行实证见 [[tasks/phase3-desktop/11-first-tag-release.md|任务 11]]。
 - [x] 网页端安装入口指向 GitHub Releases 并使用新标签打开。
 - [x] 未签名 Windows 安装包的接受口径已写入发布流程；不把代码签名当作发布阻塞条件。
 
 ## 当前边界
 
-本任务只代表发布工作流与入口改造已交付。首次真实 `vX.Y.Z` tag 发布、Worker 线上部署和 GitHub Release 线上创建尚未执行；`production` Environment（若保留）仅作部署记录分类，不配置 required reviewers 或 `v*.*.*` tag 保护 / 部署规则，也不作为审批或安全门禁；后续动作见 [[tasks/phase3-desktop/11-first-tag-release.md|首次真实 tag 发布]]。
+本任务代表发布工作流与入口改造已交付；首次真实 `v0.1.0` tag 发布、Worker 线上部署和 GitHub Release 线上创建已于 2026-11-25 UTC 由 [[tasks/phase3-desktop/11-first-tag-release.md|任务 11]] 完成并留档。`production` Environment（若保留）仅作部署记录分类，不配置 required reviewers 或 `v*.*.*` tag 保护 / 部署规则，也不作为审批或安全门禁。
 
 ## 依赖
 

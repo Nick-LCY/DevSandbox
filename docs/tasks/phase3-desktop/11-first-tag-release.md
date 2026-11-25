@@ -1,6 +1,6 @@
 ---
 prd: prds/phase3-desktop.md
-status: todo
+status: done
 ---
 # 任务：首次真实 tag 发布
 
@@ -12,14 +12,22 @@ status: todo
 
 ## 完成标准
 
-- [ ] 单人维护者确认目标 `vX.Y.Z`，并核对五个版本字段一致后将 tag push 到目标仓库。
-- [ ] `build-windows` 成功：版本校验、前端 typecheck/tests、Rust tests、Windows x64 NSIS build 与 artifact 上传全部通过；构建不需要 `CLOUDFLARE_API_TOKEN`，并产出经校验的 `web-frontend-dist` artifact。
-- [ ] `deploy-worker` 成功：下载并校验 `web-frontend-dist`，使用 `CLOUDFLARE_API_TOKEN` 完成最终 `pnpm exec wrangler deploy`；token 只在该 deploy 步骤可见，不引入 Terraform 步骤。
-- [ ] 核对 Worker 发布遵守 `production-worker-deploy` 并发组的串行语义；workflow 使用固定 SHA 的 actions，Rust 工具链为显式 `1.90.0`。
-- [ ] `create-release` 成功：GitHub 正式 Release 创建完成，并附加 x64 NSIS 安装包。
-- [ ] 发布后核对 Release 资产可下载；未签名安装包的 SmartScreen 告警按已接受限制记录，不把它误判为发布失败。
+- [x] 单人维护者确认目标 `v0.1.0`，核对版本字段后将 annotated tag push 到目标仓库；commit `169724a` 已推送，且包含先前批准的 `ac39271`。
+- [x] `build-windows` 成功：版本校验、前端 typecheck/tests、Rust tests、Windows x64 NSIS build 与 artifact 上传全部通过；构建不需要 `CLOUDFLARE_API_TOKEN`，并产出经校验的 `web-frontend-dist` artifact。
+- [x] `deploy-worker` 成功：下载并校验 `web-frontend-dist`，使用 `CLOUDFLARE_API_TOKEN` 完成最终 `pnpm exec wrangler deploy`；token 只在该 deploy 步骤可见，不引入 Terraform 步骤；Cloudflare deploy job 成功。
+- [x] 核对 Worker 发布遵守 `production-worker-deploy` 并发组的串行语义；workflow 使用固定 SHA 的 actions，Rust 工具链为显式 `1.90.0`。
+- [x] `create-release` 成功：GitHub 正式 Release 创建完成，并附加 x64 NSIS 安装包。
+- [x] 发布后核对 Release 资产可下载；资产为 `DevSandbox-0.1.0-windows-x64-setup.exe`，大小 **4,452,313 bytes**；安装包未签名，SmartScreen 告警按已接受限制记录，不把它误判为发布失败。
+
+## 执行实证（2026-11-25 UTC）
+
+- **Tag / commit**：annotated tag `v0.1.0` 已推送；commit `169724a` 已推送，且已将先前批准的 `ac39271` 一并推送。
+- **GitHub Actions**：run `45567316929` 成功；`build-windows`、`deploy-worker`、`create-release` 均 success，Cloudflare deploy job 成功。
+- **正式 Release**：<https://github.com/Nick-LCY/DevSandbox/releases/tag/v0.1.0>
+- **安装包**：`DevSandbox-0.1.0-windows-x64-setup.exe`，**4,452,313 bytes**，已作为 Release 资产并可下载。
+- **验证边界**：安装包未签名；本次记录只确认发布资产可下载，不代表用户已安装、启动或连接验证。仍需手工安装验证。
 
 ## 依赖
 
 - 依赖 [[tasks/phase3-desktop/10-release-workflow.md|10 发布工作流与桌面端下载入口]] 已完成。
-- 由单人维护者选择版本并执行 tag push；本任务当前未开始，不能据此声称 Cloudflare 或 GitHub Release 已成功。
+- 由单人维护者选择版本并执行 tag push；已执行 `v0.1.0` 发布并完成 Cloudflare 与 GitHub Release 核对，详见本节「执行实证」。安装包仍需手工安装验证。

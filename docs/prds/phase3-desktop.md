@@ -207,19 +207,19 @@
 | **P1** | **免 root 守护进程 `-p 127.0.0.1:<port>:<port>` 是否在宿主回环真的产生监听** | ① 宿主 `ss -ltn` 出现该端口；② 从宿主 `curl 127.0.0.1:<端口>` 能连到容器内目标服务 | **已实测通过**（本机，2026-11-03，见 [[tasks/phase3-desktop/RESULTS.md|三期留档]]）。**2026-11-03 决策 C：该路径不再采用**——Fallback B 升为唯一路径，「外层契约」（宿主回环端口 / 隧道 / 桌面监听三层）改为「用户机监听 ⇄ 隧道 WS ⇄ exec 字节泵 ⇄ 转发容器 ⇄ 沙箱端口」。立稿的备案描述留档 |
 | **P2** | **Tauri v2 + WebView2 三项冒烟** | ① `oklch()` 配色正常（Tailwind v4 色板底座，Chromium < 111 会整页掉色）；② xterm.js 渲染 + `fit` 量算正常 + 终端表面不溢出；③ `navigator.clipboard` 在安全上下文下可读可写（查 `window.isSecureContext`） | ① → 令牌层补一条 oklch 回退色（改 `globals.css` 的 `:root` / `.dark` 两处 + `@theme` 映射）；② → 调整终端测量盒与字体度量；③ → 剪贴板快捷键改走 Tauri 侧剪贴板能力（改 `src/lib/terminal-shortcuts.ts` 的分类口径与测试） |
 | **P3** | 转发镜像（`alpine/socat`，钉 digest）在沙箱守护进程内经统一镜像代理可拉 | 代理命中 / 未命中都能拉到；digest 与代理缓存路径记录在案 | 拉不到 → 转发容器起不来。备案：改用平台自建转发镜像（本地构建 + 宿主导出注入，走 `image_source=host` 那条既有路径） |
-| **P4** | Windows 安装包的出包路径 | 至少一条路径可重复执行（GitHub Actions `windows-latest` 或用户自有 Windows 机器），记录环境、耗时、产物形态 | **本地 Windows 路径已实测通过；GitHub Actions workflow 已实现，但真实 tag 首次执行待完成** |
+| **P4** | Windows 安装包的出包路径 | 至少一条路径可重复执行（GitHub Actions `windows-latest` 或用户自有 Windows 机器），记录环境、耗时、产物形态 | **本地 Windows 路径已实测通过；GitHub Actions workflow 已于 2026-11-25 UTC 由 `v0.1.0` 真实 tag 执行成功，产出 Release 安装包** |
 | **P5** | Windows 目标机器的 WebView2 运行时 | `webviewInstallMode` 三选一：Evergreen 静默安装 / 离线安装包随包分发 / 提示用户自装 | 离线机器上 Evergreen 拉不到运行时 → 必须随包分发离线安装包（体积变大），或明确要求目标机器有 Edge |
 
 ### 风险清单
 
 | 编号 | 风险 | 影响 | 应对 |
 |---|---|---|---|
-| **R1** | **本开发机是 Linux，Windows 安装包构建路径未定** | 08 任务无法交付；用户拿不到可安装产物 | **本地 Windows 路径已验证；GitHub Actions `windows-latest` workflow 已交付，首次真实 tag 运行待执行**。Tauri v2 不支持从 Linux 交叉编译出 Windows 安装包。 |
+| **R1** | **本开发机是 Linux，Windows 安装包构建路径未定** | 08 任务无法交付；用户拿不到可安装产物 | **本地 Windows 路径已验证；GitHub Actions `windows-latest` workflow 已于 2026-11-25 UTC 真实执行成功并发布安装包**。Tauri v2 不支持从 Linux 交叉编译出 Windows 安装包。 |
 | **R2** | **WebView2 下 `oklch()` 不被支持** | Tailwind v4 的整套色板失效，界面掉色（不是"不好看"，是"没有颜色"） | P2 真机冒烟硬项；备案是令牌层补一条 `rgb()` 回退色（注意 [[conventions/console-frontend.md|前端约定]] 禁止组件里写裸色值，只能在 `globals.css` 的令牌层加） |
 | **R3** | xterm.js 在 WebView2 下的字体度量 / `fit` 差异 | 终端列数错位、终端表面溢出、出现原生滚动条 | P2 真机冒烟硬项；已知既有坑：自托管字体 swap 晚到会让列数失配（前端已有 `document.fonts.ready` 补 fit 的处理，需在 WebView2 下复验） |
 | **R4** | `navigator.clipboard` 的安全上下文判定 | 剪贴板快捷键（`Ctrl+Shift+C` / `Ctrl+Shift+V`）失效。既有约定明确「剪贴板 API 需要安全上下文……非安全上下文下接口不存在，走失败路径弹提示，不做降级」 | P2 真机冒烟硬项；备案是改走 Tauri 侧剪贴板（会改 `src/lib/terminal-shortcuts.ts` 的分类口径与单元测试） |
 | **R5** | **既有验收套件在 token 模式下的全量回归成本** | 9 条 spec 全部要带令牌；`global-setup` 启动后端要注入令牌；页面侧要预置连接配置；新增负向用例 | 任务 07 专门处理；用 `storageState` 预置而不是在每条用例里点配置，把回归增量控制在分钟级 |
-| **R6** | 仓库无 CI、无远端 | GitHub Actions 出包路径需要先建远端 | **已消解：同版本 tag 的发布 workflow 已写入仓库；首次真实 tag 运行仍待执行** |
+| **R6** | 仓库无 CI、无远端 | GitHub Actions 出包路径需要先建远端 | **已消解：同版本 tag 的发布 workflow 已写入仓库，并于 2026-11-25 UTC 由 `v0.1.0` 真实 tag 触发成功** |
 | **R7** | WebView2 运行时缺失或版本过旧 | 应用打不开或掉色 | `webviewInstallMode` 选离线安装包随包分发（体积代价）；README 明示最低 WebView2 版本 |
 | **R8** | 安装包未做代码签名 | SmartScreen 强告警，用户需手动「更多信息 → 仍要运行」 | 无证书可接受则明示；需要签名则另立需求（证书采购与保管不在本期） |
 | **R9** | 令牌明文存 `localStorage` | 同源脚本可读；桌面 WebView 与浏览器页面同性质 | 平台单人自用，本期接受；UI 与文档写明；「存操作系统凭据库」列为开放问题 Q5（可在不改前端契约的前提下换实现） |
@@ -298,7 +298,7 @@
 | **Q1** | **★ 令牌怎么分发到桌面端？** | **推荐：服务端启动生成并落 `<平台数据根>/console-token.json`（`0600`），同时支持 `SANDBOX_CONSOLE_TOKEN` 环境变量注入（优先级更高）。** 理由：① 与平台既有口径一致（元数据、模板都是数据根下的 `0600` 文件）；② 环境变量会出现在 `systemd` 单元文件与 `/proc/<pid>/environ` 里，落盘文件更可控；③ 用户取令牌的方式是「读文件」，不需要在桌面端做「服务端生成 → 传输 → 落盘」的引导。**代价**：需要 root 读文件这一步；令牌轮换无 UI（只能删文件 + 重启服务） | 任务 02、03、07、09；README 与 API.md 的操作说明 |
 | **Q2** | **★ `/api/health` 是否豁免认证？** | **推荐：不豁免。** 理由：① 与「所有 `/api` 受 token 保护」的口径完全一致，不留例外；② 前端能借此区分「后端不可达」（连接失败）与「令牌无效」（401），这是实打实的体验收益；③ 版本号等字段不外泄给未认证调用方。**代价**：外部监控 / LB 探活必须带令牌或改用 socket 层探活 | 任务 02、03、07 |
 | **Q3** | **★ 转发会话在服务重启后的语义？** | **推荐：服务重启即全部丢失**（与终端会话既有口径一致），并在启动时清理上次遗留的转发容器与记录（对齐 `purge_leftover_sessions` 的做法）。理由：不发明第二套状态机；转发容器是平台自建资源，重启后无人认领的容器必须被回收，否则会变成孤儿 | 任务 04、05；ADR 0014 第 7 节 |
-| **Q4** | **★ Windows 安装包的构建路径？** | **已关闭（发布自动化实现完成）**：同版本 `vX.Y.Z` tag 触发 GitHub Actions `windows-latest`，串联 Windows x64 NSIS build/tests、Cloudflare Worker deploy 与 GitHub Release；本地 Windows 构建仍可作为已验证的备用路径。**首次真实 tag 尚未执行。** | 任务 10；首次执行见 [[tasks/phase3-desktop/11-first-tag-release.md\|任务 11]] |
+| **Q4** | **★ Windows 安装包的构建路径？** | **已关闭（2026-11-25 UTC 真实发布验证）**：同版本 `vX.Y.Z` tag 触发 GitHub Actions `windows-latest`，串联 Windows x64 NSIS build/tests、Cloudflare Worker deploy 与 GitHub Release；`v0.1.0` 的 run `45567316929` 成功；本地 Windows 构建仍可作为已验证的备用路径。安装包未签名，手工安装验证待执行。 | 任务 10；执行与留档见 [[tasks/phase3-desktop/11-first-tag-release.md\|任务 11]] |
 | **Q5** | 桌面端令牌存哪？ | **推荐 v1 存 `localStorage`**（与主题、侧栏折叠、抽屉宽度同一层，存取收敛在 `src/lib/connection.ts`，配单元测试），把「存操作系统凭据库」列为后续可换实现项（**不改前端契约即可替换**）。代价：明文、同源脚本可读 | 任务 03；ADR 0015 第 2 节 |
 | **Q6** | 转发容器用什么镜像？ | **推荐：`alpine/socat` 钉 digest，经统一镜像代理拉取到沙箱守护进程**（改动最小，代理已有缓存与 CA 机制）。备案：平台自建转发镜像（本地构建 + 宿主导出注入）。代价：多一个需要平台维护 digest 的外部镜像 | 任务 01（P3）、04 |
 | **Q7** | 桌面本机端口由谁分配？ | **已关闭（2026-11-03 用户拍板，决策 C）**：**由桌面端持有**——默认 = 容器端口、**可编辑且不可为空**、**被占自动换空闲端口并显示实际值**、**允许 <1024**（Windows 可绑、macOS 现代版可绑、Linux 非 root 不可绑；目标平台 Windows 为主，Linux 上绑低端口失败须明确报错）。**后端不感知本机端口**；宿主侧的端口分配与区间已随 `-p` 一并废除 | 任务 06；ADR 0014 第 4 节 |
