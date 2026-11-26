@@ -1,6 +1,6 @@
 {
   "name": "dev-sandbox",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Cloudflare Workers 项目：控制台前端静态资产 + 极简 passthrough 脚本（脚本与资产归 wrangler，域名层归 Terraform）",

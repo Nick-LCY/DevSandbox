@@ -1,6 +1,6 @@
 [package]
 name = "sandbox-console-desktop"
-version = "0.1.0"
+version = "0.2.0"
 description = "沙箱平台控制台桌面端（Tauri v2 壳）"
 authors = ["sandbox-platform"]
 edition = "2021"
