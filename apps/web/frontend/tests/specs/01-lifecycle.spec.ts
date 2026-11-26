@@ -31,6 +31,7 @@ import {
   toastItem,
   waitDialogSettled,
   waitDrawerSettled,
+  switchSettingsTab,
 } from '../helpers/console';
 import { sandboxContainerState, userUid } from '../helpers/host';
 import { readFixtures } from '../helpers/sandbox';
@@ -355,6 +356,7 @@ test.describe('网页控制台全流程', () => {
 
   test('设置抽屉：刷新状态与重启代理两个按钮在代理设置区里', async ({ page }) => {
     await openSettingsDrawer(page);
+    await switchSettingsTab(page, 'proxy');
 
     // 两个按钮从抽屉页脚搬进了第一区：就在代理设置区里，不再是全局页脚。
     const section = page.locator(
