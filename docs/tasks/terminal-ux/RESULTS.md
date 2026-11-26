@@ -1,9 +1,9 @@
 # 终端交互增强：全轮收口留档（2026-11-26）
 
-> 本轮范围全部在前端 `apps/web/frontend`：设置抽屉「通用设置」、两个终端交互偏好、`Shift+Enter` 映射、终端内右键复制 / 粘贴接管和常开 OSC 52 剪贴板互通。`apps/web/backend` 与 `apps/core` 零改动，零新增依赖；收口修正提交 `f3d7f14` 已推送 `origin/main`。
+> 本轮范围全部在前端 `apps/web/frontend`：设置抽屉「通用设置」、两个终端交互偏好、`Shift+Enter` 映射、终端内右键复制 / 粘贴接管和常开 OSC 52 剪贴板互通。`apps/web/backend` 与 `apps/core` 零改动，零新增依赖；收口修正提交 `f3d7f14` 已推送 `origin/main`；发布提交 `409d2ac chore(release): 版本号 0.2.0`、`5f3a09e docs(terminal-ux): 收口验收、Shift+Enter CSI-u 修正与 v0.2.0 发布留档` 已推送，annotated tag `v0.2.0` 已推送。
 > 需求见 [[prds/terminal-ux.md|终端交互增强 PRD]]，任务集见 [[tasks/terminal-ux/README.md|终端交互增强任务集]]，约定见 [[conventions/console-frontend.md|控制台前端约定]]。
 
-**状态：01~05 全部 done。** 自动化验收已完成；用户已完成网页与桌面形态手工验收，桌面右键菜单抑制与剪贴板读写确认无问题。Shift+Enter 收口后修正为 kitty CSI-u，用户在 pi 内实测换行通过；即将随 `v0.2.0` 发布，tag、Actions run 与 Worker 部署结果待回填。
+**状态：01~05 全部 done。** 自动化验收已完成；用户已完成网页与桌面形态手工验收，桌面右键菜单抑制与剪贴板读写确认无问题。Shift+Enter 收口后修正为 kitty CSI-u，用户在 pi 内实测换行通过；已随 `v0.2.0` 发布：Actions run `45832306595` 已 completed / `success`，`build-windows`、`deploy-worker`、`create-release` 三个 job 全部 `success`；GitHub 正式 Release 已创建，资产 `DevSandbox-0.2.0-windows-x64-setup.exe` 为 4,457,358 字节（约 4.25 MB）；Cloudflare 前端 `https://dev.sankabox.com` 返回 200。
 
 ## 一、轮次总表
 
@@ -29,7 +29,7 @@
 | 真沙箱 e2e | 首轮 4 个定向 spec | **28 / 28**；0 失败 / 0 跳过 / 0 flaky |
 | 真沙箱 e2e | 修复轮复跑 `19` + `16` | **15 / 15**；0 失败 / 0 跳过 / 0 flaky |
 | 真沙箱 e2e | 全量 `pnpm exec playwright test --config=tests/playwright.config.ts` | **88 通过 / 0 失败 / 0 跳过 / 0 flaky**；14.4 分钟；退出码 0（基线 77 + `19-terminal-interaction` 新增 11） |
-| 范围核对 | 后端 / 核心包 / 依赖 / 发布 | `apps/web/backend` 与 `apps/core` 零改动；零新增依赖；Shift+Enter 修正提交 `f3d7f14` 已推送 `origin/main`；`v0.2.0` tag、Actions run 与 Worker 结果待回填 |
+| 范围核对 | 后端 / 核心包 / 依赖 / 发布 | `apps/web/backend` 与 `apps/core` 零改动；零新增依赖；Shift+Enter 修正提交 `f3d7f14` 已推送 `origin/main`；annotated tag `v0.2.0` 已推送，Actions run `45832306595` 已 completed / `success`，`build-windows`、`deploy-worker`、`create-release` 三个 job 全部 `success`；GitHub Release 与 Cloudflare Worker 前端部署成功 |
 
 ## 三、机制与关键口径
 
@@ -133,7 +133,11 @@ pnpm exec playwright test --config=tests/playwright.config.ts
 
 2026-11-26，用户已完成网页形态与桌面形态手工验收，均通过；桌面右键菜单抑制与剪贴板读写确认无问题。用户同时在 pi 内实测 `Shift+Enter` 换行通过，确认收口修正有效。
 
-代码修正提交 `f3d7f14 fix(web): Shift+Enter 改发 kitty CSI-u 序列 ESC[13;2u` 已推送 `origin/main`。本轮即将随 `v0.2.0` 发布；tag、Actions run 结果与 Worker 部署结果尚待回填。本节不将待发生的发布动作写成已完成事实。
+代码修正提交 `f3d7f14 fix(web): Shift+Enter 改发 kitty CSI-u 序列 ESC[13;2u` 已推送 `origin/main`。发布提交 `409d2ac chore(release): 版本号 0.2.0`、`5f3a09e docs(terminal-ux): 收口验收、Shift+Enter CSI-u 修正与 v0.2.0 发布留档` 已推送；annotated tag `v0.2.0` 已推送，推送前 `scripts/verify-release-version.mjs v0.2.0` 校验通过（matches 5 version files）。
+
+Actions run `45832306595` 已 completed，结论为 `success`：<https://github.com/Nick-LCY/DevSandbox/actions/runs/45832306595>；`build-windows`、`deploy-worker`、`create-release` 三个 job 全部 `success`。GitHub 正式 Release `v0.2.0` 已创建（<https://github.com/Nick-LCY/DevSandbox/releases/tag/v0.2.0>），资产 `DevSandbox-0.2.0-windows-x64-setup.exe`，大小 4,457,358 字节（约 4.25 MB）。Cloudflare 前端 `https://dev.sankabox.com` 返回 200，确认部署后的新产物线上可达。
+
+未带令牌访问 `https://sandbox-api.sankabox.com/api/health` 返回 401，属于预期的鉴权行为，不是故障。宿主侧后端服务未随本次发布重启或更新；本轮为前端改动，后端零改动。
 
 ## 十、本机人工验收方式（已执行，保留为历史记录）
 
@@ -167,5 +171,5 @@ pnpm exec playwright test --config=tests/playwright.config.ts
 
 - PRD 验收标准已逐条挂证据；证据分为真沙箱 e2e、单测、设计口径三档。64 KiB 超限明确只有单测证据；用户网页与桌面形态手工验收已通过，桌面右键菜单抑制与剪贴板读写确认无问题。
 - 任务 01~05 全部 `done`；定向 e2e 首轮 28 / 28，修复轮 15 / 15；第二次全量 e2e **88 / 88**，14.4 分钟，退出码 0。
-- 本轮后端 / 核心包零改动，零新增依赖；Shift+Enter 修正提交 `f3d7f14` 已推送 `origin/main`。`v0.2.0` 发布动作即将执行，tag、Actions run 与 Worker 结果待回填。
+- 本轮后端 / 核心包零改动，零新增依赖；Shift+Enter 修正提交 `f3d7f14` 已推送 `origin/main`。annotated tag `v0.2.0` 已推送，Actions run `45832306595` 成功，GitHub Release 与 Cloudflare 前端线上产物已更新；宿主侧后端服务未重启或更新。
 - 看板与索引收口见 [[current-state.md|当前状态]]、[[prds/README.md|需求清单]]、[[tasks/README.md|任务清单]]；后续保留 64 KiB 真机覆盖与 kitty 协商应答能力边界两项非阻断留白。

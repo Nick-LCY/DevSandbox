@@ -39,7 +39,7 @@
 
 ## 版本发布记录
 
-- `v0.2.0`（2026-11-26）：五个版本字段已改，随「终端交互增强」即将发布；tag、Actions run 与 Worker 部署结果待回填。
+- `v0.2.0`（2026-11-26）：annotated tag 已推送；推送前 `scripts/verify-release-version.mjs v0.2.0` 校验通过（matches 5 version files）。Actions run `45832306595` 已 completed / `success`（<https://github.com/Nick-LCY/DevSandbox/actions/runs/45832306595>），`build-windows`、`deploy-worker`、`create-release` 三个 job 全部 `success`；GitHub 正式 Release 已创建（<https://github.com/Nick-LCY/DevSandbox/releases/tag/v0.2.0>），资产 `DevSandbox-0.2.0-windows-x64-setup.exe` 为 4,457,358 字节（约 4.25 MB）；Cloudflare 前端 Worker 部署成功。本轮仅前端改动，宿主侧后端服务未重启或更新。
 
 ## 状态口径（不得越界声明）
 
