@@ -52,6 +52,12 @@
 - 有选区复用既有 Ctrl+Shift+C 复制路径；无选区读取 `navigator.clipboard.readText()` 后调用 `term.paste()`，不直接写 socket。
 - 右键偏好关闭、点击终端外、组件卸载后均不接管；卸载会移除监听。复制成功零反馈，失败沿用 `terminal-clipboard` toast。
 
+### 收口后微调（2026-11-26）
+
+用户在前端与桌面端验收后提出的唯一交互微调为：终端右键复制分支仅在复制成功后调用 `term.clearSelection()` 清除选区；复制失败保留选区以便重试，并继续弹既有 `terminal-clipboard` 失败 toast。无选区的右键粘贴分支不清除选区；`Ctrl/Cmd+Shift+C` 既有快捷键路径行为不变，也不清除选区。两条复制路径的选区差异是刻意口径，复制成功仍零 toast。
+
+本轮定向回归：组件单测 **35 / 35** 通过，`typecheck` 与 `typecheck:tests` 双零错，定向 e2e `19-terminal-interaction` **11 / 11** 通过（48.6 s）。本轮未新增中文文案，未重跑字体脚本，未跑全量 e2e。
+
 ### OSC 52 双向与 64 KiB 预检
 
 - OSC 52 **常开、无开关**，只处理选择区 `c`；忽略 `p`、`s` 和 cut buffer。
@@ -103,7 +109,7 @@ pnpm exec playwright test --config=tests/playwright.config.ts
 
 ## 七、已知边界与留白
 
-1. **桌面形态右键菜单抑制未做真机验证**：网页形态已自动验收通过；Windows WebView2 上 `preventDefault(contextmenu)` 能否抑制原生菜单、剪贴板读写是否正常，均待用户在真机确认。
+1. **桌面形态右键菜单抑制未做真机验证**：网页形态已自动验收通过；右键复制成功清除选区、失败保留选区的语义已由本轮组件单测与定向 e2e 覆盖；Windows WebView2 上 `preventDefault(contextmenu)` 能否抑制原生菜单、剪贴板读写是否正常，仍待用户在真机确认。
 2. **64 KiB 超限只有纯函数与组件单测覆盖**，无真机 e2e 覆盖；该缺口已在 `apps/web/frontend/tests/README.md` 登记。
 3. **容器内程序可任意写宿主剪贴板**：沿既有「容器内程序视为受信」口径，用户已明确接受，登记为信任边界；本轮不做白名单或确认弹窗。
 4. **OSC 52 内容不随快照恢复**：快照只恢复屏幕状态，不重放控制序列；重连后不补发，属预期行为。

@@ -89,7 +89,8 @@
 - [x] `Shift+Enter` 开启时，终端发送严格的 `0x1b 0x0d`，不多发或少发字节。证据：真沙箱 e2e（`19-terminal-interaction` 的 PTY 字节取证）与单测（快捷键分类）。
 - [x] `Shift+Enter` 映射不改变 Ctrl+C、Ctrl+V、浏览器保留键和既有剪贴板快捷键语义。证据：单测（`terminal-shortcuts.ts` 分类回归）与真沙箱 e2e（`03-terminal` 8 条基线回归）。
 - [x] 终端右键关闭时，右键不被前端接管，终端外点击也不被接管。证据：真沙箱 e2e（`19-terminal-interaction` 的开关两态与终端内外负向断言）。
-- [x] 终端右键开启且右键点位在 xterm 区域内、有选区时，复制结果与 Ctrl+Shift+C 完全一致。证据：真沙箱 e2e（`19-terminal-interaction` / `09-terminal-clipboard` 定向剪贴板用例）。
+- [x] 终端右键开启且右键点位在 xterm 区域内、有选区时，复制内容结果与 Ctrl+Shift+C 一致。证据：真沙箱 e2e（`19-terminal-interaction` / `09-terminal-clipboard` 定向剪贴板用例）。
+- [x] 右键复制成功后选区被清除；复制失败保留选区以便重试；`Ctrl/Cmd+Shift+C` 既有路径不清除选区。证据：组件单测 **35 / 35** 与定向 e2e `19-terminal-interaction` **11 / 11**。
 - [x] 右键复制成功零反馈；复制失败弹失败 toast，来源标识为 `terminal-clipboard`。证据：单测（组件级成功 / 失败负向覆盖）与真沙箱 e2e（`09-terminal-clipboard`）。
 - [x] 终端右键开启且点位在 xterm 区域内、无选区时，系统剪贴板内容通过 `term.paste` 粘贴进终端。证据：真沙箱 e2e（`19-terminal-interaction` / `09-terminal-clipboard`）与单测（`term.paste` 接线）。
 - [x] 右键读取系统剪贴板失败弹失败 toast，来源标识为 `terminal-clipboard`，且不绕过 `term.paste` 或静默降级。证据：单测（组件级失败路径与 `term.paste` 负向覆盖）与设计口径（失败不降级）。

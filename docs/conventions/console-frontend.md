@@ -102,7 +102,7 @@
 - **剪贴板 API 需要安全上下文**：`navigator.clipboard` 只在安全上下文可用（`127.0.0.1` 或后续反代 TLS）；非安全上下文下接口不存在，走失败路径弹提示，不做降级。
 - **首用读取可能弹一次浏览器授权**：`readText` 首次调用时浏览器可能弹权限确认，属预期行为，不是失败，不要为此加绕行逻辑。
 - **快捷键分类是语义锁**：分类规则收敛在纯函数 `src/lib/terminal-shortcuts.ts`（`classifyTerminalShortcut`），单元测试逐条钉死——`Ctrl+C` 仍是 SIGINT、`Ctrl+V` 仍是 0x16、保留键仍放行、只有 `Ctrl+Shift+C` / `Ctrl+Shift+V` 走剪贴板。`Shift+Enter` 作为独立 `shiftEnter` 分类，优先级位于 forward 之后、plain 之前；开关两态字节与统一 `sendInput()` 见本节后续约定。改这段分类必须同步改测试。
-- **终端右键接管边界与顺序**：右键开关开启时，终端容器在 `contextmenu` 的 capture 阶段先判断事件目标是否在当前 `term.element` 内；不在则完全不接管。在终端内才执行 `preventDefault()` + `stopPropagation()`，再按是否有选区分流：有选区复用 Ctrl+Shift+C 的复制路径，无选区先 `navigator.clipboard.readText()`，成功后调用 `term.paste()`，不直接写 socket。关闭开关、终端外点击和卸载后均不接管；成功零反馈，失败 toast 来源固定 `terminal-clipboard`。
+- **终端右键接管边界与顺序**：右键开关开启时，终端容器在 `contextmenu` 的 capture 阶段先判断事件目标是否在当前 `term.element` 内；不在则完全不接管。在终端内才执行 `preventDefault()` + `stopPropagation()`，再按是否有选区分流：有选区复用 Ctrl+Shift+C 的复制路径，但仅在右键复制分支且复制成功后调用 `term.clearSelection()` 清除选区，复制失败保留选区以便重试；无选区先 `navigator.clipboard.readText()`，成功后调用 `term.paste()`，不直接写 socket。`Ctrl/Cmd+Shift+C` 既有快捷键路径不清除选区；两条路径的这一差异是刻意口径。关闭开关、终端外点击和卸载后均不接管；成功零反馈，失败 toast 来源固定 `terminal-clipboard`。
 - **OSC 52 常开口径**：不设开关，只处理选择区 `c`，忽略 `p` / `s` / cut buffer；set 写系统剪贴板，query 读系统剪贴板后 base64 经统一 `sendInput()` 回写 PTY，**不走 `term.paste`**。payload 先按 base64 长度预检 64 KiB，解码后再按字节数二次校验；非法 base64、超限和非 `c` 静默丢弃。系统剪贴板读取失败沿 Ctrl+Shift+C 口径处理：`terminal-clipboard` 失败 toast、沿用既有文案、不发响应、不降级。异步落地前检查终端仍挂载且 socket 为 OPEN。
 - **键盘协议协商标记不在快照里**：kitty 键盘协议等「键盘能力协商」标志不随快照恢复（前端 xterm.js 5.5.0 不支持该协议），所以 `Shift+Enter` 仍靠前端自定义映射：`terminal-shortcuts.ts` 的 `shiftEnter` 分类优先级位于 forward 之后、plain 之前；偏好开启时经统一 `sendInput()` 发送 `0x1b 0x0d`，关闭时发送 `0x0d`。
 
