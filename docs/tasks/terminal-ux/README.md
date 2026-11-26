@@ -2,7 +2,7 @@
 
 本目录是**终端交互增强**任务集，需求见 [[prds/terminal-ux.md|终端交互增强 PRD]]。本轮只涉及前端体验：设置抽屉「通用设置」tab、`Shift+Enter` 映射、终端内右键复制 / 粘贴和常开的 OSC 52 剪贴板互通；后端与核心包不改。
 
-**状态：01~05 全部 done，2026-11-26 收口。** 自动化验收完成：前端 vitest **1093 passed / 59 files**，typecheck 双零错，字体构建与 build 成功；定向真沙箱 e2e 首轮 **28 / 28**，修复轮 **15 / 15**，全程 0 失败 / 0 跳过 / 0 flaky。桌面 Windows WebView2 真机、全量 e2e 与用户手工验收仍是留白，详见 [[tasks/terminal-ux/RESULTS.md|全轮留档]]。
+**状态：01~05 全部 done，2026-11-26 收口。** 自动化验收完成：前端 vitest **1093 passed / 59 files**，typecheck 双零错，字体构建与 build 成功；定向真沙箱 e2e 首轮 **28 / 28**、修复轮 **15 / 15**，第二次全量 **88 / 88**（14.4 分钟，0 失败 / 0 跳过 / 0 flaky，退出码 0；基线 77 + `19-terminal-interaction` 11）。桌面 Windows WebView2 真机、64 KiB 超限真机覆盖与用户手工验收仍是留白，详见 [[tasks/terminal-ux/RESULTS.md|全轮留档]]。
 
 ## 任务清单
 
@@ -12,7 +12,7 @@
 | [[tasks/terminal-ux/02-shift-enter-mapping.md\|02]] | 终端 Shift+Enter 映射开关接线 | done | 开启发送 `0x1b 0x0d`、关闭保持 `0x0d`、既有终端快捷键语义回归覆盖 |
 | [[tasks/terminal-ux/03-terminal-context-menu-clipboard.md\|03]] | 终端右键复制 / 粘贴接管 | done | 仅 xterm 区域 capture 接管、有选区复制、无选区 `term.paste`、阻止原生菜单与 xterm 右键行为 |
 | [[tasks/terminal-ux/04-osc52-clipboard-interop.md\|04]] | OSC 52 剪贴板双向互通 | done | 选择区 `c` 双向桥接、忽略 `p` / `s` / cut buffer、64 KiB base64 预检与字节二次校验、读取失败不响应 |
-| [[tasks/terminal-ux/05-acceptance-and-docs.md\|05]] | 验收与文档收口 | done | 定向 e2e、门禁全量、字体子集重跑、前端 README 标识表同步、PRD 核销与留档；全量 e2e 未跑、桌面真机待验收 |
+| [[tasks/terminal-ux/05-acceptance-and-docs.md\|05]] | 验收与文档收口 | done | 定向与全量 e2e、门禁全量、字体子集重跑、前端 README 标识表同步、PRD 核销与留档；桌面真机、64 KiB 真机覆盖与用户手工验收待执行 |
 
 ## 依赖顺序
 
@@ -46,5 +46,5 @@
 - [[tasks/terminal-ux/02-shift-enter-mapping.md]] — `Shift+Enter` 映射接线。
 - [[tasks/terminal-ux/03-terminal-context-menu-clipboard.md]] — 终端右键复制 / 粘贴接管。
 - [[tasks/terminal-ux/04-osc52-clipboard-interop.md]] — OSC 52 双向剪贴板互通。
-- [[tasks/terminal-ux/05-acceptance-and-docs.md]] — 验收与文档收口（**done：2026-11-26**；定向 e2e 首轮 28 / 28、修复轮 15 / 15；全量 e2e 未跑，桌面真机与用户手工验收待执行）。
-- [[tasks/terminal-ux/RESULTS.md]] — 终端交互增强全轮收口留档（01~05；前端 vitest 1093 / 59 files、typecheck 双零、build 成功；定向真沙箱 e2e 28 / 28 + 修复轮 15 / 15）。
+- [[tasks/terminal-ux/05-acceptance-and-docs.md]] — 验收与文档收口（**done：2026-11-26**；定向 e2e 首轮 28 / 28、修复轮 15 / 15、第二次全量 **88 / 88（14.4 分钟）**；回归修复已补 `switchSettingsTab(page, 'proxy')`；提交链为 `cdd2c3f`、`5f362aa`、`02a3a15`、`60c4669`、`984c657`，全部本地未 push；桌面真机、64 KiB 真机覆盖与用户手工验收待执行）。
+- [[tasks/terminal-ux/RESULTS.md]] — 终端交互增强全轮收口留档（01~05；前端 vitest 1093 / 59 files、typecheck 双零、build 成功；定向真沙箱 e2e 28 / 28 + 修复轮 15 / 15 + 第二次全量 **88 / 88（14.4 分钟）**；含回归修复与 5 个本地未 push 提交）。
