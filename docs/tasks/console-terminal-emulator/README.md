@@ -6,7 +6,7 @@
 
 **状态：01~04 全部 done（2026-11-19 收口）**——后端 **461 passed**、前端 vitest **1041 passed**、核心包 **511 / 514**（3 例既有镜像代理 502 环境故障，本轮 `apps/core` 零改动）、typecheck ×2 + build + ruff 全绿；e2e 全量 **75 条**（基线 71 + 新增 4）每条至少通过一次、无稳定失败（单次 75/75 受宿主内存 OOM 制约，dmesg 实证）。**全轮留档见 [[tasks/console-terminal-emulator/RESULTS.md|RESULTS.md]]**。看板见 [[current-state.md|当前状态]]。
 
-**本轮代码 17 个提交（`8954025..da45bda`）全部未 push，工作区干净**；未触碰生产部署与前端发布。
+**2026-11-26 更新：** 本轮代码 17 个提交已全部在 `origin/main`；前端已随 2026-11-25 的 `v0.1.0` 发布部署到 Cloudflare Worker；**宿主侧后端是否已重启更新未记录、待核实**。
 
 ## 关键口径（贯穿全轮）
 
@@ -63,3 +63,7 @@
 - [[tasks/console-terminal-emulator/RESULTS.md]] — **全轮收口留档**：轮次总表与提交链、门禁数字表、根因→根治对照、测试与取证要点、已知限制 6 条、偏离登记 5 条、评审遗留 4 条。
 - [[prds/console-terminal-emulator.md]] — 需求（**交付后补记**：本轮以施工单推进，未先立 PRD）。
 - [[architecture/decisions/0020-控制台终端采用后端模拟器与快照接入.md]] — **ADR 0020**（已接受）：模拟器选型三档对比、接入协议换代、两条红线、已知限制。
+
+## 后续更新（2026-11-26）
+
+17 个提交 `82b70bf..da45bda` 已在 `origin/main`。前端已随 2026-11-25 的 `v0.1.0` 发布部署到 Cloudflare Worker。宿主侧后端服务在 2026-11-25 之后是否已重启 / 更新：未记录，待核实。

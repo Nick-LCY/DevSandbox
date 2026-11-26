@@ -1,34 +1,52 @@
 # 当前状态
 
-> 高频变更的工作看板。**开始任何任务前先读这里。** 由团队维护。保持轻量——它是看板，不是叙事。
+> 高频变更的工作看板。**开始任何任务前先读这里。** 由团队维护，保持轻量；历史过程与验收证据见各轮留档。
 
 ## 活跃需求
-- **文件注入副本手动刷新**：在**创建时快照**之上加一条**显式刷新**通道——运行中的沙箱可对**单文件**或**整目录**已保存注入手动刷新托管副本，**不停机**（不中断容器 / 终端 / agent）；目录按镜像同步，宿主源里**已不存在的成员一并删除**。**已交付（本地），待用户手工验收**（[[prds/file-injection-refresh.md|PRD]]，[[tasks/file-injection-refresh/README.md|任务集]]，01~05 **全部 done**，验收标准 **23 / 23** 逐条挂证据；[[tasks/file-injection-refresh/RESULTS.md|全轮留档]]）：归档前 **10 个提交均留本地（未 push）**、**零部署**（**绝不 Cloudflare 部署**）；**全量 E2E 只跑过一次**（77 = 76 通过 / 1 失败，唯一失败为 spec16 首行写死的脆化断言、与本轮代码无关，已由独立 test-only 提交定向修复，**未跑第二次全量**）。**用户手工验收尚未执行**——本机走查方式见留档第六节。
+
+无活跃需求。最近一轮「文件注入副本手动刷新」已由用户于 2026-11-26 手工验收通过，当前转入历史交付。
 
 ## 历史交付
-- 历史交付的叙事与验收留档：git 历史 + [[tasks/README.md|docs/tasks/ 各留档页]]。
+
+| 轮次 | 收口日期 | 一句话结论 | 留档指针 |
+|---|---|---|---|
+| 沙箱平台一期 | 2026-10-29 | 本地闭环与一期验收通过。 | [[tasks/sandbox-platform/RESULTS.md]] |
+| 二期控制台 | 2026-10-30 | 控制面服务化、网页控制台与一期回归验收通过。 | [[tasks/phase2-console/README.md]] |
+| 控制台模板 | 2026-10-31 | 基础镜像 0.3.0、启动模板与真机验收交付。 | [[tasks/console-templates/README.md]] |
+| 文件注入 | 2026-11-02（按文档提交日期） | 创建时文件复制、改属主、只读注入与控制台接入交付。 | [[tasks/file-injection/README.md]] |
+| 三期桌面 | 2026-11-04（主体）；2026-11-25（首次发布） | 桌面端与端口转发主体、发布自动化及 `v0.1.0` 均已交付；安装包未签名，SmartScreen 告警仍是已知限制，手工安装验证未完成。 | [[tasks/phase3-desktop/RESULTS.md]] |
+| 运行期文件传输 | 2026-11-11 | 运行中沙箱单文件上传 / 下载的 web 与桌面通路收口，Windows 真机清单 15 条通过。 | [[tasks/runtime-file-transfer/RESULTS.md]] |
+| 控制台托管 Cloudflare | 2026-11-12 | 前端托管到 Cloudflare Workers、后端纯 API 化与公网真机验收完成。 | [[tasks/console-cloudflare/RESULTS.md]] |
+| 文件窗格与 Obsidian | 2026-11-14 | 终端伴生文件窗格、Obsidian 阅读器与 wikilink 跳转交付。 | [[tasks/file-pane-obsidian/RESULTS.md]] |
+| 镜像缓存清单 | 2026-11-15 | 缓存清单、缓存优先拉取引导与方案 C / 180 天口径收口。 | [[tasks/registry-cache-manifest/RESULTS.md]] |
+| 控制台终端模拟器 | 2026-11-19 | 终端 ①② 已由服务端模拟器与前端实例常驻根治；17 个提交已在 `origin/main`，前端随 2026-11-25 `v0.1.0` 发布部署到 Cloudflare Worker；e2e 75 条均至少通过一次，单次全量受宿主内存 OOM 未取得 75/75；宿主后端更新状态未记录，待核实。 | [[tasks/console-terminal-emulator/RESULTS.md]] |
+| 文件注入副本刷新 | 2026-11-23 | 01~05 全部 done，10 个提交已在 `origin/main`；单次全量 77 = 76 通过 / 1 失败，唯一失败为 spec16 首行脆化断言，已由独立 test-only 提交修复但未跑第二次全量；自动化验收与留档完成。 | [[tasks/file-injection-refresh/RESULTS.md]] |
+
+**本轮验收结论（单列）**：文件注入副本手动刷新于 **2026-11-26** 由用户手工验收通过；此前「待用户手工验收」「零 push」均已过期。10 个提交 `6b694d4..ffcbdf9` 已随 2026-11-25 的 `v0.1.0` 发布推送至 `origin/main`。
 
 ## 规划
-> 以下为用户已拍板、尚未立项的方向；立项后再补 PRD 与任务集，并在下方任务看板挂行。
 
-- **终端会话顺序与快捷键切换标签**：沙箱内多个终端会话按稳定顺序排列，支持键盘快捷键在标签之间切换；控制台小型体验轮。**前置已解除，可随时立项**（文件窗格与 Obsidian 阅读器轮已于 2026-11-14 收口）；动同一片终端标签区时，以 [[prds/file-pane-obsidian.md|该轮 PRD]] 的分屏 / 折叠 / 固定 tab 口径为现状基线，**并以本轮（2026-11-19）的终端实例常驻口径为标签区基线**（`TerminalStack` 常驻槽位 + `display:none` + 只挂载已访问会话 + 焦点请求序号，见 [[architecture/decisions/0020-控制台终端采用后端模拟器与快照接入.md|ADR 0020]]）——快捷键切标签不得按「切标签即重连 / 重挂载」实现。TODO 板的待办 ③（终端自定义按键映射）与本项同属终端键盘层，**可一并或先后立项**。
-- **沙箱详情与转发记录接口合并**：控制台对「沙箱详情」与「转发记录列表」当前是两个接口、前端一个定时器一拍并行双刷；用户倾向后续把两份数据合并为一个接口读径（如详情响应嵌转发记录，或嵌套子资源）。未立项；立项时需处理已发布的三条转发管理 REST 契约的去留（保留则须钉死两条读径等价，废弃则破坏已发布 API 形状）与合并响应的部分失败语义（详情成功但转发读取失败时返回什么）。
+- **终端会话顺序与快捷键切换标签**：未立项；标签区基线沿用文件窗格轮与 [[architecture/decisions/0020-控制台终端采用后端模拟器与快照接入.md]] 的终端实例常驻口径。
+- **沙箱详情与转发记录接口合并**：未立项；后续需处理已发布 REST 契约的保留 / 废弃以及部分失败语义。
 
 ## 任务看板
-**无 doing 任务集。** **发布自动化**：[[tasks/phase3-desktop/10-release-workflow.md|同版本 tag 发布工作流]] **done**（无 Cloudflare 密钥构建并传递已校验 frontend dist artifact；`CLOUDFLARE_API_TOKEN` 仅在最终 `wrangler deploy` 步骤可见；production Environment 仅作部署记录分类；Worker 发布串行；actions 固定 SHA / Rust 1.90）；[[tasks/phase3-desktop/11-first-tag-release.md|首次真实 tag 发布]] **done**（2026-11-25 UTC：`v0.1.0` annotated tag 已推送；commit `169724a` 已推送，且包含先前批准的 `ac39271`；Actions run `45567316929` 成功，`build-windows` / `deploy-worker` / `create-release` 均 success；Cloudflare deploy job 成功；GitHub Release 已创建，资产可下载；安装包未签名，尚需手工安装验证，不声称用户已安装验证，Release：<https://github.com/Nick-LCY/DevSandbox/releases/tag/v0.1.0>）。 **最近收口**：[[tasks/file-injection-refresh/README.md|文件注入副本手动刷新]]（2026-11-23 立项、同日收口，**01~05 全部 done**；PRD 验收 **23 / 23**；门禁 core **578 / 578**、服务端 **482 / 482**、前端 vitest **1058 / 1058**、定向 e2e spec 18 **2 / 2**；**单次**全量 77 = 76 通过 / 1 失败；归档前 **10 提交未 push**、**未部署**；**用户手工验收待执行**——留档见 [[tasks/file-injection-refresh/RESULTS.md|RESULTS]]）。
-再往前：[[tasks/console-terminal-emulator/README.md|控制台终端全步方案 + 前端实例常驻]]（2026-11-19，01~04 全部 done；代码 17 提交**未 push**，生产部署与前端发布未做）。已收口任务集的叙事与验收留档见 [[tasks/README.md|docs/tasks/ 各留档页]] 与 git 历史。
+
+**无 doing 任务集。** 发布自动化与首次真实 tag 发布已归入「历史交付」中的三期桌面行。
 
 ## TODO / 阻塞
-- [x] **首次真实桌面端发布（2026-11-25 UTC）**：`v0.1.0` annotated tag 已推送；commit `169724a`（包含先前批准的 `ac39271`）已推送。Actions run `45567316929` 成功，`build-windows` / `deploy-worker` / `create-release` 均 success；Cloudflare deploy job 成功；正式 GitHub Release 已创建，Release 资产可下载：`DevSandbox-0.1.0-windows-x64-setup.exe`（4,452,313 bytes）。安装包未签名，SmartScreen 告警仍是已知限制。
-- [x] **pi × 控制台终端 ①②（2026-11-17 登记，2026-11-19 根治）**：症状①（pi 全屏切 tab 后鼠标 / 焦点 / 括号粘贴失效）与②（退出 pi 后切 tab 往 bash 回显控制字符）的**同源根因**是「终端状态没有权威持有者」：xterm 实例非常驻（`key={activeId}`）+ 重连靠整段重放历史（历史里的终端探测被新实例再应答）。本轮以 **服务端常驻终端模拟器 + 附着下发快照恢复流 + 前端终端实例常驻** 从源头根治：模式状态由后端模拟器权威维护，恢复介质从「历史字节」换成「当前状态」，探测不进任何回放、模拟器应答不外出。决策见 [[architecture/decisions/0020-控制台终端采用后端模拟器与快照接入.md|ADR 0020]]，交付与门禁见 [[tasks/console-terminal-emulator/README.md|任务集]] 与 [[tasks/console-terminal-emulator/RESULTS.md|全轮留档]]；代码 17 提交（`8954025..da45bda`）**未 push**，生产部署与前端发布未做。
-- [ ] **pi × 控制台终端 ③④（2026-11-17 登记，不阻断使用，待立项）**：③ **控制台终端自定义按键映射（2026-11-17 用户拍板：要 pi 之外的终端层，非 pi 内部键位）**：对标 VS Code 终端 sendSequence 键位三要素（key 组合 + command/args 注入序列文本 + when terminalFocus 聚焦限定）——终端聚焦时把指定按键组合替换为任意转义序列注入 PTY；首个用例 shift+enter → `\e\r`（ESC+回车），解决 pi 等 CLI「Enter 提交、Shift+Enter 换行」无法区分的问题。**pi 侧无解**：浏览器终端里 shift+enter 与 enter 进 PTY 的字节完全相同，pi 自带键位配置只能重排它能收到的动作，管不到这层，故只能在控制台前端拦截按键（如 `attachCustomKeyEventHandler`）按用户映射表把序列写进数据通道；pi 侧可再用自带键位配置把收到的序列绑到换行动作（具体绑定立项时核）。远期根治路线是前端实现 kitty 键盘协议（可原生上报 shift+enter 的独立编码，pi 侧已开启 kitty 协商能识别），映射表为务实解；映射表存放位置（前端设置抽屉/本地存储 vs 服务端配置）立项时定。（2026-11-19 复核：快照**不恢复键盘协议标志**——前端 xterm.js 5.5.0 不支持该协议，模拟器带了也用不起来，故本轮不因此变得可行。）④ **系统剪贴板 ↔ 沙箱剪贴板互通**：pi 全屏「选中即自动复制」默认开启，容器内无 pbcopy/xclip/wl-copy 等原生工具时走 OSC 52 兜底（`\e]52;c;<base64>`），但前端 xterm.js 5.5.0 **未实现 OSC 52**（该转义被解析后直接丢弃），复制内容到不了宿主剪贴板，自动复制断链；粘贴方向已有通路（原生粘贴事件 → 剪贴板读取 → 注入 PTY），缺的是容器→宿主方向，修法是前端注册 OSC 52 处理器写 `navigator.clipboard`、桌面壳视需要加 Tauri 剪贴板桥（宿主→容器方向见 [[conventions/console-frontend.md|控制台前端约定]] 的「终端键盘与剪贴板」）。（2026-11-19 复核：快照**不含 OSC 52 内容**，本轮零副作用；仍待立项。）
-- [x] **W9 e2e 首行钉脆化（2026-11-23 闭）**：spec 16「PRD 21」原把共享缓存清单**首行写死**为 `astral-sh/uv:0.13.7`，本机共享缓存实际首行是 `alpine/socat:latest` —— 该断言在**文件注入刷新轮的唯一一次全量**里失败（真正端点、CLI 与逐字一致断言均通过）；已由**独立 test-only 提交** `ee7d970` 改为**动态取本次 manifest 首个有效标签**并保留 UI 旁证，原用例**定向 1 / 1（35.4 s）**通过、`typecheck:tests` 通过。**本轮未跑第二次全量**（全量唯一一次在 `ee7d970` 之前，见 [[tasks/file-injection-refresh/RESULTS.md|留档]]）。
-- [ ] **方案 C 轮登记待办（不阻断，剩 ① ② ④ ⑤ ⑥）**：① **blob 层 60d 写死在代理镜像 `nginx.conf`**（无 env 旋钮、平台管不到，要统一 180d 须改镜像模板）；② W8 lint 词级禁令收窄；④ S2 死常量注记；⑤ S3 锁内多次 inspect 合并；⑥ S5 inactive 生效说明。
-- [ ] sandboxctl 增加文件注入参数（如 `--file`）——文件注入轮核心能力已落地，待补命令行入口。
-- [ ] 文件注入降级路径收口（终审遗留，不阻断使用）：预检阶段纳入本次目标沙箱的计划家目录（消除干跑/实跑对自家目录的口径差）；getent / test -d / readlink 失败时从静默放行改为可观测（error 日志 + API.md 写明降级行为）。
-- [ ] 免密 sudo 规则收窄（[[architecture/decisions/0016-控制台默认运行用户改为非root.md|0016]] 遗留，**不阻断使用**）：控制台默认非 root 运行后，宿主特权操作仍经一条宽口径免密 sudo（`sankabox ALL=(ALL) NOPASSWD: ALL`），实际权限 ≈ root。要真正收敛信任边界，须把 `NOPASSWD` 收窄到平台真正用到的那几类命令（docker、useradd/userdel/usermod/groupadd、install、chmod/chown、tee、loginctl、systemctl --user 等）——代价是以后新增宿主命令必须同步补规则，漏一条就报权限错。
-- [ ] **release `panic = "abort"` 的处置（待拍板，不阻断使用）**：桌面端 release profile 配了 `panic = "abort"`，**桥接任务 panic 在发布版会让整个应用闪退**（2026-11-09 修掉的 wss provider panic 走的是 dev 构建，未在打包版触发；同类 panic 一旦命中打包版即整进程退出）。候选方案：**① 去掉 `abort`**（改回 unwind，panic 只挂当前任务）；**② 对桥接任务做 panic 兜底**（捕获后转失败上报，界面给红字 + toast，不带崩进程）。详见 [[tasks/phase3-desktop/RESULTS.md|三期留档]] 第十节。
-- **宿主部署可选小项（不阻断，2026-11-12 登记）**：① **单元注释文案与新模板对齐**——可选，需按「新模板 + 回填本机三行」的**合并方式**落地（不覆盖单元，避免丢本机定制）；② **注入令牌长度 14 < 建议 16**——轮换可消告警，需**同步改单元与前端配置**。
-- [ ] **代理 referrers 兜底已落地（2026-11-16，残留登记）**：平台在代理容器内幂等打补丁（片段 `/etc/nginx/nginx.referrers.fallback.conf` + 主配置一行 include，标记 `sandbox_referrers_fallback_v1`），给 `/v2/<repo>/referrers/<digest>` 单开一个 location（走既有缓存区 `cache`、有效期 180d），上游 502/503/504/超时回 OCI 空引用列表（200 + `application/vnd.oci.image.index.v1+json`）⇒ 上游断网时缓存命中的镜像仍能拉完（语义：不知道有没有引用＝按没有处理）。补丁随 `ensure_running` / 代理重启**自动重放**（容器被重建后补回）。**残留**：① 兜底响应不入缓存（上游恢复后仍要回源一次）；② 每次 referrers 查询仍先撞一次上游（断网时约 5 秒超时后才回落）；③ 缓存扫描器把 referrers 键计入 `skipped`（不影响镜像清单本体）；④ 只覆盖 502/503/504/超时，上游 404 等其它失败码原样透传。
-- [ ] **v0.1.0 安装包手工安装验证**：Release 资产已可下载，但安装包未签名；本次发布记录不包含用户已安装 / 启动 / 连接验证，需后续手工安装验证。
-- 阻塞项：无。
+
+- [ ] **pi × 控制台终端 ③④（不阻断使用，待立项）**：③ 终端自定义按键映射（首个用例为 `Shift+Enter → ESC+回车`，映射存放位置立项时定）；④ 系统剪贴板 ↔ 沙箱剪贴板互通（容器到宿主方向需前端 OSC 52 处理器，桌面壳视需要加剪贴板桥）。
+- [ ] **方案 C 轮登记待办（不阻断）**：剩 ① blob 层 60d 写死在代理镜像 `nginx.conf`、② W8 lint 词级禁令收窄、④ S2 死常量注记、⑤ S3 锁内多次 inspect 合并、⑥ S5 inactive 生效说明。
+- [ ] `sandboxctl` 增加文件注入参数（如 `--file`）——文件注入核心能力已落地，待补命令行入口。
+- [ ] **文件注入降级路径收口（不阻断使用）**：预检纳入本次目标沙箱的计划家目录；getent / test -d / readlink 失败时改为可观测错误日志，并在 API.md 写明降级行为。
+- [ ] **免密 sudo 规则收窄（不阻断使用）**：收窄现有宽口径 `NOPASSWD: ALL`，只保留平台实际使用的宿主命令；新增宿主命令需同步补规则。
+- [ ] **release `panic = "abort"` 处置（待拍板，不阻断使用）**：候选为去掉 `abort` 改回 unwind，或为桥接任务增加 panic 兜底并转失败上报。详见三期留档第十节。
+- [ ] **宿主部署可选小项（不阻断）**：单元注释文案与新模板对齐（采用合并方式保留本机三行）；注入令牌从长度 14 轮换到建议的 16，并同步改单元与前端配置。
+- [ ] **代理 referrers 兜底残留（不阻断）**：① 兜底响应不入缓存；② 每次查询仍先撞上游；③ 缓存扫描器将 referrers 键计入 `skipped`；④ 仅覆盖 502/503/504/超时，其他失败码原样透传。
+- [ ] **`v0.1.0` 安装包手工安装验证**：资产可下载但未签名；尚无用户安装、启动、连接验证记录。
+
+## 待核实
+
+- 控制台终端轮在 2026-11-25 `v0.1.0` 发布之后，宿主侧后端服务是否已重启 / 更新：**未记录，待核实**。
+
+阻塞项：无。

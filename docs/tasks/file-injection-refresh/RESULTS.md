@@ -100,4 +100,8 @@
 - **PRD 验收标准 23 条逐条挂证据核销（23 / 23）**，证据分**真沙箱 e2e / 定向单测 / 设计口径**三档，明细见 [[prds/file-injection-refresh.md|PRD]] 的验收标准一节。
 - **任务 01~05 全部 done**；全量 E2E **只跑过一次**并如实留档（76 / 77，通过项与唯一失败的原因、修复与「无第二次全量」均已写明）。
 - **零部署、零 push**；归档前 10 个提交均留本地，本归档另起提交。
-- **文档落位**：ADR 0021、本任务集（六页 + 本页）、[[prds/file-injection-refresh.md|PRD]]、[[architecture/decisions/README.md|ADR 清单]] 与 [[architecture/README.md|架构目录]] 索引、[[architecture/overview.md|系统总览]]、[[conventions/console-frontend.md|控制台前端约定]]、[[current-state.md|当前状态]]、[[tasks/README.md|任务清单]] 与 [[prds/README.md|需求清单]]。
+- **文档落位**：ADR 0021、本任务集（六页 + 本页）、[[prds/file-injection-refresh.md|PRD]]、[[architecture/decisions/README.md|ADR 清单]] 与 [[architecture/README.md|架构目录]]、[[architecture/overview.md|系统总览]]、[[conventions/console-frontend.md|控制台前端约定]]、[[current-state.md|当前状态]]、[[tasks/README.md|任务清单]] 与 [[prds/README.md|需求清单]]。
+
+## 后续更新（2026-11-26）
+
+用户手工验收已通过，测试无问题。此前“零 push”口径已过期：10 个提交 `6b694d4..ffcbdf9` 已随 2026-11-25 的 `v0.1.0` 发布推送至 `origin/main`。原第六节“用户手工验收尚未执行”的内容保留为历史记录。
