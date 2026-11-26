@@ -439,6 +439,7 @@ test.describe('镜像缓存清单（端点 / 注入 / cached-images）', () => {
     page.on('request', countRequests);
 
     await openSettingsDrawer(page);
+    await switchSettingsTab(page, 'proxy');
 
     // 打开抽屉即加载一次：等加载结束（刷新按钮回到可用态）再看数据。
     const refresh = page.getByTestId('page-settings-cache-images-refresh-button');
@@ -547,7 +548,7 @@ test.describe('镜像缓存清单（端点 / 注入 / cached-images）', () => {
     expect(beforeSwitch.cacheImages, '打开抽屉应拉过一次缓存清单').toBeGreaterThan(0);
     expect(beforeSwitch.templates, '打开抽屉应拉过一次模板列表').toBeGreaterThan(0);
     await switchSettingsTab(page, 'templates');
-    await switchSettingsTab(page, 'backend');
+    await switchSettingsTab(page, 'general');
     await switchSettingsTab(page, 'proxy');
     await page.waitForTimeout(500);
     expect(
