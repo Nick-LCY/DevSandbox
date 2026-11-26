@@ -14,10 +14,13 @@
  * 这里用**假 WebSocket**驱动帧协议：帧是本组件与后端之间的全部交互面，
  * 没必要为它起真的后端。真 xterm 照用（解析与状态机是本用例要验的东西）。
  */
-import { cleanup, render, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { Terminal } from '@xterm/xterm';
+
 import { getSessionPwd, clearSessionPwd } from '../lib/terminal-pwd';
+import { OSC52_MAX_BASE64_LENGTH } from '../lib/terminal-clipboard';
 import { TerminalView } from './TerminalView';
 import { ToastProvider } from './Toast';
 
@@ -704,5 +707,325 @@ describe('终端视图的常驻生命周期', () => {
     expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
     // 终端 DOM 摘除
     expect(document.querySelector('.xterm-helper-textarea')).toBeNull();
+  });
+});
+
+/** Shift+Enter、右键接管与 OSC 52 的组件层接线验证。 */
+describe('TerminalView：终端行为增强', () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe(): void {}
+
+        unobserve(): void {}
+
+        disconnect(): void {}
+      },
+    );
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }));
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  function renderTerminal(preferences: {
+    shiftEnterEscape?: boolean;
+    rightClickClipboard?: boolean;
+  } = {}): ReturnType<typeof render> {
+    return render(
+      <ToastProvider>
+        <TerminalView
+          sessionId="sess-behavior"
+          terminalPreferences={{
+            shiftEnterEscape: preferences.shiftEnterEscape ?? false,
+            rightClickClipboard: preferences.rightClickClipboard ?? false,
+          }}
+          onStateChange={() => {}}
+        />
+      </ToastProvider>,
+    );
+  }
+
+  function binaryFrames(socket: FakeWebSocket): Uint8Array[] {
+    return socket.sent
+      .filter((frame) => /^\d+(?:,\d+)*$/.test(frame))
+      .map((frame) => Uint8Array.from(frame.split(',').map(Number)));
+  }
+
+  async function connectedSocket(): Promise<FakeWebSocket> {
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    socket.emitOpen();
+    socket.emitText(HELLO_FRAME);
+    return socket;
+  }
+
+  it('Shift+Enter 开启时发送严格的 ESC+回车且不重复发送', async () => {
+    renderTerminal({ shiftEnterEscape: true });
+    const socket = await connectedSocket();
+    const textarea = document.querySelector('.xterm-helper-textarea') as HTMLElement;
+
+    expect(fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: true })).toBe(false);
+    fireEvent.keyUp(textarea, { key: 'Enter', shiftKey: true });
+
+    expect(binaryFrames(socket)).toEqual([new Uint8Array([0x1b, 0x0d])]);
+  });
+
+  it('Shift+Enter 关闭时保持 xterm 的单个回车', async () => {
+    renderTerminal({ shiftEnterEscape: false });
+    const socket = await connectedSocket();
+    const textarea = document.querySelector('.xterm-helper-textarea') as HTMLElement;
+
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: true, keyCode: 13, which: 13 });
+    expect(binaryFrames(socket)).toEqual([new Uint8Array([0x0d])]);
+  });
+
+  it('右键开启且终端内有选区时复制并阻止事件', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    vi.spyOn(Terminal.prototype, 'hasSelection').mockReturnValue(true);
+    vi.spyOn(Terminal.prototype, 'getSelection').mockReturnValue('selected');
+    renderTerminal({ rightClickClipboard: true });
+    await connectedSocket();
+
+    const termElement = document.querySelector('.xterm') as HTMLElement;
+    expect(fireEvent.contextMenu(termElement)).toBe(false);
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('selected'));
+  });
+
+  it('右键复制失败：写入 reject 时弹复制失败 toast', async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error('denied'));
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    vi.spyOn(Terminal.prototype, 'hasSelection').mockReturnValue(true);
+    vi.spyOn(Terminal.prototype, 'getSelection').mockReturnValue('selected');
+    renderTerminal({ rightClickClipboard: true });
+    await connectedSocket();
+
+    const termElement = document.querySelector('.xterm') as HTMLElement;
+    expect(fireEvent.contextMenu(termElement)).toBe(false);
+    const toast = await screen.findByTestId('page-toast-item');
+    expect(toast.textContent).toContain('复制到系统剪贴板失败');
+    expect(toast.getAttribute('data-toast-source')).toBe('terminal-clipboard');
+  });
+
+  it('右键开启且终端内无选区时读取剪贴板并走 term.paste', async () => {
+    const readText = vi.fn().mockResolvedValue('pasted');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { readText },
+    });
+    const paste = vi.spyOn(Terminal.prototype, 'paste');
+    renderTerminal({ rightClickClipboard: true });
+    await connectedSocket();
+
+    const termElement = document.querySelector('.xterm') as HTMLElement;
+    expect(fireEvent.contextMenu(termElement)).toBe(false);
+    await waitFor(() => expect(paste).toHaveBeenCalledWith('pasted'));
+  });
+
+  it('右键粘贴失败：readText reject 时弹读取失败 toast', async () => {
+    const readText = vi.fn().mockRejectedValue(new Error('denied'));
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { readText },
+    });
+    renderTerminal({ rightClickClipboard: true });
+    await connectedSocket();
+
+    const termElement = document.querySelector('.xterm') as HTMLElement;
+    expect(fireEvent.contextMenu(termElement)).toBe(false);
+    const toast = await screen.findByTestId('page-toast-item');
+    expect(toast.textContent).toContain('读取系统剪贴板失败');
+    expect(toast.getAttribute('data-toast-source')).toBe('terminal-clipboard');
+  });
+
+  it('右键终端外或开关关闭时不接管', async () => {
+    const readText = vi.fn().mockResolvedValue('pasted');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { readText },
+    });
+    renderTerminal({ rightClickClipboard: true });
+    await connectedSocket();
+
+    const surface = screen.getByTestId('page-sandbox-detail-terminal-surface');
+    expect(fireEvent.contextMenu(surface)).toBe(true);
+    expect(readText).not.toHaveBeenCalled();
+
+    cleanup();
+    FakeWebSocket.instances = [];
+    renderTerminal({ rightClickClipboard: false });
+    await connectedSocket();
+    const termElement = document.querySelector('.xterm') as HTMLElement;
+    expect(fireEvent.contextMenu(termElement)).toBe(true);
+    expect(readText).not.toHaveBeenCalled();
+  });
+
+
+  it('卸载后派发 contextmenu 不触发剪贴板读写', async () => {
+    const readText = vi.fn().mockResolvedValue('pasted');
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { readText, writeText },
+    });
+    const view = renderTerminal({ rightClickClipboard: true });
+    await connectedSocket();
+    const termElement = document.querySelector('.xterm') as HTMLElement;
+
+    view.unmount();
+    fireEvent.contextMenu(termElement);
+
+    expect(readText).not.toHaveBeenCalled();
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it('偏好运行中变更不重建 WebSocket', async () => {
+    const view = renderTerminal({ rightClickClipboard: false });
+    await connectedSocket();
+
+    view.rerender(
+      <ToastProvider>
+        <TerminalView
+          sessionId="sess-behavior"
+          terminalPreferences={{ shiftEnterEscape: true, rightClickClipboard: true }}
+          onStateChange={() => {}}
+        />
+      </ToastProvider>,
+    );
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
+  it('OSC 52 set 写入系统剪贴板，query 以响应帧写回 PTY', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const readText = vi.fn().mockResolvedValue('query text');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText, readText },
+    });
+    renderTerminal();
+    const socket = await connectedSocket();
+
+    const oscBytes = Uint8Array.from('\u001b]52;c;U0VU\u0007', (character) => character.charCodeAt(0));
+    socket.emitBytes(oscBytes);
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('SET'));
+
+    socket.emitBytes(Uint8Array.from('\u001b]52;c;?\u0007', (character) => character.charCodeAt(0)));
+    await waitFor(() =>
+      expect(binaryFrames(socket)).toContainEqual(
+        new Uint8Array(new TextEncoder().encode('\u001b]52;c;cXVlcnkgdGV4dA==\u0007')),
+      ),
+    );
+  });
+
+  it('OSC 52 非 c 选择区与 cut buffer 在 handler 层忽略', async () => {
+    const readText = vi.fn().mockResolvedValue('query text');
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { readText, writeText },
+    });
+    renderTerminal();
+    const socket = await connectedSocket();
+
+    for (const selection of ['s', '0', '1']) {
+      socket.emitBytes(
+        Uint8Array.from(`\u001b]52;${selection};U0VU\u0007`, (character) => character.charCodeAt(0)),
+      );
+      socket.emitBytes(
+        Uint8Array.from(`\u001b]52;${selection};?\u0007`, (character) => character.charCodeAt(0)),
+      );
+    }
+
+    expect(writeText).not.toHaveBeenCalled();
+    expect(readText).not.toHaveBeenCalled();
+    expect(binaryFrames(socket)).toEqual([]);
+  });
+
+  it('OSC 52 超过 64 KiB：不写剪贴板、不发响应且不弹成功 toast', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const readText = vi.fn().mockResolvedValue('query text');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText, readText },
+    });
+    renderTerminal();
+    const socket = await connectedSocket();
+    const encoded = 'A'.repeat(OSC52_MAX_BASE64_LENGTH + 4);
+
+    socket.emitBytes(
+      Uint8Array.from(`\u001b]52;c;${encoded}\u0007`, (character) => character.charCodeAt(0)),
+    );
+
+    expect(writeText).not.toHaveBeenCalled();
+    expect(readText).not.toHaveBeenCalled();
+    expect(binaryFrames(socket)).toEqual([]);
+    expect(screen.queryAllByTestId('page-toast-item')).toHaveLength(0);
+  });
+
+  it('socket 已关闭时 OSC 52 query 的异步读取完成后不发响应', async () => {
+    let resolveRead!: (text: string) => void;
+    const readText = vi.fn(
+      () =>
+        new Promise<string>((resolve) => {
+          resolveRead = resolve;
+        }),
+    );
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { readText },
+    });
+    renderTerminal();
+    const socket = await connectedSocket();
+    const sentBefore = socket.sent.length;
+    socket.readyState = FakeWebSocket.CLOSED;
+
+    socket.emitBytes(Uint8Array.from('\u001b]52;c;?\u0007', (character) => character.charCodeAt(0)));
+    await waitFor(() => expect(readText).toHaveBeenCalledTimes(1));
+    resolveRead('query text');
+    await waitFor(() => expect(socket.sent).toHaveLength(sentBefore));
+
+    expect(socket.sent).toHaveLength(sentBefore);
+  });
+
+  it('OSC 52 query 跨两帧只响应一次，读取失败只弹 toast 不发响应', async () => {
+    const readText = vi.fn().mockRejectedValue(new Error('denied'));
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { readText },
+    });
+    renderTerminal();
+    const socket = await connectedSocket();
+
+    socket.emitBytes(Uint8Array.from('\u001b]52;c;?', (character) => character.charCodeAt(0)));
+    expect(readText).not.toHaveBeenCalled();
+    socket.emitBytes(Uint8Array.from('\u0007', (character) => character.charCodeAt(0)));
+    await waitFor(() => expect(readText).toHaveBeenCalledTimes(1));
+    const toast = await screen.findByTestId('page-toast-item');
+    expect(toast.textContent).toContain('读取系统剪贴板失败');
+    expect(toast.getAttribute('data-toast-source')).toBe('terminal-clipboard');
+    expect(binaryFrames(socket)).toEqual([]);
   });
 });

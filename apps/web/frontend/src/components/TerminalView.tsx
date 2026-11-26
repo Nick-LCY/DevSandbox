@@ -35,6 +35,15 @@ import {
   parseCurrentDirPayload,
   setSessionPwd,
 } from '../lib/terminal-pwd';
+import {
+  buildOsc52Response,
+  decodeOsc52Text,
+  parseOsc52Payload,
+} from '../lib/terminal-clipboard';
+import {
+  DEFAULT_TERMINAL_PREFERENCES,
+  type TerminalPreferences,
+} from '../lib/terminal-preferences';
 import { classifyTerminalShortcut } from '../lib/terminal-shortcuts';
 import { useToast } from './Toast';
 
@@ -98,6 +107,8 @@ interface TerminalViewProps {
    * 回填时才递增序号，这里只负责执行回填。
    */
   focusRequestId?: number;
+  /** 终端交互偏好；变化只更新引用，不重建终端连接。 */
+  terminalPreferences?: TerminalPreferences;
   onStateChange: (state: TerminalState) => void;
 }
 
@@ -139,9 +150,14 @@ export function TerminalView({
   retryToken = 0,
   active = true,
   focusRequestId = 0,
+  terminalPreferences,
   onStateChange,
 }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const terminalPreferencesRef = useRef<TerminalPreferences>(
+    terminalPreferences ?? DEFAULT_TERMINAL_PREFERENCES,
+  );
+  terminalPreferencesRef.current = terminalPreferences ?? DEFAULT_TERMINAL_PREFERENCES;
   const stateCallbackRef = useRef(onStateChange);
   stateCallbackRef.current = onStateChange;
   /**
@@ -184,6 +200,20 @@ export function TerminalView({
     let retryTimer: number | null = null;
     let stableTimer: number | null = null;
     let socket: WebSocket | null = null;
+
+    /**
+     * 统一的终端输入发送入口。
+     *
+     * xterm 的 onData、Shift+Enter 映射与 OSC 52 查询响应都走这里；未连接时
+     * 静默丢弃，避免任何路径在 socket 未 OPEN 时直接发送。
+     */
+    const sendInput = (data: string): void => {
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      socket.send(new TextEncoder().encode(data));
+    };
+
     /** 上一条票据失败的提示键（同一句不重复弹）。 */
     let lastTicketFailureKey = '';
 
@@ -297,7 +327,9 @@ export function TerminalView({
           return;
         }
         void clipboard.writeText(selection).catch(() => {
-          reportClipboardFailure('复制到系统剪贴板失败');
+          if (!disposed) {
+            reportClipboardFailure('复制到系统剪贴板失败');
+          }
         });
       } catch {
         // 非标准实现可能同步抛错：归入失败分支（与异步失败同一条提示）。
@@ -327,13 +359,98 @@ export function TerminalView({
             term.paste(text);
           })
           .catch(() => {
-            reportClipboardFailure('读取系统剪贴板失败');
+            if (!disposed) {
+              reportClipboardFailure('读取系统剪贴板失败');
+            }
           });
       } catch {
         // 非标准实现可能同步抛错：归入失败分支（与异步失败同一条提示）。
         reportClipboardFailure('读取系统剪贴板失败');
       }
     };
+
+    /**
+     * OSC 52 仅处理选择区 c；parser 负责跨帧拼接，回调同步返回 true 以吞掉序列。
+     * 剪贴板 Promise 落地时再次检查组件生命周期与 socket 状态。
+     */
+    const osc52Disposable = term.parser.registerOscHandler(52, (payload: string) => {
+      const parsed = parseOsc52Payload(payload);
+      if (!parsed || parsed.selection !== 'c') {
+        return true;
+      }
+      if (parsed.operation === 'set') {
+        const text = parsed.data === null ? null : decodeOsc52Text(parsed.data);
+        if (text === null) {
+          return true;
+        }
+        try {
+          const clipboard = navigator.clipboard;
+          if (!clipboard || typeof clipboard.writeText !== 'function') {
+            reportClipboardFailure('复制到系统剪贴板失败');
+            return true;
+          }
+          void clipboard.writeText(text).catch(() => {
+            if (!disposed) {
+              reportClipboardFailure('复制到系统剪贴板失败');
+            }
+          });
+        } catch {
+          reportClipboardFailure('复制到系统剪贴板失败');
+        }
+        return true;
+      }
+
+      try {
+        const clipboard = navigator.clipboard;
+        if (!clipboard || typeof clipboard.readText !== 'function') {
+          reportClipboardFailure('读取系统剪贴板失败');
+          return true;
+        }
+        void clipboard
+          .readText()
+          .then((text) => {
+            if (disposed) {
+              return;
+            }
+            const response = buildOsc52Response(text);
+            if (response === null) {
+              reportClipboardFailure('读取系统剪贴板失败');
+              return;
+            }
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+              return;
+            }
+            sendInput(response);
+          })
+          .catch(() => {
+            if (!disposed) {
+              reportClipboardFailure('读取系统剪贴板失败');
+            }
+          });
+      } catch {
+        reportClipboardFailure('读取系统剪贴板失败');
+      }
+      return true;
+    });
+
+    const handleContextMenu = (event: MouseEvent): void => {
+      if (!terminalPreferencesRef.current.rightClickClipboard) {
+        return;
+      }
+      const target = event.target;
+      if (!(target instanceof Node) || !term.element?.contains(target)) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      if (term.hasSelection()) {
+        copySelectionToClipboard();
+      } else {
+        pasteFromClipboard();
+      }
+    };
+    container.addEventListener('contextmenu', handleContextMenu, true);
 
     // 快捷键处置：分类规则在 `src/lib/terminal-shortcuts.ts`（纯函数，可单测）。
     //
@@ -348,9 +465,20 @@ export function TerminalView({
         metaKey: event.metaKey,
         altKey: event.altKey,
         shiftKey: event.shiftKey,
+      }, {
+        shiftEnterEnabled: terminalPreferencesRef.current.shiftEnterEscape,
       });
       if (action === 'reserved' || action === 'plain') {
         return true;
+      }
+      if (action === 'shiftEnter') {
+        if (event.type === 'keydown') {
+          event.preventDefault();
+          event.stopPropagation();
+          sendInput('\x1b\r');
+          return false;
+        }
+        return event.type === 'keyup';
       }
       event.preventDefault();
       event.stopPropagation();
@@ -732,10 +860,7 @@ export function TerminalView({
     }
 
     const dataDisposable = term.onData((data: string) => {
-      if (!socket || socket.readyState !== WebSocket.OPEN) {
-        return;
-      }
-      socket.send(new TextEncoder().encode(data));
+      sendInput(data);
     });
 
     const resizeDisposable = term.onResize(() => {
@@ -783,9 +908,11 @@ export function TerminalView({
       cancelSnapshotFallback();
       fitDebouncer.cancel();
       observer.disconnect();
+      container.removeEventListener('contextmenu', handleContextMenu, true);
       dataDisposable.dispose();
       resizeDisposable.dispose();
       oscDisposable.dispose();
+      osc52Disposable.dispose();
       socket?.close();
       fitAddon.dispose();
       term.dispose();

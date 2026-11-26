@@ -146,6 +146,39 @@ describe('classifyTerminalShortcut：转发给容器内的组合', () => {
   });
 });
 
+describe('classifyTerminalShortcut：Shift+Enter 映射', () => {
+  it('启用时只命中无其它修饰键的 Shift+Enter', () => {
+    expect(
+      classifyTerminalShortcut(press({ key: 'Enter', shiftKey: true }), {
+        shiftEnterEnabled: true,
+      }),
+    ).toBe('shiftEnter');
+  });
+
+  it('关闭或缺省时 Shift+Enter 保持普通按键', () => {
+    expect(classifyTerminalShortcut(press({ key: 'Enter', shiftKey: true }))).toBe('plain');
+    expect(
+      classifyTerminalShortcut(press({ key: 'Enter', shiftKey: true }), {
+        shiftEnterEnabled: false,
+      }),
+    ).toBe('plain');
+  });
+
+  it('Ctrl / Meta / Alt + Shift + Enter 不命中映射', () => {
+    for (const modifier of [
+      { ctrlKey: true },
+      { metaKey: true },
+      { altKey: true },
+    ]) {
+      expect(
+        classifyTerminalShortcut(press({ key: 'Enter', shiftKey: true, ...modifier }), {
+          shiftEnterEnabled: true,
+        }),
+      ).toBe('forward');
+    }
+  });
+});
+
 describe('classifyTerminalShortcut：普通按键', () => {
   it('纯按键（不带 Ctrl / Meta / Alt）是普通按键', () => {
     expect(classifyTerminalShortcut(press({ key: 'a' }))).toBe('plain');
