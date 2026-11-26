@@ -13,6 +13,7 @@ import {
   type ConnectionConfig,
 } from '../../lib/connection';
 import { restartForwardListeners } from '../../lib/desktop-forward';
+import type { TerminalPreferences } from '../../lib/terminal-preferences';
 import {
   describeCaOutcome,
   describeCertificate,
@@ -23,6 +24,7 @@ import {
 } from '../../lib/proxy';
 import { useToast } from '../Toast';
 import { Input } from '../ui/input';
+import { Switch } from '../ui/switch';
 import { Tabs, TabsList, TabsPanel, TabsTab } from '../ui/tabs';
 import { CacheImagesTable } from './CacheImagesTable';
 import { DrawerShell } from './DrawerShell';
@@ -65,14 +67,14 @@ function Field({ label, value, testId }: { label: string; value: string; testId:
 }
 
 /**
- * 设置抽屉：**代理 / 模板 / 后端配置**三个 tab。
+ * 设置抽屉：**通用设置 / 代理 / 模板**三个 tab。
  *
  * - **代理** tab：代理设置（状态展示 + 刷新状态 + 重启 + CA 重装结果）+ 缓存
  *   镜像清单（只读表格，打开加载 + 手动刷新，零轮询）。顶部的代理设置区
  *   **有界且自己滚**（重启结果很长时滚这一块，不裁掉），清单表格撑满剩余
  *   高度、内容超出时表格内部滚（表头吸顶）。
  * - **模板** tab：启动模板管理区（列表 / 行内重命名 / 删除）。
- * - **后端配置** tab：连接配置（后端地址 + 访问令牌 + 测试连接 + 保存配置）。
+ * - **通用设置** tab：终端交互开关 + 连接配置（后端地址 + 访问令牌 + 测试连接 + 保存配置）。
  *
  * 面板一律 `keepMounted`（隐藏的 tab 不卸载）：打开抽屉即全量加载，清单与
  * 模板列表都是打开抽屉那一次拉，不靠切 tab 触发。
@@ -90,6 +92,8 @@ export function SettingsDialog({
   onWidthChange,
   connection,
   onConnectionChange,
+  terminalPreferences,
+  onTerminalPreferencesChange,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -101,6 +105,10 @@ export function SettingsDialog({
   connection: ConnectionConfig;
   /** 改连接配置（落盘 + 桌面侧同步动态 CSP）。 */
   onConnectionChange: (next: ConnectionConfig) => void;
+  /** 当前终端交互偏好，由工作台持有唯一状态源。 */
+  terminalPreferences: TerminalPreferences;
+  /** 以完整对象上提终端交互偏好变化。 */
+  onTerminalPreferencesChange: (next: TerminalPreferences) => void;
 }) {
   const { show } = useToast();
   const [status, setStatus] = useState<ProxyStatus | null>(null);
@@ -108,7 +116,7 @@ export function SettingsDialog({
   const [loading, setLoading] = useState(true);
   const [restarting, setRestarting] = useState(false);
 
-  /* ------------------------------------------------------- 连接配置（第三区） */
+  /* ------------------------------------------------------- 连接配置（通用设置 tab） */
 
   /** 连接配置的草稿值：没保存前不动生效中的配置。 */
   // 基址恒非空：配置里是空串（存量数据）时归一为默认地址（归一规则只有
@@ -294,22 +302,22 @@ export function SettingsDialog({
       </h2>
 
       {/*
-        设置抽屉的三个 tab：**代理**（状态 + 按钮 + 缓存镜像清单）/ **模板**
-        （启动模板管理）/ **后端配置**（连接配置）。
+        设置抽屉的三个 tab：**通用设置**（终端交互 + 连接配置）/ **代理**
+        （状态 + 按钮 + 缓存镜像清单）/ **模板**（启动模板管理）。
 
         面板一律 `keepMounted`：隐藏的 tab **不卸载**，打开抽屉即全量加载
         （代理状态 / 缓存清单 / 模板列表都是打开抽屉那一次拉）。
       */}
-      <Tabs defaultValue="proxy" className="flex min-h-0 flex-1 flex-col">
+      <Tabs defaultValue="general" className="flex min-h-0 flex-1 flex-col">
         <TabsList data-testid="page-settings-tabs">
+          <TabsTab value="general" data-testid="page-settings-tab-general">
+            通用设置
+          </TabsTab>
           <TabsTab value="proxy" data-testid="page-settings-tab-proxy">
             代理
           </TabsTab>
           <TabsTab value="templates" data-testid="page-settings-tab-templates">
             模板
-          </TabsTab>
-          <TabsTab value="backend" data-testid="page-settings-tab-backend">
-            后端配置
           </TabsTab>
         </TabsList>
 
@@ -440,9 +448,43 @@ export function SettingsDialog({
           </section>
         </TabsPanel>
 
-        {/* 后端配置 tab：连接配置（后端地址 + 访问令牌 + 测试连接 + 保存配置）。 */}
-        <TabsPanel value="backend" keepMounted className="min-h-0 flex-1 overflow-y-auto">
-          <section aria-label="连接配置">
+        {/* 通用设置 tab：终端交互偏好 + 连接配置。 */}
+        <TabsPanel value="general" keepMounted className="min-h-0 flex-1 overflow-y-auto">
+          <section aria-label="终端交互" data-testid="page-settings-terminal-interaction">
+            <h3 className="mb-2 text-[13px] font-semibold text-foreground">终端交互</h3>
+            <div className="divide-y divide-border">
+              <label className="flex min-h-10 items-center justify-between gap-4 py-2">
+                <span className="text-[13px] text-foreground">Shift+Enter 发送 ESC+回车</span>
+                <Switch
+                  checked={terminalPreferences.shiftEnterEscape}
+                  onCheckedChange={(enabled) =>
+                    onTerminalPreferencesChange({
+                      ...terminalPreferences,
+                      shiftEnterEscape: enabled,
+                    })
+                  }
+                  aria-label="Shift+Enter 发送 ESC+回车"
+                  data-testid="page-settings-terminal-shift-enter-switch"
+                />
+              </label>
+              <label className="flex min-h-10 items-center justify-between gap-4 py-2">
+                <span className="text-[13px] text-foreground">右键复制 / 粘贴</span>
+                <Switch
+                  checked={terminalPreferences.rightClickClipboard}
+                  onCheckedChange={(enabled) =>
+                    onTerminalPreferencesChange({
+                      ...terminalPreferences,
+                      rightClickClipboard: enabled,
+                    })
+                  }
+                  aria-label="右键复制 / 粘贴"
+                  data-testid="page-settings-terminal-right-click-switch"
+                />
+              </label>
+            </div>
+          </section>
+
+          <section aria-label="连接配置" className="mt-6">
             <h3 className="mb-2 text-[13px] font-semibold text-foreground">连接配置</h3>
             <div className="space-y-3">
               <div>

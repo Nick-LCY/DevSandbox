@@ -13,6 +13,7 @@ import {
   type DesktopSyncOutcome,
 } from '../../lib/connection';
 import { useDrawerWidth } from '../../lib/drawer-width';
+import { useTerminalPreferences } from '../../lib/terminal-preferences';
 import { nextPollFailure } from '../../lib/poll';
 import {
   describeMergedPollFailure,
@@ -157,6 +158,18 @@ function WorkbenchView({
   const { show } = useToast();
   // 三个抽屉共用一份宽度（存 localStorage）。
   const { widthVw, setWidthVw } = useDrawerWidth();
+  const {
+    preferences: terminalPreferences,
+    setShiftEnterEscape,
+    setRightClickClipboard,
+  } = useTerminalPreferences();
+  const handleTerminalPreferencesChange = useCallback(
+    (next: typeof terminalPreferences) => {
+      setShiftEnterEscape(next.shiftEnterEscape);
+      setRightClickClipboard(next.rightClickClipboard);
+    },
+    [setRightClickClipboard, setShiftEnterEscape],
+  );
 
   const [sandboxes, setSandboxes] = useState<SandboxSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -620,6 +633,7 @@ function WorkbenchView({
             onActiveSessionChange={selectSession}
             sandboxWorkdir={detail?.workdir ?? ''}
             desktop={desktop}
+            terminalPreferences={terminalPreferences}
           />
         </>
       ) : (
@@ -659,6 +673,8 @@ function WorkbenchView({
         onWidthChange={setWidthVw}
         connection={connection}
         onConnectionChange={onConnectionChange}
+        terminalPreferences={terminalPreferences}
+        onTerminalPreferencesChange={handleTerminalPreferencesChange}
       />
 
       <DeleteSandboxDialog

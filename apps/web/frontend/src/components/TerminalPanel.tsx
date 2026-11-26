@@ -15,6 +15,10 @@ import {
   type WorkspaceTabKind,
 } from '../lib/file-pane';
 import { useFilePaneCollapsed } from '../lib/file-pane-collapsed';
+import {
+  DEFAULT_TERMINAL_PREFERENCES,
+  type TerminalPreferences,
+} from '../lib/terminal-preferences';
 import { nextPollFailure } from '../lib/poll';
 import { sessionNumbering, sortSessionsByCreation } from '../lib/sessions';
 import { resolveActiveSession, type TerminalRefreshState } from '../lib/terminal-active';
@@ -89,6 +93,8 @@ interface TerminalPanelProps {
   sandboxWorkdir?: string;
   /** 是否运行在桌面壳里（桌面形态下载 = 原生保存框 + Rust 落盘）。 */
   desktop?: boolean;
+  /** 终端交互偏好；由工作台持有，未传时使用默认关闭值。 */
+  terminalPreferences?: TerminalPreferences;
 }
 
 /**
@@ -108,6 +114,7 @@ export function TerminalPanel({
   onActiveSessionChange,
   sandboxWorkdir,
   desktop = false,
+  terminalPreferences = DEFAULT_TERMINAL_PREFERENCES,
 }: TerminalPanelProps) {
   const { show } = useToast();
   /**
@@ -778,6 +785,7 @@ export function TerminalPanel({
                     activeId={activeId}
                     retryTokens={retryTokens}
                     focusRequests={focusRequests}
+                    terminalPreferences={terminalPreferences}
                     onStateChange={handleStateChange}
                   />
                 ) : (

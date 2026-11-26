@@ -512,7 +512,7 @@ export async function confirmStop(page: Page, name: string): Promise<void> {
 }
 
 /**
- * 打开设置抽屉（代理设置 + 启动模板管理）。
+ * 打开设置抽屉（通用设置 / 代理 / 模板）。
  */
 export async function openSettingsDrawer(page: Page): Promise<void> {
   await gotoWorkbench(page);
@@ -521,12 +521,12 @@ export async function openSettingsDrawer(page: Page): Promise<void> {
 }
 
 /** 设置抽屉的三个 tab。 */
-export type SettingsTab = 'proxy' | 'templates' | 'backend';
+export type SettingsTab = 'general' | 'proxy' | 'templates';
 
 /**
  * 切到设置抽屉的某个 tab。
  *
- * 设置抽屉是三 tab 结构（代理 / 模板 / 后端配置）：模板区与连接配置区在
+ * 设置抽屉是三 tab 结构（通用设置 / 代理 / 模板）：模板区与连接配置区在
  * 各自的 tab 面板里，操作前先切过去。
  *
  * **切 tab 不发请求**：面板一律 `keepMounted`（隐藏的不卸载），数据是打开

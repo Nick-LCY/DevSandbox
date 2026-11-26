@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react';
 
 import { cn } from '../lib/cn';
+import {
+  DEFAULT_TERMINAL_PREFERENCES,
+  type TerminalPreferences,
+} from '../lib/terminal-preferences';
 import { markVisited, resolveMountedSessions } from '../lib/terminal-residency';
 import { TerminalView, type TerminalState } from './TerminalView';
 
@@ -31,6 +35,8 @@ interface TerminalStackProps {
   focusRequests: Record<string, number>;
   /** 终端视图上报状态（按会话区分——后台会话也报）。 */
   onStateChange: (sessionId: string, state: TerminalState) => void;
+  /** 终端交互偏好；未传时使用默认关闭值。 */
+  terminalPreferences?: TerminalPreferences;
 }
 
 export function TerminalStack({
@@ -39,6 +45,7 @@ export function TerminalStack({
   retryTokens,
   focusRequests,
   onStateChange,
+  terminalPreferences = DEFAULT_TERMINAL_PREFERENCES,
 }: TerminalStackProps) {
   /**
    * 已访问过的会话。
@@ -72,6 +79,7 @@ export function TerminalStack({
             active={sessionId === activeId}
             retryToken={retryTokens[sessionId] ?? 0}
             focusRequestId={focusRequests[sessionId] ?? 0}
+            terminalPreferences={terminalPreferences}
             onStateChange={(state) => {
               onStateChange(sessionId, state);
             }}

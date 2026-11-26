@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 /**
- * 设置抽屉：**代理 / 模板 / 后端配置**三个 tab。
+ * 设置抽屉：**通用设置 / 代理 / 模板**三个 tab。
  *
  * 覆盖几件事：
- * - 三个 tab 就位：代理默认激活，切到模板 tab 后 TemplateManager 在场；
+ * - 三个 tab 就位：通用设置默认激活，切到模板 tab 后 TemplateManager 在场；
  *   三个区（代理设置 / 启动模板 / 连接配置）各自可寻址；
  * - 重启成功：弹成功 toast；
  * - 重启失败：弹失败 toast；随后那次状态刷新也失败时，**不能**再弹一条
@@ -30,6 +30,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_BACKEND_BASE_URL, type ConnectionConfig } from '../../lib/connection';
+import { DEFAULT_TERMINAL_PREFERENCES } from '../../lib/terminal-preferences';
 import { ToastProvider } from '../Toast';
 import { SettingsDialog } from './SettingsDialog';
 
@@ -128,7 +129,11 @@ function makeCachePayload(
 }
 
 /** 渲染带 Provider 的设置抽屉。 */
-function renderDialog(options?: { connection?: ConnectionConfig }): void {
+function renderDialog(options?: {
+  connection?: ConnectionConfig;
+  terminalPreferences?: typeof DEFAULT_TERMINAL_PREFERENCES;
+  onTerminalPreferencesChange?: (next: typeof DEFAULT_TERMINAL_PREFERENCES) => void;
+}): void {
   render(
     <ToastProvider>
       <SettingsDialog
@@ -140,6 +145,8 @@ function renderDialog(options?: { connection?: ConnectionConfig }): void {
           options?.connection ?? { backendBaseUrl: DEFAULT_BACKEND_BASE_URL, token: 'sbx_test' }
         }
         onConnectionChange={onConnectionChange}
+        terminalPreferences={options?.terminalPreferences ?? DEFAULT_TERMINAL_PREFERENCES}
+        onTerminalPreferencesChange={options?.onTerminalPreferencesChange ?? vi.fn()}
       />
     </ToastProvider>,
   );
@@ -175,7 +182,7 @@ function makeTemplate(overrides: Record<string, unknown> = {}) {
 
 /** 切到某个 tab（点 tab 按钮）。 */
 function switchTab(
-  tab: 'page-settings-tab-proxy' | 'page-settings-tab-templates' | 'page-settings-tab-backend',
+  tab: 'page-settings-tab-proxy' | 'page-settings-tab-templates' | 'page-settings-tab-general',
 ): void {
   fireEvent.click(screen.getByTestId(tab));
 }
@@ -203,10 +210,16 @@ afterEach(() => {
   mocks.health.mockReset();
   // 桌面形态的探测标记（模块外注入，测试之间清掉）。
   delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  delete (window as unknown as { PointerEvent?: unknown }).PointerEvent;
 });
 
 // 默认：代理状态读得到、缓存清单为空、模板列表为空（各用例自己覆盖需要的那一项）。
 beforeEach(() => {
+  // Base UI Switch 的受控原语会创建 PointerEvent；jsdom 默认未提供构造器。
+  Object.defineProperty(window, 'PointerEvent', {
+    configurable: true,
+    value: window.MouseEvent,
+  });
   mocks.proxyStatus.mockResolvedValue(makeStatus());
   mocks.cacheImages.mockResolvedValue(makeCachePayload({ images: [] }));
   mocks.listTemplates.mockResolvedValue([]);
@@ -269,18 +282,36 @@ describe('代理重启反馈', () => {
 });
 
 describe('设置抽屉的三个 tab', () => {
-  it('三个 tab 就位：代理默认激活', async () => {
+  it('三个 tab 就位：通用设置默认激活', async () => {
     renderDialog();
 
     const tabs = await screen.findByTestId('page-settings-tabs');
     expect(tabs.getAttribute('role')).toBe('tablist');
+    expect(screen.getByTestId('page-settings-tab-general').textContent).toBe('通用设置');
     expect(screen.getByTestId('page-settings-tab-proxy').textContent).toBe('代理');
     expect(screen.getByTestId('page-settings-tab-templates').textContent).toBe('模板');
-    expect(screen.getByTestId('page-settings-tab-backend').textContent).toBe('后端配置');
 
-    // 代理 tab 默认激活（激活态是主色下划线那一条）。
-    expect(screen.getByTestId('page-settings-tab-proxy').getAttribute('data-active')).toBe('');
-    expect(activePanel()?.contains(screen.getByLabelText('代理设置'))).toBe(true);
+    // 通用设置 tab 默认激活（激活态是主色下划线那一条）。
+    expect(screen.getByTestId('page-settings-tab-general').getAttribute('data-active')).toBe('');
+    expect(activePanel()?.contains(screen.getByLabelText('终端交互'))).toBe(true);
+  });
+
+  it('通用设置里的两个开关默认关闭，并把完整偏好对象上提', async () => {
+    const onTerminalPreferencesChange = vi.fn();
+    renderDialog({ onTerminalPreferencesChange });
+
+    const section = await screen.findByTestId('page-settings-terminal-interaction');
+    expect(section).toBeTruthy();
+    const shiftEnter = screen.getByTestId('page-settings-terminal-shift-enter-switch');
+    const rightClick = screen.getByTestId('page-settings-terminal-right-click-switch');
+    expect(shiftEnter.getAttribute('aria-checked')).toBe('false');
+    expect(rightClick.getAttribute('aria-checked')).toBe('false');
+
+    fireEvent.click(shiftEnter);
+    expect(onTerminalPreferencesChange).toHaveBeenCalledWith({
+      shiftEnterEscape: true,
+      rightClickClipboard: false,
+    });
   });
 
   it('切到模板 tab：启动模板管理在场，代理区不在激活面板里', async () => {
@@ -298,11 +329,11 @@ describe('设置抽屉的三个 tab', () => {
     expect(panel?.contains(screen.getByTestId('page-settings-template-item'))).toBe(true);
   });
 
-  it('切到后端配置 tab：连接配置区在场', async () => {
+  it('切到通用设置 tab：连接配置区在场', async () => {
     renderDialog();
 
     await screen.findByTestId('page-settings-tabs');
-    switchTab('page-settings-tab-backend');
+    switchTab('page-settings-tab-general');
 
     const panel = activePanel();
     expect(panel?.contains(screen.getByLabelText('连接配置'))).toBe(true);
@@ -500,7 +531,7 @@ describe('设置抽屉的缓存镜像清单区', () => {
     expect(screen.getByLabelText('代理设置')).toBeTruthy();
     switchTab('page-settings-tab-templates');
     expect(activePanel()?.contains(screen.getByLabelText('启动模板'))).toBe(true);
-    switchTab('page-settings-tab-backend');
+    switchTab('page-settings-tab-general');
     expect(activePanel()?.contains(screen.getByLabelText('连接配置'))).toBe(true);
   });
 
