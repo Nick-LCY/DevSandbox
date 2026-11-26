@@ -109,7 +109,9 @@ status: todo        # todo | doing | done | blocked
 - [[tasks/file-injection-refresh/03-admin-api.md]] — 管理 API（详情 `injections` 新字段 + 按条目标识的刷新端点 **204** + 错误分类 + 三类负例 + `API.md` 第 18 章）（**done：2026-11-23**）
 - [[tasks/file-injection-refresh/04-detail-drawer.md]] — 详情抽屉「注入文件」清单（每条一行 + 「刷新副本」按钮 + 读 / 写分离 + 字体子集重生成）（**done：2026-11-23**）
 - [[tasks/file-injection-refresh/05-acceptance-and-delivery.md]] — 定向验收与交付（定向 Playwright `18-file-injection-refresh` **2 / 2** + 单次全量 + 留档与文档同步）（**done：2026-11-23**）
-- [[tasks/file-injection-refresh/RESULTS.md]] — 文件注入副本手动刷新**全轮收口留档**（提交链 10 个提交已在 `origin/main`；用户手工验收已于 2026-11-26 通过；门禁数字表；**单次全量** 77 = 76 / 1 与那一条失败的归因；已知边界与留白 7 条；本机人工验收方式）
+- [[tasks/file-injection-refresh/RESULTS.md]] - 文件注入副本手动刷新**全轮收口留档**(提交链 10 个提交已在 `origin/main`；用户手工验收已于 2026-11-26 通过；门禁数字表；**单次全量** 77 = 76 / 1 与那一条失败的归因；已知边界与留白 7 条；本机人工验收方式）
+- [[tasks/terminal-ux/RESULTS.md]] — 终端交互增强全轮收口留档（01~05；门禁与定向真沙箱 e2e 数字、机制口径、审查修复、六条已知边界及本机人工验收方式）。
+- [[tasks/terminal-ux/README.md]] — 终端交互增强任务集（**2026-11-26 已收口：01~05 全部 done**；前端 vitest **1093 passed / 59 files**、typecheck 双零错、字体构建成功、build 成功；定向真沙箱 e2e 首轮 **28 / 28**、修复轮 **15 / 15**；后端与核心包零改动，未部署、未 push；桌面真机、全量 e2e 与用户手工验收待执行；**全轮留档见 [[tasks/terminal-ux/RESULTS.md\|RESULTS]]**）
 
 ## 看板
 任务状态汇总见 [[current-state.md]]，由人维护。

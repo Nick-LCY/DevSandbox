@@ -76,7 +76,7 @@
 
 ## 设置抽屉的三个 tab 与缓存镜像清单
 
-- **设置抽屉三个 tab**：抽屉内容由四个纵向 section 拆为**三个 tab——代理 / 模板 / 后端配置**，**代理 tab 默认激活**，代理 tab 含缓存镜像清单。tablist 标识 `page-settings-tabs`，三个 tab 各挂 `page-settings-tab-proxy` / `page-settings-tab-templates` / `page-settings-tab-backend`（激活态带 `data-active`）。tab 原语封装与 keepMounted 口径见「组件与路由」节。
+- **设置抽屉三个 tab**：抽屉内容拆为**三个 tab——通用设置 / 代理 / 模板**，**通用设置 tab 默认激活**；通用设置包含「终端交互」区与原连接配置表单，代理 tab 含缓存镜像清单。tablist 标识 `page-settings-tabs`，三个 tab 各挂 `page-settings-tab-general` / `page-settings-tab-proxy` / `page-settings-tab-templates`（激活态带 `data-active`）。终端交互区标识 `page-settings-terminal-interaction`，两个开关标识为 `page-settings-terminal-shift-enter-switch` / `page-settings-terminal-right-click-switch`。tab 原语封装与 keepMounted 口径见「组件与路由」节。
 - **缓存镜像清单数据口径**：**只展示有 tag 的镜像**——改拉 `GET /api/proxy/cache/images?format=json&tags=only`（api 层 `cacheImages({ tagsOnly: true })`），与沙箱内 `cached-images` 命令同一口径；**后端与 API 契约零改动**。
 - **表格列口径**：IMAGE = `repo:tag`（多标签逐行展开、按 (repo, tag) 排序）；ID = digest 去 `sha256:` 前缀取**前 12 位**（完整 digest 挂 `title`）；SIZE = **十进制**（1000 进制）；CACHED TIME = **UTC** `YYYY-MM-DD HH:mm:ss`；「清单生成时间」脚注保留（UTC 口径）。
 - **本地搜索过滤**：**纯本地、不发请求**——大小写不敏感子串匹配 `repo:tag`；命中 digest 时**整组展开显示**；空态两种分开：「清单为空」与「搜索无命中」不是同一句话。
@@ -101,8 +101,10 @@
 - **成功零反馈、失败弹失败 toast**：复制成功不弹任何提示；失败弹失败 toast，来源标识固定 `terminal-clipboard`，文案「复制到系统剪贴板失败」/「读取系统剪贴板失败」。没有选区时按 `Ctrl+Shift+C` 静默不做任何事。
 - **剪贴板 API 需要安全上下文**：`navigator.clipboard` 只在安全上下文可用（`127.0.0.1` 或后续反代 TLS）；非安全上下文下接口不存在，走失败路径弹提示，不做降级。
 - **首用读取可能弹一次浏览器授权**：`readText` 首次调用时浏览器可能弹权限确认，属预期行为，不是失败，不要为此加绕行逻辑。
-- **快捷键分类是语义锁**：分类规则收敛在纯函数 `src/lib/terminal-shortcuts.ts`（`classifyTerminalShortcut`），单元测试逐条钉死——`Ctrl+C` 仍是 SIGINT、`Ctrl+V` 仍是 0x16、保留键仍放行、只有 `Ctrl+Shift+C` / `Ctrl+Shift+V` 走剪贴板。改这段分类必须同步改测试。
-- **键盘协议协商标记不在快照里**：kitty 键盘协议等「键盘能力协商」标志不随快照恢复（前端 xterm.js 5.5.0 不支持该协议），所以 `Shift+Enter` 这类「需要独立编码」的按键仍要靠前端自定义映射（待办 ③，未立项）。**不得按「快照已解决」写文档或写代码。**
+- **快捷键分类是语义锁**：分类规则收敛在纯函数 `src/lib/terminal-shortcuts.ts`（`classifyTerminalShortcut`），单元测试逐条钉死——`Ctrl+C` 仍是 SIGINT、`Ctrl+V` 仍是 0x16、保留键仍放行、只有 `Ctrl+Shift+C` / `Ctrl+Shift+V` 走剪贴板。`Shift+Enter` 作为独立 `shiftEnter` 分类，优先级位于 forward 之后、plain 之前；开关两态字节与统一 `sendInput()` 见本节后续约定。改这段分类必须同步改测试。
+- **终端右键接管边界与顺序**：右键开关开启时，终端容器在 `contextmenu` 的 capture 阶段先判断事件目标是否在当前 `term.element` 内；不在则完全不接管。在终端内才执行 `preventDefault()` + `stopPropagation()`，再按是否有选区分流：有选区复用 Ctrl+Shift+C 的复制路径，无选区先 `navigator.clipboard.readText()`，成功后调用 `term.paste()`，不直接写 socket。关闭开关、终端外点击和卸载后均不接管；成功零反馈，失败 toast 来源固定 `terminal-clipboard`。
+- **OSC 52 常开口径**：不设开关，只处理选择区 `c`，忽略 `p` / `s` / cut buffer；set 写系统剪贴板，query 读系统剪贴板后 base64 经统一 `sendInput()` 回写 PTY，**不走 `term.paste`**。payload 先按 base64 长度预检 64 KiB，解码后再按字节数二次校验；非法 base64、超限和非 `c` 静默丢弃。系统剪贴板读取失败沿 Ctrl+Shift+C 口径处理：`terminal-clipboard` 失败 toast、沿用既有文案、不发响应、不降级。异步落地前检查终端仍挂载且 socket 为 OPEN。
+- **键盘协议协商标记不在快照里**：kitty 键盘协议等「键盘能力协商」标志不随快照恢复（前端 xterm.js 5.5.0 不支持该协议），所以 `Shift+Enter` 仍靠前端自定义映射：`terminal-shortcuts.ts` 的 `shiftEnter` 分类优先级位于 forward 之后、plain 之前；偏好开启时经统一 `sendInput()` 发送 `0x1b 0x0d`，关闭时发送 `0x0d`。
 
 ## 终端全屏与焦点回填
 
