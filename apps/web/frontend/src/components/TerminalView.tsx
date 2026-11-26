@@ -312,7 +312,7 @@ export function TerminalView({
      * 写入是异步的（浏览器要弹授权、或系统剪贴板被别的进程占着），
      * 不能在按键处理函数里等——按键处理函数必须同步返回。
      */
-    const copySelectionToClipboard = (): void => {
+    const copySelectionToClipboard = (clearSelectionOnSuccess = false): void => {
       if (!term.hasSelection()) {
         return;
       }
@@ -326,11 +326,17 @@ export function TerminalView({
           reportClipboardFailure('复制到系统剪贴板失败');
           return;
         }
-        void clipboard.writeText(selection).catch(() => {
-          if (!disposed) {
-            reportClipboardFailure('复制到系统剪贴板失败');
-          }
-        });
+        void clipboard.writeText(selection)
+          .then(() => {
+            if (clearSelectionOnSuccess && !disposed) {
+              term.clearSelection();
+            }
+          })
+          .catch(() => {
+            if (!disposed) {
+              reportClipboardFailure('复制到系统剪贴板失败');
+            }
+          });
       } catch {
         // 非标准实现可能同步抛错：归入失败分支（与异步失败同一条提示）。
         reportClipboardFailure('复制到系统剪贴板失败');
@@ -445,7 +451,7 @@ export function TerminalView({
       event.stopPropagation();
       event.stopImmediatePropagation();
       if (term.hasSelection()) {
-        copySelectionToClipboard();
+        copySelectionToClipboard(true);
       } else {
         pasteFromClipboard();
       }

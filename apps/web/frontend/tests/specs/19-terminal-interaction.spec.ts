@@ -269,6 +269,7 @@ test.describe('终端交互增强', () => {
       button: 'right',
     });
     await expect.poll(async () => (await readClipboard(page)).trim(), { timeout: 15_000 }).toBe(marker);
+    await expect(surfaceOf(page, sessionId).locator('.xterm-selection > div')).toHaveCount(0);
     await assertNoTerminalClipboardToast(page);
   });
 

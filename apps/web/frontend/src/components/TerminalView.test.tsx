@@ -797,6 +797,7 @@ describe('TerminalView：终端行为增强', () => {
 
   it('右键开启且终端内有选区时复制并阻止事件', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
+    const clearSelection = vi.spyOn(Terminal.prototype, 'clearSelection');
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: { writeText },
@@ -809,10 +810,12 @@ describe('TerminalView：终端行为增强', () => {
     const termElement = document.querySelector('.xterm') as HTMLElement;
     expect(fireEvent.contextMenu(termElement)).toBe(false);
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('selected'));
+    expect(clearSelection).toHaveBeenCalledTimes(1);
   });
 
-  it('右键复制失败：写入 reject 时弹复制失败 toast', async () => {
+  it('右键复制失败：写入 reject 时保留选区并弹复制失败 toast', async () => {
     const writeText = vi.fn().mockRejectedValue(new Error('denied'));
+    const clearSelection = vi.spyOn(Terminal.prototype, 'clearSelection');
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: { writeText },
@@ -827,6 +830,25 @@ describe('TerminalView：终端行为增强', () => {
     const toast = await screen.findByTestId('page-toast-item');
     expect(toast.textContent).toContain('复制到系统剪贴板失败');
     expect(toast.getAttribute('data-toast-source')).toBe('terminal-clipboard');
+    expect(clearSelection).not.toHaveBeenCalled();
+  });
+
+  it('Ctrl+Shift+C 复制成功时保持选区', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const clearSelection = vi.spyOn(Terminal.prototype, 'clearSelection');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    vi.spyOn(Terminal.prototype, 'hasSelection').mockReturnValue(true);
+    vi.spyOn(Terminal.prototype, 'getSelection').mockReturnValue('selected');
+    renderTerminal();
+    await connectedSocket();
+
+    const textarea = document.querySelector('.xterm-helper-textarea') as HTMLElement;
+    expect(fireEvent.keyDown(textarea, { key: 'C', ctrlKey: true, shiftKey: true })).toBe(false);
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('selected'));
+    expect(clearSelection).not.toHaveBeenCalled();
   });
 
   it('右键开启且终端内无选区时读取剪贴板并走 term.paste', async () => {
