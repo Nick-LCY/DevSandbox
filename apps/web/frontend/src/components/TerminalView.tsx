@@ -481,7 +481,9 @@ export function TerminalView({
         if (event.type === 'keydown') {
           event.preventDefault();
           event.stopPropagation();
-          sendInput('\x1b\r');
+          // 使用 kitty CSI-u 的 Shift+Enter 编码；不要发 ESC+CR，因为 kitty 未激活时
+          // pi 会把它解释成 alt+enter，命令消息会被直接发送出去。
+          sendInput('\x1b[13;2u');
           return false;
         }
         return event.type === 'keyup';

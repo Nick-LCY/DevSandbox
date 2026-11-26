@@ -32,7 +32,7 @@ export interface TerminalShortcutEvent {
  * - `copy`：复制选区到系统剪贴板；
  * - `paste`：从系统剪贴板粘贴进终端；
  * - `forward`：拦下浏览器行为，但仍编码后送进容器内的 shell；
- * - `shiftEnter`：把 Shift+Enter 映射成 ESC+回车；
+ * - `shiftEnter`：把 Shift+Enter 映射成 kitty CSI-u 编码 `ESC[13;2u`；
  * - `plain`：普通按键，交给 xterm 照常处理。
  */
 export type TerminalShortcutAction =
@@ -90,7 +90,7 @@ function isBrowserReservedShortcut(event: TerminalShortcutEvent): boolean {
  *    `Ctrl+Alt+Shift+C` 是 AltGr 组合（输入特殊字符），不能被劫持成复制——
  *    这类组合一律留给转发路径；
  * 3. **其余带 Ctrl / Meta / Alt 的组合**：拦下浏览器行为，但仍转发给容器内的 shell；
- * 4. **启用时的 Shift+Enter**：交给终端视图映射成 ESC+回车；
+ * 4. **启用时的 Shift+Enter**：交给终端视图映射成 kitty CSI-u 编码 `ESC[13;2u`；
  * 5. **纯按键**：交给 xterm 照常处理。
  *
  * `c` / `v` 都不在保留键清单里，所以第 1 步与第 2 步天然不冲突。

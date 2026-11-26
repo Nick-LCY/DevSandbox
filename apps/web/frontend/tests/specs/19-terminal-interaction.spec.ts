@@ -240,22 +240,21 @@ test.describe('终端交互增强', () => {
     );
   });
 
-  test('Shift+Enter 开启后在 PTY 内发送 ESC+回车，关闭时没有 ESC', async ({ page }) => {
+  test('Shift+Enter 开启后在 PTY 内发送完整 kitty CSI-u 序列，关闭时仍是单独回车', async ({ page }) => {
     await enablePreference(page, 'page-settings-terminal-shift-enter-switch');
     const enabledSession = await openFreshTerminal(page);
-    await typeInTerminal(page, enabledSession, 'stty -icrnl; cat -v');
+    await typeInTerminal(page, enabledSession, 'stty -icanon -icrnl -echo; cat -v');
     await focusTerminal(page, enabledSession);
     await page.keyboard.press('Shift+Enter');
-    await expectTerminalText(page, enabledSession, '^[', 15_000);
-    await expectTerminalText(page, enabledSession, '^M', 15_000);
+    await expectTerminalText(page, enabledSession, '^[[13;2u', 15_000);
 
     await clearTerminalPreferences(page);
     const disabledSession = await openFreshTerminal(page);
-    await typeInTerminal(page, disabledSession, 'stty -icrnl; cat -v');
+    await typeInTerminal(page, disabledSession, 'stty -icanon -icrnl -echo; cat -v');
     await focusTerminal(page, disabledSession);
     await page.keyboard.press('Shift+Enter');
     await expectTerminalText(page, disabledSession, '^M', 15_000);
-    await expectTerminalTextAbsent(page, disabledSession, '^[', 3_000);
+    await expectTerminalTextAbsent(page, disabledSession, '^[[13;2u', 3_000);
   });
 
   test('右键开启 + 终端内有选区：复制选区到系统剪贴板且不弹成功 toast', async ({ page }) => {

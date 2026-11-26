@@ -454,7 +454,7 @@ export function SettingsDialog({
             <h3 className="mb-2 text-[13px] font-semibold text-foreground">终端交互</h3>
             <div className="divide-y divide-border">
               <label className="flex min-h-10 items-center justify-between gap-4 py-2">
-                <span className="text-[13px] text-foreground">Shift+Enter 发送 ESC+回车</span>
+                <span className="text-[13px] text-foreground">Shift+Enter 换行</span>
                 <Switch
                   checked={terminalPreferences.shiftEnterEscape}
                   onCheckedChange={(enabled) =>
@@ -463,7 +463,7 @@ export function SettingsDialog({
                       shiftEnterEscape: enabled,
                     })
                   }
-                  aria-label="Shift+Enter 发送 ESC+回车"
+                  aria-label="Shift+Enter 换行"
                   data-testid="page-settings-terminal-shift-enter-switch"
                 />
               </label>

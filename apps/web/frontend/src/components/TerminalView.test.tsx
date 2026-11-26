@@ -775,7 +775,7 @@ describe('TerminalView：终端行为增强', () => {
     return socket;
   }
 
-  it('Shift+Enter 开启时发送严格的 ESC+回车且不重复发送', async () => {
+  it('Shift+Enter 开启时发送完整的 kitty CSI-u 序列且不重复发送', async () => {
     renderTerminal({ shiftEnterEscape: true });
     const socket = await connectedSocket();
     const textarea = document.querySelector('.xterm-helper-textarea') as HTMLElement;
@@ -783,7 +783,9 @@ describe('TerminalView：终端行为增强', () => {
     expect(fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: true })).toBe(false);
     fireEvent.keyUp(textarea, { key: 'Enter', shiftKey: true });
 
-    expect(binaryFrames(socket)).toEqual([new Uint8Array([0x1b, 0x0d])]);
+    expect(binaryFrames(socket)).toEqual([
+      new Uint8Array([0x1b, 0x5b, 0x31, 0x33, 0x3b, 0x32, 0x75]),
+    ]);
   });
 
   it('Shift+Enter 关闭时保持 xterm 的单个回车', async () => {
