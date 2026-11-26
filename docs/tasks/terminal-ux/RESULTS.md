@@ -1,16 +1,16 @@
 # 终端交互增强：全轮收口留档（2026-11-26）
 
-> 本轮范围全部在前端 `apps/web/frontend`：设置抽屉「通用设置」、两个终端交互偏好、`Shift+Enter` 映射、终端内右键复制 / 粘贴接管和常开 OSC 52 剪贴板互通。`apps/web/backend` 与 `apps/core` 零改动，零新增依赖；未部署、未 push。
+> 本轮范围全部在前端 `apps/web/frontend`：设置抽屉「通用设置」、两个终端交互偏好、`Shift+Enter` 映射、终端内右键复制 / 粘贴接管和常开 OSC 52 剪贴板互通。`apps/web/backend` 与 `apps/core` 零改动，零新增依赖；收口修正提交 `f3d7f14` 已推送 `origin/main`。
 > 需求见 [[prds/terminal-ux.md|终端交互增强 PRD]]，任务集见 [[tasks/terminal-ux/README.md|终端交互增强任务集]]，约定见 [[conventions/console-frontend.md|控制台前端约定]]。
 
-**状态：01~05 全部 done。** 自动化验收已完成：定向真沙箱 e2e 首轮 28 / 28、修复轮 15 / 15，第二次全量真沙箱 e2e 88 / 88（14.4 分钟，0 失败 / 0 跳过 / 0 flaky，退出码 0）；桌面 Windows WebView2 真机验证与用户手工验收仍是留白，不能据此写成用户已验收、已部署或已 push。
+**状态：01~05 全部 done。** 自动化验收已完成；用户已完成网页与桌面形态手工验收，桌面右键菜单抑制与剪贴板读写确认无问题。Shift+Enter 收口后修正为 kitty CSI-u，用户在 pi 内实测换行通过；即将随 `v0.2.0` 发布，tag、Actions run 与 Worker 部署结果待回填。
 
 ## 一、轮次总表
 
 | 任务 | 交付 | 状态 | 收口日期 |
 |---|---|---|---|
 | [[tasks/terminal-ux/01-preferences-and-general-settings.md\|01 偏好存储与通用设置]] | 两个独立 localStorage 偏好、默认关闭、非法值回落关闭；设置抽屉 tab 改为「通用设置 → 代理 → 模板」，通用设置默认激活并承载终端交互区与原连接配置表单 | done | 2026-11-26 |
-| [[tasks/terminal-ux/02-shift-enter-mapping.md\|02 Shift+Enter 映射]] | `shiftEnter` 分类与统一 `sendInput()`；开关开时 `0x1b 0x0d`，关时 `0x0d`；切换不重建终端 / WebSocket | done | 2026-11-26 |
+| [[tasks/terminal-ux/02-shift-enter-mapping.md\|02 Shift+Enter 映射]] | `shiftEnter` 分类与统一 `sendInput()`；开关开时发送 kitty CSI-u `ESC[13;2u`（7 字节，`f3d7f14` 修正），关时 `0x0d`；切换不重建终端 / WebSocket | done | 2026-11-26 |
 | [[tasks/terminal-ux/03-terminal-context-menu-clipboard.md\|03 终端右键接管]] | capture 阶段仅接管 xterm 内右键；有选区复制，无选区 `readText()` + `term.paste()`；关闭或终端外不接管 | done | 2026-11-26 |
 | [[tasks/terminal-ux/04-osc52-clipboard-interop.md\|04 OSC 52 互通]] | 常开、只处理 `c` 选择区；set / query 双向桥接，query 经 `sendInput()` 回写 PTY；base64 64 KiB 预检与解码后二次校验 | done | 2026-11-26 |
 | [[tasks/terminal-ux/05-acceptance-and-docs.md\|05 验收与文档收口]] | 定向 e2e、前端全量门禁、字体重建、PRD 逐条证据、约定 / 看板 / 清单 / 留档同步 | done | 2026-11-26 |
@@ -29,7 +29,7 @@
 | 真沙箱 e2e | 首轮 4 个定向 spec | **28 / 28**；0 失败 / 0 跳过 / 0 flaky |
 | 真沙箱 e2e | 修复轮复跑 `19` + `16` | **15 / 15**；0 失败 / 0 跳过 / 0 flaky |
 | 真沙箱 e2e | 全量 `pnpm exec playwright test --config=tests/playwright.config.ts` | **88 通过 / 0 失败 / 0 跳过 / 0 flaky**；14.4 分钟；退出码 0（基线 77 + `19-terminal-interaction` 新增 11） |
-| 范围核对 | 后端 / 核心包 / 依赖 / 发布 | `apps/web/backend` 与 `apps/core` 零改动；零新增依赖；未部署、未 push |
+| 范围核对 | 后端 / 核心包 / 依赖 / 发布 | `apps/web/backend` 与 `apps/core` 零改动；零新增依赖；Shift+Enter 修正提交 `f3d7f14` 已推送 `origin/main`；`v0.2.0` tag、Actions run 与 Worker 结果待回填 |
 
 ## 三、机制与关键口径
 
@@ -43,7 +43,8 @@
 ### Shift+Enter
 
 - `terminal-shortcuts.ts` 新增 `shiftEnter` 分类，优先级在 forward 之后、plain 之前，不污染既有分类语义。
-- `TerminalView` 抽出统一 `sendInput()`：偏好开启发送严格的 `0x1b 0x0d`，关闭保持 `0x0d`。
+- 原实现曾在偏好开启时发送 `ESC+CR` 两字节。收口后用户在 pi 内实测发现它不换行而是直接发送消息；pi 1.6.1 源码证实，pi 启动时发送 kitty 查询 `ESC[>7u ESC[?u`，只有终端回 `CSI ? <flags> u` 且 flags 非零才置 `_kittyProtocolActive`。本链路前端 xterm.js 5.5 不支持该协议，服务端模拟器不注册应答回调，因此永不应答、始终未激活；未激活时 pi 将 `ESC+CR` 解析成 `alt+enter`，绑定 `app.message.followUp` 直接发送消息。VS Code 新版集成终端会应答该查询，所以同一串字节在那里有效。
+- 已改为 pi 自身的 `NATIVE_SHIFT_ENTER_SEQUENCE`：kitty CSI-u `ESC[13;2u`，字节为 `0x1b 0x5b 0x31 0x33 0x3b 0x32 0x75`，共 7 字节；该解析分支不依赖协议是否激活。**稳定约定：不得改回 `ESC+CR`。**用户已在 pi 内实测换行通过。修正提交：`f3d7f14 fix(web): Shift+Enter 改发 kitty CSI-u 序列 ESC[13;2u`，已推送 `origin/main`。
 - 偏好由 ref 读取，开关切换不重建终端实例或 WebSocket；Ctrl / Meta / Alt、浏览器保留键、Ctrl+Shift+C / Ctrl+Shift+V 语义保持不变。
 
 ### 右键 capture
@@ -109,16 +110,16 @@ pnpm exec playwright test --config=tests/playwright.config.ts
 
 ## 七、已知边界与留白
 
-1. **桌面形态右键菜单抑制未做真机验证**：网页形态已自动验收通过；右键复制成功清除选区、失败保留选区的语义已由本轮组件单测与定向 e2e 覆盖；Windows WebView2 上 `preventDefault(contextmenu)` 能否抑制原生菜单、剪贴板读写是否正常，仍待用户在真机确认。
+1. **桌面形态右键菜单与剪贴板已由用户真机验收通过**：用户确认网页与桌面形态均通过，桌面右键菜单抑制与剪贴板读写无问题；右键复制成功清除选区、失败保留选区的语义也由组件单测与定向 e2e 覆盖。
 2. **64 KiB 超限只有纯函数与组件单测覆盖**，无真机 e2e 覆盖；该缺口已在 `apps/web/frontend/tests/README.md` 登记。
-3. **容器内程序可任意写宿主剪贴板**：沿既有「容器内程序视为受信」口径，用户已明确接受，登记为信任边界；本轮不做白名单或确认弹窗。
-4. **OSC 52 内容不随快照恢复**：快照只恢复屏幕状态，不重放控制序列；重连后不补发，属预期行为。
-5. **剪贴板读写仍依赖安全上下文与浏览器 / WebView2 权限**：非安全上下文走失败 toast，不做降级，沿既有口径。
-6. **用户手工验收尚未执行**：自动化验收已完成，但真实用户尚未按下一节方式走查网页与桌面形态。
+3. **本平台终端不应答 kitty 键盘协议协商**：pi 的 kitty 查询不会收到 `CSI ? <flags> u` 应答；原因是前端 xterm.js 5.5 不支持该协议，服务端模拟器不注册应答回调。因此依赖扩展协议的其他按键（例如 Ctrl+Enter 之类）仍需前端逐个合成。Shift+Enter 已通过前端直接发送 `ESC[13;2u` 规避该限制。
+4. **容器内程序可任意写宿主剪贴板**：沿既有「容器内程序视为受信」口径，用户已明确接受，登记为信任边界；本轮不做白名单或确认弹窗。
+5. **OSC 52 内容不随快照恢复**：快照只恢复屏幕状态，不重放控制序列；重连后不补发，属预期行为。
+6. **剪贴板读写仍依赖安全上下文与浏览器 / WebView2 权限**：非安全上下文走失败 toast，不做降级，沿既有口径。
 
-## 八、提交链（本地，未 push）
+## 八、提交链
 
-代码收口核对时工作树干净；以下 **5 个提交全部留在本地、未 push**。本次文档补记属于后续 docs 变更，不纳入以下提交链：
+前置收口代码提交链仍按原记录保留：
 
 1. `cdd2c3f` `feat(web): 通用设置 tab 与终端交互偏好层`
 2. `5f362aa` `feat(web): 终端 Shift+Enter 映射、右键与 OSC 52 剪贴板`
@@ -126,54 +127,45 @@ pnpm exec playwright test --config=tests/playwright.config.ts
 4. `60c4669` `docs(terminal-ux): 立项、验收留档与前端约定同步`
 5. `984c657` `test(web): 设置抽屉默认 tab 变更后代理区用例补切 tab`
 
-## 九、本机人工验收方式（尚未执行）
+收口后修正：`f3d7f14 fix(web): Shift+Enter 改发 kitty CSI-u 序列 ESC[13;2u`，已推送 `origin/main`。本次文档变更不纳入上述代码提交链。
 
-以下步骤由用户在本机执行；本次文档收口没有拉起或停止任何进程。使用临时测试沙箱和测试固定令牌，不要把真实令牌写入文档或截图。
+## 九、用户真机验收与发布
 
-1. 在仓库根目录启动临时后端 8100：
+2026-11-26，用户已完成网页形态与桌面形态手工验收，均通过；桌面右键菜单抑制与剪贴板读写确认无问题。用户同时在 pi 内实测 `Shift+Enter` 换行通过，确认收口修正有效。
+
+代码修正提交 `f3d7f14 fix(web): Shift+Enter 改发 kitty CSI-u 序列 ESC[13;2u` 已推送 `origin/main`。本轮即将随 `v0.2.0` 发布；tag、Actions run 结果与 Worker 部署结果尚待回填。本节不将待发生的发布动作写成已完成事实。
+
+## 十、本机人工验收方式（已执行，保留为历史记录）
+
+**以下为收口时的验收步骤，用户已于 2026-11-26 执行并通过，本节保留作为复验指引。**
+
+1. **起新版后端**（8000 已被现有服务占用，另起 8100）——**在仓库根目录执行**（`--project apps/web/backend` 是相对仓库根的路径）：
 
    ```bash
-   SANDBOX_CONSOLE_HOST=127.0.0.1 SANDBOX_CONSOLE_PORT=8100 \\
+   SANDBOX_CONSOLE_HOST=127.0.0.1 SANDBOX_CONSOLE_PORT=8100 \
      uv run --project apps/web/backend python -m sandbox_console
    ```
 
-2. 另开终端启动前端 preview 8200。先切 Node 22，先 build 再 preview：
+   令牌用**本人现有配置**或本机令牌，**不要把 secret 抄进文档或截图**。
+2. **另开一个终端起前端**（nvm 22 + pnpm）——**先切到前端目录、切到 Node 22**，再**先 build、后 preview**：
 
    ```bash
    cd apps/web/frontend
-   source /home/sankabox/.nvm/nvm.sh
+   source "$HOME/.nvm/nvm.sh"
    nvm use 22
    pnpm run build
    pnpm run preview --host 127.0.0.1 --port 8200 --strictPort
    ```
 
-3. 浏览器打开 preview，设置后端地址为 `http://127.0.0.1:8100`，填入测试固定令牌，连接后新建一个临时真沙箱。
+   **`pnpm run build` 不能省**：preview 伺服的是 `dist` 静态产物，不先 build 就会伺服旧产物，看不到本轮界面改动。
+3. **设置里填**后端地址 `http://127.0.0.1:8100` 与管理令牌，连接后打开「通用设置」，确认终端交互区的两个开关默认关闭；新建一个临时沙箱。
+4. **Shift+Enter 点验**：关闭「Shift+Enter 映射」时确认终端仍发送回车 `0x0d`；开启后，终端发送 kitty CSI-u `ESC[13;2u`，取证建议执行 `stty -icanon -icrnl -echo; cat -v`，观察 `^[[13;2u`。**不要用 `ESC+CR`，kitty 未激活时会被 pi 解释为 `alt+enter` 而直接发送消息。**在 pi 内按 `Shift+Enter` 确认换行，不直接发送消息。
+5. **右键与剪贴板点验**：开启终端右键开关，在终端内有选区时右键复制、无选区时右键粘贴；确认终端外右键不被接管、终端内不弹原生菜单，网页与桌面形态均可用。Windows WebView2 原生菜单抑制与剪贴板权限**已由用户于 2026-11-26 在桌面形态确认**。
+6. **OSC 52 点验**：确认容器内程序通过 OSC 52 设置选择区 `c` 能写入系统剪贴板、查询选择区 `c` 能读回并收到响应；确认 `p`、`s` 与 cut buffer 被忽略，超限或读取失败不产生部分写入或响应。
 
-4. 点验设置与 Shift+Enter：
-   - 打开设置抽屉，确认 tab 顺序为「通用设置 → 代理 → 模板」，默认落在「通用设置」，两个开关均为关闭；分别打开后刷新页面，确认选择保留。
-   - 开关关闭时，在终端执行 `stty -icrnl; cat -v`，按 Shift+Enter，观察为回车字节；打开开关后重复，观察为 `^[` 后跟回车（即 `0x1b 0x0d`）。结束 `cat` 后恢复 shell。
+## 十一、核销结论
 
-5. 点验右键：
-   - 打开「右键复制 / 粘贴」开关，在终端产生可选文本并框选，终端内右键后检查系统剪贴板；清除选区，将系统剪贴板换成一段测试文本，终端内无选区右键，确认文本经终端粘贴进入。
-   - 右键点终端外，确认网页原有行为未被接管；关闭开关后重复终端内右键，确认本轮逻辑不接管。Windows WebView2 原生菜单抑制与剪贴板权限仍需真机确认。
-
-6. 点验 OSC 52（真沙箱内执行，先执行 set，再执行 query）：
-
-   ```bash
-   printf '\033]52;c;%s\a' "$(printf '%s' 'terminal-ux-osc52-check' | base64 -w0)"
-   ```
-
-   执行后在宿主系统剪贴板粘贴，预期得到 `terminal-ux-osc52-check`。再在真沙箱中运行下面命令，让程序发出 OSC 52 query 并读取前端回写的响应：
-
-   ```bash
-   python3 -c 'import os,termios,tty; old=termios.tcgetattr(0); tty.setraw(0); os.write(1,b"\033]52;c;?\a"); data=os.read(0,4096); termios.tcsetattr(0,termios.TCSANOW,old); print(repr(data))'
-   ```
-
-   预期 `repr` 中出现 `\\x1b]52;c;` 及系统剪贴板内容的 base64。若浏览器处于非安全上下文或权限被拒，预期是 `terminal-clipboard` 失败 toast，且不收到 query 响应；不做降级。
-
-## 十、核销结论
-
-- PRD 验收标准已逐条挂证据；证据分为真沙箱 e2e、单测、设计口径三档。64 KiB 超限明确只有单测证据，桌面真机与用户手工验收未被写成通过。
+- PRD 验收标准已逐条挂证据；证据分为真沙箱 e2e、单测、设计口径三档。64 KiB 超限明确只有单测证据；用户网页与桌面形态手工验收已通过，桌面右键菜单抑制与剪贴板读写确认无问题。
 - 任务 01~05 全部 `done`；定向 e2e 首轮 28 / 28，修复轮 15 / 15；第二次全量 e2e **88 / 88**，14.4 分钟，退出码 0。
-- 本轮只改前端范围内文档与已交付前端结果的留档信息；后端 / 核心包零改动，零新增依赖，未部署、未 push。
-- 看板与索引收口见 [[current-state.md|当前状态]]、[[prds/README.md|需求清单]]、[[tasks/README.md|任务清单]]；后续保留桌面真机确认、视需要补 64 KiB 真机覆盖与用户手工验收三项本轮遗留待办。
+- 本轮后端 / 核心包零改动，零新增依赖；Shift+Enter 修正提交 `f3d7f14` 已推送 `origin/main`。`v0.2.0` 发布动作即将执行，tag、Actions run 与 Worker 结果待回填。
+- 看板与索引收口见 [[current-state.md|当前状态]]、[[prds/README.md|需求清单]]、[[tasks/README.md|任务清单]]；后续保留 64 KiB 真机覆盖与 kitty 协商应答能力边界两项非阻断留白。

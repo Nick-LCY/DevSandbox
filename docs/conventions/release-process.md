@@ -37,6 +37,10 @@
 - Windows x64 NSIS 安装包**未签名可接受**；SmartScreen 告警属于已知限制，**不作为发布失败条件**。
 - 桌面端 release profile 的 `panic = "abort"` 处置见 [[tasks/phase3-desktop/RESULTS.md|三期留档]] 与 [[current-state.md|当前状态]] 的 TODO 区（与本约定无冲突）。
 
+## 版本发布记录
+
+- `v0.2.0`（2026-11-26）：五个版本字段已改，随「终端交互增强」即将发布；tag、Actions run 与 Worker 部署结果待回填。
+
 ## 状态口径（不得越界声明）
 
 - **workflow 文件已交付 ≠ 已发布**：只有真实 `vX.Y.Z` tag 触发的 run 才能作为线上部署与 Release 成功的证据。
