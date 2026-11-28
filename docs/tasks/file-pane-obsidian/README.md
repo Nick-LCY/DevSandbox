@@ -1,5 +1,7 @@
 # 文件窗格与 Obsidian 阅读器任务集
 
+> **修订注记（2026-11-28）**：文件行交互语义已被 [[tasks/file-row-action-swap/README.md|文件行交互反转]] 轮反转为「单击预览、hover 下载」；本任务集及对应历史 PRD 正文中的旧语义仅作历史留档。
+
 本目录是**文件窗格与 Obsidian 阅读器**轮的任务集，共 **8 个任务**，需求来源见 [[prds/file-pane-obsidian.md|文件窗格与 Obsidian 阅读器 PRD]]。
 
 这一轮改造控制台的**终端区**：① 把文件浏览从「全局抽屉」改成**终端的伴生分屏**（可折叠、锚定当前会话的 shell 当前目录、以浏览下载为主、文本预览为辅）；② 新增一个**固定的 Obsidian tab**，全宽双栏 vault 阅读器（左树右预览，markdown 渲染 + wikilink 正向跳转）。支撑链路是 **pwd 通道**——用 shell integration（OSC 1337）把 shell 当前目录报上来。

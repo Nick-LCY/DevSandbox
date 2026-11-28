@@ -113,7 +113,9 @@ status: todo        # todo | doing | done | blocked
 - [[tasks/terminal-ux/RESULTS.md]] — 终端交互增强全轮收口留档（01~05；用户真机验收通过，含 pi 内 Shift+Enter 换行实测；Shift+Enter 收口后修正为 kitty CSI-u（`f3d7f14`）；已随 `v0.2.0` 发布（Actions run `45832306595` 成功，Release 与前端线上产物已更新）；门禁与定向真沙箱 e2e 数字、第二次全量 **88 / 88（14.4 分钟，基线 77 + `19-terminal-interaction` 11）**、回归修复、机制口径及已知边界均有留档）。
 - [[tasks/terminal-ux/README.md]] — 终端交互增强任务集（**2026-11-26 已收口：01~05 全部 done**；前端 vitest **1093 passed / 59 files**、typecheck 双零错、字体构建成功、build 成功；定向真沙箱 e2e 首轮 **28 / 28**、修复轮 **15 / 15**、第二次全量 **88 / 88（14.4 分钟）**；用户网页与桌面形态手工验收通过，桌面右键菜单抑制与剪贴板读写确认无问题；Shift+Enter 收口后修正为 kitty CSI-u（`f3d7f14`，pi 内实测换行通过）；已随 `v0.2.0` 发布（Actions run `45832306595` 成功，Release 与前端线上产物已更新）；64 KiB 真机覆盖仍是已知边界；**全轮留档见 [[tasks/terminal-ux/RESULTS.md\|RESULTS]]**）
 
-- [[tasks/syntax-highlight/README.md]] — 文件预览语法高亮轮任务集（**2026-11-28 收口**，01~04 全部 **done**；自动化验收：单测 **64 文件 / 1139 / 1139**、定向 e2e **16 / 16**、最终全量 e2e **90 / 90**；5 个提交已在 `origin/main`（至 `1464087`），未发布，用户真机手工验收待执行；全轮留档见 [[tasks/syntax-highlight/RESULTS.md|RESULTS]]）
+- [[tasks/syntax-highlight/README.md]] — 文件预览语法高亮轮任务集（**2026-11-28 收口**，01~04 全部 **done**；自动化验收：单测 **64 文件 / 1139 / 1139**、定向 e2e **16 / 16**、最终全量 e2e **90 / 90**；5 个提交已在 `origin/main`（至 `1464087`），未发布，用户真机验收已于 **2026-11-28** 通过；全轮留档见 [[tasks/syntax-highlight/RESULTS.md|RESULTS]]）
+- [[tasks/file-row-action-swap/README.md]] — 文件行交互反转小轮任务集（**2026-11-28**，01 done；单击预览、hover 下载；自动化验收通过，用户验收待执行，代码未提交未发布）。
+- [[tasks/file-row-action-swap/01-file-row-action-swap.md]] — 文件行交互语义反转与验收留档（done；含门禁、审查结论与遗留 TODO）。
 - [[tasks/syntax-highlight/01-syntax-infrastructure.md]] — 语法基础设施：Shiki 4.6.0 core + JavaScript regex engine、语言映射、Worker 客户端与 Worker、主题订阅、Vite 分包、有界缓存与生命周期控制（**done**）
 - [[tasks/syntax-highlight/02-file-pane-preview.md]] — 文件窗格预览高亮：`FileBrowserPanel` + `SyntaxHighlightedLines`、`.md` Markdown grammar 但不渲染 Markdown DOM、统一 `preview-lines.ts` 行语义与主题回归（**done**）
 - [[tasks/syntax-highlight/03-obsidian-fenced-preview.md]] — Obsidian fenced 代码高亮：共享 `SyntaxHighlightedCodeBlock`、无语言 fenced 的 `language-text` remark 标记、渲染 / 源码 / inline code 语义（**done**）
