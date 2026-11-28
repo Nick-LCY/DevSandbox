@@ -12,7 +12,10 @@ import {
   DEFAULT_THEME,
   THEME_STORAGE_KEY,
   applyTheme,
+  getAppliedTheme,
   readStoredTheme,
+  subscribeAppliedTheme,
+  useAppliedTheme,
   useTheme,
   writeStoredTheme,
 } from './theme';
@@ -144,5 +147,37 @@ describe('主题机制', () => {
 
     expect(result.current.theme).toBe('light');
     expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe(null);
+  });
+
+  it('getAppliedTheme 读 <html> 上的已应用主题（与 index.html 防闪烁脚本同源）', () => {
+    // 模拟 index.html 的防闪烁脚本先写了 dataset.theme
+    document.documentElement.dataset.theme = 'dark';
+    expect(getAppliedTheme()).toBe('dark');
+
+    applyTheme('light');
+    expect(getAppliedTheme()).toBe('light');
+  });
+
+  it('subscribeAppliedTheme：applyTheme 后订阅者被通知，退订后不再通知', () => {
+    const listener = vi.fn();
+    const unsubscribe = subscribeAppliedTheme(listener);
+
+    applyTheme('dark');
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
+    applyTheme('light');
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it('useAppliedTheme 随 applyTheme 更新', () => {
+    const { result } = renderHook(() => useAppliedTheme());
+    expect(result.current).toBe('light');
+
+    act(() => applyTheme('dark'));
+    expect(result.current).toBe('dark');
+
+    act(() => applyTheme('light'));
+    expect(result.current).toBe('light');
   });
 });

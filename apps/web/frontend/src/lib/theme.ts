@@ -5,12 +5,14 @@
  * - 只认「用户明确选过的值」。非法值、读取失败一律回落亮色，**不跟随系统**。
  * - index.html 的防闪烁脚本用同一套存储键先挂 dark 类，避免首帧闪一下亮色。
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 
 export type Theme = 'light' | 'dark';
 
 export const THEME_STORAGE_KEY = 'sandbox-console-theme';
 export const DEFAULT_THEME: Theme = 'light';
+
+const appliedThemeListeners = new Set<() => void>();
 
 function isTheme(value: unknown): value is Theme {
   return value === 'light' || value === 'dark';
@@ -66,6 +68,29 @@ export function applyTheme(theme: Theme): void {
   const root = document.documentElement;
   root.classList.toggle('dark', theme === 'dark');
   root.dataset.theme = theme;
+  for (const listener of appliedThemeListeners) {
+    listener();
+  }
+}
+
+/** Read the theme already applied to <html>, including index.html's anti-flash snapshot. */
+export function getAppliedTheme(): Theme {
+  if (typeof document === 'undefined') {
+    return DEFAULT_THEME;
+  }
+  const value = document.documentElement.dataset.theme;
+  return isTheme(value) ? value : DEFAULT_THEME;
+}
+
+/** Subscribe to changes made through applyTheme. */
+export function subscribeAppliedTheme(listener: () => void): () => void {
+  appliedThemeListeners.add(listener);
+  return () => appliedThemeListeners.delete(listener);
+}
+
+/** React snapshot hook for components that follow the applied document theme. */
+export function useAppliedTheme(): Theme {
+  return useSyncExternalStore(subscribeAppliedTheme, getAppliedTheme, () => DEFAULT_THEME);
 }
 
 export interface ThemeApi {
