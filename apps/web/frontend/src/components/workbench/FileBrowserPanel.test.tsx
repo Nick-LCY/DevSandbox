@@ -25,6 +25,7 @@ import {
   type TransferProgress,
 } from '../../api/client';
 import type { FileListEntry } from '../../api/types';
+import { installSyntaxWorkerStub } from '../../lib/syntax-highlight.test-helpers';
 import { clearSessionPwd, setSessionPwd } from '../../lib/terminal-pwd';
 import { ToastProvider } from '../Toast';
 import { FileBrowserPanel } from './FileBrowserPanel';
@@ -207,8 +208,11 @@ function stubResizeObserver(): {
 }
 
 let clickedAnchors: HTMLAnchorElement[] = [];
+let uninstallSyntaxWorker: (() => void) | null = null;
 
 beforeEach(() => {
+  // 语法高亮 Worker 替身（接真实 Shiki 实现）：预览的 `.ts` / `.js` 等文件会出 token。
+  uninstallSyntaxWorker = installSyntaxWorkerStub();
   mocks.listFiles.mockReset();
   mocks.uploadFile.mockReset();
   mocks.downloadFile.mockReset();
@@ -256,6 +260,8 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  uninstallSyntaxWorker?.();
+  uninstallSyntaxWorker = null;
   vi.restoreAllMocks();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
@@ -1632,7 +1638,7 @@ describe('预览（窗格内的第二视图）', () => {
     expect(screen.queryByTestId('page-file-pane-jump-button')).toBeNull();
     expect(screen.getByTestId('page-file-pane-collapse-button')).toBeTruthy();
 
-    // 正文：等宽 + 行号槽 + **纯文本**（`.md` 不渲染 markdown）
+    // 正文：等宽 + 行号槽 + **不产生 Markdown DOM**（`.md` 只是文本行布局）
     const body = screen.getByTestId('page-file-preview-body');
     expect(classTokens(body)).toContain('font-mono');
     const lines = screen.getAllByTestId('page-file-preview-line').map((node) => node.textContent);
@@ -1643,6 +1649,93 @@ describe('预览（窗格内的第二视图）', () => {
     expect(document.querySelector('h1')).toBeNull();
     expect(document.querySelector('strong')).toBeNull();
     expect(document.querySelector('pre code')).toBeNull();
+    // `.md` 按 **Markdown grammar** 高亮（已识别语法 ⇒ 出现 token），
+    // 但**不生成任何 Markdown DOM**（仍是纯文本行布局）
+    await waitFor(() =>
+      expect(document.querySelectorAll('.shiki-token').length).toBeGreaterThan(0),
+    );
+    expect(document.querySelector('h1')).toBeNull();
+    expect(document.querySelector('ul')).toBeNull();
+    expect(document.querySelector('a')).toBeNull();
+  });
+
+  it('已识别语言的文件：正文出现语法 token，且每行文本与原文一致', async () => {
+    mocks.listFiles.mockResolvedValue([entry({ name: 'app.ts', size: 24 })]);
+    mocks.readFile.mockResolvedValue({
+      text: 'const a: number = 1;\nconsole.log(a);',
+      binary: false,
+      size: 24,
+      bytes: 24,
+      truncated: false,
+    } satisfies ReadFileResult);
+    renderPanel();
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+
+    fireEvent.click(previewButtonOf('app.ts'));
+    await waitFor(() =>
+      expect(screen.getAllByTestId('page-file-preview-line')).toHaveLength(2),
+    );
+
+    // token 出现（不以其颜色值作断言）
+    await waitFor(() =>
+      expect(document.querySelectorAll('.shiki-token').length).toBeGreaterThan(0),
+    );
+    // 行号与行容器标识仍在
+    expect(
+      screen.getAllByTestId('page-file-preview-line-number').map((node) => node.textContent),
+    ).toEqual(['1', '2']);
+    // 每行 textContent 与原文一致
+    expect(screen.getAllByTestId('page-file-preview-line').map((node) => node.textContent)).toEqual([
+      'const a: number = 1;',
+      'console.log(a);',
+    ]);
+  });
+
+  it('未知扩展名：纯文本回退，不出现 token', async () => {
+    mocks.listFiles.mockResolvedValue([entry({ name: 'data.weirdext', size: 5 })]);
+    mocks.readFile.mockResolvedValue({
+      text: 'plain text',
+      binary: false,
+      size: 10,
+      bytes: 10,
+      truncated: false,
+    } satisfies ReadFileResult);
+    renderPanel();
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+
+    fireEvent.click(previewButtonOf('data.weirdext'));
+    await waitFor(() =>
+      expect(screen.getAllByTestId('page-file-preview-line')).toHaveLength(1),
+    );
+    expect(document.querySelectorAll('.shiki-token').length).toBe(0);
+    expect(screen.getByTestId('page-file-preview-line').textContent).toBe('plain text');
+  });
+
+  it('高亮不截断正文：长文件每一行都渲染且文本与原文一致', async () => {
+    const source = Array.from({ length: 120 }, (_, index) => `const v${index} = ${index};`).join(
+      '\n',
+    );
+    mocks.listFiles.mockResolvedValue([entry({ name: 'long.js', size: source.length })]);
+    mocks.readFile.mockResolvedValue({
+      text: source,
+      binary: false,
+      size: source.length,
+      bytes: source.length,
+      truncated: false,
+    } satisfies ReadFileResult);
+    renderPanel();
+    await waitFor(() => expect(screen.getAllByTestId('page-file-browser-row')).toHaveLength(1));
+
+    fireEvent.click(previewButtonOf('long.js'));
+    await waitFor(() =>
+      expect(screen.getAllByTestId('page-file-preview-line')).toHaveLength(120),
+    );
+    await waitFor(() =>
+      expect(document.querySelectorAll('.shiki-token').length).toBeGreaterThan(0),
+    );
+    expect(screen.getAllByTestId('page-file-preview-line').map((node) => node.textContent)).toEqual(
+      source.split('\n'),
+    );
   });
 
   it('Esc 与返回钮等价：退回列表；列表态没有返回钮', async () => {

@@ -50,10 +50,14 @@ import {
 } from '../../lib/file-transfer';
 import { isSameContainerPath, resolveFilePaneStartPath } from '../../lib/file-pane';
 import { getSessionPwd, subscribeSessionPwd } from '../../lib/terminal-pwd';
+import { resolveFileSyntaxLanguage } from '../../lib/syntax-language';
+import { syntaxThemeFor } from '../../lib/syntax-highlight';
+import { useAppliedTheme } from '../../lib/theme';
 import { useToast } from '../Toast';
 import { ModalShell } from './ModalShell';
 import { PreviewConfirmDialog } from './PreviewConfirmDialog';
 import { PreviewLoading } from './PreviewLoading';
+import { SyntaxHighlightedLines } from './SyntaxHighlightedCode';
 
 interface FileBrowserPanelProps {
   /** 沙箱名（三条文件端点都挂在它下面）。 */
@@ -288,6 +292,13 @@ function FilePreviewView({
   onDownload,
 }: FilePreviewViewProps) {
   const lines = view.status === 'ready' ? splitPreviewLines(view.text) : [];
+  const language = resolveFileSyntaxLanguage(target.name);
+  const theme = syntaxThemeFor(useAppliedTheme());
+  const syntaxKey = `${target.path}\u0000${view.status === 'ready' ? view.text : ''}\u0000${theme}\u0000${language ?? 'plain'}`;
+  const [syntaxState, setSyntaxState] = useState<{
+    key: string;
+    status: 'loading' | 'ready' | 'error';
+  }>({ key: syntaxKey, status: 'loading' });
   const toolButton =
     'grid size-8 flex-none place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none';
 
@@ -395,25 +406,54 @@ function FilePreviewView({
           /* 全文渲染 + 行号槽（等宽字体；不做虚拟化） */
           <div
             data-testid="page-file-preview-body"
+            data-syntax-state={language === null ? 'plain' : syntaxState.key === syntaxKey ? syntaxState.status : 'loading'}
+            data-syntax-theme={theme}
             className="min-h-0 flex-1 overflow-auto rounded-lg border border-border bg-card py-1 font-mono text-[12px] leading-5"
           >
-            {lines.map((line, index) => (
-              <div key={index} className="flex">
-                <span
-                  aria-hidden="true"
-                  data-testid="page-file-preview-line-number"
-                  className="w-10 shrink-0 select-none border-r border-border pr-2 text-right text-[11px] tabular-nums text-faint"
-                >
-                  {index + 1}
-                </span>
-                <span
-                  data-testid="page-file-preview-line"
-                  className="whitespace-pre px-2 pr-3"
-                >
-                  {line}
-                </span>
-              </div>
-            ))}
+            {language === null ? (
+              lines.map((line, index) => (
+                <div key={index} className="flex">
+                  <span
+                    aria-hidden="true"
+                    data-testid="page-file-preview-line-number"
+                    className="w-10 shrink-0 select-none border-r border-border pr-2 text-right text-[11px] tabular-nums text-faint"
+                  >
+                    {index + 1}
+                  </span>
+                  <span
+                    data-testid="page-file-preview-line"
+                    className="whitespace-pre px-2 pr-3"
+                  >
+                    {line}
+                  </span>
+                </div>
+              ))
+            ) : (
+              <SyntaxHighlightedLines
+                lines={lines}
+                language={language}
+                theme={theme}
+                source={view.text}
+                onStateChange={(status) => setSyntaxState({ key: syntaxKey, status })}
+                renderLineContainer={(index, content) => (
+                  <div key={index} className="flex">
+                    <span
+                      aria-hidden="true"
+                      data-testid="page-file-preview-line-number"
+                      className="w-10 shrink-0 select-none border-r border-border pr-2 text-right text-[11px] tabular-nums text-faint"
+                    >
+                      {index + 1}
+                    </span>
+                    <span
+                      data-testid="page-file-preview-line"
+                      className="whitespace-pre px-2 pr-3"
+                    >
+                      {content}
+                    </span>
+                  </div>
+                )}
+              />
+            )}
           </div>
         ))}
     </div>

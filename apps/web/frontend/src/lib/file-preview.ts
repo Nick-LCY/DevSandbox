@@ -86,26 +86,4 @@ export function currentPreview(
 }
 
 /* ---------------------------------------------------------------- 行号槽 */
-
-/**
- * 把预览正文切成行（行号槽逐行对齐用）。
- *
- * 口径：
- *
- * - 只按 `\n` 切，行尾的 `\r`（CRLF 文件）去掉——否则 jsdom / 浏览器里每行末尾
- *   会多一个不可见的回车符，复制出来的内容与原文不一致；
- * - **末尾换行不算多一行**（`"a\n"` ⇒ `['a']`）：编辑器与 `cat` 的行号习惯如此；
- * - 空文本 ⇒ `[]`（不画行号槽，直接是空正文）；
- * - **空行保留**（`"a\n\nb"` ⇒ `['a', '', 'b']`）：行号必须与原文对得上。
- */
-export function splitPreviewLines(text: string): string[] {
-  if (text === '') {
-    return [];
-  }
-  const normalized = text.endsWith('\n') ? text.slice(0, -1) : text;
-  if (normalized === '') {
-    // 只有一个换行（`"\n"`）：一行空内容。
-    return [''];
-  }
-  return normalized.split('\n').map((line) => (line.endsWith('\r') ? line.slice(0, -1) : line));
-}
+export { splitPreviewLines } from './preview-lines';
