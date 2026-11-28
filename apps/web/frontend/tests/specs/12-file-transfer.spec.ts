@@ -23,7 +23,7 @@
  *    出现并走完 → 列表出现该条目（名称 / 大小列都正确）；
  * 四、**容器内校验**：上传后容器里的文件字节数与内容摘要都与本地一致，属主是
  *    **容器内的 root**（宿主侧即沙箱专属用户，这正是「平台代用户写入」的形态）；
- * 五、**下载回环**：点文件行本身即下载（没有下载按钮），取回的字节与本地
+ * 五、**下载回环**：hover 文件行后点击行尾下载按钮，取回的字节与本地
  *    逐字节一致（sha256），中文文件名的 `Content-Disposition` 也正确，
  *    响应 `Content-Length` = 探测到的字节数（API.md 16.2）；
  * 六、**同名覆盖**：同名普通文件先弹覆盖确认框；取消 → 「已跳过」且**容器内**
@@ -34,7 +34,7 @@
  * 负例：
  * 一、下载**目录** → 400 + 固定中文文案（**UI 层无此入口**：点目录行是「进入
  *    目录」，所以这条走接口直调，并顺带断言「点目录行不发下载请求」——**带一条
- *    正向对照**：先点文件行，监听器必须听到下载请求，证明监听器本身有效）；
+ *    正向对照**：先点文件行尾下载按钮，监听器必须听到下载请求，证明监听器本身有效）；
  * 二、上传目标**是已存在目录** → 400 + 固定中文文案，**UI 就地展示后端 detail**
  *    （同名目录不弹覆盖确认框）；
  * 三、**非法路径**（相对路径）→ 400 + 固定中文文案（UI 层没有路径输入框，
@@ -589,9 +589,10 @@ test.describe('运行期文件传输', () => {
       expect(listed!.kind).toBe('file');
       expect(listed!.size).toBe(big.bytes.length);
 
-      // ── ⑤ 下载回环：点行即下载（没有下载按钮），字节逐一致
+      // ── ⑤ 下载回环：hover 文件行后点行尾下载按钮，字节逐一致
       const downloadPromise = page.waitForEvent('download');
-      await bigRow.click();
+      await bigRow.hover();
+      await bigRow.getByTestId('page-file-browser-row-download-button').click();
       const download = await downloadPromise;
       expect(download.suggestedFilename(), '下载文件名不是原文件名').toBe(big.name);
       const savedPath = path.join(dir, `downloaded-${big.name}`);
@@ -601,10 +602,10 @@ test.describe('运行期文件传输', () => {
       expect(sha256Of(savedBytes), '下载到的内容与上传的不一致').toBe(big.sha256);
       await expect(fileToast(page, 'success', `已下载 ${big.name}`)).toBeVisible();
 
-      // **正向对照**：点文件行确实发出了下载请求（监听器本身有效的证据）
+      // **正向对照**：点文件行尾下载按钮确实发出了下载请求（监听器本身有效的证据）
       expect(
         downloadRequests.length,
-        '点文件行没有发出下载请求（监听器可能失效，后面的「零增量」断言会恒真）',
+        '点文件行尾下载按钮没有发出下载请求（监听器可能失效，后面的「零增量」断言会恒真）',
       ).toBeGreaterThan(0);
       // 下载响应的 `Content-Length` = **探测到的字节数**（API.md 16.2）
       expect(downloadResponses.length, '没有观测到下载响应').toBeGreaterThan(0);
@@ -674,7 +675,8 @@ test.describe('运行期文件传输', () => {
       const chineseRow = fileRow(page, chinese.name);
       await expect(chineseRow).toHaveCount(1, { timeout: 60_000 });
       const chineseDownloadPromise = page.waitForEvent('download');
-      await chineseRow.click();
+      await chineseRow.hover();
+      await chineseRow.getByTestId('page-file-browser-row-download-button').click();
       const chineseDownload = await chineseDownloadPromise;
       expect(chineseDownload.suggestedFilename(), '中文文件名在下载时被改了').toBe(chinese.name);
       const chineseSaved = path.join(dir, 'downloaded-chinese.txt');
@@ -699,15 +701,16 @@ test.describe('运行期文件传输', () => {
       await expect(hiddenRow.getByTestId('page-file-browser-row-name')).toHaveText('.env-acc');
 
       // ── ⑨ 面包屑导航：回根目录 → 点目录行回到 /workspace（点目录行是「进入目录」）
-      // **正向对照（先）**：点一次文件行，监听器必须听到下载请求——否则后面
+      // **正向对照（先）**：点一次文件行尾下载按钮，监听器必须听到下载请求——否则后面
       // 「点目录行零增量」这条负向断言会恒真（监听器根本没在工作）。
       const controlBefore = downloadRequests.length;
       const controlDownload = page.waitForEvent('download');
-      await chineseRow.click();
+      await chineseRow.hover();
+      await chineseRow.getByTestId('page-file-browser-row-download-button').click();
       await controlDownload;
       expect(
         downloadRequests.length - controlBefore,
-        '正向对照失败：点文件行没有发出下载请求（监听器可能失效）',
+        '正向对照失败：点文件行尾下载按钮没有发出下载请求（监听器可能失效）',
       ).toBeGreaterThan(0);
       const controlContentLength =
         downloadResponses[downloadResponses.length - 1]?.contentLength ?? null;

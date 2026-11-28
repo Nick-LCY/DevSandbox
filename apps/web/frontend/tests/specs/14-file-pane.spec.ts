@@ -15,7 +15,7 @@
  * 一甲、**工具条顺序**（复验修复轮·第二批 #1）：折叠钮**最左**、上传**最右**，
  *    回跳 → 刷新相对顺序不变、居中排布；
  * 一乙、**窗格预览**（复验修复轮·第二批 #3，QA-01 当时漏了文件窗格预览的真渲染
- *    断言——这条补上并**永久留在套件里**）：点行尾眼睛钮 ⇒ 预览第二视图渲染
+ *    断言——这条补上并**永久留在套件里**）：点文件行 ⇒ 预览第二视图渲染
  *    **正文**（行号 + 内容可见，不停在「正在读取…」）；
  *    窗格默认宽 340px，把手可拖拽（往左变宽、往右变窄）与方向键调宽，窗格有最小宽度
  *    240px、上限 720px，且**终端面板有最小宽度钳位**（拖到最窄时终端不被压没）；
@@ -490,7 +490,7 @@ test.describe('文件窗格（终端右侧分屏）', () => {
     );
   });
 
-  test('窗格预览：点行尾眼睛钮 ⇒ 预览第二视图渲染正文（行号 + 内容可见，QA-01 补口）', async ({
+  test('窗格预览：点文件行 ⇒ 预览第二视图渲染正文（行号 + 内容可见，QA-01 补口）', async ({
     page,
   }) => {
     await gotoDetail(page, SANDBOX);
@@ -508,14 +508,13 @@ test.describe('文件窗格（终端右侧分屏）', () => {
     const row = fileRow(page, 'acc-pane-preview-note.txt');
     await expect(row, '刷新后夹具文件没有出现在列表里').toBeVisible({ timeout: 30_000 });
 
-    // 点行尾的眼睛钮（行 hover 才浮现）：预览是窗格内的第二视图
-    await row.hover();
-    await row.getByTestId('page-file-browser-row-preview-button').click();
+    // 点文件行：预览是窗格内的第二视图
+    await row.click();
 
     // **正文渲染**（不停在「正在读取…」）：行号 + 内容可见（复验修复轮·第二批
     // #3 的真沙箱断言；QA-01 当时漏了文件窗格预览，这就是那条真渲染断言）
     const body = page.getByTestId('page-file-preview-body');
-    await expect(body, '点眼睛后预览正文没有渲染出来').toBeVisible({ timeout: 30_000 });
+    await expect(body, '点文件行后预览正文没有渲染出来').toBeVisible({ timeout: 30_000 });
     const lines = page.getByTestId('page-file-preview-line');
     await expect(lines).toHaveText(['ACC_PREVIEW_LINE_ONE', 'ACC_PREVIEW_LINE_TWO']);
     const numbers = page.getByTestId('page-file-preview-line-number');
@@ -564,7 +563,7 @@ test.describe('文件窗格（终端右侧分屏）', () => {
 
     // ── ① TypeScript：正文渲染、行号槽与行标识仍在
     await tsRow.hover();
-    await tsRow.getByTestId('page-file-browser-row-preview-button').click();
+    await tsRow.click();
     const body = page.getByTestId('page-file-preview-body');
     await expect(body).toBeVisible({ timeout: 30_000 });
     await expect(page.getByTestId('page-file-preview-line-number')).toHaveText(['1', '2', '3', '4']);
@@ -593,7 +592,7 @@ test.describe('文件窗格（终端右侧分屏）', () => {
     await expect(page.getByTestId('page-file-browser-list')).toBeVisible();
     const jsRow = fileRow(page, 'acc-pane-highlight.js');
     await jsRow.hover();
-    await jsRow.getByTestId('page-file-browser-row-preview-button').click();
+    await jsRow.click();
     await expect(page.getByTestId('page-file-preview-body')).toBeVisible({ timeout: 30_000 });
     await expect
       .poll(
@@ -610,7 +609,7 @@ test.describe('文件窗格（终端右侧分屏）', () => {
     await expect(page.getByTestId('page-file-browser-list')).toBeVisible();
     const unknownRow = fileRow(page, 'acc-pane-highlight.weirdext');
     await unknownRow.hover();
-    await unknownRow.getByTestId('page-file-browser-row-preview-button').click();
+    await unknownRow.click();
     const unknownBody = page.getByTestId('page-file-preview-body');
     await expect(unknownBody).toBeVisible({ timeout: 30_000 });
     await expect(page.getByTestId('page-file-preview-line')).toHaveText(['plain text body']);

@@ -4,7 +4,7 @@ import {
   Check,
   Copy,
   Crosshair,
-  Eye,
+  Download,
   FileWarning,
   Folder,
   Loader2,
@@ -478,7 +478,7 @@ function FilePreviewView({
  *
  * 面板自身的能力（沿用抽屉时期的那一套，行为不变）：
  * - 列表三列：图标 + 名称 / 大小 / 修改时间（无类型列）；文件夹在前、隐藏文件照常显示；
- * - **点击文件行本身即下载**（没有下载按钮）；
+ * - **点击文件行本身即预览**；下载由文件行 hover 浮现的下载按钮触发；
  * - 上传只进**当前浏览目录**（无路径输入框）；多文件排队逐个传，行内进度 + 可取消；
  * - 同名**文件**先弹覆盖确认；同名**目录**交给服务端 400（不弹确认框）；
  * - 面包屑**父级**可点击；**当前层级是纯文本**（不可点、无按钮样式）；
@@ -1443,17 +1443,6 @@ export function FileBrowserPanel({
     [desktop, sandbox, show, startDesktopDownload],
   );
 
-  const activateEntry = useCallback(
-    (entry: FileListEntry) => {
-      if (entry.kind === 'dir') {
-        enterDirectory(entry.name);
-        return;
-      }
-      void startDownload(entry);
-    },
-    [enterDirectory, startDownload],
-  );
-
   /* ------------------------------------------------------------ 预览 */
 
   /** 栈顶预览目标（`null` = 列表态）。 */
@@ -1570,7 +1559,7 @@ export function FileBrowserPanel({
   );
 
   /**
-   * 点「预览」眼睛钮：**大文件先弹二次确认**（确认才发请求，取消一个请求都不发）。
+   * 请求预览：**大文件先弹二次确认**（确认才发请求，取消一个请求都不发）。
    *
    * 目录行没有预览（目录不可预览）；条目名为空 / 含 `/` 时也静默不动作。
    */
@@ -1595,6 +1584,22 @@ export function FileBrowserPanel({
       void startPreview(target);
     },
     [startPreview],
+  );
+
+  const activateEntry = useCallback(
+    (entry: FileListEntry) => {
+      if (entry.kind === 'dir') {
+        enterDirectory(entry.name);
+        return;
+      }
+      if (entry.kind === 'file') {
+        requestPreview(entry);
+        return;
+      }
+      // special 条目没有预览入口，保留原有单击下载语义。
+      void startDownload(entry);
+    },
+    [enterDirectory, requestPreview, startDownload],
   );
 
   /** 二次确认：**确认才发起读取**。 */
@@ -2223,7 +2228,7 @@ export function FileBrowserPanel({
                   data-kind={entry.kind}
                   className={cn(
                     rowGrid,
-                    // `group`：hover 整行时行尾浮现「预览」眼睛钮（`group-hover`）
+                    // `group`：hover 整行时行尾浮现「下载」按钮（`group-hover`）
                     'group cursor-pointer border-b border-border px-3 py-2 transition-colors last:border-b-0 hover:bg-muted/60 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none',
                   )}
                 >
@@ -2284,9 +2289,9 @@ export function FileBrowserPanel({
                         'text-right font-mono text-[11.5px] tabular-nums text-muted-foreground',
                         /*
                           复验修复轮·第二批 #5（审查后口径收紧）：**只有文件行**
-                          hover 才隐藏修改时间（给行尾浮现的眼睛钮让位）；目录行
+                          hover 才隐藏修改时间（给行尾浮现的下载按钮让位）；目录行
                           与 special 行 hover 时时间都保持可见——special 行与
-                          目录行一样没有预览钮，原本「非文件行也隐藏时间、却没
+                          目录行一样没有下载钮，原本「非文件行也隐藏时间、却没
                           有任何按钮」是个死角。
                         */
                         entry.kind === 'file' &&
@@ -2296,30 +2301,29 @@ export function FileBrowserPanel({
                       {formatFileMtime(entry.mtime)}
                     </span>
                     {/*
-                      「预览」眼睛钮：**行尾浮现**、约 150ms 淡入、**不带文字**。
-                      - 行单击仍是**下载**（既有口径零改动）⇒ click 与 Enter / Space
-                        都要 `stopPropagation`（否则行上的键盘处理器会把「预览」当成下载）；
-                      - **仅文件行有**（与 README「仅文件行」口径一致）：目录不可
-                        预览，special 条目（设备 / 套接字等）走预览必然报错——
-                        直接不给入口；
+                      「下载」按钮：**行尾浮现**、约 150ms 淡入、**不带文字**。
+                      - 行单击是**预览**（键盘 Enter / Space 也走同一路径）⇒ click 与
+                        Enter / Space 都要 `stopPropagation`，避免按钮操作冒泡到行；
+                      - **仅文件行有**：目录不可下载，special 条目沿用单击下载且不额外
+                        浮现按钮；
                       - 它盖在修改时间那一格上，hover 时时间文字淡出，不叠字。
                     */}
                     {entry.kind === 'file' && (
                       <button
                         type="button"
-                        title="预览"
-                        aria-label={`预览 ${entry.name}`}
-                        data-testid="page-file-browser-row-preview-button"
+                        title="下载"
+                        aria-label="下载"
+                        data-testid="page-file-browser-row-download-button"
                         onClick={(event) => {
                           event.stopPropagation();
-                          requestPreview(entry);
+                          void startDownload(entry);
                         }}
                         onKeyDown={(event) => {
                           event.stopPropagation();
                         }}
                         className="absolute right-0 top-1/2 grid size-6 -translate-y-1/2 place-items-center rounded-md text-muted-foreground opacity-0 transition-opacity duration-150 group-hover:opacity-100 hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
                       >
-                        <Eye className="size-3.5" aria-hidden="true" />
+                        <Download className="size-3.5" aria-hidden="true" />
                       </button>
                     )}
                   </div>
