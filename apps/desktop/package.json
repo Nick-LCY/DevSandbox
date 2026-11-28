@@ -1,6 +1,6 @@
 {
   "name": "@sandbox-platform/desktop",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "沙箱平台桌面控制台（Tauri v2 壳）：与网页控制台共用同一份前端产物",

@@ -1,6 +1,6 @@
 {
   "name": "@sandbox-platform/console",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "沙箱平台网页控制台前端：沙箱列表 / 新建沙箱 / 沙箱详情与网页终端 / 代理设置",
