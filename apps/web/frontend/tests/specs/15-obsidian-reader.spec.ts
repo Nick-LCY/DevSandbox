@@ -64,6 +64,7 @@ const VAULT = '/workspace';
 const NOTE_A = 'acc-vault-note-a.md';
 const NOTE_B = 'acc-vault-note-b.md';
 const NOTE_C = 'acc-vault-note-c.md';
+const NOTE_CODE = 'acc-vault-note-code.md';
 const PLAIN_TXT = 'acc-vault-not-markdown.txt';
 const SUBDIR = 'acc-vault-dir';
 /** 不存在的 wikilink 目标（错误条断言用）。 */
@@ -92,6 +93,33 @@ const NOTE_B_BODY = `# 笔记 B
 const NOTE_C_BODY = `# 笔记 C
 
 子目录里的笔记。
+`;
+
+/** 代码块夹具：已知语言（js / yaml）、未知语言、无语言围栏、行内码。 */
+const NOTE_CODE_BODY = `# 代码块夹具
+
+行内码：\`const x = 1;\`
+
+\`\`\`js
+const answer = 42;
+function greet(name) {
+  return \`hi \${name}\`;
+}
+\`\`\`
+
+\`\`\`yaml
+key: value
+list:
+  - one
+\`\`\`
+
+\`\`\`language-foo
+unknown language block
+\`\`\`
+
+\`\`\`
+no language block
+\`\`\`
 `;
 
 /** 打开 Obsidian tab（不设根：引导态）。 */
@@ -183,6 +211,7 @@ test.describe('Obsidian 阅读器', () => {
     const fixtures: Array<[string, string]> = [
       [`${VAULT}/${NOTE_A}`, NOTE_A_BODY],
       [`${VAULT}/${NOTE_B}`, NOTE_B_BODY],
+      [`${VAULT}/${NOTE_CODE}`, NOTE_CODE_BODY],
       [`${VAULT}/${SUBDIR}/${NOTE_C}`, NOTE_C_BODY],
       [`${VAULT}/${PLAIN_TXT}`, 'ACC_NOT_MARKDOWN\n'],
     ];
@@ -493,6 +522,75 @@ test.describe('Obsidian 阅读器', () => {
     await expect(preview(page)).toHaveAttribute('data-selected-path', `${VAULT}/${NOTE_A}`, {
       timeout: 60_000,
     });
+  });
+
+  test('围栏代码块高亮：已知语言出 token，未知 / 无语言 / 行内码不出，源码态无 token', async ({
+    page,
+  }) => {
+    await openObsidianTab(page);
+    await useWorkdirAsVaultRoot(page);
+
+    await openNote(page, `${VAULT}/${NOTE_CODE}`, NOTE_CODE);
+    const content = previewContent(page);
+    await expect(content).toBeVisible({ timeout: 60_000 });
+
+    const blocks = content.locator('pre code');
+    await expect(blocks, '围栏代码块数量不对').toHaveCount(4);
+
+    // ── ① 已知语言（js / yaml）：出现语法 token
+    await expect
+      .poll(async () => blocks.nth(0).locator('.shiki-token').count(), {
+        timeout: 30_000,
+        message: 'JavaScript 围栏块没有出现语法 token',
+      })
+      .toBeGreaterThan(0);
+    await expect
+      .poll(async () => blocks.nth(1).locator('.shiki-token').count(), {
+        timeout: 30_000,
+        message: 'YAML 围栏块没有出现语法 token',
+      })
+      .toBeGreaterThan(0);
+    // 代码内容逐字保留
+    await expect(blocks.nth(0)).toContainText('const answer = 42;');
+    await expect(blocks.nth(1)).toContainText('key: value');
+
+    // ── ② 未知语言 / 无语言：纯文本，零 token
+    expect(await blocks.nth(2).locator('.shiki-token').count(), '未知语言块不该出现 token').toBe(0);
+    await expect(blocks.nth(2)).toContainText('unknown language block');
+    expect(await blocks.nth(3).locator('.shiki-token').count(), '无语言块不该出现 token').toBe(0);
+    await expect(blocks.nth(3)).toContainText('no language block');
+
+    // ── ③ 行内码：不出 token
+    const inline = content.locator('p code');
+    await expect(inline).toContainText('const x = 1;');
+    expect(await inline.locator('.shiki-token').count(), '行内码不该出现 token').toBe(0);
+
+    // ── ④ 深色底保留（终端恒定深色令牌）
+    for (let index = 0; index < 4; index += 1) {
+      const pre = blocks.nth(index).locator('xpath=..');
+      await expect(pre).toHaveClass(/bg-terminal-bg/);
+    }
+
+    // ── ⑤ 源码态：原文可见、零 token
+    await page.getByTestId('page-sandbox-detail-obsidian-preview-mode-source').click();
+    const source = page.getByTestId('page-sandbox-detail-obsidian-preview-source');
+    await expect(source).toBeVisible();
+    await expect(source).toContainText('const answer = 42;');
+    await expect(source).toContainText('unknown language block');
+    expect(await page.locator('.shiki-token').count(), '源码态不该出现 token').toBe(0);
+
+    // ── ⑥ 主题切换：应用主题变了，但 Obsidian 代码块**固定 github-dark**
+    await page.getByTestId('page-sandbox-detail-obsidian-preview-mode-render').click();
+    await expect(content).toBeVisible();
+    await page.getByTestId('page-layout-theme-toggle').click();
+    await expect
+      .poll(async () => page.locator('html').getAttribute('data-theme'), { timeout: 30_000 })
+      .toBe('dark');
+    await expect(blocks.nth(0)).toHaveAttribute('data-syntax-theme', 'github-dark');
+    await page.getByTestId('page-layout-theme-toggle').click();
+    await expect
+      .poll(async () => page.locator('html').getAttribute('data-theme'), { timeout: 30_000 })
+      .toBe('light');
   });
 
   test('wikilink 目标不存在：正文顶部就地错误条（文案 / 可关闭 / 不跳转 / 不弹 toast）', async ({

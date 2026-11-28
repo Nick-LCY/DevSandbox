@@ -57,4 +57,26 @@ export default defineConfig({
       },
     },
   },
+  worker: {
+    /*
+     * 语法高亮 Worker 内部按语言**动态 import** grammar（每个 grammar 一个独立
+     * chunk），所以产物必须支持代码分割 ⇒ worker 用 ES 模块格式
+     * （默认的 iife / UMD 不支持代码分割，Vite 会直接报构建失败）。
+     */
+    format: 'es',
+    rollupOptions: {
+      output: {
+        /*
+         * Shiki core / engine 各自单独成 chunk：**不挂进主包**（主包不需要
+         * Shiki——它只在 Worker 里跑）。放在 worker 的 rollupOptions 里，
+         * 避免 `build.rollupOptions.output.manualChunks` 把 shiki/core
+         * 拉进主图（那会让首页白白预加载一份 Shiki）。
+         */
+        manualChunks: {
+          'shiki-core': ['shiki/core'],
+          'shiki-engine': ['shiki/engine/javascript'],
+        },
+      },
+    },
+  },
 });

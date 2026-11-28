@@ -532,6 +532,91 @@ test.describe('文件窗格（终端右侧分屏）', () => {
     await expect(page.getByTestId('page-file-preview-body')).toHaveCount(0);
   });
 
+  test('语法高亮：已识别语言出现 token、行内容与原文一致；未知扩展名纯文本回退', async ({
+    page,
+  }) => {
+    await gotoDetail(page, SANDBOX);
+    await openFilePane(page);
+    await expectPaneAt(page, ['workspace']);
+
+    // 夹具：一份 TypeScript、一份 JavaScript、一份未知扩展名
+    const tsSource = 'const answer: number = 42;\nfunction greet(name: string) {\n  return `hi ${name}`;\n}\n';
+    const jsSource = 'export const add = (a, b) => a + b;\n';
+    await uploadSandboxFile(
+      SANDBOX,
+      `${WORKSPACE}/acc-pane-highlight.ts`,
+      Buffer.from(tsSource, 'utf-8'),
+    );
+    await uploadSandboxFile(
+      SANDBOX,
+      `${WORKSPACE}/acc-pane-highlight.js`,
+      Buffer.from(jsSource, 'utf-8'),
+    );
+    await uploadSandboxFile(
+      SANDBOX,
+      `${WORKSPACE}/acc-pane-highlight.weirdext`,
+      Buffer.from('plain text body\n', 'utf-8'),
+    );
+    await page.getByTestId('page-file-browser-refresh-button').click();
+
+    const tsRow = fileRow(page, 'acc-pane-highlight.ts');
+    await expect(tsRow, '夹具 .ts 文件没有出现在列表里').toBeVisible({ timeout: 30_000 });
+
+    // ── ① TypeScript：正文渲染、行号槽与行标识仍在
+    await tsRow.hover();
+    await tsRow.getByTestId('page-file-browser-row-preview-button').click();
+    const body = page.getByTestId('page-file-preview-body');
+    await expect(body).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('page-file-preview-line-number')).toHaveText(['1', '2', '3', '4']);
+    const lines = page.getByTestId('page-file-preview-line');
+    await expect(lines).toHaveCount(4);
+    // 每行文本与原文一致（高亮不改变内容）
+    await expect(lines).toHaveText(tsSource.replace(/\n$/, '').split('\n'));
+
+    // ── ② 出现语法 token（不以颜色值作断言）
+    await expect
+      .poll(async () => body.locator('.shiki-token').count(), {
+        timeout: 30_000,
+        message: 'TypeScript 预览没有出现语法 token',
+      })
+      .toBeGreaterThan(0);
+
+    // ── ③ 主题随应用亮/暗切换（data-syntax-theme 变化）
+    await expect(body).toHaveAttribute('data-syntax-theme', 'github-light');
+    await page.getByTestId('page-layout-theme-toggle').click();
+    await expect(body).toHaveAttribute('data-syntax-theme', 'github-dark');
+    await page.getByTestId('page-layout-theme-toggle').click();
+    await expect(body).toHaveAttribute('data-syntax-theme', 'github-light');
+
+    // ── ④ JavaScript：同样出 token
+    await page.getByTestId('page-file-preview-back-button').click();
+    await expect(page.getByTestId('page-file-browser-list')).toBeVisible();
+    const jsRow = fileRow(page, 'acc-pane-highlight.js');
+    await jsRow.hover();
+    await jsRow.getByTestId('page-file-browser-row-preview-button').click();
+    await expect(page.getByTestId('page-file-preview-body')).toBeVisible({ timeout: 30_000 });
+    await expect
+      .poll(
+        async () => page.getByTestId('page-file-preview-body').locator('.shiki-token').count(),
+        { timeout: 30_000, message: 'JavaScript 预览没有出现语法 token' },
+      )
+      .toBeGreaterThan(0);
+    await expect(page.getByTestId('page-file-preview-line')).toHaveText(
+      jsSource.replace(/\n$/, '').split('\n'),
+    );
+
+    // ── ⑤ 未知扩展名：纯文本回退（零 token），正文照常可见
+    await page.getByTestId('page-file-preview-back-button').click();
+    await expect(page.getByTestId('page-file-browser-list')).toBeVisible();
+    const unknownRow = fileRow(page, 'acc-pane-highlight.weirdext');
+    await unknownRow.hover();
+    await unknownRow.getByTestId('page-file-browser-row-preview-button').click();
+    const unknownBody = page.getByTestId('page-file-preview-body');
+    await expect(unknownBody).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('page-file-preview-line')).toHaveText(['plain text body']);
+    expect(await unknownBody.locator('.shiki-token').count(), '未知扩展名不该出现 token').toBe(0);
+  });
+
   test('会话切换：新的终端会话带自己的窗格，折叠态跨会话保持', async ({ page }) => {
     await gotoDetail(page, SANDBOX);
     const first = await openFilePane(page);
