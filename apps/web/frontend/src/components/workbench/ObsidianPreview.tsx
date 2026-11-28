@@ -58,6 +58,9 @@ import { cn } from '../../lib/cn';
 import { formatFileSize } from '../../lib/file-transfer';
 import { isLargePreviewFile } from '../../lib/file-preview';
 import { markdownBodyForRender } from '../../lib/markdown';
+import { resolveFenceSyntaxLanguage } from '../../lib/syntax-language';
+import { SyntaxHighlightedCodeBlock } from './SyntaxHighlightedCode';
+
 import {
   createWikilinkResolver,
   isSameWikilinkTarget,
@@ -236,7 +239,37 @@ function WikilinkLink({ link }: { link: WikilinkParts }) {
   );
 }
 
+/** React children → 纯文本（markdown 代码块的 children 是一串字符串）。 */
+function childrenToText(children: ReactNode): string {
+  if (children === null || children === undefined || typeof children === 'boolean') {
+    return '';
+  }
+  if (typeof children === 'string' || typeof children === 'number') {
+    return String(children);
+  }
+  if (Array.isArray(children)) {
+    return children.map((child) => childrenToText(child)).join('');
+  }
+  return '';
+}
+
 /* ------------------------------------------------- markdown 排版 */
+
+const remarkFenceText = () => (tree: unknown): void => {
+  const visit = (node: unknown): void => {
+    if (node === null || typeof node !== 'object') {
+      return;
+    }
+    const current = node as { type?: unknown; lang?: string | null; children?: unknown[] };
+    if (current.type === 'code' && !current.lang) {
+      current.lang = 'text';
+    }
+    if (Array.isArray(current.children)) {
+      current.children.forEach(visit);
+    }
+  };
+  visit(tree);
+};
 
 const markdownComponents: Components = {
   p({ children }) {
@@ -322,9 +355,17 @@ const markdownComponents: Components = {
   /* 行内码与围栏代码块共用 `code`：围栏块带 `language-*` 类名（块底色在 `pre` 上）。
      **代码里不做 wikilink 替换**——代码块里的 `[[x]]` 就是字面量。 */
   code({ className, children }) {
-    const block = typeof className === 'string' && className.startsWith('language-');
-    if (block) {
-      return <code className={cn('font-mono', className)}>{children}</code>;
+    const isBlock = typeof className === 'string' && className.startsWith('language-');
+    if (isBlock) {
+      const identifier = className.slice('language-'.length);
+      const language = resolveFenceSyntaxLanguage(identifier);
+      return (
+        <SyntaxHighlightedCodeBlock
+          source={childrenToText(children)}
+          language={language}
+          className={cn('font-mono', className)}
+        />
+      );
     }
     return (
       <code className="rounded bg-muted px-1 py-0.5 font-mono text-[12.5px] text-foreground">
@@ -850,7 +891,7 @@ export function ObsidianPreview({
             >
               {hasBody ? (
                 <WikilinkContext.Provider value={runtime}>
-                  <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                  <Markdown remarkPlugins={[remarkGfm, remarkFenceText]} components={markdownComponents}>
                     {renderedBody}
                   </Markdown>
                 </WikilinkContext.Provider>

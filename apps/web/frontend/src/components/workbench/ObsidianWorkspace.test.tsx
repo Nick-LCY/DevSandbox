@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TextNotPreviewableError, type ReadFileResult } from '../../api/client';
 import type { FileListEntry } from '../../api/types';
+import { installSyntaxWorkerStub } from '../../lib/syntax-highlight.test-helpers';
 import {
   readStoredExpandedPaths,
   readStoredSelection,
@@ -96,7 +97,10 @@ function treeNode(testId: string, path: string): HTMLElement | undefined {
     .find((node) => node.getAttribute('data-path') === path);
 }
 
+let uninstallSyntaxWorker: (() => void) | null = null;
+
 beforeEach(() => {
+  uninstallSyntaxWorker = installSyntaxWorkerStub();
   // `readFile` 默认按 `FILE_CONTENTS` 返回全文（每个用例可自行覆盖）。
   mocks.readFile.mockImplementation((_sandbox: string, path: string) => {
     const text = FILE_CONTENTS.get(path);
@@ -115,6 +119,8 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  uninstallSyntaxWorker?.();
+  uninstallSyntaxWorker = null;
   vi.clearAllMocks();
   mocks.listFiles.mockReset();
   mocks.readFile.mockReset();
@@ -601,6 +607,18 @@ const READER_INDEX = [
   '',
   '```js',
   'const a = 1;',
+  '```',
+  '',
+  '```yaml',
+  'key: value',
+  '```',
+  '',
+  '```language-foo',
+  'unknown language block',
+  '```',
+  '',
+  '```',
+  'no language block',
   '```',
   '',
   '<script>window.__pwn = 1;</script>',
@@ -1231,6 +1249,104 @@ describe('wikilink 渲染、tooltip 与跳转（OBS-08 / OBS-09 / OBS-10）', ()
     expect(
       screen.queryByTestId('page-sandbox-detail-obsidian-preview-wikilink-error'),
     ).toBeNull();
+  });
+});
+
+describe('阅读器：围栏代码块语法高亮', () => {
+  /** 渲染态正文里的全部代码块（按文档顺序）。 */
+  function codeBlocks(content: HTMLElement): HTMLElement[] {
+    return Array.from(content.querySelectorAll('pre code'));
+  }
+
+  it('已知语言的围栏块出现 token；未知语言 / 无语言 / 行内码不出现 token', async () => {
+    mockReaderVault();
+    writeStoredVaultRoot('demo', ROOT);
+    renderWorkspace();
+
+    await openReaderFile('/vault/index.md');
+    const body = await screen.findByTestId('page-sandbox-detail-obsidian-preview-body');
+    const content = within(body).getByTestId('page-sandbox-detail-obsidian-preview-content');
+
+    // 四个围栏块：js / yaml / 未知 language-foo / 无语言
+    const blocks = codeBlocks(content);
+    expect(blocks.length).toBe(4);
+
+    // 已知语言：出 token
+    await waitFor(() => {
+      expect(blocks[0].querySelectorAll('.shiki-token').length).toBeGreaterThan(0);
+      expect(blocks[1].querySelectorAll('.shiki-token').length).toBeGreaterThan(0);
+    });
+    // 未知语言 / 无语言：纯文本，无 token
+    expect(blocks[2].querySelectorAll('.shiki-token').length).toBe(0);
+    expect(blocks[3].querySelectorAll('.shiki-token').length).toBe(0);
+    expect(blocks[2].getAttribute('data-syntax-state')).toBe('plain');
+    expect(blocks[3].getAttribute('data-syntax-state')).toBe('plain');
+    expect(blocks[2].getAttribute('data-syntax-theme')).toBe('github-dark');
+    expect(blocks[3].getAttribute('data-syntax-theme')).toBe('github-dark');
+    expect(blocks[2].textContent).toContain('unknown language block');
+    expect(blocks[3].textContent).toContain('no language block');
+
+    // 行内码：无 token
+    const inline = content.querySelector('p code');
+    expect(inline?.textContent).toBe('行内码');
+    expect(inline?.querySelectorAll('.shiki-token').length).toBe(0);
+
+    // 深色底保留
+    for (const block of blocks) {
+      expect(block.closest('pre')?.className).toContain('bg-terminal-bg');
+    }
+  });
+
+  it('围栏块主题固定 github-dark（不随应用主题变化）', async () => {
+    mockReaderVault();
+    writeStoredVaultRoot('demo', ROOT);
+    renderWorkspace();
+
+    await openReaderFile('/vault/index.md');
+    const body = await screen.findByTestId('page-sandbox-detail-obsidian-preview-body');
+    const content = within(body).getByTestId('page-sandbox-detail-obsidian-preview-content');
+
+    await waitFor(() => {
+      expect(content.querySelector('pre code')?.getAttribute('data-syntax-theme')).toBe(
+        'github-dark',
+      );
+    });
+  });
+
+  it('源码态不出现 token（纯文本）', async () => {
+    mockReaderVault();
+    writeStoredVaultRoot('demo', ROOT);
+    renderWorkspace();
+
+    await openReaderFile('/vault/index.md');
+    await screen.findByTestId('page-sandbox-detail-obsidian-preview-body');
+
+    fireEvent.click(screen.getByTestId('page-sandbox-detail-obsidian-preview-mode-source'));
+    const source = await screen.findByTestId('page-sandbox-detail-obsidian-preview-source');
+    expect(source.textContent).toContain('const a = 1;');
+    expect(document.querySelectorAll('.shiki-token').length).toBe(0);
+  });
+
+  it('代码块里的 [[wikilink]] 仍是字面量', async () => {
+    mockReaderVault();
+    setFile(
+      '/vault/index.md',
+      `${READER_INDEX}\n\`\`\`js\nconst link = "[[target]]";\n\`\`\`\n`,
+    );
+    writeStoredVaultRoot('demo', ROOT);
+    renderWorkspace();
+
+    await openReaderFile('/vault/index.md');
+    const body = await screen.findByTestId('page-sandbox-detail-obsidian-preview-body');
+    const content = within(body).getByTestId('page-sandbox-detail-obsidian-preview-content');
+    const blocks = codeBlocks(content);
+    const jsBlock = blocks[blocks.length - 1];
+    expect(jsBlock.textContent).toContain('[[target]]');
+    expect(
+      jsBlock.querySelectorAll(
+        '[data-testid="page-sandbox-detail-obsidian-preview-wikilink"]',
+      ).length,
+    ).toBe(0);
   });
 });
 
