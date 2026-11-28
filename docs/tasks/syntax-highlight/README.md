@@ -4,7 +4,7 @@
 
 ## 状态
 
-**01~04 全部 done（2026-11-28 收口）。** 自动化验收通过：单测 **64 个测试文件、1139 / 1139**，定向真沙箱 e2e **16 / 16**，最终全量真沙箱 e2e **90 / 90**，typecheck / `typecheck:tests` / build 通过；代码仍未提交、未发布，用户真机手工验收待执行。全轮数字与边界见 [[tasks/syntax-highlight/RESULTS.md|RESULTS.md]]。
+**01~04 全部 done（2026-11-28 收口）。** 自动化验收通过：单测 **64 个测试文件、1139 / 1139**，定向真沙箱 e2e **16 / 16**，最终全量真沙箱 e2e **90 / 90**，typecheck / `typecheck:tests` / build 通过；5 个提交已在 `origin/main`（至 `1464087`），代码未发布，用户真机手工验收待执行。提交清单见 [[tasks/syntax-highlight/RESULTS.md#九、提交记录|全轮提交清单]]。
 
 ## 关键口径
 
