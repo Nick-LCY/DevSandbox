@@ -146,6 +146,13 @@
 - **大文件预览统一口径（文件窗格预览与 Obsidian 阅读器共用）**：对 **>2 MB** 文件两处预览同口径——**同一个二次确认对话框**（`PreviewConfirmDialog`：**确认才发起读取、取消不发请求**）+ **同一个进度条**（`PreviewLoading`：进度按**已接收字节 / 文件列表条目的 `size`**），确认后加载渲染**全文**；**不截断、无「文件过大」提示条**；小文件直接加载、不出现进度条。判定纯函数 `isLargePreviewFile` 用**列表条目的 `size`**，两处共用 `src/lib` 同一套。
 - **Obsidian 视图与文件窗格互斥共存于内容区**：激活 Obsidian tab 时**分屏整体不渲染**（e2e 按 count 0 断言，不是隐藏样式），避免两套布局叠加。
 
+## 预览语法高亮
+
+- 文件窗格预览与 Obsidian fenced code block 的高亮 token 断言，只依赖 token class、`data-syntax-state`、`data-syntax-theme` 与完整文本内容；**不得以具体颜色值作为测试契约**，避免主题实现细节把测试绑定在渲染颜色上。
+- 文件窗格与 Worker 的预览行语义统一走 `preview-lines.ts`：CRLF、空行和末尾换行必须保持一致，token 渲染后的 `textContent` 必须与输入源码逐字一致。
+- 所有 fenced code block（包括无语言和未知语言）统一经过 `SyntaxHighlightedCodeBlock`；无法识别或高亮失败时保留完整原文，不另造渲染分支。
+- 预览全文高亮不设大小降级阈值、不截断；既有大于 2 MB 文件的二次确认与进度条只负责读取前确认和读取反馈。
+
 ## 侧栏折叠
 
 - **折叠只切样式、不卸载 DOM**：侧栏（`src/components/workbench/Sidebar.tsx`）折叠时一律用 `hidden` / `sr-only` 收起，**「新建沙箱」按钮必须始终挂载**——**页面上恒有两个 `page-sandbox-list-create-button`**（侧栏顶部 + 右侧空态引导块），验收脚本取第一个即可。
